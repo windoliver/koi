@@ -1,6 +1,6 @@
 {
   "name": "@koi/tools-builtin",
-  "description": "Built-in filesystem tools (read, edit, write) for Koi agents",
+  "description": "Built-in tools: filesystem (read, edit, write) + search (glob, grep, tool-search)",
   "version": "0.0.0",
   "private": true,
   "type": "module",
