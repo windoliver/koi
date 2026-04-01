@@ -180,10 +180,10 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
       const response = await next(effectiveRequest);
 
-      // Post-call: fire-and-forget
+      // Post-call: fire-and-forget (use effective input, not original, for audit consistency)
       const postEvent = buildEvent(ctx.session, "tool.post", {
         toolName: request.toolId,
-        data: { input: request.input, output: response.output } as JsonObject,
+        data: { input: effectiveRequest.input, output: response.output } as JsonObject,
       });
       fireAndForget(sessionId, postEvent);
 
@@ -198,8 +198,16 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const sessionId = ctx.session.sessionId as string;
 
       // Pre-call: blocking dispatch with decision aggregation
+      // Include model params so hooks can inspect prompt, tools, and settings
       const preEvent = buildEvent(ctx.session, "model.pre", {
-        data: { model: request.model ?? "default" } as JsonObject,
+        data: {
+          model: request.model ?? "default",
+          temperature: request.temperature,
+          maxTokens: request.maxTokens,
+          messageCount: request.messages.length,
+          toolCount: request.tools?.length ?? 0,
+          hasSystemPrompt: request.systemPrompt !== undefined,
+        } as JsonObject,
       });
       const preResults = await registry.execute(sessionId, preEvent);
       const decision = aggregateDecisions(preResults);
@@ -213,9 +221,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       }
 
       const effectiveRequest: ModelRequest =
-        decision.kind === "modify"
-          ? { ...request, metadata: { ...request.metadata, ...decision.patch } }
-          : request;
+        decision.kind === "modify" ? { ...request, ...decision.patch } : request;
 
       const response = await next(effectiveRequest);
 

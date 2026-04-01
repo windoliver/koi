@@ -339,6 +339,41 @@ describe("wrapToolCall", () => {
     expect(result.output).toBe("success despite hook failure");
   });
 
+  it("post-call event uses effective (modified) input for audit consistency", async () => {
+    // Pre-call returns modify, then we verify the post-call event has the modified input
+    let postCallEvent: HookEvent | undefined;
+    let callIndex = 0;
+    executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
+      callIndex++;
+      if (callIndex === 1) {
+        // session start — no decision
+        return [];
+      }
+      if (callIndex === 2) {
+        // pre-call — modify input
+        return [successResult("sanitizer", { kind: "modify", patch: { cmd: "ls -la" } })];
+      }
+      // post-call — capture the event
+      postCallEvent = event;
+      return [];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "done",
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: { cmd: "rm -rf /" } };
+    await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertDefined(postCallEvent);
+    // Post-call should see the sanitized input, not the original
+    expect((postCallEvent.data as Record<string, unknown>).input).toEqual({ cmd: "ls -la" });
+  });
+
   it("fires post-call hooks after next() returns (fire-and-forget)", async () => {
     // First call = pre-call (continue), second call = post-call
     let callCount = 0;
@@ -400,6 +435,29 @@ describe("wrapModelCall", () => {
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.content).toBe("hello");
+  });
+
+  it("modifies model request fields when hook returns modify decision", async () => {
+    executeSpy.mockResolvedValue([
+      successResult("rerouter", { kind: "modify", patch: { model: "cheap-model" } }),
+    ]);
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ModelRequest) => Promise<ModelResponse>>().mockResolvedValue({
+      content: "cheap response",
+      model: "cheap-model",
+    });
+
+    const request: ModelRequest = { messages: [], model: "expensive-model" };
+    await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
+
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    const passedRequest = nextFn.mock.calls[0]?.[0];
+    assertDefined(passedRequest);
+    // Patch should modify the request itself, not just metadata
+    expect(passedRequest.model).toBe("cheap-model");
   });
 
   it("blocks model call when hook returns block decision", async () => {
