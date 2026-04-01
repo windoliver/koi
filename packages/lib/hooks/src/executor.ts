@@ -155,11 +155,15 @@ async function executeHttpHook(
       headers["X-Hook-Signature"] = `sha256=${Buffer.from(sig).toString("hex")}`;
     }
 
+    // Block redirects to prevent SSRF — a 30x redirect could
+    // send the event payload to an arbitrary HTTP endpoint, bypassing the
+    // HTTPS/localhost validation enforced at schema level.
     const response = await fetch(hook.url, {
       method: hook.method ?? "POST",
       headers,
       body: JSON.stringify(event),
       signal,
+      redirect: "error",
     });
 
     const durationMs = performance.now() - start;

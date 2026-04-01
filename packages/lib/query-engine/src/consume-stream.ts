@@ -138,4 +138,24 @@ export async function* consumeModelStream(
       }
     }
   }
+
+  // Stream ended without a terminal "done" or "error" chunk — transport
+  // breakage, iterator cancellation, or provider version skew. Synthesize
+  // a terminal error so downstream consumers always get a deterministic
+  // end-of-stream signal.
+  yield {
+    kind: "done",
+    output: {
+      content: [],
+      stopReason: "error",
+      metrics: {
+        totalTokens: inputTokens + outputTokens,
+        inputTokens,
+        outputTokens,
+        turns: 0,
+        durationMs: 0,
+      },
+      metadata: { error: "stream ended without terminal chunk" },
+    },
+  };
 }
