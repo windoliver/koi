@@ -2,13 +2,20 @@
  * Per-call tool execution middleware factory.
  *
  * Wraps every tool call with:
- * - Abort signal composition (parent + per-tool timeout)
- * - Deterministic error normalization (never throws on tool failure)
- * - Transparent pass-through on success
+ * - Abort signal composition (parent + per-tool timeout via AbortSignal.any)
+ * - Per-tool timeout enforcement via Promise.race
+ * - Pre-aborted signal short-circuit
+ *
+ * This middleware does NOT normalize errors into ToolResponse. Errors are
+ * thrown as KoiRuntimeError (for timeout/abort) or re-thrown as-is (for tool
+ * failures). Error-to-ToolResponse normalization is the engine adapter's
+ * responsibility at the outermost boundary — doing it here would corrupt
+ * governance accounting in outer middleware that distinguishes fulfilled
+ * next() (success) from rejected next() (failure).
  */
 
-import type { JsonObject, KoiMiddleware, ToolRequest, ToolResponse } from "@koi/core";
-import { formatToolError, toKoiError } from "@koi/errors";
+import type { KoiMiddleware, ToolRequest } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -19,92 +26,29 @@ export interface ToolExecutionConfig {
   readonly defaultTimeoutMs?: number | undefined;
   /** Per-tool timeout overrides. Takes precedence over defaultTimeoutMs. */
   readonly toolTimeouts?: Readonly<Record<string, number>> | undefined;
-  /** Include stack trace in error responses. Default: false. */
-  readonly includeStackInResponse?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Internal discriminated union for type-safe error classification
+// Config validation
 // ---------------------------------------------------------------------------
 
-type ToolCallOutcome =
-  | { readonly kind: "success"; readonly response: ToolResponse }
-  | { readonly kind: "tool_error"; readonly error: unknown }
-  | { readonly kind: "timeout"; readonly timeoutMs: number | undefined }
-  | { readonly kind: "aborted"; readonly reason: unknown };
-
-/**
- * Classify a caught error into a ToolCallOutcome.
- * Distinguishes abort vs timeout vs generic tool error via DOMException.name.
- */
-function classifyError(error: unknown): ToolCallOutcome {
-  if (error instanceof DOMException) {
-    if (error.name === "AbortError") {
-      return { kind: "aborted", reason: error.message };
-    }
-    if (error.name === "TimeoutError") {
-      return { kind: "timeout", timeoutMs: undefined };
-    }
+function validateTimeoutMs(label: string, value: number): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `${label} must be a finite positive number, got ${value}`,
+      { context: { [label]: value } },
+    );
   }
-  return { kind: "tool_error", error };
 }
 
-/**
- * Map a ToolCallOutcome to a ToolResponse.
- * Every outcome variant produces a valid response — never throws.
- */
-function mapOutcomeToResponse(
-  outcome: ToolCallOutcome,
-  toolId: string,
-  configuredTimeoutMs: number | undefined,
-  includeStack: boolean,
-): ToolResponse {
-  switch (outcome.kind) {
-    case "success":
-      return outcome.response;
-
-    case "aborted":
-      return {
-        output: "Tool call aborted",
-        metadata: {
-          _error: { kind: "aborted" } satisfies JsonObject,
-        },
-      };
-
-    case "timeout": {
-      const ms = outcome.timeoutMs ?? configuredTimeoutMs;
-      const message =
-        ms !== undefined ? `Tool call timed out after ${ms}ms` : "Tool call timed out";
-      return {
-        output: message,
-        metadata: {
-          _error: {
-            kind: "timeout",
-            ...(ms !== undefined ? { timeoutMs: ms } : {}),
-          } satisfies JsonObject,
-        },
-      };
-    }
-
-    case "tool_error": {
-      const koiError = toKoiError(outcome.error);
-      const errorMeta: Record<string, unknown> = {
-        kind: "tool_error",
-        code: koiError.code,
-        retryable: koiError.retryable,
-      };
-      if (includeStack && outcome.error instanceof Error && outcome.error.stack !== undefined) {
-        errorMeta.stack = outcome.error.stack;
-      }
-      return {
-        output: formatToolError(outcome.error, toolId),
-        metadata: { _error: errorMeta as JsonObject },
-      };
-    }
-
-    default: {
-      const _exhaustive: never = outcome;
-      throw new Error(`Unhandled outcome kind: ${String(_exhaustive)}`);
+function validateConfig(config: ToolExecutionConfig): void {
+  if (config.defaultTimeoutMs !== undefined) {
+    validateTimeoutMs("defaultTimeoutMs", config.defaultTimeoutMs);
+  }
+  if (config.toolTimeouts !== undefined) {
+    for (const [toolId, ms] of Object.entries(config.toolTimeouts)) {
+      validateTimeoutMs(`toolTimeouts["${toolId}"]`, ms);
     }
   }
 }
@@ -171,15 +115,51 @@ function rejectOnAbort(signal: AbortSignal): Promise<never> {
 }
 
 // ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a DOMException from AbortSignal into a KoiRuntimeError.
+ * Distinguishes timeout from abort via DOMException.name.
+ * Non-DOMException errors are re-thrown as-is.
+ */
+function rethrowAsKoiError(error: unknown, toolId: string, timeoutMs: number | undefined): never {
+  if (error instanceof DOMException) {
+    if (error.name === "TimeoutError") {
+      const msg =
+        timeoutMs !== undefined
+          ? `Tool "${toolId}" timed out after ${timeoutMs}ms`
+          : `Tool "${toolId}" timed out`;
+      throw KoiRuntimeError.from("TIMEOUT", msg, {
+        retryable: false,
+        context: { toolId, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
+      });
+    }
+    if (error.name === "AbortError") {
+      throw KoiRuntimeError.from("TIMEOUT", `Tool "${toolId}" was aborted`, {
+        retryable: false,
+        context: { toolId, abortReason: error.message },
+      });
+    }
+  }
+  // Re-throw non-DOMException errors as-is — preserves error type for
+  // outer middleware (governance, telemetry) that inspect the thrown value.
+  throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /** Create a tool-execution middleware instance. */
 export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware {
-  const defaultTimeoutMs = config?.defaultTimeoutMs;
-  const includeStack = config?.includeStackInResponse ?? false;
+  if (config !== undefined) {
+    validateConfig(config);
+  }
 
-  // Convert Record to Map at construction time for O(1) lookup (Decision #15A)
+  const defaultTimeoutMs = config?.defaultTimeoutMs;
+
+  // Convert Record to Map at construction time for O(1) lookup
   const toolTimeouts: ReadonlyMap<string, number> =
     config?.toolTimeouts !== undefined ? new Map(Object.entries(config.toolTimeouts)) : new Map();
 
@@ -190,20 +170,18 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
     describeCapabilities: () => undefined,
 
     wrapToolCall: async (_ctx, request, next) => {
-      // 1. Check: is signal already aborted? (Decision #9A scenario 1)
+      // 1. Check: is signal already aborted?
       if (request.signal?.aborted === true) {
-        return mapOutcomeToResponse(
-          { kind: "aborted", reason: request.signal.reason },
-          request.toolId,
-          undefined,
-          includeStack,
-        );
+        throw KoiRuntimeError.from("TIMEOUT", `Tool "${request.toolId}" was aborted`, {
+          retryable: false,
+          context: { toolId: request.toolId },
+        });
       }
 
-      // 2. Resolve timeout for this toolId (Decision #7B)
+      // 2. Resolve timeout for this toolId
       const timeoutMs = resolveTimeoutMs(request.toolId, toolTimeouts, defaultTimeoutMs);
 
-      // 3. Compose signal — only when timeout configured (Decision #13A)
+      // 3. Compose signal — only when timeout configured
       const composedSignal = composeSignal(request.signal, timeoutMs);
 
       // 4. Build the request to forward (only create new object if signal changed)
@@ -216,16 +194,11 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
 
         // Race tool execution against signal abort when a signal exists.
         // This ensures timeout/abort fires even if the tool ignores the signal.
-        const response: ToolResponse =
-          composedSignal !== undefined
-            ? await Promise.race([toolPromise, rejectOnAbort(composedSignal)])
-            : await toolPromise;
-
-        // Pure transparency: return the response unchanged (Decision #11B)
-        return response;
+        return composedSignal !== undefined
+          ? await Promise.race([toolPromise, rejectOnAbort(composedSignal)])
+          : await toolPromise;
       } catch (error: unknown) {
-        const outcome = classifyError(error);
-        return mapOutcomeToResponse(outcome, request.toolId, timeoutMs, includeStack);
+        rethrowAsKoiError(error, request.toolId, timeoutMs);
       }
     },
   };

@@ -1,6 +1,6 @@
 {
   "name": "@koi/tool-execution",
-  "description": "Per-call tool execution middleware with abort propagation and error normalization",
+  "description": "Per-call tool execution middleware with abort propagation and timeout enforcement",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/execution-context": "workspace:*"
+    "@koi/errors": "workspace:*"
   }
 }

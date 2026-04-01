@@ -11,9 +11,6 @@
     },
     {
       "path": "../../lib/errors"
-    },
-    {
-      "path": "../../lib/execution-context"
     }
   ]
 }

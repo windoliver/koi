@@ -2,11 +2,12 @@
  * Tests for @koi/tool-execution — per-call tool execution middleware.
  *
  * Test groups:
- * 1. Factory & configuration
+ * 1. Factory & configuration (including validation)
  * 2. Abort signal scenarios (5-scenario matrix)
- * 3. Error normalization (8-shape matrix)
+ * 3. Error propagation (8-shape matrix)
  * 4. Transparency (successful calls)
- * 5. Integration (mock middleware chain)
+ * 5. Per-tool timeout configuration
+ * 6. Integration (mock middleware chain / governance accounting)
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -102,13 +103,52 @@ describe("createToolExecution", () => {
       expect(mw.name).toBe("koi:tool-execution");
     });
 
-    test("accepts full config", () => {
+    test("accepts valid full config", () => {
       const mw = createToolExecution({
         defaultTimeoutMs: 30_000,
         toolTimeouts: { "exec:run": 60_000 },
-        includeStackInResponse: true,
       });
       expect(mw.name).toBe("koi:tool-execution");
+    });
+  });
+
+  describe("config validation", () => {
+    test("rejects negative defaultTimeoutMs", () => {
+      expect(() => createToolExecution({ defaultTimeoutMs: -1 })).toThrow("finite positive");
+    });
+
+    test("rejects NaN defaultTimeoutMs", () => {
+      expect(() => createToolExecution({ defaultTimeoutMs: NaN })).toThrow("finite positive");
+    });
+
+    test("rejects Infinity defaultTimeoutMs", () => {
+      expect(() => createToolExecution({ defaultTimeoutMs: Infinity })).toThrow("finite positive");
+    });
+
+    test("rejects zero defaultTimeoutMs", () => {
+      expect(() => createToolExecution({ defaultTimeoutMs: 0 })).toThrow("finite positive");
+    });
+
+    test("rejects invalid per-tool timeout", () => {
+      expect(() => createToolExecution({ toolTimeouts: { "bad:tool": -5 } })).toThrow(
+        "finite positive",
+      );
+    });
+
+    test("rejects NaN per-tool timeout", () => {
+      expect(() => createToolExecution({ toolTimeouts: { "bad:tool": NaN } })).toThrow(
+        "finite positive",
+      );
+    });
+
+    test("validation error is a KoiRuntimeError with VALIDATION code", () => {
+      try {
+        createToolExecution({ defaultTimeoutMs: -1 });
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("VALIDATION");
+      }
     });
   });
 
@@ -117,7 +157,7 @@ describe("createToolExecution", () => {
   // ---------------------------------------------------------------------------
 
   describe("abort signals", () => {
-    test("scenario 1: pre-aborted signal returns abort response immediately", async () => {
+    test("scenario 1: pre-aborted signal throws KoiRuntimeError immediately", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -128,19 +168,20 @@ describe("createToolExecution", () => {
         Promise.resolve({ output: "should not reach" } satisfies ToolResponse),
       );
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      // Handler should NOT have been called
-      expect(handler).not.toHaveBeenCalled();
-      // Response should indicate abort
-      expect(response.output).toContain("aborted");
-      const meta = response.metadata as JsonObject | undefined;
-      expect(meta).toBeDefined();
-      expect((meta as JsonObject)._error).toBeDefined();
-      expect(((meta as JsonObject)._error as JsonObject).kind).toBe("aborted");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        // Handler should NOT have been called
+        expect(handler).not.toHaveBeenCalled();
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("aborted");
+        expect((e as KoiRuntimeError).retryable).toBe(false);
+      }
     });
 
-    test("scenario 2: signal fires during tool execution returns abort response", async () => {
+    test("scenario 2: signal fires during tool execution throws abort error", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -148,59 +189,60 @@ describe("createToolExecution", () => {
 
       const handler: ToolHandler = () =>
         new Promise((_resolve, reject) => {
-          // Simulate: tool starts, then signal aborts
           controller.abort("user_cancel");
-          // The abort causes a DOMException in code that checks the signal
           reject(new DOMException("The operation was aborted", "AbortError"));
         });
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(response.output).toContain("aborted");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("aborted");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("aborted");
+      }
     });
 
     test("scenario 2b: signal aborts during next() with never-settling handler", async () => {
-      // Regression: rejectOnAbort must handle signals that abort between
-      // the pre-check and the addEventListener call (Codex review P1)
       const mw = createToolExecution({ defaultTimeoutMs: 5000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
 
       const handler: ToolHandler = () => {
-        // Abort synchronously inside next(), then return a never-settling promise
         controller.abort("user_cancel");
         return new Promise(() => {});
       };
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(response.output).toContain("aborted");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("aborted");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("aborted");
+      }
     });
 
-    test("scenario 3: per-tool timeout fires returns timeout response", async () => {
+    test("scenario 3: per-tool timeout fires throws timeout error", async () => {
       const mw = createToolExecution({ defaultTimeoutMs: 50 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
-      const handler: ToolHandler = () =>
-        new Promise((_resolve) => {
-          // Never resolves — will timeout
-        });
+      const handler: ToolHandler = () => new Promise(() => {});
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(response.output).toContain("timed out");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("timeout");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("timed out");
+        expect((e as KoiRuntimeError).retryable).toBe(false);
+      }
     });
 
     test("scenario 4: race between parent abort and timeout — first wins", async () => {
-      // Pre-aborted signal + timeout configured → abort should win (it's already aborted)
       const mw = createToolExecution({ defaultTimeoutMs: 10_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -211,11 +253,29 @@ describe("createToolExecution", () => {
         Promise.resolve({ output: "should not reach" } satisfies ToolResponse),
       );
 
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(handler).not.toHaveBeenCalled();
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("aborted");
+      }
+    });
+
+    test("scenario 5: no signal provided — tool executes normally", async () => {
+      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const ctx = createMockTurnContext();
+      const request = createMockToolRequest({ signal: undefined });
+
+      const expected: ToolResponse = { output: "success" };
+      const handler = mock(() => Promise.resolve(expected));
+
       const response = await invokeWrapToolCall(mw, ctx, request, handler);
 
-      expect(handler).not.toHaveBeenCalled();
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("aborted");
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(response).toEqual(expected);
     });
 
     test("scenario 5a: parent signal + timeout both present — tool succeeds before either fires", async () => {
@@ -232,111 +292,95 @@ describe("createToolExecution", () => {
       expect(handler).toHaveBeenCalledTimes(1);
       expect(response).toEqual(expected);
     });
-
-    test("scenario 5: no signal provided — tool executes normally", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
-      const ctx = createMockTurnContext();
-      // signal is undefined
-      const request = createMockToolRequest({ signal: undefined });
-
-      const expected: ToolResponse = { output: "success" };
-      const handler = mock(() => Promise.resolve(expected));
-
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(handler).toHaveBeenCalledTimes(1);
-      expect(response).toEqual(expected);
-    });
   });
 
   // ---------------------------------------------------------------------------
-  // 3. Error normalization (8-shape matrix)
+  // 3. Error propagation (tool errors re-thrown as-is)
   // ---------------------------------------------------------------------------
 
-  describe("error normalization", () => {
-    test("shape 1: standard Error", async () => {
+  describe("error propagation", () => {
+    test("shape 1: standard Error re-thrown as-is", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const request = createMockToolRequest({ toolId: "test:err" });
+      const request = createMockToolRequest();
+      const original = new Error("something broke");
 
-      const handler: ToolHandler = () => Promise.reject(new Error("something broke"));
+      const handler: ToolHandler = () => Promise.reject(original);
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(typeof response.output).toBe("string");
-      expect(response.output as string).toContain("something broke");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("tool_error");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        // Tool errors are NOT wrapped — re-thrown as-is for outer middleware
+        expect(e).toBe(original);
+      }
     });
 
-    test("shape 2: KoiRuntimeError preserves code and retryable", async () => {
+    test("shape 2: KoiRuntimeError re-thrown as-is", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const request = createMockToolRequest({ toolId: "test:koi" });
+      const request = createMockToolRequest();
+      const original = KoiRuntimeError.from("RATE_LIMIT", "Too many requests", { retryable: true });
 
-      const handler: ToolHandler = () =>
-        Promise.reject(
-          KoiRuntimeError.from("RATE_LIMIT", "Too many requests", { retryable: true }),
-        );
+      const handler: ToolHandler = () => Promise.reject(original);
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(typeof response.output).toBe("string");
-      expect(response.output as string).toContain("Too many requests");
-      const meta = response.metadata as JsonObject;
-      const errMeta = meta._error as JsonObject;
-      expect(errMeta.kind).toBe("tool_error");
-      expect(errMeta.code).toBe("RATE_LIMIT");
-      expect(errMeta.retryable).toBe(true);
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBe(original);
+        expect((e as KoiRuntimeError).code).toBe("RATE_LIMIT");
+        expect((e as KoiRuntimeError).retryable).toBe(true);
+      }
     });
 
-    test("shape 3: plain string throw", async () => {
+    test("shape 3: plain string throw re-thrown as-is", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const request = createMockToolRequest({ toolId: "test:str" });
+      const request = createMockToolRequest();
 
       const handler: ToolHandler = () => Promise.reject("oops");
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(typeof response.output).toBe("string");
-      expect(response.output as string).toContain("oops");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("tool_error");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBe("oops");
+      }
     });
 
-    test("shape 4: null throw", async () => {
+    test("shape 4: null throw re-thrown as-is", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const request = createMockToolRequest({ toolId: "test:null" });
+      const request = createMockToolRequest();
 
       const handler: ToolHandler = () => Promise.reject(null);
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(typeof response.output).toBe("string");
-      expect((response.output as string).length).toBeGreaterThan(0);
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("tool_error");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeNull();
+      }
     });
 
-    test("shape 5: object with message property", async () => {
+    test("shape 5: object with message re-thrown as-is", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const request = createMockToolRequest({ toolId: "test:obj" });
+      const request = createMockToolRequest();
+      const original = { message: "object error", statusCode: 500 };
 
-      const handler: ToolHandler = () =>
-        Promise.reject({ message: "object error", statusCode: 500 });
+      const handler: ToolHandler = () => Promise.reject(original);
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      expect(typeof response.output).toBe("string");
-      expect(response.output as string).toContain("object error");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("tool_error");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBe(original);
+      }
     });
 
-    test("shape 6: DOMException AbortError", async () => {
+    test("shape 6: DOMException AbortError becomes KoiRuntimeError TIMEOUT", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ toolId: "test:abort" });
@@ -344,13 +388,17 @@ describe("createToolExecution", () => {
       const handler: ToolHandler = () =>
         Promise.reject(new DOMException("The operation was aborted", "AbortError"));
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("aborted");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("aborted");
+      }
     });
 
-    test("shape 7: DOMException TimeoutError", async () => {
+    test("shape 7: DOMException TimeoutError becomes KoiRuntimeError TIMEOUT", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ toolId: "test:timeout" });
@@ -358,39 +406,30 @@ describe("createToolExecution", () => {
       const handler: ToolHandler = () =>
         Promise.reject(new DOMException("The operation timed out", "TimeoutError"));
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("timeout");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("timed out");
+      }
     });
 
-    test("includeStackInResponse: false hides stack trace", async () => {
-      const mw = createToolExecution({ includeStackInResponse: false });
+    test("shape 8: non-standard DOMException re-thrown as-is", async () => {
+      const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
+      const original = new DOMException("something else", "SyntaxError");
 
-      const handler: ToolHandler = () => Promise.reject(new Error("fail"));
+      const handler: ToolHandler = () => Promise.reject(original);
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      const meta = response.metadata as JsonObject;
-      const errMeta = meta._error as JsonObject;
-      expect(errMeta.stack).toBeUndefined();
-    });
-
-    test("includeStackInResponse: true includes stack trace", async () => {
-      const mw = createToolExecution({ includeStackInResponse: true });
-      const ctx = createMockTurnContext();
-      const request = createMockToolRequest();
-
-      const handler: ToolHandler = () => Promise.reject(new Error("fail"));
-
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      const meta = response.metadata as JsonObject;
-      const errMeta = meta._error as JsonObject;
-      expect(errMeta.stack).toBeDefined();
-      expect(typeof errMeta.stack).toBe("string");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBe(original);
+      }
     });
   });
 
@@ -413,14 +452,14 @@ describe("createToolExecution", () => {
       const response = await invokeWrapToolCall(mw, ctx, request, handler);
 
       expect(response).toEqual(expected);
-      // Verify it's the exact same object (referential equality for pure transparency)
+      // Verify referential equality for pure transparency
       expect(response).toBe(expected);
     });
 
     test("successful call forwards request to handler unchanged", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
-      const input = { file: "/tmp/test.txt", encoding: "utf-8" };
+      const input: JsonObject = { file: "/tmp/test.txt", encoding: "utf-8" };
       const request = createMockToolRequest({
         toolId: "fs:read",
         input,
@@ -432,7 +471,6 @@ describe("createToolExecution", () => {
       await invokeWrapToolCall(mw, ctx, request, handler);
 
       expect(handler).toHaveBeenCalledTimes(1);
-      // Handler receives the request (potentially with composed signal)
       const firstCall = handler.mock.calls[0] as unknown as readonly [ToolRequest];
       expect(firstCall[0].toolId).toBe("fs:read");
       expect(firstCall[0].input).toEqual(input);
@@ -465,14 +503,16 @@ describe("createToolExecution", () => {
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ toolId: "fast:tool" });
 
-      // This handler never resolves — relies on timeout
       const handler: ToolHandler = () => new Promise(() => {});
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      // Should timeout at 50ms, not 10_000ms
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("timeout");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).message).toContain("timed out");
+      }
     });
 
     test("falls back to defaultTimeoutMs for non-matching toolId", async () => {
@@ -485,10 +525,13 @@ describe("createToolExecution", () => {
 
       const handler: ToolHandler = () => new Promise(() => {});
 
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
-
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("timeout");
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+      }
     });
 
     test("no timeout when neither default nor per-tool configured", async () => {
@@ -506,35 +549,85 @@ describe("createToolExecution", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 6. Integration: mock middleware chain
+  // 6. Integration: governance accounting
   // ---------------------------------------------------------------------------
 
   describe("integration with middleware chain", () => {
-    test("guard errors from next() propagate unchanged (not caught by error normalization)", async () => {
+    test("tool errors propagate to outer middleware (governance sees failure)", async () => {
+      const mw = createToolExecution();
+      const ctx = createMockTurnContext();
+      const request = createMockToolRequest();
+      const toolError = new Error("tool crashed");
+
+      const handler: ToolHandler = () => Promise.reject(toolError);
+
+      // Simulate what governance extension does: try/catch around next()
+      let recordedEvent: string | undefined;
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        recordedEvent = "tool_success";
+      } catch {
+        recordedEvent = "tool_error";
+      }
+
+      // Governance must see the failure — NOT success
+      expect(recordedEvent).toBe("tool_error");
+    });
+
+    test("timeout errors propagate to outer middleware (governance sees failure)", async () => {
+      const mw = createToolExecution({ defaultTimeoutMs: 50 });
+      const ctx = createMockTurnContext();
+      const request = createMockToolRequest();
+
+      const handler: ToolHandler = () => new Promise(() => {});
+
+      let recordedEvent: string | undefined;
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        recordedEvent = "tool_success";
+      } catch {
+        recordedEvent = "tool_error";
+      }
+
+      expect(recordedEvent).toBe("tool_error");
+    });
+
+    test("abort errors propagate to outer middleware (governance sees failure)", async () => {
+      const mw = createToolExecution();
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      controller.abort("user_cancel");
+      const request = createMockToolRequest({ signal: controller.signal });
+
+      const handler = mock(() => Promise.resolve({ output: "nope" } satisfies ToolResponse));
+
+      let recordedEvent: string | undefined;
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        recordedEvent = "tool_success";
+      } catch {
+        recordedEvent = "tool_error";
+      }
+
+      expect(recordedEvent).toBe("tool_error");
+    });
+
+    test("successful calls propagate to outer middleware (governance sees success)", async () => {
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
-      // Simulate a guard (upstream middleware) that throws KoiRuntimeError
-      const guardError = KoiRuntimeError.from("TIMEOUT", "Max turns exceeded: 10/10", {
-        retryable: false,
-      });
-      const handler: ToolHandler = () => Promise.reject(guardError);
+      const handler = mock(() => Promise.resolve({ output: "ok" } satisfies ToolResponse));
 
-      // Tool-execution should let guard errors propagate as-is when they come
-      // from next() — because in the real chain, guards run OUTSIDE tool-execution
-      // (lower priority). But when the tool itself throws KoiRuntimeError, it should
-      // be caught and normalized.
-      //
-      // In this test, the error comes from the handler (terminal tool), so it
-      // SHOULD be caught and normalized into a ToolResponse.
-      const response = await invokeWrapToolCall(mw, ctx, request, handler);
+      let recordedEvent: string | undefined;
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        recordedEvent = "tool_success";
+      } catch {
+        recordedEvent = "tool_error";
+      }
 
-      // Since the error came from the terminal handler, it should be normalized
-      expect(typeof response.output).toBe("string");
-      const meta = response.metadata as JsonObject;
-      expect((meta._error as JsonObject).kind).toBe("tool_error");
-      expect((meta._error as JsonObject).code).toBe("TIMEOUT");
+      expect(recordedEvent).toBe("tool_success");
     });
 
     test("middleware composes with a pass-through wrapper", async () => {
@@ -544,9 +637,7 @@ describe("createToolExecution", () => {
 
       const expected: ToolResponse = { output: "from-tool" };
 
-      // Simulate outer middleware wrapping tool-execution
       const outerHandler: ToolHandler = async (req) => {
-        // Outer middleware delegates to tool-execution's handler
         return invokeWrapToolCall(mw, ctx, req, () => Promise.resolve(expected));
       };
 

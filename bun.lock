@@ -138,7 +138,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/execution-context": "workspace:*",
       },
     },
   },

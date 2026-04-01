@@ -1,30 +1,34 @@
 # @koi/tool-execution — Per-Call Tool Execution Middleware
 
 `@koi/tool-execution` is an L2 middleware package implementing `KoiMiddleware.wrapToolCall`
-for per-call tool dispatch orchestration. It owns abort propagation, error normalization,
-and deterministic response shaping for every tool call in the pipeline.
+for per-call tool dispatch orchestration. It owns abort propagation, per-tool timeout
+enforcement, and DOMException-to-KoiRuntimeError classification.
 
 ## Why it exists
 
-Every tool call can fail in multiple ways: the tool throws, the request is aborted,
-a timeout fires, or the tool returns malformed output. Without a dedicated execution
-wrapper, each engine adapter must independently handle these failure modes — leading
-to inconsistent error shapes, conversation corruption on abort, and duplicated logic.
+Every tool call can fail via abort signal or timeout. Without a dedicated execution
+wrapper, each engine adapter must independently compose abort signals, enforce per-tool
+timeouts, and classify DOMException variants — leading to duplicated logic and
+inconsistent error shapes.
 
-This package ensures that **every tool call produces a valid `ToolResponse`**, regardless
-of how the underlying tool behaves. It is the last middleware before the terminal tool
-handler and the first to see the tool's result.
+This middleware handles timeout/abort enforcement and error classification while
+**preserving the error signal for outer middleware**. It does NOT normalize errors
+into ToolResponse — that responsibility belongs to the engine adapter at the outermost
+boundary. Normalizing here would corrupt governance accounting (outer middleware
+distinguishes fulfilled next() from rejected next() to record success vs failure).
 
 ## What this owns
 
 - Per-call tool dispatch through `KoiMiddleware.wrapToolCall`
 - Abort propagation from `ToolRequest.signal` via `AbortSignal.any()` composition
-- Per-tool timeout enforcement via `AbortSignal.timeout()`
-- Error normalization: arbitrary tool failures → deterministic `ToolResponse`
-- Distinguishes abort vs timeout vs tool error via `DOMException.name`
+- Per-tool timeout enforcement via `AbortSignal.timeout()` + `Promise.race`
+- DOMException classification: AbortError/TimeoutError → `KoiRuntimeError("TIMEOUT")`
+- Tool errors re-thrown as-is to preserve outer middleware accounting
+- Config validation at construction time (rejects invalid timeout values)
 
 ## What this does NOT own
 
+- Error-to-ToolResponse normalization → engine adapter (outermost boundary)
 - Permission checking → `@koi/permissions`
 - Hook dispatch → `@koi/hooks`
 - Turn continuation / loop control → `@koi/query-engine`
@@ -36,8 +40,7 @@ handler and the first to see the tool's result.
 
 ```
 L0  @koi/core                ─ KoiMiddleware, ToolRequest, ToolResponse, TurnContext
-L0u @koi/errors              ─ toKoiError(), formatToolError(), KoiRuntimeError
-L0u @koi/execution-context   ─ runWithExecutionContext(), SpanRecorder
+L0u @koi/errors              ─ KoiRuntimeError
 L2  @koi/tool-execution      ─ this package
 ```
 
@@ -54,7 +57,7 @@ L2  @koi/tool-execution      ─ this package
 wrapToolCall(ctx, request, next)
   │
   ├─ 1. Check: is request.signal already aborted?
-  │     └─ YES → return ToolResponse with abort metadata
+  │     └─ YES → throw KoiRuntimeError("TIMEOUT", "aborted")
   │
   ├─ 2. Resolve timeout for this toolId
   │     ├─ toolTimeouts.get(toolId) → per-tool override
@@ -64,30 +67,17 @@ wrapToolCall(ctx, request, next)
   ├─ 3. Compose signal (only if timeout configured)
   │     └─ AbortSignal.any([request.signal, AbortSignal.timeout(ms)])
   │
-  ├─ 4. Call next(request) with composed signal
+  ├─ 4. Promise.race([next(request), rejectOnAbort(signal)])
   │     │
   │     ├─ SUCCESS → return response unchanged (pure transparency)
   │     │
-  │     └─ FAILURE → classify via DOMException.name
-  │           ├─ "AbortError"   → ToolResponse with abort metadata
-  │           ├─ "TimeoutError" → ToolResponse with timeout metadata
-  │           └─ other          → ToolResponse with error metadata
-  │                               (uses toKoiError + formatToolError)
+  │     └─ FAILURE → classify error
+  │           ├─ DOMException "AbortError"   → throw KoiRuntimeError("TIMEOUT")
+  │           ├─ DOMException "TimeoutError" → throw KoiRuntimeError("TIMEOUT")
+  │           └─ other                       → re-throw as-is
   │
-  └─ Every path returns a valid ToolResponse. Never throws on tool failure.
+  └─ Errors propagate to outer middleware. Engine adapter handles ToolResponse.
 ```
-
-### Internal discriminated union
-
-```typescript
-type ToolCallOutcome =
-  | { readonly kind: "success"; readonly response: ToolResponse }
-  | { readonly kind: "error"; readonly message: string; readonly cause?: unknown }
-  | { readonly kind: "timeout"; readonly timeoutMs: number }
-  | { readonly kind: "aborted"; readonly reason: unknown };
-```
-
-Used internally for type-safe classification. Mapped to `ToolResponse` at the boundary.
 
 ## Quick start
 
@@ -109,7 +99,6 @@ const withOverrides = createToolExecution({
     "exec:run": 60_000,     // code execution gets 60s
     "fs:read": 5_000,       // file read gets 5s
   },
-  includeStackInResponse: false, // production: hide stack traces
 });
 ```
 
@@ -117,38 +106,44 @@ const withOverrides = createToolExecution({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `defaultTimeoutMs` | `number \| undefined` | `undefined` | Global timeout for all tool calls. No timeout when absent. |
-| `toolTimeouts` | `Record<string, number>` | `{}` | Per-tool timeout overrides. Takes precedence over default. |
-| `includeStackInResponse` | `boolean` | `false` | Include stack trace in error responses. Enable for development. |
+| `defaultTimeoutMs` | `number \| undefined` | `undefined` | Global timeout for all tool calls. No timeout when absent. Must be finite and positive. |
+| `toolTimeouts` | `Record<string, number>` | `{}` | Per-tool timeout overrides. Takes precedence over default. Each value must be finite and positive. |
+
+Invalid config values (negative, NaN, Infinity, zero) throw `KoiRuntimeError("VALIDATION")` at construction time.
 
 ## Error handling
 
-| Failure mode | Detection | ToolResponse.output | ToolResponse.metadata |
-|---|---|---|---|
-| Tool throws Error | `catch` block | `formatToolError()` message | `{ _error: { kind: "tool_error", code, retryable } }` |
-| Abort signal fires | `DOMException.name === "AbortError"` | `"Tool call aborted"` | `{ _error: { kind: "aborted" } }` |
-| Timeout fires | `DOMException.name === "TimeoutError"` | `"Tool call timed out after Xms"` | `{ _error: { kind: "timeout", timeoutMs } }` |
-| Signal pre-aborted | `signal.aborted` check | `"Tool call aborted"` | `{ _error: { kind: "aborted" } }` |
+| Failure mode | Detection | Behavior |
+|---|---|---|
+| Tool throws any error | `catch` block | Re-thrown as-is — preserves error type for governance |
+| Abort signal fires | `DOMException.name === "AbortError"` | Throws `KoiRuntimeError("TIMEOUT")` with `retryable: false` |
+| Timeout fires | `DOMException.name === "TimeoutError"` | Throws `KoiRuntimeError("TIMEOUT")` with `retryable: false` |
+| Signal pre-aborted | `signal.aborted` check | Throws `KoiRuntimeError("TIMEOUT")` immediately, handler not called |
+| Invalid config | Construction time | Throws `KoiRuntimeError("VALIDATION")` |
 
 ## Testing
 
-- **Abort matrix**: 5 scenarios (pre-aborted, mid-abort, timeout, race, missing signal)
-- **Error shapes**: 8 variants (Error, KoiRuntimeError, string, null, object, AbortError, TimeoutError, malformed)
-- **Transparency**: successful calls pass through unchanged
-- **Integration**: mock middleware chain verifies guard errors propagate unchanged
+- **Config validation**: 7 tests (negative, NaN, Infinity, zero, per-tool invalid, error type)
+- **Abort matrix**: 6 scenarios (pre-aborted, mid-abort, abort-during-next race, timeout, signal race, missing signal, both present)
+- **Error propagation**: 8 shapes (Error, KoiRuntimeError, string, null, object, AbortError, TimeoutError, non-standard DOMException)
+- **Transparency**: successful calls pass through unchanged (referential equality)
+- **Governance integration**: 4 tests proving outer middleware sees correct success/failure signals
+
+40 tests, 100% line coverage, 100% function coverage.
 
 ## Design decisions
 
-1. **`AbortSignal.any()` over custom controller** — web standard, supported in Bun 1.3.x, composes parent signal with per-call timeout. First-to-abort semantics.
-2. **Always return `ToolResponse`, never throw** — prevents conversation corruption when abort fires mid-execution (LangChain.js #8570).
-3. **Internal discriminated union** — type-safe classification with exhaustive `switch`, mapped to `ToolResponse` at the boundary. Inspired by Vercel AI SDK's 3-part stream taxonomy.
+1. **Errors thrown, not normalized into ToolResponse** — Outer middleware (governance extension) distinguishes success/failure by whether `next()` throws. Normalizing errors into fulfilled ToolResponse would corrupt governance accounting. Error-to-ToolResponse normalization belongs at the engine adapter boundary.
+2. **`AbortSignal.any()` + `Promise.race`** — Web standard signal composition (Bun 1.3.x). `Promise.race` with `rejectOnAbort()` ensures timeout fires even when tools ignore the signal. `rejectOnAbort` checks `signal.aborted` before attaching listener to prevent the race where the signal fires between the pre-check and `addEventListener`.
+3. **Config validated at construction** — `AbortSignal.timeout()` throws `RangeError` for negative/NaN/Infinity. Validating early produces a clear `KoiRuntimeError("VALIDATION")` instead of an opaque runtime crash.
 4. **Conditional signal composition** — only allocate `AbortSignal.any()` when timeout is configured. Zero overhead on the happy path.
-5. **Pure transparency on success** — no metadata enrichment on the happy path. Timing belongs in observe-phase middleware.
-6. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
+5. **Pure transparency on success** — no metadata enrichment. Timing belongs in observe-phase middleware.
+6. **`retryable: false` for timeout/abort** — the tool may still be running in the background after `Promise.race` returns. Automatic retry could cause duplicate side effects.
+7. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
 
 ## Layer compliance
 
-- [x] Runtime deps: `@koi/core` (L0) + `@koi/errors` (L0u) + `@koi/execution-context` (L0u)
+- [x] Runtime deps: `@koi/core` (L0) + `@koi/errors` (L0u)
 - [x] No imports from `@koi/engine` or peer L2 packages
 - [x] All interface properties are `readonly`
 - [x] No vendor types in public API
