@@ -54,6 +54,21 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/channel-base": {
+      "name": "@koi/channel-base",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/channel-cli": {
+      "name": "@koi/channel-cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/context-manager": {
       "name": "@koi/context-manager",
       "version": "0.0.0",
@@ -111,6 +126,15 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/hooks": {
+      "name": "@koi/hooks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
       },
     },
     "packages/lib/query-engine": {
@@ -302,6 +326,10 @@
 
     "@jscpd/tokenizer": ["@jscpd/tokenizer@4.0.4", "", { "dependencies": { "@jscpd/core": "4.0.4", "reprism": "^0.0.11", "spark-md5": "^3.0.2" } }, "sha512-xxYYY/qaLah/FlwogEbGIxx9CjDO+G9E6qawcy26WwrflzJb6wsnhjwdneN6Wb0RNCDsqvzY+bzG453jsin4UQ=="],
 
+    "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
+
+    "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
+
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
@@ -325,6 +353,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 

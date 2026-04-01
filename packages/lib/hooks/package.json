@@ -1,6 +1,6 @@
 {
-  "name": "@koi/git-utils",
-  "description": "Wrap git CLI commands and resolve worktree paths via Bun.spawn",
+  "name": "@koi/hooks",
+  "description": "Hook loader, schema validation, and session-scoped hook lifecycle management",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,8 +18,11 @@
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
   },
+  "devDependencies": {},
   "koi": {
     "optional": true
   }

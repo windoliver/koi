@@ -1,6 +1,6 @@
 {
-  "name": "@koi/query-engine",
-  "description": "Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation",
+  "name": "@koi/channel-base",
+  "description": "Shared ChannelAdapter factory with lifecycle, capability-aware block rendering, and handler dispatch",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,8 +18,5 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
-  },
-  "koi": {
-    "optional": true
   }
 }

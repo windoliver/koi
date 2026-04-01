@@ -1,8 +1,11 @@
 {
-  "name": "@koi/query-engine",
-  "description": "Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation",
+  "name": "@koi/channel-cli",
+  "description": "Read user input via readline, write output to stdout",
   "version": "0.0.0",
   "private": true,
+  "koi": {
+    "optional": true
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -11,6 +14,7 @@
     }
   },
   "dependencies": {
+    "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*"
   },
   "scripts": {
@@ -18,8 +22,5 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
-  },
-  "koi": {
-    "optional": true
   }
 }
