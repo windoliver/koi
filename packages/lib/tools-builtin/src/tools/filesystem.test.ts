@@ -110,6 +110,38 @@ describe("createFsReadTool", () => {
     expect(result.error).toContain("offset");
   });
 
+  test("rejects negative offset", async () => {
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ path: "/test", offset: -1 })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("non-negative integer");
+  });
+
+  test("rejects fractional limit", async () => {
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ path: "/test", limit: 2.5 })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("non-negative integer");
+  });
+
+  test("rejects NaN and Infinity for offset", async () => {
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const nanResult = (await tool.execute({ path: "/test", offset: Number.NaN })) as {
+      readonly code: string;
+    };
+    expect(nanResult.code).toBe("VALIDATION");
+    const infResult = (await tool.execute({ path: "/test", offset: Number.POSITIVE_INFINITY })) as {
+      readonly code: string;
+    };
+    expect(infResult.code).toBe("VALIDATION");
+  });
+
   test("returns validation error when path is wrong type (not empty string)", async () => {
     const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "" })) as {

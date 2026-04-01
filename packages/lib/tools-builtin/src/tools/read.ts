@@ -44,9 +44,9 @@ export function createFsReadTool(
 
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
-      const offsetResult = parseOptionalNumber(args, "offset");
+      const offsetResult = parseOptionalNumber(args, "offset", { nonNegativeInteger: true });
       if (!offsetResult.ok) return offsetResult.err;
-      const limitResult = parseOptionalNumber(args, "limit");
+      const limitResult = parseOptionalNumber(args, "limit", { nonNegativeInteger: true });
       if (!limitResult.ok) return limitResult.err;
       const encodingResult = parseOptionalString(args, "encoding");
       if (!encodingResult.ok) return encodingResult.err;

@@ -46,11 +46,20 @@ export function parseOptionalString(
 export function parseOptionalNumber(
   args: JsonObject,
   key: string,
+  options?: { readonly nonNegativeInteger?: boolean },
 ): ParseResult<number | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
   if (typeof value !== "number") {
     return { ok: false, err: { error: `${key} must be a number`, code: "VALIDATION" } };
+  }
+  if (options?.nonNegativeInteger) {
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+      return {
+        ok: false,
+        err: { error: `${key} must be a non-negative integer`, code: "VALIDATION" },
+      };
+    }
   }
   return { ok: true, value };
 }
