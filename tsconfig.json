@@ -20,6 +20,7 @@
     { "path": "packages/lib/validation" },
     { "path": "packages/lib/context-manager" },
     { "path": "packages/mm/session-repair" },
-    { "path": "packages/mm/token-estimator" }
+    { "path": "packages/mm/token-estimator" },
+    { "path": "packages/net/mcp" }
   ]
 }
