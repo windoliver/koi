@@ -13,6 +13,18 @@ import type {
 } from "@koi/core";
 import { parseArray, parseOptionalBoolean, parseString } from "../parse-args.js";
 
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = haystack.indexOf(needle, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + needle.length;
+  }
+  return count;
+}
+
 export function createFsEditTool(
   backend: FileSystemBackend,
   prefix: string,
@@ -89,6 +101,30 @@ export function createFsEditTool(
           };
         }
         edits.push({ oldText: hunk.oldText, newText: hunk.newText });
+      }
+
+      // Preflight: read file and verify each oldText occurs exactly once
+      const readResult = await backend.read(pathResult.value);
+      if (!readResult.ok) {
+        return { error: readResult.error.message, code: readResult.error.code };
+      }
+      const fileContent = readResult.value.content;
+      for (let i = 0; i < edits.length; i++) {
+        const hunk = edits[i];
+        if (hunk === undefined) continue;
+        const occurrences = countOccurrences(fileContent, hunk.oldText);
+        if (occurrences === 0) {
+          return {
+            error: `edits[${String(i)}].oldText not found in file`,
+            code: "NOT_FOUND",
+          };
+        }
+        if (occurrences > 1) {
+          return {
+            error: `edits[${String(i)}].oldText matches ${String(occurrences)} locations — must be unique`,
+            code: "AMBIGUOUS",
+          };
+        }
       }
 
       if (execOptions?.signal?.aborted) {

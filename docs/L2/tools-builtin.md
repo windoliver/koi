@@ -7,7 +7,7 @@ Layer 2 package — primordial filesystem tools (read, edit, write) implementing
 Provides the three core file manipulation tools that every Koi agent needs:
 
 - **read** — Read file content with optional line offset/limit
-- **edit** — Search-and-replace with validation (oldText must exist and be unique)
+- **edit** — Search-and-replace with uniqueness preflight (oldText must exist exactly once)
 - **write** — Create or overwrite files with optional directory creation
 
 These are "primordial" tools — bundled at build time, highest trust level. They delegate all I/O to a `FileSystemBackend` (L0 contract), keeping the tools themselves pure argument validation + dispatch.
@@ -59,7 +59,7 @@ Each factory takes `(backend: FileSystemBackend, prefix: string, policy: ToolPol
 | `path` | `string` | yes | Absolute path to the file |
 | `content` | `string` | yes | Content to write |
 | `createDirectories` | `boolean` | no | Create parent dirs if missing |
-| `overwrite` | `boolean` | no | Overwrite existing file (default: true) |
+| `overwrite` | `boolean` | no | Overwrite existing file (default: false — fails closed) |
 
 ### Argument Parsing
 

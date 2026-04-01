@@ -139,7 +139,7 @@ describe("createFsEditTool", () => {
     const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       path: "/tmp/file.ts",
-      edits: [{ oldText: "foo", newText: "bar" }],
+      edits: [{ oldText: "file content", newText: "new content" }],
     })) as { readonly path: string; readonly hunksApplied: number };
     expect(result.path).toBe("/tmp/file.ts");
     expect(result.hunksApplied).toBe(1);
@@ -159,11 +159,15 @@ describe("createFsEditTool", () => {
       },
     };
     const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
-    await tool.execute({ path: "/test", edits: [{ oldText: "a", newText: "b" }], dryRun: true });
+    await tool.execute({
+      path: "/test",
+      edits: [{ oldText: "file content", newText: "b" }],
+      dryRun: true,
+    });
     expect(receivedOptions).toEqual({ dryRun: true });
   });
 
-  test("returns error on backend failure", async () => {
+  test("returns error on backend read failure", async () => {
     const tool = createFsEditTool(createFailingBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       path: "/test",
@@ -243,10 +247,37 @@ describe("createFsEditTool", () => {
     expect(result.error).toContain("empty");
   });
 
+  test("rejects edit when oldText is not found in file", async () => {
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [{ oldText: "nonexistent text", newText: "bar" }],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("NOT_FOUND");
+    expect(result.error).toContain("not found");
+  });
+
+  test("rejects edit when oldText matches multiple locations", async () => {
+    const backend = {
+      ...createMockBackend(),
+      read: (_path: string) => ({
+        ok: true as const,
+        value: { content: "aaa bbb aaa", path: _path, size: 11 },
+      }),
+    };
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [{ oldText: "aaa", newText: "ccc" }],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("AMBIGUOUS");
+    expect(result.error).toContain("2 locations");
+  });
+
   test("returns cancelled when signal is already aborted", async () => {
     const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute(
-      { path: "/test", edits: [{ oldText: "a", newText: "b" }] },
+      { path: "/test", edits: [{ oldText: "file content", newText: "b" }] },
       { signal: AbortSignal.abort() },
     )) as { readonly error: string; readonly code: string };
     expect(result.code).toBe("CANCELLED");
@@ -282,7 +313,7 @@ describe("createFsWriteTool", () => {
     expect(receivedOptions).toEqual({ createDirectories: true, overwrite: false });
   });
 
-  test("defaults overwrite to true when omitted", async () => {
+  test("defaults overwrite to false when omitted", async () => {
     let receivedOptions: FileWriteOptions | undefined;
     const backend = {
       ...createMockBackend(),
@@ -293,7 +324,7 @@ describe("createFsWriteTool", () => {
     };
     const tool = createFsWriteTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/test", content: "x" });
-    expect(receivedOptions).toEqual({ overwrite: true });
+    expect(receivedOptions).toEqual({ overwrite: false });
   });
 
   test("returns error on backend failure", async () => {

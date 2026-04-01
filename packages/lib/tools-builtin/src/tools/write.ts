@@ -32,7 +32,8 @@ export function createFsWriteTool(
           },
           overwrite: {
             type: "boolean",
-            description: "Overwrite existing file (default: true)",
+            description:
+              "Overwrite existing file (default: false — fails if file exists unless set to true)",
           },
         },
         required: ["path", "content"],
@@ -59,7 +60,7 @@ export function createFsWriteTool(
       }
 
       const options: FileWriteOptions = {
-        overwrite: overwriteResult.value ?? true,
+        overwrite: overwriteResult.value ?? false,
         ...(createDirsResult.value !== undefined && { createDirectories: createDirsResult.value }),
       };
       const result = await backend.write(pathResult.value, contentResult.value, options);
