@@ -106,7 +106,23 @@ function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatComplet
   const role = resolveRole(msg);
 
   if (role === "assistant") {
-    const toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
+    let toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
+
+    // Session-repair fallback: when full toolCalls array is absent but callId
+    // is present, reconstruct a minimal tool_calls entry. Without this,
+    // fixTranscriptOrdering would drop the following tool result as orphaned,
+    // silently losing prior tool outputs from the conversation history.
+    if (
+      (toolCalls === undefined || toolCalls.length === 0) &&
+      readStringMeta(msg.metadata, "callId") !== undefined
+    ) {
+      const callId = readStringMeta(msg.metadata, "callId")!;
+      const callName = readStringMeta(msg.metadata, "callName") ?? "unknown";
+      const callArgs = readStringMeta(msg.metadata, "callArgs") ?? "{}";
+      toolCalls = [
+        { id: callId, type: "function", function: { name: callName, arguments: callArgs } },
+      ];
+    }
 
     // Normalize tool call IDs for provider compatibility
     const normalizedToolCalls =

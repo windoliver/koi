@@ -134,7 +134,7 @@ describe("mapMessages", () => {
   // session-repair callId convention
   // ---------------------------------------------------------------------------
 
-  test("assistant with only callId omits tool_calls (no fabrication)", () => {
+  test("assistant with callId reconstructs tool_calls for session-repair", () => {
     const msg: InboundMessage = {
       content: [{ kind: "text", text: "calling tool" }],
       senderId: "assistant",
@@ -143,16 +143,16 @@ describe("mapMessages", () => {
     };
     const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
-    // Should NOT fabricate tool_calls from callId alone
-    expect(result[0]?.tool_calls).toBeUndefined();
+    // Reconstructs tool_calls from callId so paired tool results are preserved
+    expect(result[0]?.tool_calls).toHaveLength(1);
+    expect(result[0]?.tool_calls?.[0]?.id).toBe("c1");
     expect(result[0]?.content).toBe("calling tool");
   });
 
-  test("orphaned tool with callId (no preceding tool_calls) is dropped", () => {
+  test("session-repair callId reconstructs tool_calls, preserving tool result", () => {
     // Session-repair creates assistant+tool pairs with callId only.
-    // Since the assistant has no tool_calls, the tool message is orphaned.
-    // Orphaned tool messages are dropped to preserve the trust boundary
-    // (tool results must not be relabeled as user input).
+    // The assistant's callId is reconstructed into a tool_calls entry,
+    // so the tool message is NOT orphaned and is preserved in the transcript.
     const messages: readonly InboundMessage[] = [
       {
         content: [{ kind: "text", text: "calling tool" }],
@@ -168,10 +168,12 @@ describe("mapMessages", () => {
       },
     ];
     const result = mapMessages(messages, DEFAULT_COMPAT);
-    // Only assistant remains — orphaned tool is dropped
-    expect(result).toHaveLength(1);
+    // Both assistant and tool preserved — callId was reconstructed into tool_calls
+    expect(result).toHaveLength(2);
     expect(result[0]?.role).toBe("assistant");
-    expect(result[0]?.tool_calls).toBeUndefined();
+    expect(result[0]?.tool_calls).toHaveLength(1);
+    expect(result[0]?.tool_calls?.[0]?.id).toBe("c1");
+    expect(result[1]?.role).toBe("tool");
   });
 
   test("tool with valid preceding tool_calls keeps tool role", () => {
@@ -377,6 +379,60 @@ describe("mapMessages", () => {
     expect(result[2]?.role).toBe("assistant");
     expect(result[2]?.content).toBe("I have processed the tool results.");
     expect(result[3]?.role).toBe("user");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Session-repair callId reconstruction
+  // ---------------------------------------------------------------------------
+
+  test("reconstructs tool_calls from callId when toolCalls absent", () => {
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [{ kind: "text", text: "Let me check." }],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          callId: "call_repair_1",
+          callName: "get_weather",
+          callArgs: '{"city":"SF"}',
+        },
+      },
+      {
+        content: [{ kind: "text", text: '{"temp": 72}' }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "call_repair_1" },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT);
+    // Assistant should have reconstructed tool_calls
+    expect(result[0]?.tool_calls).toHaveLength(1);
+    expect(result[0]?.tool_calls?.[0]?.function.name).toBe("get_weather");
+    // Tool result should NOT be dropped as orphan
+    expect(result).toHaveLength(2);
+    expect(result[1]?.role).toBe("tool");
+  });
+
+  test("uses 'unknown' for callName when not provided by session-repair", () => {
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: { callId: "call_unknown" },
+      },
+      {
+        content: [{ kind: "text", text: "result" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "call_unknown" },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT);
+    expect(result[0]?.tool_calls?.[0]?.function.name).toBe("unknown");
+    expect(result[0]?.tool_calls?.[0]?.function.arguments).toBe("{}");
+    // Tool result preserved
+    expect(result).toHaveLength(2);
   });
 });
 

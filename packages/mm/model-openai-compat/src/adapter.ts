@@ -2,8 +2,8 @@
  * OpenAI-compatible model adapter with production resilience.
  *
  * Features from Claude Code's production implementation:
- * - Stream idle watchdog (90s timeout, resets per chunk)
- * - Retry with exponential backoff + jitter (500ms * 2^attempt, cap 32s)
+ * - Stream idle watchdog (90s timeout, resets per chunk, cancels body read)
+ * - Retry with exponential backoff + jitter (pre-stream errors only)
  * - ECONNRESET detection → disable keep-alive for fresh TCP
  * - 529 overloaded: retryable error (caller decides foreground/background policy)
  */
@@ -116,6 +116,12 @@ async function complete(
 // Streaming with retry wrapper
 // ---------------------------------------------------------------------------
 
+/**
+ * Retry wrapper that only retries PRE-STREAM errors (HTTP errors, connection
+ * failures). Once any content chunk has been yielded to the consumer, the
+ * attempt is committed — no retry, because the consumer already has partial
+ * data and replaying would duplicate text/tool events.
+ */
 async function* streamWithRetry(
   config: ResolvedConfig,
   request: ModelRequest,
@@ -126,6 +132,7 @@ async function* streamWithRetry(
   for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
     let shouldRetry = false;
     let retryAfterMs: number | undefined;
+    let hasYieldedContent = false;
 
     for await (const chunk of streamOnce(config, request, getDisableKeepAlive)) {
       if (chunk.kind === "error") {
@@ -134,12 +141,25 @@ async function* streamWithRetry(
           setDisableKeepAlive(true);
         }
 
-        // Check if retryable and we have attempts left
-        if (chunk.retryable === true && attempt < retryConfig.maxRetries) {
+        // Only retry if NO content has been yielded yet. Once text_delta,
+        // tool_call_start, or thinking_delta has escaped to the consumer,
+        // retrying would replay those events and corrupt the output.
+        if (!hasYieldedContent && chunk.retryable === true && attempt < retryConfig.maxRetries) {
           shouldRetry = true;
           retryAfterMs = chunk.retryAfterMs;
           break; // Exit inner loop, retry
         }
+      }
+
+      // Track whether consumer-visible content has been emitted
+      if (
+        chunk.kind === "text_delta" ||
+        chunk.kind === "thinking_delta" ||
+        chunk.kind === "tool_call_start" ||
+        chunk.kind === "tool_call_delta" ||
+        chunk.kind === "tool_call_end"
+      ) {
+        hasYieldedContent = true;
       }
 
       yield chunk;
@@ -167,6 +187,33 @@ async function* streamOnce(
     request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
   const url = `${config.baseUrl}/chat/completions`;
+
+  // Stream idle watchdog — create BEFORE fetch so the signal can cancel
+  // both the HTTP request and the body stream reader.
+  const idleController = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function resetIdleTimer(): void {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleController.abort("stream_idle_timeout");
+    }, STREAM_IDLE_TIMEOUT_MS);
+  }
+
+  function clearIdleTimer(): void {
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  }
+
+  // Combine user signal with idle watchdog — this signal is passed to fetch()
+  // so that both the initial request AND the body stream read are cancelled
+  // when either the user aborts or the idle timer fires.
+  const combinedSignal = request.signal
+    ? AbortSignal.any([request.signal, idleController.signal])
+    : idleController.signal;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${config.apiKey}`,
@@ -174,17 +221,33 @@ async function* streamOnce(
     ...config.headers,
   };
 
-  // --- Fetch ---
+  // Start idle timer — covers the fetch() phase too
+  resetIdleTimer();
+
+  // --- Fetch with combined signal (user abort + idle watchdog) ---
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: request.signal ?? null,
+      signal: combinedSignal,
     });
   } catch (error: unknown) {
-    if (request.signal?.aborted === true) return;
+    clearIdleTimer();
+    if (request.signal?.aborted === true) return; // User abort — clean
+
+    // Idle timeout during fetch
+    if (idleController.signal.aborted) {
+      yield {
+        kind: "error",
+        message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
+        code: "TIMEOUT",
+        retryable: true,
+      };
+      return;
+    }
+
     const isConnReset = isConnectionResetError(error);
     yield {
       kind: "error",
@@ -197,6 +260,7 @@ async function* streamOnce(
 
   // --- HTTP errors ---
   if (!response.ok) {
+    clearIdleTimer();
     const errorBody = await response.text();
     const koiError = mapProviderError(
       response.status,
@@ -214,9 +278,10 @@ async function* streamOnce(
     return;
   }
 
-  // --- Parse SSE stream with idle watchdog ---
+  // --- Parse SSE stream ---
   const responseBody = response.body;
   if (responseBody === null) {
+    clearIdleTimer();
     yield {
       kind: "error",
       message: `${config.provider} returned 200 OK with no response body`,
@@ -234,47 +299,15 @@ async function* streamOnce(
   let sawDone = false;
   let hadError = false;
 
-  // Stream idle watchdog — abort hung streams after 90s of no data
-  const idleController = new AbortController();
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function resetIdleTimer(): void {
-    if (idleTimer !== undefined) clearTimeout(idleTimer);
-    idleTimer = setTimeout(
-      () => idleController.abort("stream_idle_timeout"),
-      STREAM_IDLE_TIMEOUT_MS,
-    );
-  }
-
-  function clearIdleTimer(): void {
-    if (idleTimer !== undefined) {
-      clearTimeout(idleTimer);
-      idleTimer = undefined;
-    }
-  }
-
-  // Combine user signal with idle watchdog
-  const combinedSignal = request.signal
-    ? AbortSignal.any([request.signal, idleController.signal])
-    : idleController.signal;
-
+  // Reset idle timer — headers arrived, now timing body chunks
   resetIdleTimer();
 
   try {
+    // The combinedSignal was passed to fetch(), so when the idle timer fires
+    // and aborts idleController, the body stream read throws an AbortError.
+    // This is what makes the watchdog actually cancel hung reads.
     for await (const rawChunk of responseBody) {
       resetIdleTimer();
-
-      if (combinedSignal.aborted) {
-        if (request.signal?.aborted === true) return; // User abort — clean
-        // Idle timeout — emit error
-        yield {
-          kind: "error",
-          message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
-          code: "TIMEOUT",
-          retryable: true,
-        };
-        return;
-      }
 
       const text = decoder.decode(rawChunk as Uint8Array, { stream: true });
       if (text.includes("[DONE]")) sawDone = true;
@@ -352,7 +385,7 @@ async function* streamOnce(
     clearIdleTimer();
     if (request.signal?.aborted === true) return;
 
-    // Check if idle timeout triggered
+    // Idle timeout fired → aborted the body read → threw AbortError
     if (idleController.signal.aborted) {
       yield {
         kind: "error",
