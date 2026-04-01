@@ -25,6 +25,7 @@
     { "path": "packages/mm/model-openai-compat" },
     { "path": "packages/mm/session-repair" },
     { "path": "packages/mm/token-estimator" },
-    { "path": "packages/net/mcp" }
+    { "path": "packages/net/mcp" },
+    { "path": "packages/security/permissions" }
   ]
 }
