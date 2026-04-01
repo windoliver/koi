@@ -40,6 +40,7 @@ import type {
   IterationLimits,
   LoopDetectionConfig,
   SpawnPolicy,
+  ToolExecutionConfig,
 } from "@koi/engine-compose";
 import type { GovernanceConfig } from "@koi/engine-reconcile";
 import type { AssemblyConflict } from "./agent-entity.js";
@@ -96,6 +97,8 @@ export interface CreateKoiOptions {
   readonly loopDetection?: Partial<LoopDetectionConfig> | false;
   /** Spawn governance policy. Defaults to DEFAULT_SPAWN_POLICY. */
   readonly spawn?: Partial<SpawnPolicy>;
+  /** Tool execution config (abort propagation + per-tool timeouts). Set to false to disable. */
+  readonly toolExecution?: Partial<ToolExecutionConfig> | false;
   /**
    * Kernel extensions for pluggable guards, lifecycle validation, and assembly validation.
    * Extensions are composed with the default guard extension (created from limits/loopDetection/spawn).

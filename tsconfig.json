@@ -18,6 +18,7 @@
     { "path": "packages/lib/hash" },
     { "path": "packages/lib/shutdown" },
     { "path": "packages/lib/validation" },
+    { "path": "packages/lib/context-manager" },
     { "path": "packages/mm/model-openai-compat" },
     { "path": "packages/mm/session-repair" },
     { "path": "packages/mm/token-estimator" }
