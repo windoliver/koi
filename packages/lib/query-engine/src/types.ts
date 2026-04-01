@@ -8,6 +8,9 @@ export interface AccumulatedToolCall {
   readonly rawArgs: string;
   /** Parsed arguments. `undefined` when JSON parsing failed. */
   readonly parsedArgs: JsonObject | undefined;
+  /** Set when JSON parsing failed — describes the parse error. Callers should
+   *  check this field to distinguish parse failures from valid empty args. */
+  readonly parseError?: string | undefined;
 }
 
 /** In-flight tool call being accumulated. */

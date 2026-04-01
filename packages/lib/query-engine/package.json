@@ -18,5 +18,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
+  },
+  "koi": {
+    "optional": true
   }
 }

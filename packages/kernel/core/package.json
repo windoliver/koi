@@ -81,6 +81,10 @@
       "types": "./dist/health.d.ts",
       "import": "./dist/health.js"
     },
+    "./hook": {
+      "types": "./dist/hook.d.ts",
+      "import": "./dist/hook.js"
+    },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"

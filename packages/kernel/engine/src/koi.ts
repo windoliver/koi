@@ -14,6 +14,7 @@ import type {
   ComposedCallHandlers,
   EngineEvent,
   EngineInput,
+  EngineStopReason,
   InboxComponent,
   InboxItem,
   KoiMiddleware,
@@ -86,6 +87,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
     ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
+    ...(options.toolExecution !== undefined ? { toolExecution: options.toolExecution } : {}),
   });
   const brickRequiresExt = createBrickRequiresExtension();
   const allExtensions = [
@@ -848,7 +850,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     } catch (error: unknown) {
       // Guard error → convert to a done event
       if (error instanceof KoiRuntimeError) {
-        const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
+        // If the run signal was aborted (user cancel, shutdown, token limit),
+        // use "interrupted" regardless of error code — the abort is the root cause.
+        const stopReason: EngineStopReason = runSignal.aborted
+          ? "interrupted"
+          : error.code === "TIMEOUT"
+            ? "max_turns"
+            : "error";
         agent.transition({ kind: "complete", stopReason });
         const doneEvent: EngineEvent = {
           kind: "done",

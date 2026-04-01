@@ -18,6 +18,7 @@ export default defineConfig({
     "src/governance-backend.ts",
     "src/eviction.ts",
     "src/health.ts",
+    "src/hook.ts",
     "src/lifecycle.ts",
     "src/message.ts",
     "src/middleware.ts",
