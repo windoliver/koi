@@ -3,6 +3,9 @@
   "description": "Read user input via readline, write output to stdout",
   "version": "0.0.0",
   "private": true,
+  "koi": {
+    "optional": true
+  },
   "type": "module",
   "exports": {
     ".": {
