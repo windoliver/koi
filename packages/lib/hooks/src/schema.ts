@@ -6,6 +6,7 @@
  */
 
 import type { CommandHookConfig, HookConfig, HookFilter, HttpHookConfig } from "@koi/core";
+import { HOOK_EVENT_KINDS } from "@koi/core";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -15,7 +16,7 @@ import { z } from "zod";
 function createHookFilterSchema(): z.ZodType<HookFilter> {
   return z.object({
     events: z
-      .array(z.string().min(1))
+      .array(z.enum(HOOK_EVENT_KINDS))
       .min(1, "events filter must not be empty — omit the field instead")
       .optional(),
     tools: z

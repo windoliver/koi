@@ -45,6 +45,16 @@ describe("hookFilterSchema", () => {
     const result = hookFilterSchema.safeParse({ channels: [] });
     expect(result.success).toBe(false);
   });
+
+  it("rejects invalid event kind", () => {
+    const result = hookFilterSchema.safeParse({ events: ["not.a.real.event"] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects misspelled event kind", () => {
+    const result = hookFilterSchema.safeParse({ events: ["sesion.started"] });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("commandHookSchema", () => {

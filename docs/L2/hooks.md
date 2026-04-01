@@ -19,6 +19,33 @@ events.
 > hook dispatch integration ships. Until then, callers use `loadHooks()` /
 > `createHookRegistry()` / `executeHooks()` directly.
 
+## Hook Event Kinds
+
+All hook events use the `HookEventKind` string union — a closed set of
+dot-separated lifecycle discriminators. The canonical list lives in
+`@koi/core` as `HOOK_EVENT_KINDS` (array) and `HookEventKind` (type).
+
+| Event | Fires when |
+|-------|-----------|
+| `session.started` | A new agent session begins |
+| `session.ended` | A session terminates (success or abort) |
+| `turn.started` | A new conversation turn begins |
+| `turn.ended` | A conversation turn completes |
+| `tool.before` | Immediately before a tool is invoked |
+| `tool.succeeded` | A tool invocation completes successfully |
+| `tool.failed` | A tool invocation fails |
+| `permission.request` | A permission check is about to be evaluated |
+| `permission.denied` | A permission check was denied |
+| `compact.before` | Context compaction is about to run |
+| `compact.after` | Context compaction has completed |
+| `subagent.started` | A sub-agent has been spawned |
+| `subagent.stopped` | A sub-agent has terminated |
+| `config.changed` | Agent configuration was modified at runtime |
+
+Adding new events is additive — extend the `HOOK_EVENT_KINDS` array in
+`@koi/core`. Existing hooks are unaffected because filters use OR logic
+within the `events` field.
+
 ## Hook Types
 
 ### Phase 1 (this package)
