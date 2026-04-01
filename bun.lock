@@ -132,6 +132,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/mm/tool-execution": {
+      "name": "@koi/tool-execution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -306,6 +315,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tool-execution": ["@koi/tool-execution@workspace:packages/mm/tool-execution"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
