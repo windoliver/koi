@@ -11,8 +11,20 @@ function makeRule(
   effect: "allow" | "deny" | "ask",
   source: "policy" | "project" | "local" | "user" = "project",
   reason?: string,
+  principal?: string,
 ): CompiledRule {
-  return { pattern, action, effect, source, reason, compiled: compileGlob(pattern) };
+  const compiledPrincipal =
+    principal !== undefined && principal !== "*" ? compileGlob(principal) : undefined;
+  return {
+    pattern,
+    action,
+    effect,
+    source,
+    reason,
+    principal,
+    compiled: compileGlob(pattern),
+    compiledPrincipal,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -148,5 +160,34 @@ describe("evaluateRules", () => {
     const rules = [makeRule("lib/**", "write", "allow")];
     const decision = evaluateRules(query, rules);
     expect(decision.effect).toBe("ask");
+  });
+
+  test("matches rule when principal matches", () => {
+    const rules = [makeRule("src/**", "write", "allow", "project", undefined, "agent-1")];
+    expect(evaluateRules(query, rules)).toEqual({ effect: "allow" });
+  });
+
+  test("skips rule when principal does not match", () => {
+    const rules = [makeRule("src/**", "write", "allow", "project", undefined, "agent-2")];
+    const decision = evaluateRules(query, rules);
+    expect(decision.effect).toBe("ask");
+  });
+
+  test("principal glob matches pattern", () => {
+    const rules = [makeRule("src/**", "write", "allow", "project", undefined, "agent-*")];
+    expect(evaluateRules(query, rules)).toEqual({ effect: "allow" });
+  });
+
+  test("rule without principal matches all principals", () => {
+    const rules = [makeRule("src/**", "write", "allow")];
+    expect(evaluateRules(query, rules)).toEqual({ effect: "allow" });
+  });
+
+  test("principal-scoped deny overrides broad allow", () => {
+    const rules = [
+      makeRule("src/**", "write", "deny", "policy", "restricted", "agent-1"),
+      makeRule("src/**", "write", "allow", "user"),
+    ];
+    expect(evaluateRules(query, rules)).toEqual({ effect: "deny", reason: "restricted" });
   });
 });

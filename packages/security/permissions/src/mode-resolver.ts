@@ -14,7 +14,7 @@ import { PLAN_ALLOWED_ACTIONS } from "./rule-types.js";
  * - `"bypass"` — always allow
  * - `"plan"`   — deny-by-default; only explicitly allowed read-only actions pass
  * - `"default"` — evaluate rules, fallback to ask
- * - `"auto"`   — evaluate rules, fallback to allow
+ * - `"auto"`   — evaluate rules, fallback to ask (classifier in #1236 may promote to allow)
  */
 export function resolveMode(
   mode: PermissionMode,
@@ -45,12 +45,9 @@ export function resolveMode(
     }
 
     case "auto": {
-      const decision = evaluateRules(query, rules);
-      // In auto mode, convert ask → allow (classifier in #1236 may override)
-      if (decision.effect === "ask") {
-        return { effect: "allow" };
-      }
-      return decision;
+      // Evaluate rules. Explicit allow/deny propagate as-is.
+      // Unmatched (ask) stays as ask — the classifier in #1236 may promote to allow.
+      return evaluateRules(query, rules);
     }
   }
 }

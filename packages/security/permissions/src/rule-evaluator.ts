@@ -62,6 +62,13 @@ function matchAction(ruleAction: string, queryAction: string): boolean {
   return ruleAction === "*" || ruleAction === queryAction;
 }
 
+function matchPrincipal(compiledPrincipal: RegExp | undefined, principal: string): boolean {
+  if (compiledPrincipal === undefined) {
+    return true;
+  }
+  return compiledPrincipal.test(principal);
+}
+
 /**
  * Evaluate pre-compiled rules against a query. First matching rule wins.
  *
@@ -72,7 +79,11 @@ export function evaluateRules(
   rules: readonly CompiledRule[],
 ): PermissionDecision {
   for (const rule of rules) {
-    if (matchAction(rule.action, query.action) && matchResource(rule.compiled, query.resource)) {
+    if (
+      matchPrincipal(rule.compiledPrincipal, query.principal) &&
+      matchAction(rule.action, query.action) &&
+      matchResource(rule.compiled, query.resource)
+    ) {
       if (rule.effect === "allow") {
         return { effect: "allow" };
       }

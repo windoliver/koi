@@ -143,9 +143,9 @@ describe("resolveMode", () => {
       });
     });
 
-    test("converts ask fallback to allow", () => {
+    test("falls back to ask when no rule matches", () => {
       const decision = resolveMode("auto", writeQuery, []);
-      expect(decision).toEqual({ effect: "allow" });
+      expect(decision.effect).toBe("ask");
     });
 
     test("returns allow for matching allow rule", () => {

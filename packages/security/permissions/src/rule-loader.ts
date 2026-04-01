@@ -15,6 +15,7 @@ const permissionRuleSchema = z.object({
   pattern: z.string().min(1),
   action: z.string().min(1),
   effect: z.enum(["allow", "deny", "ask"]),
+  principal: z.string().min(1).optional(),
   reason: z.string().optional(),
 });
 
@@ -37,7 +38,11 @@ function validateSourceRules(
 function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledRule, KoiError> {
   try {
     const compiled = compileGlob(rule.pattern);
-    return { ok: true, value: { ...rule, source, compiled } };
+    const compiledPrincipal =
+      rule.principal !== undefined && rule.principal !== "*"
+        ? compileGlob(rule.principal)
+        : undefined;
+    return { ok: true, value: { ...rule, source, compiled, compiledPrincipal } };
   } catch {
     return {
       ok: false,

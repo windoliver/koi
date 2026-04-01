@@ -13,6 +13,8 @@ export interface PermissionRule {
   readonly action: string;
   /** What happens when the rule matches. */
   readonly effect: RuleEffect;
+  /** Glob pattern matched against `PermissionQuery.principal`. Omit or `"*"` to match all. */
+  readonly principal?: string | undefined;
   /** Human-readable reason surfaced in deny/ask decisions. */
   readonly reason?: string | undefined;
 }
@@ -28,9 +30,12 @@ export interface SourcedRule extends PermissionRule {
   readonly source: RuleSource;
 }
 
-/** A sourced rule with its glob pattern pre-compiled to a RegExp. */
+/** A sourced rule with its glob patterns pre-compiled to RegExp. */
 export interface CompiledRule extends SourcedRule {
+  /** Compiled resource pattern. */
   readonly compiled: RegExp;
+  /** Compiled principal pattern. Undefined means match all principals. */
+  readonly compiledPrincipal?: RegExp | undefined;
 }
 
 /**
@@ -38,7 +43,7 @@ export interface CompiledRule extends SourcedRule {
  * - `"default"` — evaluate rules; fall back to ask
  * - `"bypass"`  — always allow (CI / trusted automation)
  * - `"plan"`    — deny write actions; allow reads
- * - `"auto"`    — evaluate rules; fall back to allow (classifier refines later)
+ * - `"auto"`    — evaluate rules; fall back to ask (classifier in #1236 may promote to allow)
  */
 export type PermissionMode = "default" | "bypass" | "plan" | "auto";
 
