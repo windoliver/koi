@@ -149,6 +149,42 @@ describe("createChannelAdapter", () => {
       await adapter2.send({ content: [{ kind: "text", text: "works" }] });
       await adapter2.disconnect();
     });
+
+    test("events emitted during listener registration are delivered (not dropped)", async () => {
+      const received: InboundMessage[] = [];
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {},
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          // Simulate a platform that emits a buffered event immediately
+          // during listener registration (before connect() sets connected=true)
+          handler("startup-event");
+          return () => {};
+        },
+        normalize: (line: string) => ({
+          content: [{ kind: "text", text: line }],
+          senderId: "test",
+          timestamp: Date.now(),
+        }),
+      });
+
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+      await Bun.sleep(10);
+
+      // The startup event should have been delivered, not dropped
+      expect(received).toHaveLength(1);
+      expect(received[0]?.content).toEqual([{ kind: "text", text: "startup-event" }]);
+
+      await adapter.disconnect();
+    });
   });
 
   describe("handler dispatch", () => {
@@ -301,6 +337,34 @@ describe("createChannelAdapter", () => {
       await adapter.connect();
       await adapter.sendStatus?.({ kind: "processing", turnIndex: 0 });
       expect(statusFn).toHaveBeenCalledTimes(1);
+    });
+
+    test("disconnect drains in-flight sendStatus before teardown", async () => {
+      const events: string[] = [];
+      const statusFn = mock(async () => {
+        events.push("status-start");
+        await Bun.sleep(30);
+        events.push("status-end");
+      });
+      const { adapter } = createTestAdapter({
+        platformSendStatus: statusFn,
+        platformDisconnect: async () => {
+          events.push("disconnect");
+        },
+      });
+
+      await adapter.connect();
+
+      // Start a slow status write (don't await)
+      const statusPromise = adapter.sendStatus?.({ kind: "processing", turnIndex: 0 });
+      await Bun.sleep(5);
+      // Disconnect while status is in-flight
+      const disconnectPromise = adapter.disconnect();
+
+      await Promise.all([statusPromise, disconnectPromise]);
+
+      // Status must complete before platformDisconnect
+      expect(events).toEqual(["status-start", "status-end", "disconnect"]);
     });
   });
 

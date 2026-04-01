@@ -53,13 +53,16 @@ export interface ChannelAdapterConfig<E> {
 export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter {
   // let requires justification: mutable connection state managed by lifecycle methods
   let connected = false;
+  // let requires justification: monotonic epoch incremented on each connect, used by event
+  // listener to detect disconnect without dropping events during listener registration
+  let connectEpoch = 0;
   // let requires justification: serializes concurrent connect/disconnect calls
   let lifecycleChain: Promise<void> = Promise.resolve();
   let handlers: ReadonlyArray<{ readonly fn: MessageHandler; readonly id: number }> = [];
   // let requires justification: monotonic counter for unique subscription IDs
   let nextHandlerId = 0;
   let unsubPlatform: (() => void) | undefined;
-  // let requires justification: serializes send() calls so concurrent messages don't interleave
+  // let requires justification: serializes send()/sendStatus() so concurrent writes don't interleave
   let sendChain: Promise<void> = Promise.resolve();
 
   async function dispatch(message: InboundMessage): Promise<void> {
@@ -86,13 +89,21 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         if (connected) return;
         await config.platformConnect();
 
+        // Capture the epoch for this connection. Events use this to detect
+        // whether a disconnect happened, even if received during the window
+        // between listener registration and connected=true (startup events).
+        const epoch = ++connectEpoch;
+
         // Treat listener registration as part of the atomic connect step.
         // If onPlatformEvent() throws, roll back platformConnect() so the
         // adapter doesn't get wedged in a half-initialized state.
         try {
           unsubPlatform = config.onPlatformEvent((event: E) => {
-            // Guard: drop events once disconnect has started
-            if (!connected) return;
+            // Guard: drop events if a disconnect has occurred since this
+            // connection started. Uses epoch instead of connected flag so
+            // events emitted during registration (before connected=true)
+            // are still delivered.
+            if (connectEpoch !== epoch) return;
 
             // Wrap normalize() so both sync throws and async rejections
             // route through onNormalizationError instead of crashing.
@@ -108,9 +119,9 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
             if (normalized instanceof Promise) {
               normalized
                 .then((msg) => {
-                  // Re-check connected after async normalize — disconnect may
+                  // Re-check epoch after async normalize — disconnect may
                   // have started while the promise was pending.
-                  if (msg !== null && connected) return dispatch(msg);
+                  if (msg !== null && connectEpoch === epoch) return dispatch(msg);
                 })
                 .catch((err: unknown) => {
                   config.onNormalizationError?.(err, event);
@@ -132,8 +143,10 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     disconnect: (): Promise<void> =>
       enqueueLifecycle(async () => {
         if (!connected) return;
-        // 1. Reject new sends and stop inbound event processing
+        // 1. Reject new sends and invalidate the current epoch so
+        //    pending async normalizations are dropped
         connected = false;
+        connectEpoch++;
         // 2. Unsubscribe platform listener BEFORE draining so no new
         //    events are dispatched during the drain window
         unsubPlatform?.();
@@ -178,9 +191,13 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     const platformSendStatus = config.platformSendStatus;
     return {
       ...base,
-      sendStatus: async (status: ChannelStatus): Promise<void> => {
-        if (!connected) return;
-        await platformSendStatus(status);
+      sendStatus: (status: ChannelStatus): Promise<void> => {
+        if (!connected) return Promise.resolve();
+        // Serialize status writes through the same chain as send()
+        // so disconnect drains both before tearing down the transport.
+        const op = sendChain.catch(() => {}).then(() => platformSendStatus(status));
+        sendChain = op.catch(() => {});
+        return op;
       },
     };
   }
