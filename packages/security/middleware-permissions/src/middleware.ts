@@ -32,7 +32,7 @@ import {
   swallowError,
 } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
-import { DEFAULT_DENY_MARKER } from "./classifier.js";
+import { isDefaultDeny } from "./classifier.js";
 import type {
   ApprovalCacheConfig,
   PermissionCacheConfig,
@@ -237,8 +237,17 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // Backend fingerprint for approval cache key isolation
   const backendFingerprint = fnv1a(String(Math.random()));
 
-  // Denial tracker
-  const tracker: DenialTracker = createDenialTracker();
+  // Denial trackers scoped per session (keyed by sessionId)
+  const trackersBySession = new Map<string, DenialTracker>();
+
+  function getTracker(sessionId: string): DenialTracker {
+    let t = trackersBySession.get(sessionId);
+    if (t === undefined) {
+      t = createDenialTracker();
+      trackersBySession.set(sessionId, t);
+    }
+    return t;
+  }
 
   // Forged tool names scoped per turn (keyed by turnId to prevent cross-turn leaks)
   const forgedToolsByTurn = new Map<string, Set<string>>();
@@ -248,12 +257,19 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // -----------------------------------------------------------------------
 
   function queryForTool(ctx: TurnContext, resource: string): PermissionQuery {
+    // Build principal with user/session scope for tenant isolation.
+    // Format: "agentId:userId:sessionId" — ensures decision cache keys
+    // and backend checks are scoped per-user and per-session.
+    const userId = ctx.session.userId ?? "__anonymous__";
+    const sessionId = ctx.session.sessionId as string;
+    const principal = `${ctx.session.agentId}:${userId}:${sessionId}`;
+
     const meta = ctx.metadata;
     const hasKeys = Object.keys(meta).length > 0;
     if (hasKeys) {
-      return { principal: ctx.session.agentId, action: "invoke", resource, context: meta };
+      return { principal, action: "invoke", resource, context: meta };
     }
-    return { principal: ctx.session.agentId, action: "invoke", resource };
+    return { principal, action: "invoke", resource };
   }
 
   function auditDecision(
@@ -396,13 +412,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const turnForged = new Set<string>();
     const turnKey = ctx.turnId as string;
 
+    const sessionTracker = getTracker(ctx.session.sessionId as string);
+
     const filtered = tools.filter((tool, i) => {
       const decision = decisions[i]!;
       if (auditSink !== undefined) {
         auditDecision(ctx, tool.name, decision, 0, auditSink);
       }
       if (decision.effect === "deny") {
-        tracker.record({
+        sessionTracker.record({
           toolId: tool.name,
           reason: decision.reason,
           timestamp: clock(),
@@ -448,10 +466,14 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       };
     },
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      tracker.clear();
-      decisionCache?.clear();
-      approvalCache?.clear();
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // Clear only this session's tracker — not other active sessions
+      const sid = ctx.sessionId as string;
+      const sessionTracker = trackersBySession.get(sid);
+      if (sessionTracker !== undefined) {
+        sessionTracker.clear();
+        trackersBySession.delete(sid);
+      }
       forgedToolsByTurn.clear();
       await backend.dispose?.();
     },
@@ -489,19 +511,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       if (decision.effect === "deny") {
-        // Forged tool override: allow if denial is default-deny (not explicit)
-        // Scoped to the current turn to prevent cross-turn bypass
+        // Forged tool override: allow if denial is default-deny (not explicit).
+        // Uses structured symbol flag — never parses reason text.
+        // Scoped to the current turn to prevent cross-turn bypass.
         const turnKey = ctx.turnId as string;
         const turnForged = forgedToolsByTurn.get(turnKey);
-        if (
-          turnForged !== undefined &&
-          turnForged.has(request.toolId) &&
-          decision.reason.includes(DEFAULT_DENY_MARKER)
-        ) {
+        if (turnForged?.has(request.toolId) && isDefaultDeny(decision)) {
           return next(request);
         }
 
-        tracker.record({
+        getTracker(ctx.session.sessionId as string).record({
           toolId: request.toolId,
           reason: decision.reason,
           timestamp: clock(),
@@ -588,7 +607,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       ]).finally(() => ac.abort());
 
       if (approvalResult.kind === "deny") {
-        tracker.record({
+        getTracker(ctx.session.sessionId as string).record({
           toolId: request.toolId,
           reason: approvalResult.reason,
           timestamp: clock(),

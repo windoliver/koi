@@ -5,6 +5,7 @@ import {
   createPatternPermissionBackend,
   DEFAULT_DENY_MARKER,
   DEFAULT_GROUPS,
+  isDefaultDeny,
 } from "../classifier.js";
 
 function check(
@@ -175,6 +176,37 @@ describe("createPatternPermissionBackend", () => {
       expect(keys).toContain("lsp");
       expect(keys).toContain("mcp");
     });
+  });
+});
+
+describe("isDefaultDeny", () => {
+  test("returns true for default-deny decisions from pattern backend", () => {
+    const b = createPatternPermissionBackend({
+      rules: { allow: ["multiply"], deny: [], ask: [] },
+    });
+    const d = check(b, "unknown_tool");
+    expect(isDefaultDeny(d)).toBe(true);
+  });
+
+  test("returns false for explicit deny decisions", () => {
+    const b = createPatternPermissionBackend({
+      rules: { allow: [], deny: ["bash"], ask: [] },
+    });
+    const d = check(b, "bash");
+    expect(isDefaultDeny(d)).toBe(false);
+  });
+
+  test("returns false for allow decisions", () => {
+    expect(isDefaultDeny({ effect: "allow" })).toBe(false);
+  });
+
+  test("returns false for plain deny without symbol", () => {
+    // External backend returns a deny with marker text — should NOT be flagged
+    const externalDeny: PermissionDecision = {
+      effect: "deny",
+      reason: "Blocked (default deny)",
+    };
+    expect(isDefaultDeny(externalDeny)).toBe(false);
   });
 });
 

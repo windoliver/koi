@@ -18,6 +18,7 @@ export {
   createPatternPermissionBackend,
   DEFAULT_DENY_MARKER,
   DEFAULT_GROUPS,
+  isDefaultDeny,
 } from "./classifier.js";
 // Config
 export type {

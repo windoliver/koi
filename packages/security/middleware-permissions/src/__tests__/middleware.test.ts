@@ -25,6 +25,7 @@ import { createPermissionsMiddleware } from "../middleware.js";
 function makeTurnContext(overrides?: {
   readonly userId?: string;
   readonly agentId?: string;
+  readonly sessionId?: string;
   readonly turnIndex?: number;
   readonly turnId?: string;
   readonly metadata?: JsonObject;
@@ -33,7 +34,7 @@ function makeTurnContext(overrides?: {
   const base = {
     session: {
       agentId: overrides?.agentId ?? "agent:test",
-      sessionId: "s-1" as never,
+      sessionId: (overrides?.sessionId ?? "s-1") as never,
       runId: "r-1" as never,
       userId: overrides?.userId ?? "user-1",
       metadata: {},
@@ -103,14 +104,14 @@ describe("createPermissionsMiddleware", () => {
     test("passes through when no tools", async () => {
       const mw = createPermissionsMiddleware({ backend: allowAll() });
       const req: ModelRequest = { messages: [] };
-      const result = await mw.wrapModelCall!(makeTurnContext(), req, noopModelHandler);
-      expect(result.content).toBe("ok");
+      const result = await mw.wrapModelCall?.(makeTurnContext(), req, noopModelHandler);
+      expect(result?.content).toBe("ok");
     });
 
     test("keeps allowed tools", async () => {
       const mw = createPermissionsMiddleware({ backend: allowAll() });
       const handler = mock(noopModelHandler);
-      await mw.wrapModelCall!(makeTurnContext(), makeModelRequest(["a", "b"]), handler);
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b"]), handler);
       const passedReq = handler.mock.calls[0]?.[0] as ModelRequest;
       expect(passedReq.tools).toHaveLength(2);
     });
@@ -123,7 +124,7 @@ describe("createPermissionsMiddleware", () => {
       });
       const mw = createPermissionsMiddleware({ backend });
       const handler = mock(noopModelHandler);
-      await mw.wrapModelCall!(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
       const passedReq = handler.mock.calls[0]?.[0] as ModelRequest;
       expect(passedReq.tools).toHaveLength(2);
       expect(passedReq.tools?.map((t) => t.name)).toEqual(["a", "c"]);
@@ -136,7 +137,7 @@ describe("createPermissionsMiddleware", () => {
       });
       const mw = createPermissionsMiddleware({ backend });
       const handler = mock(noopModelHandler);
-      await mw.wrapModelCall!(makeTurnContext(), makeModelRequest(["a", "b"]), handler);
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b"]), handler);
       const passedReq = handler.mock.calls[0]?.[0] as ModelRequest;
       expect(passedReq.tools).toHaveLength(2);
     });
@@ -146,12 +147,12 @@ describe("createPermissionsMiddleware", () => {
     test("calls next for allowed tools", async () => {
       const mw = createPermissionsMiddleware({ backend: allowAll() });
       const handler = mock(noopToolHandler);
-      const result = await mw.wrapToolCall!(
+      const result = await mw.wrapToolCall?.(
         makeTurnContext(),
         makeToolRequest("multiply"),
         handler,
       );
-      expect(result.output).toBe("done");
+      expect(result?.output).toBe("done");
       expect(handler).toHaveBeenCalledTimes(1);
     });
   });
@@ -163,7 +164,7 @@ describe("createPermissionsMiddleware", () => {
       });
       const handler = mock(noopToolHandler);
       await expect(
-        mw.wrapToolCall!(makeTurnContext(), makeToolRequest("bash"), handler),
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("bash"), handler),
       ).rejects.toThrow("tool is blocked");
       expect(handler).not.toHaveBeenCalled();
     });
@@ -171,7 +172,7 @@ describe("createPermissionsMiddleware", () => {
     test("thrown error has PERMISSION code", async () => {
       const mw = createPermissionsMiddleware({ backend: denyAll("nope") });
       try {
-        await mw.wrapToolCall!(makeTurnContext(), makeToolRequest("bash"), noopToolHandler);
+        await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("bash"), noopToolHandler);
         throw new Error("should not reach");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
@@ -190,7 +191,7 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalHandler });
       const handler = mock(noopToolHandler);
 
-      await mw.wrapToolCall!(ctx, makeToolRequest("deploy"), handler);
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), handler);
       expect(handler).toHaveBeenCalledTimes(1);
     });
 
@@ -203,7 +204,7 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
       await expect(
-        mw.wrapToolCall!(ctx, makeToolRequest("deploy"), noopToolHandler),
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
       ).rejects.toThrow("user rejected");
     });
 
@@ -216,7 +217,7 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalHandler });
       const handler = mock(noopToolHandler);
 
-      await mw.wrapToolCall!(ctx, makeToolRequest("deploy", { dangerous: true }), handler);
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy", { dangerous: true }), handler);
       const passedReq = handler.mock.calls[0]?.[0] as ToolRequest;
       expect(passedReq.input).toEqual({ safe: true });
     });
@@ -226,7 +227,7 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext();
 
       await expect(
-        mw.wrapToolCall!(ctx, makeToolRequest("deploy"), noopToolHandler),
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
       ).rejects.toThrow("no approval handler");
     });
 
@@ -242,7 +243,7 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
       await expect(
-        mw.wrapToolCall!(ctx, makeToolRequest("deploy"), noopToolHandler),
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
       ).rejects.toThrow("timed out");
     });
   });
@@ -255,8 +256,8 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext();
       const req = makeToolRequest("multiply");
 
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
 
       expect(checkFn).toHaveBeenCalledTimes(1);
     });
@@ -270,8 +271,8 @@ describe("createPermissionsMiddleware", () => {
       const approvalHandler = async (): Promise<ApprovalDecision> => ({ kind: "allow" });
       const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
-      await mw.wrapToolCall!(ctx, makeToolRequest("deploy"), noopToolHandler);
-      await mw.wrapToolCall!(ctx, makeToolRequest("deploy"), noopToolHandler);
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
 
       expect(checkFn).toHaveBeenCalledTimes(2);
     });
@@ -288,17 +289,17 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext();
       const req = makeToolRequest("multiply");
 
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(checkFn).toHaveBeenCalledTimes(1);
 
       // Still cached
       now += 4000;
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(checkFn).toHaveBeenCalledTimes(1);
 
       // Expired
       now += 2000;
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(checkFn).toHaveBeenCalledTimes(2);
     });
   });
@@ -315,8 +316,8 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalFn });
       const req = makeToolRequest("deploy", { target: "staging" });
 
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
 
       expect(approvalFn).toHaveBeenCalledTimes(1);
     });
@@ -331,12 +332,12 @@ describe("createPermissionsMiddleware", () => {
       });
       const ctx = makeTurnContext({ requestApproval: approvalFn });
 
-      await mw.wrapToolCall!(
+      await mw.wrapToolCall?.(
         ctx,
         makeToolRequest("deploy", { target: "staging" }),
         noopToolHandler,
       );
-      await mw.wrapToolCall!(ctx, makeToolRequest("deploy", { target: "prod" }), noopToolHandler);
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy", { target: "prod" }), noopToolHandler);
 
       expect(approvalFn).toHaveBeenCalledTimes(2);
     });
@@ -355,8 +356,8 @@ describe("createPermissionsMiddleware", () => {
       const ctx = makeTurnContext({ requestApproval: approvalFn });
       const req = makeToolRequest("deploy", { dangerous: true });
 
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
-      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
 
       // Must prompt both times since modify results are never cached
       expect(approvalFn).toHaveBeenCalledTimes(2);
@@ -377,14 +378,14 @@ describe("createPermissionsMiddleware", () => {
         requestApproval: approvalFn,
         metadata: { tenant: "acme" },
       });
-      await mw.wrapToolCall!(ctxA, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctxA, req, noopToolHandler);
 
       // Same tool+input but different context — must re-prompt
       const ctxB = makeTurnContext({
         requestApproval: approvalFn,
         metadata: { tenant: "globex" },
       });
-      await mw.wrapToolCall!(ctxB, req, noopToolHandler);
+      await mw.wrapToolCall?.(ctxB, req, noopToolHandler);
 
       expect(approvalFn).toHaveBeenCalledTimes(2);
     });
@@ -403,7 +404,7 @@ describe("createPermissionsMiddleware", () => {
         auditSink,
       });
 
-      await mw.wrapToolCall!(makeTurnContext(), makeToolRequest("multiply"), noopToolHandler);
+      await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("multiply"), noopToolHandler);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]?.kind).toBe("tool_call");
@@ -424,7 +425,7 @@ describe("createPermissionsMiddleware", () => {
       });
 
       try {
-        await mw.wrapToolCall!(makeTurnContext(), makeToolRequest("bash"), noopToolHandler);
+        await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("bash"), noopToolHandler);
       } catch {
         // expected
       }
@@ -445,7 +446,7 @@ describe("createPermissionsMiddleware", () => {
       });
 
       // Should not throw despite broken sink
-      await mw.wrapToolCall!(makeTurnContext(), makeToolRequest("multiply"), noopToolHandler);
+      await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("multiply"), noopToolHandler);
     });
   });
 
@@ -472,7 +473,7 @@ describe("createPermissionsMiddleware", () => {
       // First 2 failures trip the circuit
       for (let i = 0; i < 2; i++) {
         try {
-          await mw.wrapToolCall!(ctx, makeToolRequest("test"), noopToolHandler);
+          await mw.wrapToolCall?.(ctx, makeToolRequest("test"), noopToolHandler);
         } catch {
           // expected
         }
@@ -480,7 +481,7 @@ describe("createPermissionsMiddleware", () => {
 
       // Circuit open — should deny without calling backend
       try {
-        await mw.wrapToolCall!(ctx, makeToolRequest("test"), noopToolHandler);
+        await mw.wrapToolCall?.(ctx, makeToolRequest("test"), noopToolHandler);
         throw new Error("should not reach");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
@@ -499,7 +500,7 @@ describe("createPermissionsMiddleware", () => {
       const mw = createPermissionsMiddleware({ backend });
 
       await expect(
-        mw.wrapToolCall!(makeTurnContext(), makeToolRequest("test"), noopToolHandler),
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("test"), noopToolHandler),
       ).rejects.toThrow("failing closed");
     });
   });
@@ -538,7 +539,7 @@ describe("createPermissionsMiddleware", () => {
         metadata: {},
       };
 
-      await mw.onSessionEnd!(sessionCtx);
+      await mw.onSessionEnd?.(sessionCtx);
       expect(disposeFn).toHaveBeenCalledTimes(1);
     });
   });
@@ -556,9 +557,130 @@ describe("createPermissionsMiddleware", () => {
       const mw = createPermissionsMiddleware({ backend });
       const handler = mock(noopModelHandler);
 
-      await mw.wrapModelCall!(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
       expect(checkBatchFn).toHaveBeenCalledTimes(1);
       expect(checkBatchFn.mock.calls[0]?.[0]).toHaveLength(3);
+    });
+  });
+
+  describe("principal scoping (tenant isolation)", () => {
+    test("different users produce different cache keys", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({ effect: "allow" as const }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({ backend, cache: true });
+
+      await mw.wrapToolCall?.(
+        makeTurnContext({ userId: "alice" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+      await mw.wrapToolCall?.(
+        makeTurnContext({ userId: "bob" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+
+      // Both should call backend because different users = different cache keys
+      expect(checkFn).toHaveBeenCalledTimes(2);
+    });
+
+    test("different sessions produce different cache keys", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({ effect: "allow" as const }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({ backend, cache: true });
+
+      await mw.wrapToolCall?.(
+        makeTurnContext({ sessionId: "s-1" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+      await mw.wrapToolCall?.(
+        makeTurnContext({ sessionId: "s-2" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+
+      expect(checkFn).toHaveBeenCalledTimes(2);
+    });
+
+    test("principal includes userId and sessionId", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({ effect: "allow" as const }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({ backend });
+
+      await mw.wrapToolCall?.(
+        makeTurnContext({ userId: "alice", sessionId: "s-42" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+
+      const query = checkFn.mock.calls[0]?.[0] as PermissionQuery;
+      expect(query.principal).toContain("alice");
+      expect(query.principal).toContain("s-42");
+    });
+  });
+
+  describe("per-session denial tracking", () => {
+    test("onSessionEnd only clears ending session tracker", async () => {
+      const mw = createPermissionsMiddleware({ backend: denyAll("denied") });
+
+      // Session 1 gets a denial
+      try {
+        await mw.wrapToolCall?.(
+          makeTurnContext({ sessionId: "s-1" }),
+          makeToolRequest("bash"),
+          noopToolHandler,
+        );
+      } catch {
+        // expected
+      }
+
+      // Session 2 gets a denial
+      try {
+        await mw.wrapToolCall?.(
+          makeTurnContext({ sessionId: "s-2" }),
+          makeToolRequest("rm"),
+          noopToolHandler,
+        );
+      } catch {
+        // expected
+      }
+
+      // End session 1 — should not clear session 2
+      await mw.onSessionEnd?.({
+        agentId: "agent:test",
+        sessionId: "s-1" as never,
+        runId: "r-1" as never,
+        metadata: {},
+      });
+
+      // Session 2 should still work independently (no crash, no shared state)
+      try {
+        await mw.wrapToolCall?.(
+          makeTurnContext({ sessionId: "s-2" }),
+          makeToolRequest("bash"),
+          noopToolHandler,
+        );
+      } catch {
+        // expected — tool is denied
+      }
+    });
+  });
+
+  describe("forged-tool bypass uses structured flag", () => {
+    test("does not bypass explicit deny even with marker text in reason", async () => {
+      // Backend returns explicit deny with marker text in reason — should NOT be bypassed
+      const backend: PermissionBackend = {
+        check: () => ({
+          effect: "deny" as const,
+          reason: `Explicitly blocked (default deny)`,
+        }),
+      };
+      const mw = createPermissionsMiddleware({ backend });
+
+      await expect(
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("forged-tool"), noopToolHandler),
+      ).rejects.toThrow();
     });
   });
 });
