@@ -104,9 +104,26 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/query-engine": {
+      "name": "@koi/query-engine",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
+    },
+    "packages/lib/tools-core": {
+      "name": "@koi/tools-core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
     },
     "packages/lib/validation": {
       "name": "@koi/validation",
@@ -301,11 +318,15 @@
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
+    "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
+
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
