@@ -104,6 +104,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/query-engine": {
+      "name": "@koi/query-engine",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -300,6 +307,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
