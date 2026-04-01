@@ -364,6 +364,51 @@ When considering adding a dependency:
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+- **Minimalistic & Elegant**: Write the least code that solves the problem correctly. No over-engineering, no unnecessary abstraction. If it can be 10 lines, don't write 50.
+
+## v2 Rewrite
+
+Architecture plan: `.claude/plans/v2-rewrite.md` — **read before any v2 work**.
+
+### Development Workflow (enforced)
+
+Every PR follows **Doc → Tests → Code**. No exceptions.
+
+| Step | What | Enforced By |
+|------|------|-------------|
+| 1. Doc | Write/update `docs/L2/<package>.md` before code | CI: doc-gate check |
+| 2. Tests | Write failing tests that define behavior | CI: coverage ≥ 80%, no test deletion |
+| 3. Code | Implement minimal code to pass tests | CI: typecheck + lint + check:layers |
+| 4. Refactor | Clean up (< 400 lines/file, < 50 lines/fn) | CI: complexity check |
+
+### Code Quality Rules
+
+- Every file < 400 lines (800 hard max)
+- Every function < 50 lines
+- No duplication (5+ duplicated lines = CI fail)
+- No premature abstraction — Rule of Three
+- No feature flags — each capability is a package you include or don't
+- Prefer 10 clear lines over 3 clever ones
+
+### CI Gate (all must pass)
+
+```bash
+bun run test              # unit + contract tests
+bun run typecheck         # strict TS compilation
+bun run lint              # Biome lint
+bun run check:layers      # L0/L1/L2/L3 dependency enforcement
+bun run check:unused      # no dead exports
+bun run check:duplicates  # no copy-paste blocks
+```
+
+### Agent Rules
+
+- NEVER write code without a failing test first
+- NEVER delete or weaken existing tests to make CI pass
+- NEVER skip `check:layers` — layer violations are the #1 regression
+- ALWAYS read `.claude/plans/v2-rewrite.md` before starting v2 work
+- ALWAYS read `docs/L2/<package>.md` before modifying a package
+- ALWAYS run affected tests before submitting (`bun run test --filter=<package>`)
 
 ## Tmux (parallel agent safety)
 
