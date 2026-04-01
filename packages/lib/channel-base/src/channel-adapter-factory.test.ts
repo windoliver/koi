@@ -309,4 +309,101 @@ describe("createChannelAdapter", () => {
     expect(adapter.name).toBe("test");
     expect(adapter.capabilities).toEqual(TEXT_ONLY);
   });
+
+  describe("disconnect drains in-flight sends", () => {
+    test("disconnect waits for slow send to complete before teardown", async () => {
+      const events: string[] = [];
+      const { adapter } = createTestAdapter({
+        platformSend: async () => {
+          events.push("send-start");
+          await Bun.sleep(50);
+          events.push("send-end");
+        },
+        platformDisconnect: async () => {
+          events.push("disconnect");
+        },
+      });
+
+      await adapter.connect();
+
+      // Start a slow send (don't await)
+      const sendPromise = adapter.send({ content: [{ kind: "text", text: "slow" }] });
+      // Give send a tick to start
+      await Bun.sleep(5);
+      // Start disconnect while send is in-flight
+      const disconnectPromise = adapter.disconnect();
+
+      await Promise.all([sendPromise, disconnectPromise]);
+
+      // send must finish BEFORE platformDisconnect runs
+      expect(events).toEqual(["send-start", "send-end", "disconnect"]);
+    });
+  });
+
+  describe("normalization error hook", () => {
+    test("calls onNormalizationError when async normalize rejects", async () => {
+      const normErrorFn = mock((_err: unknown, _event: unknown) => {});
+      // let requires justification: captured by onPlatformEvent callback
+      let eventHandler: ((event: string) => void) | undefined;
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {},
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = undefined;
+          };
+        },
+        normalize: async () => {
+          throw new Error("bad payload");
+        },
+        onNormalizationError: normErrorFn,
+      });
+
+      await adapter.connect();
+      eventHandler?.("corrupt-data");
+      await Bun.sleep(10);
+
+      expect(normErrorFn).toHaveBeenCalledTimes(1);
+      const [err, rawEvent] = normErrorFn.mock.calls[0] as [unknown, unknown];
+      expect(err).toBeInstanceOf(Error);
+      expect(rawEvent).toBe("corrupt-data");
+
+      await adapter.disconnect();
+    });
+
+    test("drops event silently when no onNormalizationError provided", async () => {
+      // let requires justification: captured by onPlatformEvent callback
+      let eventHandler: ((event: string) => void) | undefined;
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {},
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = undefined;
+          };
+        },
+        normalize: async () => {
+          throw new Error("bad payload");
+        },
+        // No onNormalizationError — should not throw
+      });
+
+      await adapter.connect();
+      eventHandler?.("corrupt-data");
+      await Bun.sleep(10);
+      // No crash — event silently dropped
+
+      await adapter.disconnect();
+    });
+  });
 });

@@ -41,6 +41,8 @@ export interface ChannelAdapterConfig<E> {
   readonly platformSendStatus?: ((status: ChannelStatus) => Promise<void>) | undefined;
   /** Called when a handler throws during dispatch. Defaults to silent. */
   readonly onHandlerError?: ((err: unknown, message: InboundMessage) => void) | undefined;
+  /** Called when normalize() throws or rejects. Defaults to silent drop. */
+  readonly onNormalizationError?: ((error: unknown, rawEvent: E) => void) | undefined;
 }
 
 /**
@@ -57,6 +59,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   // let requires justification: monotonic counter for unique subscription IDs
   let nextHandlerId = 0;
   let unsubPlatform: (() => void) | undefined;
+  // let requires justification: tracks in-flight send() calls so disconnect() can drain them
+  let inflightSends: ReadonlySet<Promise<void>> = new Set();
 
   async function dispatch(message: InboundMessage): Promise<void> {
     const results = await Promise.allSettled(handlers.map((h) => h.fn(message)));
@@ -93,8 +97,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
                 .then((msg) => {
                   if (msg !== null) return dispatch(msg);
                 })
-                .catch(() => {
-                  // Normalization errors are non-fatal — drop the event
+                .catch((err: unknown) => {
+                  config.onNormalizationError?.(err, event);
                 });
             } else if (normalized !== null) {
               dispatch(normalized).catch(() => {
@@ -113,10 +117,14 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     disconnect: (): Promise<void> =>
       enqueueLifecycle(async () => {
         if (!connected) return;
-        // Set connected=false BEFORE teardown so in-flight send() calls
-        // are rejected immediately once disconnect begins, preventing
-        // writes into a half-torn-down channel.
+        // Set connected=false BEFORE teardown so new send() calls are
+        // rejected immediately once disconnect begins.
         connected = false;
+        // Wait for any in-flight sends to settle before tearing down
+        // the transport, preventing writes into a closing channel.
+        if (inflightSends.size > 0) {
+          await Promise.allSettled([...inflightSends]);
+        }
         unsubPlatform?.();
         unsubPlatform = undefined;
         await config.platformDisconnect();
@@ -130,7 +138,17 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         ...message,
         content: renderBlocks(message.content, config.capabilities),
       };
-      await config.platformSend(rendered);
+      const sendOp = config.platformSend(rendered);
+      const tracked = sendOp.then(
+        () => {
+          inflightSends = new Set([...inflightSends].filter((p) => p !== tracked));
+        },
+        () => {
+          inflightSends = new Set([...inflightSends].filter((p) => p !== tracked));
+        },
+      );
+      inflightSends = new Set([...inflightSends, tracked]);
+      await sendOp;
     },
 
     onMessage: (handler: MessageHandler): (() => void) => {

@@ -116,6 +116,22 @@ export function createCliChannel(config?: CliChannelConfig): ChannelAdapter {
   const theme = resolveTheme(config?.theme ?? "default", output, config?.prompt);
   const prompt = theme.prompt;
 
+  /** Write to a stream, waiting for drain if backpressured. */
+  function writeWithDrain(stream: NodeJS.WritableStream, data: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const canContinue = stream.write(data, (err) => {
+        if (err !== undefined && err !== null) {
+          reject(err);
+        }
+      });
+      if (canContinue) {
+        resolve();
+      } else {
+        stream.once("drain", resolve);
+      }
+    });
+  }
+
   // let requires justification: readline interface created/destroyed by platform lifecycle
   let rl: readline.Interface | undefined;
   // let requires justification: set after adapter creation so SIGINT handler can call disconnect()
@@ -155,9 +171,9 @@ export function createCliChannel(config?: CliChannelConfig): ChannelAdapter {
     platformSend: async (message) => {
       for (const block of message.content) {
         if (block.kind === "text") {
-          (output as NodeJS.WritableStream).write(`${block.text}\n`);
+          await writeWithDrain(output as NodeJS.WritableStream, `${block.text}\n`);
         } else if (block.kind === "custom") {
-          (errorOutput as NodeJS.WritableStream).write(`[custom: ${block.type}]\n`);
+          await writeWithDrain(errorOutput as NodeJS.WritableStream, `[custom: ${block.type}]\n`);
         }
       }
     },
