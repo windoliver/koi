@@ -1,7 +1,0 @@
-{"kind":"lifecycle","event":"Attached to agent koi-demo (running)","timestamp":1774659157038}
-{"kind":"user","text":"qsay hi","timestamp":1774659192446}
-{"kind":"lifecycle","event":"Run started","timestamp":1774659192455}
-{"kind":"lifecycle","event":"Step: agent","timestamp":1774659192455}
-{"kind":"assistant","text":"Hey there! 👋 Welcome to the **HERB Business Assistant**.\n\nI'm your go-to analyst for everything across the organization. Here's a quick snapshot of what I can help you with:\n\n| Area | Coverage |\n|------|----------|\n| 👥 **Employees** | 530 staff across 5 departments |\n| 🤝 **Customers** | 120 accounts across 4 regions & 3 tiers |\n| 📦 **Products** | 30 products (platform, add-ons, services) |\n| 📚 **Knowledge Base** | 20 internal Q&A on policies & processes |\n\n**Some things you can ask me:**\n- *\"Who are our top customers by revenue?\"*\n- *\"Show me a headcount breakdown by department\"*\n- *\"Which customers are at churn risk?\"*\n- *\"What's our refund policy?\"*\n\nWhat can I help you with today?","timestamp":1774659199406}
-{"kind":"lifecycle","event":"Run finished","timestamp":1774659199407}
-{"kind":"lifecycle","event":"Turns: 1, tokens: 6741","timestamp":1774659199422}
