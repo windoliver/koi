@@ -37,16 +37,12 @@
 git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
-bun run build:cli
+bun run build
 ```
 
-Create and run an agent:
-
-```bash
-bun run koi -- init my-agent      # interactive wizard (pick a preset)
-cd my-agent
-bun run up                        # starts runtime + admin panel + TUI
-```
+> **v2 scaffold**: The CLI and runtime are not yet available. The scaffold retains
+> the kernel (L0 + L1) and 11 L0u utility packages. See the `v1-archive` git tag
+> for the full v1 codebase.
 
 The wizard asks you to pick a **preset** (local, demo, or mesh), a model, and optional channels. It generates a `koi.yaml` manifest, `.env` file, and everything needed to run.
 
@@ -421,38 +417,14 @@ A browser-based UI for managing running agents, built on React 19 + Vite. Wired 
 git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
-bun run build:cli
-```
-
-### Running with `koi up`
-
-The repo does not place a `koi` binary on your shell `PATH`. Use `bun run koi --`:
-
-```bash
-bun run koi -- init my-agent   # scaffold inside (or outside) the repo
-cd my-agent
-bun run up                     # starts everything
-```
-
-Inside the generated agent directory, `bun run` scripts are available:
-
-```bash
-bun run up            # koi up — runtime + admin + TUI
-bun run dry-run       # validate manifest without starting
-bun run start:admin   # koi start --admin
-bun run tui           # attach TUI to running admin API
-bun run doctor        # diagnose health
+bun run build
+bun run test
 ```
 
 ### Prerequisites
 
 - Bun 1.3.x
-- One model provider key (e.g., `ANTHROPIC_API_KEY`)
 - If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
-- Local Nexus embed mode is the default when no URL is set
-- To build Nexus from source: `bun run koi -- up --nexus-build --nexus-source ~/nexus`
-- To use a custom port for Nexus: `bun run koi -- up --nexus-port 3000` (port conflicts auto-resolve by default)
-- To connect to remote Nexus: `--nexus-url`, `NEXUS_URL` env var, or `nexus.url` in koi.yaml
 
 ### Toolchain
 

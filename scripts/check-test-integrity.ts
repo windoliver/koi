@@ -27,18 +27,20 @@ function countTests(content: string): number {
 }
 
 async function main(): Promise<void> {
-  // Check for escape hatch in recent commit message
-  const lastMessage = (await $`git log -1 --format=%B`.text()).trim();
-  if (lastMessage.includes("[test-archive]")) {
-    console.log("ℹ️  [test-archive] escape hatch detected — skipping test integrity check.");
-    return;
-  }
-
   // Determine base branch for comparison.
   // In GitHub Actions PR jobs GITHUB_BASE_REF is set (e.g. "main") but the ref
   // is only available as origin/<branch> after the default checkout action.
   const rawBase = process.env.GITHUB_BASE_REF;
   const baseBranch = rawBase !== undefined ? `origin/${rawBase}` : "origin/main";
+
+  // Check for [test-archive] escape hatch in ANY commit in the PR range.
+  // This handles both local runs (git log -1) and CI where the checkout
+  // creates a merge commit that doesn't carry the contributor's message.
+  const commitMessages = (await $`git log ${baseBranch}..HEAD --format=%B`.text()).trim();
+  if (commitMessages.includes("[test-archive]")) {
+    console.log("ℹ️  [test-archive] escape hatch detected — skipping test integrity check.");
+    return;
+  }
 
   // Get changed files relative to base
   const diffOutput = await $`git diff --name-status ${baseBranch} -- "*.test.ts"`.text();
