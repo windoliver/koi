@@ -3,6 +3,9 @@
   "description": "Thin OpenAI-compatible model adapter for OpenAI-compatible and other Chat Completions APIs",
   "version": "0.0.0",
   "private": true,
+  "koi": {
+    "optional": true
+  },
   "type": "module",
   "exports": {
     ".": {
