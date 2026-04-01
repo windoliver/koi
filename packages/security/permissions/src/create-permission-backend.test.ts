@@ -93,4 +93,10 @@ describe("createPermissionBackend", () => {
     };
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
+
+  test("throws on invalid mode at construction time", () => {
+    expect(() => createPermissionBackend({ mode: "invalid" as "default", rules: [] })).toThrow(
+      "Invalid permission mode",
+    );
+  });
 });

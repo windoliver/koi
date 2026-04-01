@@ -53,5 +53,9 @@ export function resolveMode(
       // Unmatched (ask) stays as ask — the classifier in #1236 may promote to allow.
       return evaluateRules(query, rules);
     }
+
+    default:
+      // Fail closed on unknown mode values (e.g., bad JSON config at runtime).
+      return { effect: "deny", reason: `Unknown permission mode: ${mode as string}` };
   }
 }

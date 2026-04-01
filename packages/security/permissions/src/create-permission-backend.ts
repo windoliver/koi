@@ -8,14 +8,22 @@ import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@ko
 import { resolveMode } from "./mode-resolver.js";
 import type { PermissionConfig } from "./rule-types.js";
 
+const VALID_MODES = new Set(["default", "bypass", "plan", "auto"]);
+
 /**
  * Create a stateless `PermissionBackend` from a permission config.
  *
- * The returned backend evaluates queries against pre-loaded rules
- * using the configured permission mode.
+ * Throws at construction time if the mode is invalid, preventing
+ * misconfigured backends from silently failing at query time.
  */
 export function createPermissionBackend(config: PermissionConfig): PermissionBackend {
   const { mode, rules } = config;
+
+  if (!VALID_MODES.has(mode)) {
+    throw new Error(
+      `Invalid permission mode: "${mode}". Expected one of: default, bypass, plan, auto`,
+    );
+  }
 
   function check(query: PermissionQuery): PermissionDecision {
     return resolveMode(mode, query, rules);

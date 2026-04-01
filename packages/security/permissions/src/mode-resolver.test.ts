@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { PermissionQuery } from "@koi/core";
 import { resolveMode } from "./mode-resolver.js";
 import { compileGlob } from "./rule-evaluator.js";
-import type { CompiledRule } from "./rule-types.js";
+import type { CompiledRule, PermissionMode } from "./rule-types.js";
 
 const readQuery: PermissionQuery = {
   principal: "agent-1",
@@ -180,6 +180,14 @@ describe("resolveMode", () => {
 
     test("returns allow for matching allow rule", () => {
       expect(resolveMode("auto", writeQuery, rules)).toEqual({ effect: "allow" });
+    });
+  });
+
+  describe("unknown mode", () => {
+    test("denies with error reason for invalid mode", () => {
+      const decision = resolveMode("invalid" as PermissionMode, readQuery, rules);
+      expect(decision.effect).toBe("deny");
+      expect("reason" in decision && decision.reason).toContain("Unknown permission mode");
     });
   });
 });
