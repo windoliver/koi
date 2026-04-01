@@ -106,6 +106,7 @@ async function main(): Promise<void> {
 
   // Find L0u/L2 packages with zero consumers
   const orphans: string[] = [];
+  const optionalNoConsumer: string[] = [];
   let checkedCount = 0;
 
   for (const pkg of packages) {
@@ -115,10 +116,23 @@ async function main(): Promise<void> {
     // This is an L0u or L2 package
     checkedCount++;
 
-    if (pkg.optional) continue; // Exempt: consumed via DI at assembly time
-    if (consumed.has(pkg.name)) continue; // Has at least one consumer
+    const hasConsumer = consumed.has(pkg.name);
+
+    if (pkg.optional && !hasConsumer) {
+      optionalNoConsumer.push(pkg.name);
+      continue;
+    }
+    if (hasConsumer) continue;
 
     orphans.push(pkg.name);
+  }
+
+  // Always report optional packages with no consumers (informational)
+  if (optionalNoConsumer.length > 0) {
+    console.log(`\n${optionalNoConsumer.length} optional package(s) with no static consumer:\n`);
+    for (const name of optionalNoConsumer.sort()) {
+      console.log(`  ⚬ ${name}`);
+    }
   }
 
   if (orphans.length > 0) {
@@ -133,7 +147,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `✅ All ${checkedCount} L0u/L2 packages have at least one consumer (or are marked optional).`,
+    `\n✅ All ${checkedCount} L0u/L2 packages have at least one consumer (or are marked optional).`,
   );
 }
 
