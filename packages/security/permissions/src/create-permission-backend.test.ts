@@ -112,7 +112,7 @@ describe("createPermissionBackend", () => {
           compiled: compileGlob("**"),
         },
       ],
-      planAllowedActions: new Set(["read", "metadata"]),
+      planAllowedActions: ["read", "metadata"],
     });
     const query: PermissionQuery = {
       principal: "agent-1",
@@ -127,7 +127,7 @@ describe("createPermissionBackend", () => {
       createPermissionBackend({
         mode: "plan",
         rules: [],
-        planAllowedActions: new Set(["read", "write"]),
+        planAllowedActions: ["read", "write"],
       }),
     ).toThrow("not in the approved read-only vocabulary for planAllowedActions");
   });
@@ -137,13 +137,13 @@ describe("createPermissionBackend", () => {
       createPermissionBackend({
         mode: "plan",
         rules: [],
-        planRuleEvaluatedActions: new Set(["discover", "bash"]),
+        planRuleEvaluatedActions: ["discover", "bash"],
       }),
     ).toThrow("not in the approved read-only vocabulary for planRuleEvaluatedActions");
   });
 
-  test("post-construction mutation of caller set does not affect backend", async () => {
-    const mutableSet = new Set(["read", "metadata"]);
+  test("post-construction mutation of caller array does not affect backend", async () => {
+    const mutableArray = ["read", "metadata"];
     const backend = createPermissionBackend({
       mode: "plan",
       rules: [
@@ -155,16 +155,38 @@ describe("createPermissionBackend", () => {
           compiled: compileGlob("**"),
         },
       ],
-      planAllowedActions: mutableSet,
+      planAllowedActions: mutableArray,
     });
-    // Mutate the original set after construction — should have no effect
-    mutableSet.delete("metadata");
+    // Mutate the original array after construction — should have no effect
+    mutableArray.pop();
     const query: PermissionQuery = {
       principal: "agent-1",
       action: "metadata",
       resource: "src/index.ts",
     };
-    // Backend should still allow metadata (uses its frozen copy)
+    // Backend should still allow metadata (uses its internal copy)
+    expect(await backend.check(query)).toEqual({ effect: "allow" });
+  });
+
+  test("post-construction mutation of rules array does not affect backend", async () => {
+    const mutableRules = [
+      {
+        pattern: "src/**",
+        action: "write",
+        effect: "allow" as const,
+        source: "project" as const,
+        compiled: compileGlob("src/**"),
+      },
+    ];
+    const backend = createPermissionBackend({ mode: "default", rules: mutableRules });
+    // Clear the original rules array after construction
+    mutableRules.length = 0;
+    const query: PermissionQuery = {
+      principal: "agent-1",
+      action: "write",
+      resource: "src/index.ts",
+    };
+    // Backend should still use its frozen copy
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 });

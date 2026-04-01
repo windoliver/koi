@@ -63,12 +63,12 @@ export interface PermissionConfig {
    * Override the default set of actions auto-allowed in plan mode.
    * When omitted, uses `PLAN_ALLOWED_ACTIONS`.
    */
-  readonly planAllowedActions?: ReadonlySet<string> | undefined;
+  readonly planAllowedActions?: readonly string[] | undefined;
   /**
    * Override the default set of actions that are rule-evaluated (not auto-allowed,
    * not hard-denied) in plan mode. When omitted, uses `PLAN_RULE_EVALUATED_ACTIONS`.
    */
-  readonly planRuleEvaluatedActions?: ReadonlySet<string> | undefined;
+  readonly planRuleEvaluatedActions?: readonly string[] | undefined;
 }
 
 /** Source precedence order — index 0 is highest priority. */
@@ -82,21 +82,22 @@ export const SOURCE_PRECEDENCE: readonly RuleSource[] = [
 /**
  * Actions explicitly allowed in plan mode.
  * Plan mode is deny-by-default — only these read-only actions are permitted.
- * Any action not in this set is denied.
+ * Exported as a frozen array — internal code creates Sets from these as needed.
  */
-export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = Object.freeze(
-  new Set(["read", "glob", "grep", "search", "list"]),
-);
+export const PLAN_ALLOWED_ACTIONS: readonly string[] = Object.freeze([
+  "read",
+  "glob",
+  "grep",
+  "search",
+  "list",
+]);
 
 /**
  * Actions evaluated against rules in plan mode but NOT auto-allowed.
  * These require an explicit allow rule to proceed; unmatched queries
- * return ask. This prevents both hard-denying useful operations
- * (like discover) and silently allowing them without policy.
+ * return ask.
  */
-export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = Object.freeze(
-  new Set(["discover"]),
-);
+export const PLAN_RULE_EVALUATED_ACTIONS: readonly string[] = Object.freeze(["discover"]);
 
 /**
  * Complete vocabulary of actions approved for use in plan mode.
@@ -107,22 +108,25 @@ export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = Object.freeze(
  *
  * To add a new safe action, add it here first.
  */
-export const PLAN_SAFE_VOCABULARY: ReadonlySet<string> = Object.freeze(
-  new Set([
-    // Auto-allowed read-only actions (from PLAN_ALLOWED_ACTIONS)
-    "read",
-    "glob",
-    "grep",
-    "search",
-    "list",
-    // Rule-evaluated actions (from PLAN_RULE_EVALUATED_ACTIONS)
-    "discover",
-    // Additional safe actions that callers may add
-    "stat",
-    "metadata",
-    "lookup",
-    "describe",
-    "inspect",
-    "resolve",
-  ]),
-);
+/**
+ * Complete vocabulary of actions approved for use in plan mode.
+ * Exported as a frozen array — createPermissionBackend creates
+ * a private Set from this for validation.
+ */
+export const PLAN_SAFE_VOCABULARY: readonly string[] = Object.freeze([
+  // Auto-allowed read-only actions
+  "read",
+  "glob",
+  "grep",
+  "search",
+  "list",
+  // Rule-evaluated actions
+  "discover",
+  // Additional safe actions that callers may add
+  "stat",
+  "metadata",
+  "lookup",
+  "describe",
+  "inspect",
+  "resolve",
+]);

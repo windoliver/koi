@@ -7,7 +7,7 @@ import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@ko
 
 import type { PlanModeOptions } from "./mode-resolver.js";
 import { resolveMode } from "./mode-resolver.js";
-import type { PermissionConfig } from "./rule-types.js";
+import type { CompiledRule, PermissionConfig } from "./rule-types.js";
 import {
   PLAN_ALLOWED_ACTIONS,
   PLAN_RULE_EVALUATED_ACTIONS,
@@ -16,29 +16,47 @@ import {
 
 const VALID_MODES = new Set(["default", "bypass", "plan", "auto"]);
 
+// Private Set built from the exported frozen array — cannot be mutated by callers.
+const safeVocabularySet = new Set(PLAN_SAFE_VOCABULARY);
+
 /**
  * Validate that every action in a set is in the approved read-only vocabulary.
- * Throws with a descriptive message if any action is not recognized as safe.
  */
 function validatePlanActions(actions: ReadonlySet<string>, label: string): void {
   for (const action of actions) {
-    if (!PLAN_SAFE_VOCABULARY.has(action)) {
+    if (!safeVocabularySet.has(action)) {
       throw new Error(
         `Action "${action}" is not in the approved read-only vocabulary for ${label}. ` +
-          `Allowed: ${[...PLAN_SAFE_VOCABULARY].join(", ")}`,
+          `Allowed: ${PLAN_SAFE_VOCABULARY.join(", ")}`,
       );
     }
   }
 }
 
 /**
+ * Deep-freeze a rules array so neither the array nor individual rule objects
+ * can be mutated after backend construction.
+ */
+function freezeRules(rules: readonly CompiledRule[]): readonly CompiledRule[] {
+  const frozen = [...rules];
+  for (const rule of frozen) {
+    Object.freeze(rule);
+  }
+  return Object.freeze(frozen);
+}
+
+/**
  * Create a stateless `PermissionBackend` from a permission config.
+ *
+ * All mutable inputs (rules, action sets) are defensively copied and frozen
+ * at construction time. Post-construction mutation of the caller's original
+ * objects has no effect on the backend's behavior.
  *
  * Throws at construction time if the mode is invalid or plan-mode action
  * sets contain actions outside the approved read-only vocabulary.
  */
 export function createPermissionBackend(config: PermissionConfig): PermissionBackend {
-  const { mode, rules } = config;
+  const { mode } = config;
 
   if (!VALID_MODES.has(mode)) {
     throw new Error(
@@ -46,11 +64,12 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     );
   }
 
-  // Defensive copy + freeze — caller cannot mutate sets after construction.
-  const planAllowed = Object.freeze(new Set(config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS));
-  const planRuleEval = Object.freeze(
-    new Set(config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS),
-  );
+  // Defensive copy of rules — caller cannot mutate after construction.
+  const rules = freezeRules(config.rules);
+
+  // Defensive copy of plan action sets from caller-provided arrays.
+  const planAllowed = new Set(config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS);
+  const planRuleEval = new Set(config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS);
 
   // Validate all actions are in the approved read-only vocabulary.
   validatePlanActions(planAllowed, "planAllowedActions");

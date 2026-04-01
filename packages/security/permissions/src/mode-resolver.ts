@@ -14,8 +14,8 @@ export interface PlanModeOptions {
 }
 
 const DEFAULT_PLAN_OPTIONS: PlanModeOptions = {
-  allowedActions: PLAN_ALLOWED_ACTIONS,
-  ruleEvaluatedActions: PLAN_RULE_EVALUATED_ACTIONS,
+  allowedActions: new Set(PLAN_ALLOWED_ACTIONS),
+  ruleEvaluatedActions: new Set(PLAN_RULE_EVALUATED_ACTIONS),
 };
 
 /**
