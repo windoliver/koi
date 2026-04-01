@@ -51,13 +51,33 @@ function collectEventWarnings(hooks: readonly HookConfig[]): readonly string[] {
  * Validates an array of raw hook config objects and returns typed `HookConfig[]`.
  *
  * Filters out disabled hooks (enabled === false) from the result.
- * Warns (but does not reject) unknown event kinds in filter.events for
- * forward compatibility with newer HOOK_EVENT_KINDS additions.
+ *
+ * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
+ * @returns Result with validated hook configs or a KoiError with schema violation details.
+ */
+export function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError> {
+  const result = loadHooksInternal(raw);
+  if (!result.ok) return result;
+  return { ok: true, value: result.value.hooks };
+}
+
+/**
+ * Like `loadHooks`, but also returns warnings for unknown event kinds in
+ * `filter.events`. Unknown events are accepted (forward-compatible) but
+ * flagged so typos and version skew are visible at load time.
  *
  * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
  * @returns Result with validated hook configs + warnings, or a KoiError.
  */
-export function loadHooks(raw: unknown): Result<LoadHooksResult, KoiError> {
+export function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult, KoiError> {
+  return loadHooksInternal(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Shared implementation
+// ---------------------------------------------------------------------------
+
+function loadHooksInternal(raw: unknown): Result<LoadHooksResult, KoiError> {
   // AgentManifest.hooks is optional — treat undefined/null as empty
   if (raw === undefined || raw === null) {
     return { ok: true, value: { hooks: [], warnings: [] } };
