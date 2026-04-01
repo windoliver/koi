@@ -231,6 +231,40 @@ describe("createHookMiddleware", () => {
       // Should not throw — blocking session end is meaningless
       await expect(mw.onSessionEnd?.(ctx)).resolves.toBeUndefined();
     });
+
+    it("drains pending post-hooks before cleanup so last-turn hooks complete", async () => {
+      let postHookCompleted = false;
+      let _callIndex = 0;
+      executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
+        _callIndex++;
+        if (event.event === "tool.post") {
+          // Simulate a slow post-hook (50ms) — must complete before cleanup
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          postHookCompleted = true;
+        }
+        return [];
+      });
+
+      const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+      const ctx = makeSessionCtx();
+      const turnCtx = makeTurnCtx({ session: ctx });
+      await mw.onSessionStart?.(ctx);
+
+      // Trigger a tool call which fires a fire-and-forget tool.post
+      const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+        output: "done",
+      });
+      await mw.wrapToolCall?.(turnCtx, { toolId: "bash", input: {} }, nextFn);
+
+      // Post-hook is still in-flight (50ms delay)
+      expect(postHookCompleted).toBe(false);
+
+      // onSessionEnd should drain pending post-hooks before cleanup
+      await mw.onSessionEnd?.(ctx);
+
+      // After session end, the post-hook must have completed
+      expect(postHookCompleted).toBe(true);
+    });
   });
 
   describe("onBeforeTurn", () => {
@@ -616,6 +650,45 @@ describe("wrapModelStream", () => {
     if (chunks[0]?.kind === "error") {
       expect(chunks[0].message).toContain("not today");
     }
+  });
+
+  it("post-call event uses effective model after hook reroute, not original", async () => {
+    let postCallEvent: HookEvent | undefined;
+    let callIndex = 0;
+    executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) {
+        // model.pre — reroute to cheap model
+        return [successResult("rerouter", { kind: "modify", patch: { model: "cheap-model" } })];
+      }
+      // model.post — capture event
+      if (event.event === "model.post") {
+        postCallEvent = event;
+      }
+      return [];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    async function* fakeStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "hi" };
+    }
+    const nextFn: ModelStreamHandler = () => fakeStream();
+
+    const stream = mw.wrapModelStream?.(
+      makeTurnCtx(),
+      { messages: [], model: "expensive-model" },
+      nextFn,
+    );
+    assertDefined(stream);
+    await collectChunks(stream);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertDefined(postCallEvent);
+    // Should report the effective (rerouted) model, not the original
+    expect((postCallEvent.data as Record<string, unknown>).model).toBe("cheap-model");
   });
 
   it("fires post-call hook after stream completes", async () => {

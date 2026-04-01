@@ -5,13 +5,14 @@
  *   onSessionStart  → "session.started" (blocking — throws on block decision)
  *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
- *   onAfterTurn     → "turn.ended"      (fire-and-forget)
- *   wrapToolCall    → "tool.pre" (blocking) + "tool.post" (fire-and-forget)
- *   wrapModelCall   → "model.pre" (blocking) + "model.post" (fire-and-forget)
- *   wrapModelStream → "model.pre" (blocking) + "model.post" (fire-and-forget)
+ *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
+ *   wrapToolCall    → "tool.pre" (blocking) + "tool.post" (fire-and-forget, drained)
+ *   wrapModelCall   → "model.pre" (blocking) + "model.post" (fire-and-forget, drained)
+ *   wrapModelStream → "model.pre" (blocking) + "model.post" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
- * Post-call hooks fire-and-forget — errors are silently swallowed.
+ * Post-call hooks are fire-and-forget during the turn but drained with a bounded
+ * wait before session cleanup to prevent last-turn hooks from being aborted.
  *
  * Phase: "resolve" (priority 400). Hooks are business logic, not permissions.
  */
@@ -113,6 +114,13 @@ function filterModelPatch(patch: JsonObject): JsonObject | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Post-hook drain timeout
+// ---------------------------------------------------------------------------
+
+/** Maximum time (ms) to wait for pending post-hooks before session cleanup. */
+const POST_HOOK_DRAIN_TIMEOUT_MS = 5_000;
+
+// ---------------------------------------------------------------------------
 // Middleware factory
 // ---------------------------------------------------------------------------
 
@@ -126,6 +134,12 @@ function filterModelPatch(patch: JsonObject): JsonObject | undefined {
 export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware {
   const { hooks } = options;
   const registry = createHookRegistry();
+
+  /**
+   * Per-session set of pending post-hook promises. Drained in onSessionEnd
+   * before registry.cleanup() to prevent last-turn hooks from being aborted.
+   */
+  const pendingPostHooks = new Map<string, Set<Promise<unknown>>>();
 
   function buildEvent(
     ctx: SessionContext,
@@ -142,11 +156,44 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     };
   }
 
-  /** Fire hooks and swallow errors — for fire-and-forget post-call dispatch. */
+  /**
+   * Fire hooks without blocking the caller. The promise is tracked per-session
+   * and drained before cleanup so last-turn hooks aren't silently aborted.
+   */
   function fireAndForget(sessionId: string, event: HookEvent): void {
-    void registry.execute(sessionId, event).catch(() => {
-      /* post-call hooks are observational — errors silently swallowed */
-    });
+    const promise = registry
+      .execute(sessionId, event)
+      .catch(() => {
+        /* post-call hooks are observational — errors silently swallowed */
+      })
+      .then(() => {
+        // Self-remove from pending set once settled
+        pendingPostHooks.get(sessionId)?.delete(promise);
+      });
+
+    let pending = pendingPostHooks.get(sessionId);
+    if (pending === undefined) {
+      pending = new Set();
+      pendingPostHooks.set(sessionId, pending);
+    }
+    pending.add(promise);
+  }
+
+  /**
+   * Wait for all pending post-hooks for a session with a bounded timeout.
+   * After the timeout, remaining hooks are abandoned (cleanup will abort them).
+   */
+  async function drainPendingPostHooks(sessionId: string): Promise<void> {
+    const pending = pendingPostHooks.get(sessionId);
+    if (pending === undefined || pending.size === 0) {
+      pendingPostHooks.delete(sessionId);
+      return;
+    }
+    await Promise.race([
+      Promise.allSettled([...pending]),
+      new Promise((resolve) => setTimeout(resolve, POST_HOOK_DRAIN_TIMEOUT_MS)),
+    ]);
+    pendingPostHooks.delete(sessionId);
   }
 
   /** Build model.pre event data from a ModelRequest. */
@@ -163,7 +210,6 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
   /**
    * Run model.pre hooks and return the effective request.
-   * Throws on block (for wrapModelCall) or returns a blocked ModelResponse sentinel.
    */
   async function dispatchModelPre(
     sessionId: string,
@@ -215,6 +261,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const event = buildEvent(ctx, "session.ended");
       // Awaited but decisions ignored — can't meaningfully block session end
       await registry.execute(sessionId, event);
+      // Drain pending post-hooks before cleanup to prevent last-turn hooks
+      // from being aborted by the session controller
+      await drainPendingPostHooks(sessionId);
       registry.cleanup(sessionId);
     },
 
@@ -231,7 +280,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     async onAfterTurn(ctx: TurnContext): Promise<void> {
       const sessionId = ctx.session.sessionId as string;
       const event = buildEvent(ctx.session, "turn.ended");
-      // After-turn hooks are fire-and-forget — don't block the engine
+      // After-turn hooks are fire-and-forget but tracked for drain
       fireAndForget(sessionId, event);
     },
 
@@ -321,8 +370,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         yield* next(preResult.request);
       } finally {
         // Post-call: fire-and-forget after stream completes or errors
+        // Use effective model (from preResult), not original request model
         const postEvent = buildEvent(ctx.session, "model.post", {
-          data: { model: request.model ?? "default" } as JsonObject,
+          data: { model: preResult.request.model ?? "default" } as JsonObject,
         });
         fireAndForget(sessionId, postEvent);
       }
