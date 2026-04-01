@@ -310,6 +310,58 @@ describe("createChannelAdapter", () => {
     expect(adapter.capabilities).toEqual(TEXT_ONLY);
   });
 
+  describe("disconnect blocks inbound events immediately", () => {
+    test("events arriving after disconnect starts are dropped", async () => {
+      const received: InboundMessage[] = [];
+      // let requires justification: captured by onPlatformEvent callback
+      let eventHandler: ((event: string) => void) | undefined;
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {
+          // Simulate slow teardown — events could arrive here
+          await Bun.sleep(50);
+        },
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = undefined;
+          };
+        },
+        normalize: (line: string) => ({
+          content: [{ kind: "text", text: line }],
+          senderId: "test",
+          timestamp: Date.now(),
+        }),
+      });
+
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+
+      // Message before disconnect — should be delivered
+      eventHandler?.("before");
+      await Bun.sleep(10);
+      expect(received).toHaveLength(1);
+
+      // Start disconnect (don't await)
+      const disconnectPromise = adapter.disconnect();
+      await Bun.sleep(5);
+
+      // Event during disconnect — should be dropped (connected=false)
+      eventHandler?.("during-disconnect");
+      await Bun.sleep(10);
+      expect(received).toHaveLength(1);
+
+      await disconnectPromise;
+    });
+  });
+
   describe("disconnect drains in-flight sends", () => {
     test("disconnect waits for slow send to complete before teardown", async () => {
       const events: string[] = [];
@@ -341,6 +393,41 @@ describe("createChannelAdapter", () => {
   });
 
   describe("normalization error hook", () => {
+    test("calls onNormalizationError when sync normalize throws", async () => {
+      const normErrorFn = mock((_err: unknown, _event: unknown) => {});
+      // let requires justification: captured by onPlatformEvent callback
+      let eventHandler: ((event: string) => void) | undefined;
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {},
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = undefined;
+          };
+        },
+        normalize: () => {
+          throw new Error("sync boom");
+        },
+        onNormalizationError: normErrorFn,
+      });
+
+      await adapter.connect();
+      eventHandler?.("bad-event");
+      await Bun.sleep(10);
+
+      expect(normErrorFn).toHaveBeenCalledTimes(1);
+      const [err, rawEvent] = normErrorFn.mock.calls[0] as [unknown, unknown];
+      expect(err).toBeInstanceOf(Error);
+      expect(rawEvent).toBe("bad-event");
+
+      await adapter.disconnect();
+    });
+
     test("calls onNormalizationError when async normalize rejects", async () => {
       const normErrorFn = mock((_err: unknown, _event: unknown) => {});
       // let requires justification: captured by onPlatformEvent callback

@@ -91,7 +91,20 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         // adapter doesn't get wedged in a half-initialized state.
         try {
           unsubPlatform = config.onPlatformEvent((event: E) => {
-            const normalized = config.normalize(event);
+            // Guard: drop events once disconnect has started
+            if (!connected) return;
+
+            // Wrap normalize() so both sync throws and async rejections
+            // route through onNormalizationError instead of crashing.
+            // let requires justification: holds normalize result which may be sync or async
+            let normalized: InboundMessage | null | Promise<InboundMessage | null>;
+            try {
+              normalized = config.normalize(event);
+            } catch (err: unknown) {
+              config.onNormalizationError?.(err, event);
+              return;
+            }
+
             if (normalized instanceof Promise) {
               normalized
                 .then((msg) => {
@@ -117,16 +130,18 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     disconnect: (): Promise<void> =>
       enqueueLifecycle(async () => {
         if (!connected) return;
-        // Set connected=false BEFORE teardown so new send() calls are
-        // rejected immediately once disconnect begins.
+        // 1. Reject new sends and stop inbound event processing
         connected = false;
-        // Wait for any in-flight sends to settle before tearing down
-        // the transport, preventing writes into a closing channel.
+        // 2. Unsubscribe platform listener BEFORE draining so no new
+        //    events are dispatched during the drain window
+        unsubPlatform?.();
+        unsubPlatform = undefined;
+        // 3. Wait for in-flight sends to settle before tearing down
+        //    the transport, preventing writes into a closing channel
         if (inflightSends.size > 0) {
           await Promise.allSettled([...inflightSends]);
         }
-        unsubPlatform?.();
-        unsubPlatform = undefined;
+        // 4. Tear down the platform transport
         await config.platformDisconnect();
       }),
 
