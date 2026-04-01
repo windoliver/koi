@@ -192,6 +192,38 @@ function fixTranscriptOrdering(
 }
 
 // ---------------------------------------------------------------------------
+// Anthropic prompt caching (via OpenRouter)
+// ---------------------------------------------------------------------------
+
+/**
+ * Add Anthropic-style cache_control to the last user/assistant text content.
+ *
+ * Only applies when the model ID starts with "anthropic/" — Anthropic is the
+ * only provider that uses request-side cache control. OpenAI caching is
+ * automatic (no headers needed), Google only reports cache metrics.
+ *
+ * Mutates the messages array in place for performance (called after mapping).
+ */
+function maybeAddAnthropicCacheControl(messages: ChatCompletionMessage[], model: string): void {
+  if (!model.startsWith("anthropic/")) return;
+
+  // Walk backwards to find the last user/assistant message with text content
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
+    if (typeof msg.content !== "string" || msg.content.length === 0) continue;
+
+    // Convert string content to array format with cache_control.
+    // We mutate via Object.assign to work around readonly types — this is
+    // intentional post-processing on our own freshly-created message array.
+    Object.assign(msg, {
+      content: [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }],
+    });
+    return;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -231,11 +263,27 @@ export function buildRequestBody(
   const systemPrompt = request.metadata?.systemPrompt as string | undefined;
   if (systemPrompt !== undefined) {
     const role = config.compat.supportsDeveloperRole ? "developer" : "system";
-    messages.push({ role: role as "system", content: systemPrompt });
+    const effectiveModel = request.model ?? config.model;
+    // Add cache_control to system prompt for Anthropic models — this is the
+    // most cacheable content (identical across all turns in a conversation)
+    if (effectiveModel.startsWith("anthropic/")) {
+      messages.push({
+        role: role as "system",
+        content: [
+          { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+        ] as unknown as string,
+      });
+    } else {
+      messages.push({ role: role as "system", content: systemPrompt });
+    }
   }
 
   // Conversation messages
   messages.push(...mapMessages(request.messages, config.compat));
+
+  // Anthropic prompt caching — add cache_control to last text block
+  const effectiveModel = request.model ?? config.model;
+  maybeAddAnthropicCacheControl(messages, effectiveModel);
 
   const body: Record<string, unknown> = {
     model: request.model ?? config.model,
