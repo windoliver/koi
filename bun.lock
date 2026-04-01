@@ -173,6 +173,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/mm/model-openai-compat": {
+      "name": "@koi/model-openai-compat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/mm/session-repair": {
       "name": "@koi/session-repair",
       "version": "0.0.0",
@@ -381,6 +388,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 

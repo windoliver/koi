@@ -21,6 +21,7 @@
     { "path": "packages/lib/validation" },
     { "path": "packages/lib/context-manager" },
     { "path": "packages/lib/event-trace" },
+    { "path": "packages/mm/model-openai-compat" },
     { "path": "packages/mm/session-repair" },
     { "path": "packages/mm/token-estimator" },
     { "path": "packages/net/mcp" }

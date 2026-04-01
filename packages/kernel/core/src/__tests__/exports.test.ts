@@ -71,10 +71,16 @@ import type {
   MessageHandler,
   MiddlewareConfig,
   // assembly
+  ModelAdapter,
   ModelConfig,
+  ModelContentBlock,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStopReason,
+  ModelTextBlock,
+  ModelThinkingBlock,
+  ModelToolCallBlock,
   NodeCapability,
   OutboundMessage,
   PermissionConfig,
@@ -179,6 +185,12 @@ type _TypeGuard =
   | AssertDefined<InboundMessage>
   | AssertDefined<SessionContext>
   | AssertDefined<TurnContext>
+  | AssertDefined<ModelAdapter>
+  | AssertDefined<ModelContentBlock>
+  | AssertDefined<ModelStopReason>
+  | AssertDefined<ModelTextBlock>
+  | AssertDefined<ModelThinkingBlock>
+  | AssertDefined<ModelToolCallBlock>
   | AssertDefined<ModelRequest>
   | AssertDefined<ModelResponse>
   | AssertDefined<ModelHandler>

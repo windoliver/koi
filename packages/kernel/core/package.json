@@ -89,6 +89,10 @@
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"
     },
+    "./model-adapter": {
+      "types": "./dist/model-adapter.d.ts",
+      "import": "./dist/model-adapter.js"
+    },
     "./model-provider": {
       "types": "./dist/model-provider.d.ts",
       "import": "./dist/model-provider.js"
