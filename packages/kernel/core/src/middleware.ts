@@ -12,7 +12,9 @@ import type {
   ToolDescriptor,
   TurnId,
 } from "./ecs.js";
+import type { KoiErrorCode } from "./errors.js";
 import type { InboundMessage } from "./message.js";
+import type { ModelContentBlock, ModelStopReason } from "./model-adapter.js";
 
 export interface SessionContext {
   readonly agentId: string;
@@ -59,8 +61,16 @@ export interface ModelResponse {
   readonly usage?: {
     readonly inputTokens: number;
     readonly outputTokens: number;
+    readonly cacheReadTokens?: number | undefined;
+    readonly cacheWriteTokens?: number | undefined;
   };
   readonly metadata?: JsonObject;
+  /** Why the model stopped generating. Absent for legacy callers. */
+  readonly stopReason?: ModelStopReason | undefined;
+  /** Provider-specific response identifier for debugging/audit. */
+  readonly responseId?: string | undefined;
+  /** Rich content blocks when the model returns tool calls or thinking. */
+  readonly richContent?: readonly ModelContentBlock[] | undefined;
 }
 
 export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
@@ -75,6 +85,9 @@ export type ModelChunk =
   | {
       readonly kind: "error";
       readonly message: string;
+      readonly code?: KoiErrorCode | undefined;
+      readonly retryable?: boolean | undefined;
+      readonly retryAfterMs?: number | undefined;
       readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
     }
   | { readonly kind: "done"; readonly response: ModelResponse };

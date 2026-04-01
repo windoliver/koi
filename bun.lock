@@ -124,6 +124,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/mm/model-openrouter": {
+      "name": "@koi/model-openrouter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/mm/session-repair": {
       "name": "@koi/session-repair",
       "version": "0.0.0",
@@ -307,6 +314,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/model-openrouter": ["@koi/model-openrouter@workspace:packages/mm/model-openrouter"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
