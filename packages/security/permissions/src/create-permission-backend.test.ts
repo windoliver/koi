@@ -146,20 +146,35 @@ describe("createPermissionBackend", () => {
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 
-  test("namespace resources are not path-normalized", async () => {
+  test("namespace resources with traversal segments are denied", async () => {
     const backend = createPermissionBackend({
       mode: "default",
       rules: [
         { pattern: "agent:tenant-a/**", action: "discover", effect: "allow", source: "project" },
       ],
     });
-    // agent:tenant-a/../tenant-b should NOT be normalized to tenant-b
     const query: PermissionQuery = {
       principal: "agent-1",
       action: "discover",
       resource: "agent:tenant-a/../tenant-b",
     };
-    // Should match as-is against the pattern (.. is literal in namespace)
+    const decision = await backend.check(query);
+    expect(decision.effect).toBe("deny");
+    expect("reason" in decision && decision.reason).toContain("traversal");
+  });
+
+  test("clean namespace resources match rules normally", async () => {
+    const backend = createPermissionBackend({
+      mode: "default",
+      rules: [
+        { pattern: "agent:tenant-a/**", action: "discover", effect: "allow", source: "project" },
+      ],
+    });
+    const query: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:tenant-a/bot-1",
+    };
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 });

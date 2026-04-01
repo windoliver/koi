@@ -179,10 +179,29 @@ export function normalizeResource(resource: string): string | null {
   return isUnixAbsolute ? `/${result}` : result;
 }
 
+/** Regex matching `.` or `..` as a path segment within a resource value. */
+const TRAVERSAL_SEGMENT = /(?:^|[/\\])\.\.?(?:[/\\]|$)/;
+
+/**
+ * Check if a namespace resource value contains path-traversal segments.
+ * Namespace identifiers (agent:foo, tool:bar) should not contain
+ * `.` or `..` segments — these have no legitimate meaning and could
+ * be used to escape glob-based tenant scoping.
+ */
+function hasNamespaceTraversal(resource: string): boolean {
+  const colonIndex = resource.indexOf(":");
+  if (colonIndex === -1) {
+    return false;
+  }
+  const value = resource.slice(colonIndex + 1);
+  return TRAVERSAL_SEGMENT.test(value);
+}
+
 /**
  * Evaluate pre-compiled rules against a query. First matching rule wins.
  *
  * Resources are normalized before matching to prevent path traversal bypasses.
+ * Namespace resources with traversal segments are denied.
  * Returns `{ effect: "ask" }` when no rule matches.
  */
 export function evaluateRules(
@@ -191,12 +210,19 @@ export function evaluateRules(
 ): PermissionDecision {
   const resource = normalizeResource(query.resource);
 
-  // Unresolvable relative paths (leading ..) are denied — we cannot safely
-  // determine the target without a known cwd.
+  // Unresolvable relative paths (leading ..) are denied.
   if (resource === null) {
     return {
       effect: "deny",
       reason: "Resource path contains unresolvable traversal segments",
+    };
+  }
+
+  // Namespace resources with traversal segments are denied.
+  if (hasNamespaceTraversal(resource)) {
+    return {
+      effect: "deny",
+      reason: "Namespace resource contains path traversal segments",
     };
   }
 
