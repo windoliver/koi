@@ -1,6 +1,6 @@
 {
   "name": "@koi/event-trace",
-  "description": "ATIF trajectory recording middleware for model and tool call observability",
+  "description": "ATIF trajectory recording middleware — records every model/tool call to an inspectable trajectory document",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,10 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/core": "workspace:*"
+  },
+  "koi": {
+    "optional": true
   },
   "scripts": {
     "build": "tsup",
