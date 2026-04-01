@@ -34,8 +34,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Determine base branch for comparison
-  const baseBranch = process.env.GITHUB_BASE_REF ?? "origin/main";
+  // Determine base branch for comparison.
+  // In GitHub Actions PR jobs GITHUB_BASE_REF is set (e.g. "main") but the ref
+  // is only available as origin/<branch> after the default checkout action.
+  const rawBase = process.env.GITHUB_BASE_REF;
+  const baseBranch = rawBase !== undefined ? `origin/${rawBase}` : "origin/main";
 
   // Get changed files relative to base
   const diffOutput = await $`git diff --name-status ${baseBranch} -- "*.test.ts"`.text();
@@ -46,18 +49,32 @@ async function main(): Promise<void> {
   for (const line of lines) {
     const parts = line.split("\t");
     const status = parts[0]?.trim();
-    const file = parts[1]?.trim();
-    if (status === undefined || file === undefined) continue;
-
-    // Skip archived files
-    if (file.startsWith("archive/")) continue;
+    if (status === undefined) continue;
 
     if (status === "D") {
+      const file = parts[1]?.trim();
+      if (file === undefined || file.startsWith("archive/")) continue;
       violations.push({ file, reason: "test file deleted" });
       continue;
     }
 
+    // Renames (R###) — the source is parts[1], destination is parts[2].
+    // If a test file is renamed OUT of active code (e.g. into archive/),
+    // that's effectively a deletion from the active test suite.
+    if (status.startsWith("R")) {
+      const source = parts[1]?.trim();
+      const dest = parts[2]?.trim();
+      if (source === undefined || dest === undefined) continue;
+      // Only flag if the source was active code and the destination is not
+      if (!source.startsWith("archive/") && dest.startsWith("archive/")) {
+        violations.push({ file: source, reason: `test file moved to archive (${dest})` });
+      }
+      continue;
+    }
+
     if (status === "M") {
+      const file = parts[1]?.trim();
+      if (file === undefined || file.startsWith("archive/")) continue;
       // Compare test count before and after
       try {
         const before = await $`git show ${baseBranch}:${file}`.text();

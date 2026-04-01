@@ -29,7 +29,19 @@ function checkFunctionLengths(filePath: string, content: string): readonly Viola
   const lines = content.split("\n");
   const violations: Violation[] = [];
 
-  // Match function declarations, arrow functions assigned to const/let, and method definitions
+  // Match function declarations, arrow functions assigned to const/let, and method definitions.
+  // The method arm excludes control-flow keywords (if, while, for, switch, catch) to avoid
+  // false positives on blocks that aren't function bodies.
+  const CONTROL_FLOW = new Set([
+    "if",
+    "else",
+    "while",
+    "for",
+    "switch",
+    "catch",
+    "return",
+    "throw",
+  ]);
   const fnPattern =
     /^(\s*)(?:export\s+)?(?:async\s+)?(?:function\s+(\w+)|(?:const|let)\s+(\w+)\s*(?::[^=]*)?=\s*(?:async\s+)?(?:\([^)]*\)|[^=])\s*=>|(\w+)\s*\([^)]*\)\s*(?::\s*[^{]*)?\{)/;
 
@@ -40,6 +52,9 @@ function checkFunctionLengths(filePath: string, content: string): readonly Viola
     if (match === null) continue;
 
     const fnName = match[2] ?? match[3] ?? match[4] ?? "anonymous";
+
+    // Skip control-flow keywords that the regex matched as method names
+    if (CONTROL_FLOW.has(fnName)) continue;
 
     // Find the opening brace
     let braceStart = i;
