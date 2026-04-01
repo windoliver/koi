@@ -84,13 +84,9 @@ export const SOURCE_PRECEDENCE: readonly RuleSource[] = [
  * Plan mode is deny-by-default — only these read-only actions are permitted.
  * Any action not in this set is denied.
  */
-export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
-  "read",
-  "glob",
-  "grep",
-  "search",
-  "list",
-]) as ReadonlySet<string>;
+export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = Object.freeze(
+  new Set(["read", "glob", "grep", "search", "list"]),
+);
 
 /**
  * Actions evaluated against rules in plan mode but NOT auto-allowed.
@@ -98,19 +94,14 @@ export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
  * return ask. This prevents both hard-denying useful operations
  * (like discover) and silently allowing them without policy.
  */
-export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = new Set([
-  "discover",
-]) as ReadonlySet<string>;
+export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = Object.freeze(
+  new Set(["discover"]),
+);
 
 /**
  * Actions that must NEVER be allowed in plan mode, regardless of config.
  * Prevents misconfiguration from turning planning into execution.
  */
-export const PLAN_DENIED_ACTIONS: ReadonlySet<string> = new Set([
-  "write",
-  "edit",
-  "delete",
-  "execute",
-  "bash",
-  "invoke",
-]) as ReadonlySet<string>;
+export const PLAN_DENIED_ACTIONS: ReadonlySet<string> = Object.freeze(
+  new Set(["write", "edit", "delete", "execute", "bash", "invoke"]),
+);

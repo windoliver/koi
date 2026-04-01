@@ -192,6 +192,15 @@ describe("normalizeResource", () => {
   test("normalizes Windows-style absolute paths", () => {
     expect(normalizeResource("C:\\secret\\..\\public.txt")).toBe("C:/public.txt");
   });
+
+  test("clamps Windows drive-letter traversal at root", () => {
+    expect(normalizeResource("C:\\..\\Windows\\system32")).toBe("C:/Windows/system32");
+  });
+
+  test("drive-like path without separator is treated as relative", () => {
+    // "C:..\foo" → "C:../foo" — no drive root (missing / after :), "C:.." is a literal segment
+    expect(normalizeResource("C:..\\foo")).toBe("C:../foo");
+  });
 });
 
 // ---------------------------------------------------------------------------

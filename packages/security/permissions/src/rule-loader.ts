@@ -38,7 +38,10 @@ function validateSourceRules(
  */
 function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledRule, KoiError> {
   try {
-    const compiled = compileGlob(rule.pattern);
+    // Normalize backslashes in patterns to forward slashes so rules match
+    // normalized resources on all platforms.
+    const normalizedPattern = rule.pattern.replaceAll("\\", "/");
+    const compiled = compileGlob(normalizedPattern);
     const compiledPrincipal =
       rule.principal !== undefined && rule.principal !== "*"
         ? compileGlob(rule.principal)
@@ -47,7 +50,17 @@ function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledR
       rule.context !== undefined
         ? Object.fromEntries(Object.entries(rule.context).map(([k, v]) => [k, compileGlob(v)]))
         : undefined;
-    return { ok: true, value: { ...rule, source, compiled, compiledPrincipal, compiledContext } };
+    return {
+      ok: true,
+      value: {
+        ...rule,
+        pattern: normalizedPattern,
+        source,
+        compiled,
+        compiledPrincipal,
+        compiledContext,
+      },
+    };
   } catch {
     return {
       ok: false,

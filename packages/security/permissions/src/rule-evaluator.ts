@@ -129,8 +129,17 @@ export function normalizeResource(resource: string): string | null {
 
   // Normalize backslashes to forward slashes for platform-agnostic matching
   const normalized = resource.replaceAll("\\", "/");
-  const isAbsolute = normalized.startsWith("/");
-  const segments = normalized.split("/");
+
+  // Detect absolute roots: Unix `/...` or Windows drive `C:/...`
+  const isUnixAbsolute = normalized.startsWith("/");
+  const driveMatch = /^[A-Za-z]:\//.exec(normalized);
+  const isAbsolute = isUnixAbsolute || driveMatch !== null;
+
+  // For drive-letter paths, preserve the drive prefix (e.g., "C:")
+  const drivePrefix = driveMatch !== null ? normalized.slice(0, 2) : undefined;
+  const pathPart = drivePrefix !== undefined ? normalized.slice(2) : normalized;
+
+  const segments = pathPart.split("/");
   const resolved: string[] = [];
 
   for (const seg of segments) {
@@ -151,7 +160,10 @@ export function normalizeResource(resource: string): string | null {
   }
 
   const result = resolved.join("/");
-  return isAbsolute ? `/${result}` : result;
+  if (drivePrefix !== undefined) {
+    return `${drivePrefix}/${result}`;
+  }
+  return isUnixAbsolute ? `/${result}` : result;
 }
 
 /**

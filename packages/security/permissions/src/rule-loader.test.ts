@@ -106,4 +106,19 @@ describe("loadRules", () => {
     expect(result.value[0]?.reason).toBe("secret");
     expect(result.value[1]?.effect).toBe("allow");
   });
+
+  test("normalizes backslashes in rule patterns", () => {
+    const sources = new Map<RuleSource, readonly PermissionRule[]>([
+      ["policy", [{ pattern: "C:\\secret\\**", action: "*", effect: "deny", reason: "secret" }]],
+    ]);
+
+    const result = loadRules(sources);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Pattern should be normalized to forward slashes
+    expect(result.value[0]?.pattern).toBe("C:/secret/**");
+    // Should match forward-slash normalized resources
+    expect(result.value[0]?.compiled.test("C:/secret/file.txt")).toBe(true);
+  });
 });
