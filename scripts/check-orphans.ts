@@ -6,14 +6,14 @@
  * dependency or devDependency. This catches packages that were added but
  * never wired into the system, or that lost all consumers after refactoring.
  *
+ * Checked layers:
+ *   - L0u: curated utilities — should still have consumers
+ *   - L2:  feature packages — the main proliferation risk
+ *
  * Exempt layers:
  *   - L0 (@koi/core): the kernel, everything depends on it
- *   - L0u: curated utility set, gated by layers.ts
  *   - L1: engine runtime, consumed by apps/L3 directly
  *   - L3/L4: leaf consumers, not consumed by other packages
- *
- * Only L2 (feature packages) are checked. An L2 package is any @koi/* package
- * not classified as L0, L0u, L1, L3, or L4.
  *
  * A package with `"koi": { "optional": true }` in its package.json is exempt —
  * it may be consumed at assembly time via dependency injection (e.g., by L3
@@ -22,7 +22,7 @@
  * Usage: bun scripts/check-orphans.ts
  */
 
-import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
+import { L0_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 
@@ -36,11 +36,7 @@ interface PackageInfo {
 
 function isExemptLayer(name: string): boolean {
   return (
-    L0_PACKAGES.has(name) ||
-    L0U_PACKAGES.has(name) ||
-    L1_PACKAGES.has(name) ||
-    L3_PACKAGES.has(name) ||
-    L4_PACKAGES.has(name)
+    L0_PACKAGES.has(name) || L1_PACKAGES.has(name) || L3_PACKAGES.has(name) || L4_PACKAGES.has(name)
   );
 }
 
@@ -108,16 +104,16 @@ async function main(): Promise<void> {
     // Root package.json read failure is not fatal
   }
 
-  // Find L2 packages with zero consumers
+  // Find L0u/L2 packages with zero consumers
   const orphans: string[] = [];
-  let l2Count = 0;
+  let checkedCount = 0;
 
   for (const pkg of packages) {
     if (!pkg.name.startsWith("@koi/")) continue;
     if (isExemptLayer(pkg.name)) continue;
 
-    // This is an L2 package
-    l2Count++;
+    // This is an L0u or L2 package
+    checkedCount++;
 
     if (pkg.optional) continue; // Exempt: consumed via DI at assembly time
     if (consumed.has(pkg.name)) continue; // Has at least one consumer
@@ -126,7 +122,7 @@ async function main(): Promise<void> {
   }
 
   if (orphans.length > 0) {
-    console.log(`\n${orphans.length} orphaned L2 package(s) with zero consumers:\n`);
+    console.log(`\n${orphans.length} orphaned package(s) with zero consumers:\n`);
     for (const name of orphans.sort()) {
       console.log(`  ✗ ${name}`);
     }
@@ -136,7 +132,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`✅ All ${l2Count} L2 packages have at least one consumer (or are marked optional).`);
+  console.log(
+    `✅ All ${checkedCount} L0u/L2 packages have at least one consumer (or are marked optional).`,
+  );
 }
 
 await main();
