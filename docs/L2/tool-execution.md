@@ -1,8 +1,9 @@
-# @koi/tool-execution — Per-Call Tool Execution Middleware
+# Tool Execution Guard — Per-Call Abort Propagation & Timeout Enforcement
 
-`@koi/tool-execution` is an L2 middleware package implementing `KoiMiddleware.wrapToolCall`
-for per-call tool dispatch orchestration. It owns abort propagation, per-tool timeout
-enforcement, and DOMException-to-KoiRuntimeError classification.
+The tool execution guard is an **L1 auto-enabled guard** in `@koi/engine-compose`,
+implementing `KoiMiddleware.wrapToolCall` for per-call abort propagation and timeout
+enforcement. It runs alongside the iteration, loop, and spawn guards — every agent
+gets it by default.
 
 ## Why it exists
 
@@ -41,7 +42,7 @@ distinguishes fulfilled next() from rejected next() to record success vs failure
 ```
 L0  @koi/core                ─ KoiMiddleware, ToolRequest, ToolResponse, TurnContext
 L0u @koi/errors              ─ KoiRuntimeError
-L2  @koi/tool-execution      ─ this package
+L1  @koi/engine-compose      ─ createToolExecutionGuard (this guard)
 ```
 
 ## Architecture
@@ -85,24 +86,31 @@ wrapToolCall(ctx, request, next)
 ## Quick start
 
 ```typescript
-import { createToolExecution } from "@koi/tool-execution";
+import { createKoi } from "@koi/engine";
 
-// Minimal — just abort propagation, no timeout
-const middleware = createToolExecution();
+// Auto-enabled — just abort propagation, no timeout
+const koi = await createKoi({ manifest, adapter });
 
 // With global timeout
-const withTimeout = createToolExecution({
-  defaultTimeoutMs: 30_000,
+const koi = await createKoi({
+  manifest, adapter,
+  toolExecution: { defaultTimeoutMs: 30_000 },
 });
 
 // With per-tool overrides
-const withOverrides = createToolExecution({
-  defaultTimeoutMs: 30_000,
-  toolTimeouts: {
-    "exec:run": 60_000,     // code execution gets 60s
-    "fs:read": 5_000,       // file read gets 5s
+const koi = await createKoi({
+  manifest, adapter,
+  toolExecution: {
+    defaultTimeoutMs: 30_000,
+    toolTimeouts: {
+      "exec:run": 60_000,     // code execution gets 60s
+      "fs:read": 5_000,       // file read gets 5s
+    },
   },
 });
+
+// Disable (not recommended)
+const koi = await createKoi({ manifest, adapter, toolExecution: false });
 ```
 
 ## Configuration
@@ -161,7 +169,8 @@ Invalid config values (negative, NaN, Infinity, zero) throw `KoiRuntimeError("VA
 
 ## Layer compliance
 
-- [x] Runtime deps: `@koi/core` (L0) + `@koi/errors` (L0u)
-- [x] No imports from `@koi/engine` or peer L2 packages
+- [x] Lives in L1 (`@koi/engine-compose`) — auto-enabled via `createDefaultGuardExtension`
+- [x] Runtime deps: `@koi/core` (L0) + `@koi/errors` (L0u) — already deps of engine-compose
 - [x] All interface properties are `readonly`
 - [x] No vendor types in public API
+- [x] Disablable via `toolExecution: false` in CreateKoiOptions
