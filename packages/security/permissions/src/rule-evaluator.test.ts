@@ -12,9 +12,14 @@ function makeRule(
   source: "policy" | "project" | "local" | "user" = "project",
   reason?: string,
   principal?: string,
+  context?: Record<string, string>,
 ): CompiledRule {
   const compiledPrincipal =
     principal !== undefined && principal !== "*" ? compileGlob(principal) : undefined;
+  const compiledContext =
+    context !== undefined
+      ? Object.fromEntries(Object.entries(context).map(([k, v]) => [k, compileGlob(v)]))
+      : undefined;
   return {
     pattern,
     action,
@@ -22,8 +27,10 @@ function makeRule(
     source,
     reason,
     principal,
+    context,
     compiled: compileGlob(pattern),
     compiledPrincipal,
+    compiledContext,
   };
 }
 
@@ -53,6 +60,21 @@ describe("compileGlob", () => {
   test("double star alone matches everything below", () => {
     const re = compileGlob("src/**");
     expect(re.test("src/a/b/c")).toBe(true);
+  });
+
+  test("terminal /** matches the directory itself", () => {
+    const re = compileGlob("src/**");
+    expect(re.test("src")).toBe(true);
+    expect(re.test("src/")).toBe(true);
+    expect(re.test("src/file.ts")).toBe(true);
+    expect(re.test("srcfoo")).toBe(false);
+  });
+
+  test("/etc/** matches /etc itself", () => {
+    const re = compileGlob("/etc/**");
+    expect(re.test("/etc")).toBe(true);
+    expect(re.test("/etc/passwd")).toBe(true);
+    expect(re.test("/etcfoo")).toBe(false);
   });
 
   test("double star at start matches everything", () => {
@@ -273,5 +295,83 @@ describe("evaluateRules", () => {
       makeRule("src/**", "write", "allow", "user"),
     ];
     expect(evaluateRules(query, rules)).toEqual({ effect: "deny", reason: "restricted" });
+  });
+
+  test("matches rule when context predicate matches", () => {
+    const rules = [
+      makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
+        zoneId: "us-east-1",
+      }),
+    ];
+    const contextQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:bot-1",
+      context: { zoneId: "us-east-1" },
+    };
+    expect(evaluateRules(contextQuery, rules)).toEqual({ effect: "allow" });
+  });
+
+  test("skips rule when context predicate does not match", () => {
+    const rules = [
+      makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
+        zoneId: "us-east-1",
+      }),
+    ];
+    const contextQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:bot-1",
+      context: { zoneId: "eu-west-1" },
+    };
+    expect(evaluateRules(contextQuery, rules).effect).toBe("ask");
+  });
+
+  test("skips rule when context is required but query has no context", () => {
+    const rules = [
+      makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
+        zoneId: "us-east-*",
+      }),
+    ];
+    const noContextQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:bot-1",
+    };
+    expect(evaluateRules(noContextQuery, rules).effect).toBe("ask");
+  });
+
+  test("context glob patterns work", () => {
+    const rules = [
+      makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
+        zoneId: "us-*",
+      }),
+    ];
+    const contextQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:bot-1",
+      context: { zoneId: "us-west-2" },
+    };
+    expect(evaluateRules(contextQuery, rules)).toEqual({ effect: "allow" });
+  });
+
+  test("cross-zone discovery denied with zone-scoped rule", () => {
+    const rules = [
+      makeRule("agent:**", "discover", "deny", "policy", "cross-zone", undefined, {
+        zoneId: "us-east-*",
+      }),
+      makeRule("agent:**", "discover", "allow", "user"),
+    ];
+    const crossZoneQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:bot-1",
+      context: { zoneId: "us-east-1" },
+    };
+    expect(evaluateRules(crossZoneQuery, rules)).toEqual({
+      effect: "deny",
+      reason: "cross-zone",
+    });
   });
 });

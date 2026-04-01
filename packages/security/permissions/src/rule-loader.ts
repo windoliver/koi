@@ -16,6 +16,7 @@ const permissionRuleSchema = z.object({
   action: z.string().min(1),
   effect: z.enum(["allow", "deny", "ask"]),
   principal: z.string().min(1).optional(),
+  context: z.record(z.string(), z.string().min(1)).optional(),
   reason: z.string().optional(),
 });
 
@@ -42,7 +43,11 @@ function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledR
       rule.principal !== undefined && rule.principal !== "*"
         ? compileGlob(rule.principal)
         : undefined;
-    return { ok: true, value: { ...rule, source, compiled, compiledPrincipal } };
+    const compiledContext =
+      rule.context !== undefined
+        ? Object.fromEntries(Object.entries(rule.context).map(([k, v]) => [k, compileGlob(v)]))
+        : undefined;
+    return { ok: true, value: { ...rule, source, compiled, compiledPrincipal, compiledContext } };
   } catch {
     return {
       ok: false,

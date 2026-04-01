@@ -37,8 +37,14 @@ export function compileGlob(pattern: string): RegExp {
         result += "(?:.*/)?";
         i += 1;
       } else {
-        // `**` at end — match anything remaining
-        result += ".*";
+        // `**` at end — match zero or more path segments (including the directory itself).
+        // If preceded by `/`, consume it to avoid double-slash in the regex.
+        if (result.endsWith("/")) {
+          result = result.slice(0, -1);
+          result += "(?:/.*)?";
+        } else {
+          result += ".*";
+        }
       }
     } else if (char === "*") {
       result += "[^/]*";
@@ -67,6 +73,26 @@ function matchPrincipal(compiledPrincipal: RegExp | undefined, principal: string
     return true;
   }
   return compiledPrincipal.test(principal);
+}
+
+function matchContext(
+  compiledContext: Readonly<Record<string, RegExp>> | undefined,
+  queryContext: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  if (compiledContext === undefined) {
+    return true;
+  }
+  if (queryContext === undefined) {
+    return false;
+  }
+  for (const key of Object.keys(compiledContext)) {
+    const pattern = compiledContext[key];
+    const value = queryContext[key];
+    if (pattern === undefined || typeof value !== "string" || !pattern.test(value)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -138,6 +164,7 @@ export function evaluateRules(
   for (const rule of rules) {
     if (
       matchPrincipal(rule.compiledPrincipal, query.principal) &&
+      matchContext(rule.compiledContext, query.context) &&
       matchAction(rule.action, query.action) &&
       matchResource(rule.compiled, resource)
     ) {

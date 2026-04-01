@@ -15,6 +15,12 @@ export interface PermissionRule {
   readonly effect: RuleEffect;
   /** Glob pattern matched against `PermissionQuery.principal`. Omit or `"*"` to match all. */
   readonly principal?: string | undefined;
+  /**
+   * Context predicates — each key must exist in `PermissionQuery.context`
+   * and its value must match the glob pattern. Omit to match regardless of context.
+   * Example: `{ zoneId: "us-east-*" }` matches queries with `context.zoneId` starting with "us-east-".
+   */
+  readonly context?: Readonly<Record<string, string>> | undefined;
   /** Human-readable reason surfaced in deny/ask decisions. */
   readonly reason?: string | undefined;
 }
@@ -36,6 +42,8 @@ export interface CompiledRule extends SourcedRule {
   readonly compiled: RegExp;
   /** Compiled principal pattern. Undefined means match all principals. */
   readonly compiledPrincipal?: RegExp | undefined;
+  /** Compiled context predicates. Undefined means match regardless of context. */
+  readonly compiledContext?: Readonly<Record<string, RegExp>> | undefined;
 }
 
 /**
