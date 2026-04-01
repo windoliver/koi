@@ -112,7 +112,14 @@ export async function* consumeModelStream(
       case "usage": {
         inputTokens += chunk.inputTokens;
         outputTokens += chunk.outputTokens;
-        // Not yielded — folded into done event
+        // Yield as custom event so callers can track partial usage
+        // on early exit (abort/error/truncation). Still folded into
+        // the done event metrics for the normal completion path.
+        yield {
+          kind: "custom",
+          type: "usage",
+          data: { inputTokens: chunk.inputTokens, outputTokens: chunk.outputTokens },
+        };
         break;
       }
 

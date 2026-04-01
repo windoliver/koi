@@ -1,6 +1,6 @@
 # @koi/query-engine
 
-Stream consumer that maps `AsyncIterable<ModelChunk>` to `AsyncGenerator<EngineEvent>`, accumulating streamed tool-call argument deltas into parsed payloads.
+Stream consumer and turn state machine for the model→tool→model loop.
 
 ## Layer
 
@@ -29,8 +29,28 @@ Async generator. Yields `EngineEvent`s in the same order chunks arrive.
 - Malformed JSON in tool-call args yields a deterministic error event (does not throw).
 - The error includes the `callId` and raw string for diagnostics.
 
+## Turn State Machine
+
+Pure state machine driving the model→tool→model loop (#1233).
+
+### States (TurnPhase)
+
+`idle` → `model` → `tool_execution` → `continue` → `model` (loop) or `complete` (done)
+
+### Public API
+
+- `createTurnState(turnIndex?)` — factory for initial idle state.
+- `transitionTurn(state, input)` — pure transition function, throws on invalid transitions.
+- `runTurn(config)` — async generator that drives the turn loop via `ComposedCallHandlers`, yielding `EngineEvent`s.
+- `validateToolArgs(args, descriptor)` — lightweight JSON Schema validation (allowlist-based, fail-closed on unsupported keywords).
+
+### Types
+
+- `TurnPhase` — `"idle" | "model" | "tool_execution" | "continue" | "complete"`
+- `TurnInput` — discriminated union: `start`, `model_done`, `tools_done`, `abort`, `error`, `max_turns`
+- `TurnState` — `{ phase, turnIndex, modelCalls, stopReason }`
+- `TurnRunnerConfig` — `{ callHandlers, messages, signal?, maxTurns? }`
+
 ## Not in scope
 
-- Turn lifecycle (handled by #1233 turn state machine).
-- Tool execution — this package only reassembles the request payload.
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.
