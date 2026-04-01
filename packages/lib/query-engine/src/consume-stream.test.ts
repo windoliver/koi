@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, ModelChunk, ToolCallId } from "@koi/core";
 import { consumeModelStream } from "./consume-stream.js";
+import type { AccumulatedToolCall } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,6 +112,42 @@ describe("consumeModelStream", () => {
     // parseError must be set so callers can discriminate failures from valid empty args
     expect(result.parseError).toBeTypeOf("string");
     expect(result.parseError.length).toBeGreaterThan(0);
+  });
+
+  test("non-object JSON args (array) are treated as parse failure", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "bad_tool", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: "[1, 2, 3]" },
+      { kind: "tool_call_end", callId: callId("tc1") },
+      { kind: "done", response: DONE_RESPONSE },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const endEvent = events.find(
+      (e) => e.kind === "tool_call_end" && e.callId === callId("tc1"),
+    ) as Extract<EngineEvent, { readonly kind: "tool_call_end" }>;
+
+    const result = endEvent.result as AccumulatedToolCall;
+    expect(result.parsedArgs).toBeUndefined();
+    expect(result.parseError).toContain("array");
+  });
+
+  test("non-object JSON args (string) are treated as parse failure", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "bad_tool", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '"just a string"' },
+      { kind: "tool_call_end", callId: callId("tc1") },
+      { kind: "done", response: DONE_RESPONSE },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const endEvent = events.find(
+      (e) => e.kind === "tool_call_end" && e.callId === callId("tc1"),
+    ) as Extract<EngineEvent, { readonly kind: "tool_call_end" }>;
+
+    const result = endEvent.result as AccumulatedToolCall;
+    expect(result.parsedArgs).toBeUndefined();
+    expect(result.parseError).toContain("string");
   });
 
   test("multiple tool calls in one response are all accumulated correctly", async () => {

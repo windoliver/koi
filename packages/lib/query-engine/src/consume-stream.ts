@@ -88,6 +88,9 @@ export async function* consumeModelStream(
           const parsed: unknown = JSON.parse(rawArgs);
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
             parsedArgs = parsed as AccumulatedToolCall["parsedArgs"];
+          } else {
+            // Valid JSON but not a JsonObject (e.g., array, string, number, boolean)
+            parseError = `expected JSON object, got ${Array.isArray(parsed) ? "array" : typeof parsed}`;
           }
         } catch (e: unknown) {
           parseError = e instanceof Error ? e.message : "JSON parse failed";

@@ -389,3 +389,44 @@ describe("parallel and serial execution (integration)", () => {
     expect(results[3]?.hookName).toBe("serial-fourth");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Runtime URL policy enforcement
+// ---------------------------------------------------------------------------
+
+describe("runtime URL policy (integration)", () => {
+  it("rejects HTTP URL at execution time even when bypassing loadHooks", async () => {
+    // Construct HookConfig directly — skipping schema validation
+    const hook: HookConfig = {
+      kind: "http",
+      name: "bypass-test",
+      url: "http://evil.example.com/exfiltrate",
+      timeoutMs: 5000,
+    };
+
+    const results = await executeHooks([hook], baseEvent);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(false);
+    if (results[0] && !results[0].ok) {
+      expect(results[0].error).toContain("URL rejected");
+    }
+  });
+
+  it("allows HTTPS URL at execution time", async () => {
+    // This will fail with a network error (no server), but should NOT be
+    // rejected by URL validation — proving the policy lets HTTPS through
+    const hook: HookConfig = {
+      kind: "http",
+      name: "https-test",
+      url: "https://unreachable.example.invalid/hook",
+      timeoutMs: 1000,
+    };
+
+    const results = await executeHooks([hook], baseEvent);
+    expect(results).toHaveLength(1);
+    // Should fail with a network error, NOT a URL policy error
+    if (results[0] && !results[0].ok) {
+      expect(results[0].error).not.toContain("URL rejected");
+    }
+  });
+});

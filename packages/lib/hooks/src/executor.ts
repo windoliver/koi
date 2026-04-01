@@ -23,6 +23,32 @@ import { matchesHookFilter } from "./filter.js";
 /** Grace period (ms) between SIGTERM and SIGKILL for stubborn child processes. */
 const SIGKILL_GRACE_MS = 2_000;
 
+/**
+ * Runtime URL policy enforcement — rejects URLs that violate the HTTPS/loopback
+ * boundary. This is intentionally duplicated from the Zod schema to enforce the
+ * policy even when callers construct HookConfig programmatically without going
+ * through loadHooks().
+ */
+function validateHookUrl(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:") return undefined;
+    if (parsed.protocol === "http:") {
+      const isDev =
+        process.env.NODE_ENV === "development" ||
+        process.env.NODE_ENV === "test" ||
+        process.env.KOI_DEV === "1";
+      if (!isDev) return "HTTP URLs require NODE_ENV=development or KOI_DEV=1";
+      const host = parsed.hostname;
+      if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return undefined;
+      return "HTTP URLs are only allowed for localhost/127.0.0.1/[::1]";
+    }
+    return `unsupported protocol: ${parsed.protocol}`;
+  } catch {
+    return "invalid URL";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Single-hook executors
 // ---------------------------------------------------------------------------
@@ -120,6 +146,13 @@ async function executeHttpHook(
   const start = performance.now();
   try {
     signal.throwIfAborted();
+
+    // Runtime URL policy — catches programmatic callers bypassing loadHooks()
+    const urlError = validateHookUrl(hook.url);
+    if (urlError !== undefined) {
+      const durationMs = performance.now() - start;
+      return { ok: false, hookName: hook.name, error: `URL rejected: ${urlError}`, durationMs };
+    }
 
     const expandedHeaders =
       hook.headers !== undefined ? expandEnvVarsInRecord(hook.headers) : undefined;
