@@ -225,52 +225,85 @@ export function normalizeMcpServers(
       continue;
     }
 
-    const internal = normalizeOne(name, config);
-    if (internal !== undefined) {
-      servers.push(internal);
+    const result = normalizeOne(name, config);
+    if (result === undefined) continue;
+    if ("rejection" in result) {
+      rejected.push(result.rejection);
+      continue;
     }
+    servers.push(result.server);
   }
 
   return { servers, unsupported, rejected };
 }
 
-function normalizeOne(name: string, config: ExternalServerConfig): McpServerConfig | undefined {
+/**
+ * Normalizes a single CC external config into a Koi internal config.
+ * Returns undefined for unsupported types.
+ * Returns a rejection string if required env vars are missing.
+ */
+function normalizeOne(
+  name: string,
+  config: ExternalServerConfig,
+): { readonly server: McpServerConfig } | { readonly rejection: string } | undefined {
   const type = config.type ?? "stdio";
+  const allMissing: string[] = [];
+
+  function expand(value: string): string {
+    const { expanded, missing } = expandEnvVars(value);
+    allMissing.push(...missing);
+    return expanded;
+  }
+
+  function expandRecord(record: Record<string, string>): Record<string, string> {
+    const { expanded, missing } = expandEnvVarsInRecord(record);
+    allMissing.push(...missing);
+    return expanded;
+  }
 
   switch (type) {
     case "stdio": {
-      // config is the stdio variant — has command, args, env
       const c = config as { command: string; args?: string[]; env?: Record<string, string> };
-      const env = c.env !== undefined ? expandEnvVarsInRecord(c.env).expanded : undefined;
-      return {
+      const env = c.env !== undefined ? expandRecord(c.env) : undefined;
+      const server: McpServerConfig = {
         kind: "stdio",
         name,
-        command: expandEnvVars(c.command).expanded,
+        command: expand(c.command),
         args: c.args !== undefined && c.args.length > 0 ? c.args : undefined,
         env: env !== undefined && Object.keys(env).length > 0 ? env : undefined,
       };
+      if (allMissing.length > 0) {
+        return { rejection: `${name}: missing env vars: ${allMissing.join(", ")}` };
+      }
+      return { server };
     }
     case "http": {
       const c = config as { url: string; headers?: Record<string, string> };
-      const headers =
-        c.headers !== undefined ? expandEnvVarsInRecord(c.headers).expanded : undefined;
-      return {
+      const headers = c.headers !== undefined ? expandRecord(c.headers) : undefined;
+      const server: McpServerConfig = {
         kind: "http",
         name,
-        url: expandEnvVars(c.url).expanded,
+        url: expand(c.url),
         headers: headers !== undefined && Object.keys(headers).length > 0 ? headers : undefined,
       };
+      if (allMissing.length > 0) {
+        return { rejection: `${name}: missing env vars: ${allMissing.join(", ")}` };
+      }
+      return { server };
     }
     case "sse": {
       const c = config as { url: string; headers?: Record<string, string> };
-      const headers =
-        c.headers !== undefined ? expandEnvVarsInRecord(c.headers).expanded : undefined;
-      return {
+      const headers = c.headers !== undefined ? expandRecord(c.headers) : undefined;
+      const server: McpServerConfig = {
         kind: "sse",
         name,
-        url: expandEnvVars(c.url).expanded,
+        url: expand(c.url),
         headers: headers !== undefined && Object.keys(headers).length > 0 ? headers : undefined,
       };
+      if (allMissing.length > 0) {
+        return { rejection: `${name}: missing env vars: ${allMissing.join(", ")}` };
+      }
+      return { server };
     }
     default:
       return undefined;

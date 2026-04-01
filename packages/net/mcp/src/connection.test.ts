@@ -296,6 +296,37 @@ describe("McpConnection reconnection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// transport error event handling
+// ---------------------------------------------------------------------------
+
+describe("McpConnection transport error events", () => {
+  test("transport error event transitions state to error", async () => {
+    const mockTransport = createMockTransport();
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(undefined, mockTransport),
+    });
+
+    await conn.connect();
+    expect(conn.state.kind).toBe("connected");
+
+    // Simulate transport error
+    mockTransport._fireEvent({ kind: "error", error: new Error("connection reset") });
+    expect(conn.state.kind).toBe("error");
+  });
+
+  test("transport closed event transitions state to error", async () => {
+    const mockTransport = createMockTransport();
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(undefined, mockTransport),
+    });
+
+    await conn.connect();
+    mockTransport._fireEvent({ kind: "closed" });
+    expect(conn.state.kind).toBe("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // tool change notifications
 // ---------------------------------------------------------------------------
 

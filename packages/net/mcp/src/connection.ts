@@ -135,13 +135,17 @@ export function createMcpConnection(
       stateMachine.transition({ kind: "connecting", attempt: 1 });
     }
 
+    // Track newly created resources so we can clean them up on failure
+    let newTransport: KoiMcpTransport | undefined;
+    let newClient: SdkClientLike | undefined;
+
     try {
-      const newTransport = makeTransport({
+      newTransport = makeTransport({
         config: config.server,
         authProvider,
       });
 
-      const newClient = makeClient({
+      newClient = makeClient({
         name: `koi-mcp-${config.name}`,
         version: "1.0.0",
       });
@@ -184,13 +188,16 @@ export function createMcpConnection(
 
       // Wire transport lifecycle events to state machine
       newTransport.onEvent((event) => {
-        if (event.kind === "closed" && stateMachine.canTransitionTo("error")) {
-          stateMachine.transition({
-            kind: "error",
-            error: notConnectedError(config.name),
-            retryable: true,
-          });
-        }
+        if (!stateMachine.canTransitionTo("error")) return;
+        const error =
+          event.kind === "error"
+            ? mapMcpError(event.error, { serverName: config.name })
+            : notConnectedError(config.name);
+        stateMachine.transition({
+          kind: "error",
+          error,
+          retryable: error.retryable,
+        });
       });
 
       // Subscribe to tool change notifications
@@ -203,8 +210,27 @@ export function createMcpConnection(
 
       return { ok: true, value: undefined };
     } catch (error: unknown) {
+      // Clean up the failed new client/transport to prevent resource leaks.
+      // A timed-out connect may still be running — closing stops the process/socket.
+      if (newClient !== undefined) {
+        try {
+          await newClient.close();
+        } catch {
+          // Best-effort cleanup
+        }
+      }
+      if (newTransport !== undefined) {
+        try {
+          await newTransport.close();
+        } catch {
+          // Best-effort cleanup
+        }
+      }
+
       if (abortController.signal.aborted) {
-        stateMachine.transition({ kind: "closed" });
+        if (stateMachine.canTransitionTo("closed")) {
+          stateMachine.transition({ kind: "closed" });
+        }
         return { ok: false, error: notConnectedError(config.name) };
       }
 
@@ -212,18 +238,22 @@ export function createMcpConnection(
 
       // Check for auth challenge (401/403)
       if (koiError.code === "PERMISSION") {
-        stateMachine.transition({
-          kind: "auth-needed",
-          challenge: { type: "bearer" },
-        });
+        if (stateMachine.canTransitionTo("auth-needed")) {
+          stateMachine.transition({
+            kind: "auth-needed",
+            challenge: { type: "bearer" },
+          });
+        }
         return { ok: false, error: koiError };
       }
 
-      stateMachine.transition({
-        kind: "error",
-        error: koiError,
-        retryable: koiError.retryable,
-      });
+      if (stateMachine.canTransitionTo("error")) {
+        stateMachine.transition({
+          kind: "error",
+          error: koiError,
+          retryable: koiError.retryable,
+        });
+      }
       return { ok: false, error: koiError };
     }
   };

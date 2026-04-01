@@ -300,6 +300,28 @@ describe("normalizeMcpServers", () => {
     expect(rejected[0]).toContain("headersHelper");
   });
 
+  test("rejects config with missing env vars (no default)", () => {
+    delete process.env.NONEXISTENT_MCP_VAR;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing env var expansion
+    const { servers, rejected } = normalizeMcpServers({
+      broken: { type: "http", url: "${NONEXISTENT_MCP_VAR}" },
+    });
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("missing env vars");
+    expect(rejected[0]).toContain("NONEXISTENT_MCP_VAR");
+  });
+
+  test("accepts config where missing env vars have defaults", () => {
+    delete process.env.OPTIONAL_MCP_VAR;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing env var expansion
+    const { servers, rejected } = normalizeMcpServers({
+      ok: { type: "http", url: "https://${OPTIONAL_MCP_VAR:-fallback.com}/mcp" },
+    });
+    expect(servers).toHaveLength(1);
+    expect(rejected).toHaveLength(0);
+  });
+
   test("rejects config with oauth (not yet implemented)", () => {
     const { servers, rejected } = normalizeMcpServers({
       "oauth-server": {
