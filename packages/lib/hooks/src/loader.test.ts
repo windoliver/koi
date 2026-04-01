@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { loadHooks } from "./loader.js";
+import { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
 
 describe("loadHooks", () => {
   it("returns typed configs for valid input", () => {
@@ -165,6 +165,67 @@ describe("loadHooks", () => {
         expect(hook.headers).toEqual({ Authorization: "Bearer token" });
         expect(hook.secret).toBe("my-secret");
       }
+    }
+  });
+});
+
+describe("loadHooksWithDiagnostics", () => {
+  it("warns on unknown event kinds without rejecting", () => {
+    const result = loadHooksWithDiagnostics([
+      {
+        kind: "command",
+        name: "future-hook",
+        cmd: ["echo"],
+        filter: { events: ["session.started", "future.event"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hooks).toHaveLength(1);
+      expect(result.value.warnings).toHaveLength(1);
+      expect(result.value.warnings[0]).toContain("future.event");
+      expect(result.value.warnings[0]).toContain("not in the built-in event set");
+    }
+  });
+
+  it("returns no warnings for known event kinds", () => {
+    const result = loadHooksWithDiagnostics([
+      {
+        kind: "command",
+        name: "known-hook",
+        cmd: ["echo"],
+        filter: { events: ["session.started", "tool.succeeded"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.warnings).toHaveLength(0);
+    }
+  });
+
+  it("warns on typos in event kinds", () => {
+    const result = loadHooksWithDiagnostics([
+      {
+        kind: "command",
+        name: "typo-hook",
+        cmd: ["echo"],
+        filter: { events: ["sesion.started"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hooks).toHaveLength(1);
+      expect(result.value.warnings).toHaveLength(1);
+      expect(result.value.warnings[0]).toContain("sesion.started");
+    }
+  });
+
+  it("returns hooks and empty warnings for valid input", () => {
+    const result = loadHooksWithDiagnostics([{ kind: "command", name: "a", cmd: ["echo"] }]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hooks).toHaveLength(1);
+      expect(result.value.warnings).toHaveLength(0);
     }
   });
 });

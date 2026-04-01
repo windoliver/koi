@@ -45,6 +45,14 @@ describe("hookFilterSchema", () => {
     const result = hookFilterSchema.safeParse({ channels: [] });
     expect(result.success).toBe(false);
   });
+
+  it("accepts unknown event kinds for forward compatibility", () => {
+    // Runtime validation accepts any non-empty string so that newer event
+    // kinds added to HOOK_EVENT_KINDS don't brick older validators.
+    // Compile-time safety is provided by the HookEventKind type instead.
+    const result = hookFilterSchema.safeParse({ events: ["future.event"] });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("commandHookSchema", () => {
