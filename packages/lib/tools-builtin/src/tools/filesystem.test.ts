@@ -274,6 +274,23 @@ describe("createFsEditTool", () => {
     expect(result.error).toContain("2 locations");
   });
 
+  test("rejects edit when oldText has overlapping matches", async () => {
+    const backend = {
+      ...createMockBackend(),
+      read: (_path: string) => ({
+        ok: true as const,
+        value: { content: "aaa", path: _path, size: 3 },
+      }),
+    };
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [{ oldText: "aa", newText: "bb" }],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("AMBIGUOUS");
+    expect(result.error).toContain("2 locations");
+  });
+
   test("returns cancelled when signal is already aborted", async () => {
     const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute(
