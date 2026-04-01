@@ -140,22 +140,34 @@ export function createMcpConnection(
     let newClient: SdkClientLike | undefined;
 
     try {
-      newTransport = makeTransport({
-        config: config.server,
-        authProvider,
-      });
-
-      newClient = makeClient({
-        name: `koi-mcp-${config.name}`,
-        version: "1.0.0",
-      });
-
-      // Connect with AbortSignal-based timeout
+      // Timeout covers the entire connect sequence: transport creation
+      // (including async token retrieval) + SDK client connect.
       const timeoutSignal = AbortSignal.timeout(config.connectTimeoutMs);
       const composedSignal = AbortSignal.any([timeoutSignal, abortController.signal]);
 
+      const connectSequence = async (): Promise<void> => {
+        const t = await makeTransport({
+          config: config.server,
+          authProvider,
+        });
+        // If timed out during transport creation, close the orphan immediately
+        if (composedSignal.aborted) {
+          await t.close().catch(() => {});
+          return;
+        }
+        newTransport = t;
+
+        const c = makeClient({
+          name: `koi-mcp-${config.name}`,
+          version: "1.0.0",
+        });
+        newClient = c;
+
+        await c.connect(t.sdkTransport);
+      };
+
       await Promise.race([
-        newClient.connect(newTransport.sdkTransport),
+        connectSequence(),
         new Promise<never>((_, reject) => {
           composedSignal.addEventListener(
             "abort",

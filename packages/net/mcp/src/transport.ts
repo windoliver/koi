@@ -56,8 +56,8 @@ export interface CreateTransportOptions {
   readonly authProvider?: McpAuthProvider | undefined;
 }
 
-export function createTransport(options: CreateTransportOptions): KoiMcpTransport {
-  const sdkTransport = createSdkTransport(options);
+export async function createTransport(options: CreateTransportOptions): Promise<KoiMcpTransport> {
+  const sdkTransport = await createSdkTransport(options);
   return wrapSdkTransport(sdkTransport);
 }
 
@@ -74,10 +74,22 @@ function createStdio(config: StdioServerConfig): SdkTransportLike {
   return new StdioClientTransport(params) as unknown as SdkTransportLike;
 }
 
-function createHttp(config: HttpServerConfig, authProvider?: McpAuthProvider): SdkTransportLike {
+/**
+ * Token is read once at transport creation time and baked into request headers.
+ * On reconnect, connection.connect() creates a fresh transport, so the token
+ * IS re-read. However, within a single long-lived connection the token is not
+ * refreshed per-request — the SDK's StreamableHTTPClientTransport does not
+ * support dynamic header injection. For short-lived tokens (OAuth 2.1),
+ * the connection's 401 detection → reconnect path will trigger a new
+ * transport with a fresh token.
+ */
+async function createHttp(
+  config: HttpServerConfig,
+  authProvider?: McpAuthProvider,
+): Promise<SdkTransportLike> {
   const headers: Record<string, string> = config.headers !== undefined ? { ...config.headers } : {};
   if (authProvider !== undefined) {
-    const token = authProvider.token();
+    const token = await authProvider.token();
     if (token !== undefined) headers.Authorization = `Bearer ${token}`;
   }
   return new StreamableHTTPClientTransport(new URL(config.url), {
@@ -91,7 +103,7 @@ function createSse(config: SseServerConfig): SdkTransportLike {
   return new SSEClientTransport(new URL(config.url), opts) as unknown as SdkTransportLike;
 }
 
-function createSdkTransport(options: CreateTransportOptions): SdkTransportLike {
+async function createSdkTransport(options: CreateTransportOptions): Promise<SdkTransportLike> {
   const { config, authProvider } = options;
   switch (config.kind) {
     case "stdio":
@@ -146,4 +158,6 @@ function wrapSdkTransport(sdk: SdkTransportLike): KoiMcpTransport {
 // DI for testing
 // ---------------------------------------------------------------------------
 
-export type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport;
+export type CreateTransportFn = (
+  options: CreateTransportOptions,
+) => KoiMcpTransport | Promise<KoiMcpTransport>;
