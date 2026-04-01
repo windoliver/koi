@@ -18,8 +18,14 @@ import type {
 } from "@koi/core";
 import { EXTENSION_PRIORITY } from "@koi/core";
 import { needsRepair, repairSession } from "@koi/session-repair";
-import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "./guard-types.js";
+import type {
+  IterationLimits,
+  LoopDetectionConfig,
+  SpawnPolicy,
+  ToolExecutionConfig,
+} from "./guard-types.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
+import { createToolExecutionGuard } from "./tool-execution-guard.js";
 
 // ---------------------------------------------------------------------------
 // Significant transitions (validator is called)
@@ -192,6 +198,8 @@ export interface DefaultGuardExtensionConfig {
   readonly loopDetection?: Partial<LoopDetectionConfig> | false;
   /** Spawn policy. Defaults to DEFAULT_SPAWN_POLICY. */
   readonly spawn?: Partial<SpawnPolicy>;
+  /** Tool execution config (abort propagation + per-tool timeouts). Set to false to disable. */
+  readonly toolExecution?: Partial<ToolExecutionConfig> | false;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +270,11 @@ export function createDefaultGuardExtension(config?: DefaultGuardExtensionConfig
           ...(ctx.agent !== undefined ? { agent: ctx.agent } : {}),
         }),
       );
+
+      if (config?.toolExecution !== false) {
+        const toolConfig = config?.toolExecution;
+        guards.push(createToolExecutionGuard(toolConfig === undefined ? undefined : toolConfig));
+      }
 
       return guards;
     },
