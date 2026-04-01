@@ -1,0 +1,206 @@
+/**
+ * Generic factory that builds a complete ChannelAdapter from platform-specific callbacks.
+ *
+ * Handles shared channel plumbing: connection lifecycle (idempotent connect/disconnect),
+ * handler dispatch (parallel via Promise.allSettled), capability-aware block rendering
+ * (renderBlocks before platformSend), and error isolation.
+ */
+
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ChannelStatus,
+  InboundMessage,
+  MessageHandler,
+  OutboundMessage,
+} from "@koi/core";
+import { renderBlocks } from "./render-blocks.js";
+
+/** Transforms a platform-specific event into an InboundMessage (or null to skip). */
+export type MessageNormalizer<E> = (
+  event: E,
+) => InboundMessage | null | Promise<InboundMessage | null>;
+
+/** Platform-specific callbacks the factory needs to build a ChannelAdapter. */
+export interface ChannelAdapterConfig<E> {
+  readonly name: string;
+  readonly capabilities: ChannelCapabilities;
+
+  /** Connect to the platform (create readline, open websocket, etc.). */
+  readonly platformConnect: () => Promise<void>;
+  /** Disconnect from the platform (close readline, close websocket, etc.). */
+  readonly platformDisconnect: () => Promise<void>;
+  /** Write an OutboundMessage to the platform. Blocks already downgraded by renderBlocks(). */
+  readonly platformSend: (message: OutboundMessage) => Promise<void>;
+  /** Register a listener for platform events. Returns an unsubscribe function. */
+  readonly onPlatformEvent: (handler: (event: E) => void) => () => void;
+  /** Convert a platform event into an InboundMessage. */
+  readonly normalize: MessageNormalizer<E>;
+
+  /** Optional: write status indicators to the platform. */
+  readonly platformSendStatus?: ((status: ChannelStatus) => Promise<void>) | undefined;
+  /** Called when a handler throws during dispatch. Defaults to silent. */
+  readonly onHandlerError?: ((err: unknown, message: InboundMessage) => void) | undefined;
+  /** Called when normalize() throws or rejects. Defaults to silent drop. */
+  readonly onNormalizationError?: ((error: unknown, rawEvent: E) => void) | undefined;
+}
+
+/**
+ * Creates a complete ChannelAdapter from platform-specific callbacks.
+ *
+ * @typeParam E - The platform-specific event type (e.g., `string` for readline lines).
+ */
+export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter {
+  // let requires justification: mutable connection state managed by lifecycle methods
+  let connected = false;
+  // let requires justification: monotonic epoch incremented on each connect, used by event
+  // listener to detect disconnect without dropping events during listener registration
+  let connectEpoch = 0;
+  // let requires justification: serializes concurrent connect/disconnect calls
+  let lifecycleChain: Promise<void> = Promise.resolve();
+  let handlers: ReadonlyArray<{ readonly fn: MessageHandler; readonly id: number }> = [];
+  // let requires justification: monotonic counter for unique subscription IDs
+  let nextHandlerId = 0;
+  let unsubPlatform: (() => void) | undefined;
+  // let requires justification: serializes send()/sendStatus() so concurrent writes don't interleave
+  let sendChain: Promise<void> = Promise.resolve();
+
+  async function dispatch(message: InboundMessage): Promise<void> {
+    const results = await Promise.allSettled(handlers.map((h) => h.fn(message)));
+    for (const result of results) {
+      if (result.status === "rejected") {
+        config.onHandlerError?.(result.reason, message);
+      }
+    }
+  }
+
+  /** Queues an async lifecycle operation so concurrent calls execute sequentially. */
+  function enqueueLifecycle(op: () => Promise<void>): Promise<void> {
+    lifecycleChain = lifecycleChain.then(op, op);
+    return lifecycleChain;
+  }
+
+  const base = {
+    name: config.name,
+    capabilities: config.capabilities,
+
+    connect: (): Promise<void> =>
+      enqueueLifecycle(async () => {
+        if (connected) return;
+        await config.platformConnect();
+
+        // Capture the epoch for this connection. Events use this to detect
+        // whether a disconnect happened, even if received during the window
+        // between listener registration and connected=true (startup events).
+        const epoch = ++connectEpoch;
+
+        // Treat listener registration as part of the atomic connect step.
+        // If onPlatformEvent() throws, roll back platformConnect() so the
+        // adapter doesn't get wedged in a half-initialized state.
+        try {
+          unsubPlatform = config.onPlatformEvent((event: E) => {
+            // Guard: drop events if a disconnect has occurred since this
+            // connection started. Uses epoch instead of connected flag so
+            // events emitted during registration (before connected=true)
+            // are still delivered.
+            if (connectEpoch !== epoch) return;
+
+            // Wrap normalize() so both sync throws and async rejections
+            // route through onNormalizationError instead of crashing.
+            // let requires justification: holds normalize result which may be sync or async
+            let normalized: InboundMessage | null | Promise<InboundMessage | null>;
+            try {
+              normalized = config.normalize(event);
+            } catch (err: unknown) {
+              config.onNormalizationError?.(err, event);
+              return;
+            }
+
+            if (normalized instanceof Promise) {
+              normalized
+                .then((msg) => {
+                  // Re-check epoch after async normalize — disconnect may
+                  // have started while the promise was pending.
+                  if (msg !== null && connectEpoch === epoch) return dispatch(msg);
+                })
+                .catch((err: unknown) => {
+                  config.onNormalizationError?.(err, event);
+                });
+            } else if (normalized !== null) {
+              dispatch(normalized).catch(() => {
+                // Dispatch errors already handled by onHandlerError
+              });
+            }
+          });
+        } catch (err: unknown) {
+          await config.platformDisconnect();
+          throw err;
+        }
+
+        connected = true;
+      }),
+
+    disconnect: (): Promise<void> =>
+      enqueueLifecycle(async () => {
+        if (!connected) return;
+        // 1. Reject new sends and invalidate the current epoch so
+        //    pending async normalizations are dropped
+        connected = false;
+        connectEpoch++;
+        // 2. Unsubscribe platform listener BEFORE draining so no new
+        //    events are dispatched during the drain window
+        unsubPlatform?.();
+        unsubPlatform = undefined;
+        // 3. Wait for the send chain to settle before tearing down
+        //    the transport, preventing writes into a closing channel
+        await sendChain.catch(() => {});
+        // 4. Tear down the platform transport
+        await config.platformDisconnect();
+      }),
+
+    send: (message: OutboundMessage): Promise<void> => {
+      if (!connected) {
+        return Promise.reject(new Error(`Channel "${config.name}" is not connected`));
+      }
+      const rendered: OutboundMessage = {
+        ...message,
+        content: renderBlocks(message.content, config.capabilities),
+      };
+      // Serialize sends through a promise chain so concurrent calls
+      // don't interleave on the underlying transport.
+      const op = sendChain.catch(() => {}).then(() => config.platformSend(rendered));
+      sendChain = op.catch(() => {});
+      return op;
+    },
+
+    onMessage: (handler: MessageHandler): (() => void) => {
+      const id = nextHandlerId++;
+      handlers = [...handlers, { fn: handler, id }];
+      // let requires justification: tracks whether this specific subscription is active
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        handlers = handlers.filter((h) => h.id !== id);
+      };
+    },
+  };
+
+  // Conditionally add sendStatus — exactOptionalPropertyTypes forbids setting it to undefined
+  if (config.platformSendStatus !== undefined) {
+    const platformSendStatus = config.platformSendStatus;
+    return {
+      ...base,
+      sendStatus: (status: ChannelStatus): Promise<void> => {
+        if (!connected) return Promise.resolve();
+        // Serialize status writes through the same chain as send()
+        // so disconnect drains both before tearing down the transport.
+        const op = sendChain.catch(() => {}).then(() => platformSendStatus(status));
+        sendChain = op.catch(() => {});
+        return op;
+      },
+    };
+  }
+
+  return base;
+}

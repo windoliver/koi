@@ -1,0 +1,8 @@
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}],"usage":null}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}],"usage":null}
+
+data: {"id":"gen-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}
+
+data: [DONE]
+

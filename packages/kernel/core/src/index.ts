@@ -590,6 +590,19 @@ export type {
 } from "./health.js";
 // health — runtime values
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// hook — session-scoped side-effect triggers
+export type {
+  CommandHookConfig,
+  HookConfig,
+  HookEvent,
+  HookEventKind,
+  HookEventName,
+  HookExecutionResult,
+  HookFilter,
+  HookType,
+  HttpHookConfig,
+} from "./hook.js";
+export { DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS } from "./hook.js";
 // inbox — message steering queue for autonomous agents
 export type { InboxComponent, InboxItem, InboxMode, InboxPolicy } from "./inbox.js";
 export { DEFAULT_INBOX_POLICY } from "./inbox.js";
@@ -668,6 +681,15 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model adapter
+export type {
+  ModelAdapter,
+  ModelContentBlock,
+  ModelStopReason,
+  ModelTextBlock,
+  ModelThinkingBlock,
+  ModelToolCallBlock,
+} from "./model-adapter.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // name service — DNS-like name resolution for agents and bricks

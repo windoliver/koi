@@ -1,0 +1,6 @@
+{
+  "error": {
+    "message": "Internal server error",
+    "type": "server_error"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@koi/model-openai-compat",
+  "description": "Thin OpenAI-compatible model adapter for OpenAI-compatible and other Chat Completions APIs",
+  "version": "0.0.0",
+  "private": true,
+  "koi": {
+    "optional": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

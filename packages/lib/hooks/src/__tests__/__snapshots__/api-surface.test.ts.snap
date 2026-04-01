@@ -1,0 +1,154 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/hooks API surface . has stable type surface 1`] = `
+"import { HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, CommandHookConfig, HttpHookConfig } from '@koi/core';
+import { z } from 'zod';
+
+/**
+ * Environment variable substitution for hook config values.
+ *
+ * Expands \`\${VAR_NAME}\` patterns in strings using \`process.env\`.
+ * Rejects unresolved variables to fail closed on misconfiguration —
+ * hooks should not silently run with empty auth headers or signing keys.
+ */
+/**
+ * Expand \`\${VAR}\` references in a string using process.env.
+ * Returns the expanded string, or an error listing unresolved variable names.
+ */
+declare function expandEnvVars(value: string): {
+    readonly ok: true;
+    readonly value: string;
+} | {
+    readonly ok: false;
+    readonly missing: readonly string[];
+};
+/**
+ * Expand env vars in all values of a string record.
+ * Returns the expanded record, or an error listing unresolved variable names.
+ */
+declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>): {
+    readonly ok: true;
+    readonly value: Record<string, string>;
+} | {
+    readonly ok: false;
+    readonly missing: readonly string[];
+};
+
+/**
+ * Hook executor — dispatches matching hooks with parallel/serial execution.
+ *
+ * Uses AbortSignal.any() to compose per-hook timeouts with session-level
+ * cancellation. Command hooks spawn via Bun.spawn; HTTP hooks use fetch.
+ */
+
+/**
+ * Execute hooks that match the given event.
+ *
+ * Hooks run in declaration order. Contiguous parallel hooks (serial !== true)
+ * are batched and run concurrently via Promise.allSettled. Serial hooks run
+ * one at a time, flushing any pending parallel batch first.
+ *
+ * @param hooks - All hooks to consider (pre-filtered to active only)
+ * @param event - The event that triggered execution
+ * @param sessionSignal - Optional session-level abort signal for cancellation
+ * @returns Results for all matching hooks, in declaration order
+ */
+declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined): Promise<readonly HookExecutionResult[]>;
+
+/**
+ * Hook filter matching — determines whether a hook should fire for a given event.
+ *
+ * All specified filter fields must match (AND logic).
+ * Within a field, any value can match (OR logic).
+ * When no filter is set, the hook matches all events.
+ */
+
+/**
+ * Returns true if the given event matches the hook filter.
+ *
+ * @param filter - The hook's filter config. When undefined, matches everything.
+ * @param event - The event to test against.
+ */
+declare function matchesHookFilter(filter: HookFilter | undefined, event: HookEvent): boolean;
+
+/**
+ * Hook loader — validates raw config and returns typed HookConfig arrays.
+ *
+ * Entry point for parsing hook definitions from agent manifests.
+ */
+
+/** Successful load result including optional warnings for unknown event kinds. */
+interface LoadHooksResult {
+    readonly hooks: readonly HookConfig[];
+    readonly warnings: readonly string[];
+}
+/**
+ * Validates an array of raw hook config objects and returns typed \`HookConfig[]\`.
+ *
+ * Filters out disabled hooks (enabled === false) from the result.
+ *
+ * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
+ * @returns Result with validated hook configs or a KoiError with schema violation details.
+ */
+declare function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError>;
+/**
+ * Like \`loadHooks\`, but also returns warnings for unknown event kinds in
+ * \`filter.events\`. Unknown events are accepted (forward-compatible) but
+ * flagged so typos and version skew are visible at load time.
+ *
+ * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
+ * @returns Result with validated hook configs + warnings, or a KoiError.
+ */
+declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult, KoiError>;
+
+/**
+ * Hook registry — session-scoped hook registration and cleanup.
+ *
+ * Manages the lifecycle of hooks within a session: registration on session
+ * start, dispatch on events, and cleanup (abort + dispose) on session end.
+ *
+ * Uses AbortController per session so all in-flight hooks are cancelled
+ * when the session ends. Cleanup is idempotent (double-cleanup is a no-op).
+ *
+ * Trusted identity: \`agentId\` is bound at registration time and enforced
+ * on every execute call to prevent cross-session/cross-agent payload injection.
+ */
+
+/**
+ * Session-scoped hook registry.
+ *
+ * Each session gets its own AbortController for cancellation propagation.
+ * Cleanup aborts all in-flight hooks and removes the session from the registry.
+ */
+interface HookRegistry {
+    /** Register hooks for a session with its trusted agent identity. Replaces any existing registration. */
+    readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[]) => void;
+    /** Execute matching hooks for a session event. Returns empty array if session not registered. */
+    readonly execute: (sessionId: string, event: HookEvent) => Promise<readonly HookExecutionResult[]>;
+    /** Cleanup a session — abort in-flight hooks and remove registration. Idempotent. */
+    readonly cleanup: (sessionId: string) => void;
+    /** Returns true if the session has registered hooks. */
+    readonly has: (sessionId: string) => boolean;
+    /** Returns the number of active sessions. */
+    readonly size: () => number;
+}
+/**
+ * Creates a new HookRegistry instance.
+ */
+declare function createHookRegistry(): HookRegistry;
+
+/**
+ * Zod schemas for hook config validation.
+ *
+ * Validates hook definitions from agent manifests against the Phase 1
+ * hook type boundary (command + http). Unknown hook kinds fail clearly.
+ */
+
+declare const hookFilterSchema: z.ZodType<HookFilter>;
+declare const commandHookSchema: z.ZodType<CommandHookConfig>;
+declare const httpHookSchema: z.ZodType<HttpHookConfig>;
+declare const hookConfigSchema: z.ZodType<HookConfig>;
+
+export { type HookRegistry, type LoadHooksResult, commandHookSchema, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
+"
+`;

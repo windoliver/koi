@@ -18,6 +18,9 @@
 "layer:L0u":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/channel-base/**"
+      - "packages/**/config/**"
+      - "packages/**/context-manager/**"
       - "packages/**/edit-match/**"
       - "packages/**/errors/**"
       - "packages/**/event-delivery/**"
@@ -36,6 +39,9 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**"
+      - "!packages/**/channel-base/**"
+      - "!packages/**/config/**"
+      - "!packages/**/context-manager/**"
       - "!packages/**/core/**"
       - "!packages/**/edit-match/**"
       - "!packages/**/engine/**"
