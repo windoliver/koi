@@ -98,16 +98,19 @@ describe("consumeModelStream", () => {
     ) as Extract<EngineEvent, { readonly kind: "tool_call_end" }>;
 
     expect(endEvent).toBeDefined();
-    // Result should indicate the parse failure with the raw args and undefined parsedArgs
     const result = endEvent.result as {
       readonly toolName: string;
       readonly callId: ToolCallId;
       readonly rawArgs: string;
       readonly parsedArgs: undefined;
+      readonly parseError: string;
     };
     expect(result.toolName).toBe("bad_tool");
     expect(result.rawArgs).toBe('{"broken": ');
     expect(result.parsedArgs).toBeUndefined();
+    // parseError must be set so callers can discriminate failures from valid empty args
+    expect(result.parseError).toBeTypeOf("string");
+    expect(result.parseError.length).toBeGreaterThan(0);
   });
 
   test("multiple tool calls in one response are all accumulated correctly", async () => {
@@ -180,6 +183,52 @@ describe("consumeModelStream", () => {
     // Partial text must be preserved even on provider error
     expect(done.output.content).toEqual([{ kind: "text", text: "partial output" }]);
     expect((done.output.metadata as { readonly error: string }).error).toBe("rate limit exceeded");
+  });
+
+  test("error chunk surfaces dangling in-flight tool calls in metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path":' },
+      { kind: "error", message: "provider crashed" },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+
+    const meta = done.output.metadata as {
+      readonly danglingToolCalls: readonly {
+        readonly callId: string;
+        readonly toolName: string;
+        readonly partialArgs: string;
+      }[];
+    };
+    expect(meta.danglingToolCalls).toHaveLength(1);
+    expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
+    expect(meta.danglingToolCalls[0]?.toolName).toBe("read_file");
+    expect(meta.danglingToolCalls[0]?.partialArgs).toBe('{"path":');
+  });
+
+  test("truncated stream surfaces dangling tool calls in metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "write_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"content": "hi"' },
+      // Stream ends without done or error
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+
+    const meta = done.output.metadata as {
+      readonly danglingToolCalls: readonly {
+        readonly callId: string;
+        readonly toolName: string;
+        readonly partialArgs: string;
+      }[];
+    };
+    expect(meta.danglingToolCalls).toHaveLength(1);
+    expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
   });
 
   test("error chunk with no prior text yields empty content", async () => {

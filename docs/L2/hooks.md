@@ -8,16 +8,16 @@ L2 — depends on `@koi/core` (L0) and `@koi/validation` (L0u).
 
 ## Purpose
 
-Parses hook definitions from agent config, validates them against Zod schemas,
+Parses hook definitions from config, validates them against Zod schemas,
 and manages session-scoped hook registration/cleanup. Hooks are side-effect
 triggers (run a command, call a URL) that fire in response to session lifecycle
 events.
 
-> **Phase 1 scope:** This package provides the loader, schema, registry, and
-> executor APIs. Engine-level integration (automatic loading from
-> `AgentManifest.hooks` and dispatch during session lifecycle) is not yet
-> wired — callers must use `loadHooks()` / `createHookRegistry()` / 
-> `executeHooks()` explicitly until the engine integration ships.
+> **Phase 1 scope (standalone API):** This package provides the loader,
+> schema, registry, and executor as standalone APIs. `AgentManifest` does
+> not yet include a `hooks` field — that will be added when the engine-level
+> hook dispatch integration ships. Until then, callers use `loadHooks()` /
+> `createHookRegistry()` / `executeHooks()` directly.
 
 ## Hook Types
 
@@ -36,34 +36,42 @@ events.
 
 ## Config Schema
 
-Hooks are declared in `AgentManifest.hooks`:
+Hook configs are passed directly to `loadHooks()` as a JSON/YAML array:
 
-```yaml
-hooks:
-  - kind: command
-    name: on-session-start
-    cmd: ["./scripts/on-session-start.sh"]
-    filter:
-      events: ["session.started"]
-    timeoutMs: 10000
+```typescript
+import { loadHooks, createHookRegistry, executeHooks } from "@koi/hooks";
 
-  - kind: http
-    name: notify-backend
-    url: https://api.example.com/hooks
-    method: POST
-    headers:
-      Authorization: "Bearer ${HOOK_TOKEN}"
-    secret: "${WEBHOOK_SECRET}"
-    filter:
-      events: ["session.started", "session.ended"]
-    timeoutMs: 5000
+const result = loadHooks([
+  {
+    kind: "command",
+    name: "on-session-start",
+    cmd: ["./scripts/on-session-start.sh"],
+    filter: { events: ["session.started"] },
+    timeoutMs: 10000,
+  },
+  {
+    kind: "http",
+    name: "notify-backend",
+    url: "https://api.example.com/hooks",
+    method: "POST",
+    headers: { Authorization: "Bearer ${HOOK_TOKEN}" },
+    secret: "${WEBHOOK_SECRET}",
+    filter: { events: ["session.started", "session.ended"] },
+    timeoutMs: 5000,
+  },
+]);
+
+if (!result.ok) throw new Error(result.error.message);
+
+const registry = createHookRegistry();
+registry.register(sessionId, agentId, result.value);
 ```
 
 ### Filter Syntax
 
 Filters control which events trigger a hook. All filter fields use AND logic
 (all specified conditions must match). Within a field, values use OR logic
-(any value can match).
+(any value can match). Empty arrays are rejected at schema validation time.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -77,19 +85,28 @@ When no filter is specified, the hook fires on all events.
 
 - **Parallel by default** — matching hooks run via `Promise.allSettled`
 - **Serial opt-in** — set `serial: true` on a hook config for ordered execution
+- **Declaration-order results** — results preserve manifest declaration order
 - **Per-hook timeout** — `AbortSignal.timeout(hook.timeoutMs)` composed with
   session signal via `AbortSignal.any()`
 - **Failure isolation** — one hook's failure never blocks others (parallel) or
   aborts the session
+- **SIGKILL escalation** — stubborn command hooks get SIGTERM then SIGKILL after 2s
 
 ## Session Lifecycle
 
 1. **Registration** — `loadHooks()` validates config, `HookRegistry.register()`
-   binds hooks to a session ID
-2. **Execution** — `executeHooks()` dispatches matching hooks for a given event
+   binds hooks to a session with trusted `agentId`
+2. **Execution** — `HookRegistry.execute()` dispatches matching hooks, enforcing
+   session/agent identity on every call
 3. **Cleanup** — `HookRegistry.cleanup(sessionId)` aborts in-flight hooks and
-   releases resources. Uses `AsyncDisposableStack` for reverse-order cleanup.
-4. **Idempotent** — double-cleanup is a no-op
+   removes registration. Idempotent — double-cleanup is a no-op.
+
+## Security
+
+- **HTTPS-only URLs** — HTTP loopback allowed only in dev mode (`NODE_ENV=development|test` or `KOI_DEV=1`)
+- **No redirects** — `fetch()` uses `redirect: "error"` to prevent SSRF via 30x
+- **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook
+- **Trusted identity** — registry binds `agentId` at registration and overwrites caller-supplied identity on execute
 
 ## Module Structure
 
@@ -100,9 +117,10 @@ When no filter is specified, the hook fires on all events.
 | `registry.ts` | `HookRegistry` — session-scoped registration/cleanup |
 | `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
+| `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
 
 ## Dependencies
 
-- `@koi/core` — `HookConfig`, `HookFilter`, `SessionContext`, `Result`, `KoiError`
+- `@koi/core` — `HookConfig`, `HookFilter`, `HookEvent`, `Result`, `KoiError`
 - `@koi/validation` — `validateWith`, `zodToKoiError`
 - `zod` — schema definitions

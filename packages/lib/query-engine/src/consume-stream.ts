@@ -1,6 +1,25 @@
 import type { EngineEvent, ModelChunk, ToolCallId } from "@koi/core";
 import type { AccumulatedToolCall } from "./types.js";
 
+/** Extract dangling (in-flight, never completed) tool call info from accumulators. */
+function buildDanglingToolCalls(
+  accumulators: ReadonlyMap<
+    ToolCallId,
+    { readonly toolName: string; readonly fragments: string[] }
+  >,
+): readonly { readonly callId: string; readonly toolName: string; readonly partialArgs: string }[] {
+  if (accumulators.size === 0) return [];
+  const result: {
+    readonly callId: string;
+    readonly toolName: string;
+    readonly partialArgs: string;
+  }[] = [];
+  for (const [callId, acc] of accumulators) {
+    result.push({ callId, toolName: acc.toolName, partialArgs: acc.fragments.join("") });
+  }
+  return result;
+}
+
 /**
  * Consumes an `AsyncIterable<ModelChunk>` from a model provider and yields
  * `EngineEvent`s, accumulating streamed tool-call argument deltas into parsed
@@ -64,13 +83,14 @@ export async function* consumeModelStream(
         accumulators.delete(chunk.callId);
 
         let parsedArgs: AccumulatedToolCall["parsedArgs"];
+        let parseError: string | undefined;
         try {
           const parsed: unknown = JSON.parse(rawArgs);
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
             parsedArgs = parsed as AccumulatedToolCall["parsedArgs"];
           }
-        } catch {
-          // Malformed JSON — parsedArgs stays undefined
+        } catch (e: unknown) {
+          parseError = e instanceof Error ? e.message : "JSON parse failed";
         }
 
         const accumulated: AccumulatedToolCall = {
@@ -78,6 +98,7 @@ export async function* consumeModelStream(
           callId: chunk.callId,
           rawArgs,
           parsedArgs,
+          ...(parseError !== undefined ? { parseError } : {}),
         };
         completedToolCalls.push(accumulated);
 
@@ -97,8 +118,9 @@ export async function* consumeModelStream(
           inputTokens += chunk.usage.inputTokens;
           outputTokens += chunk.usage.outputTokens;
         }
-        // Preserve partial text already streamed before the error
         const errorPartialText = textFragments.join("");
+        // Surface any in-flight tool calls that never completed
+        const danglingOnError = buildDanglingToolCalls(accumulators);
         yield {
           kind: "done",
           output: {
@@ -111,7 +133,10 @@ export async function* consumeModelStream(
               turns: 0,
               durationMs: 0,
             },
-            metadata: { error: chunk.message },
+            metadata: {
+              error: chunk.message,
+              ...(danglingOnError.length > 0 ? { danglingToolCalls: danglingOnError } : {}),
+            },
           },
         };
         return;
@@ -154,6 +179,7 @@ export async function* consumeModelStream(
   // end-of-stream signal. Include any accumulated text so partial output
   // is not lost.
   const partialText = textFragments.join("");
+  const danglingOnTruncate = buildDanglingToolCalls(accumulators);
   yield {
     kind: "done",
     output: {
@@ -166,7 +192,10 @@ export async function* consumeModelStream(
         turns: 0,
         durationMs: 0,
       },
-      metadata: { error: "stream ended without terminal chunk" },
+      metadata: {
+        error: "stream ended without terminal chunk",
+        ...(danglingOnTruncate.length > 0 ? { danglingToolCalls: danglingOnTruncate } : {}),
+      },
     },
   };
 }
