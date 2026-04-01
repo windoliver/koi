@@ -179,6 +179,11 @@ export function createMcpConnection(
         }),
       ]);
 
+      // connectSequence may have returned early due to abort — verify we have both
+      if (newTransport === undefined || newClient === undefined) {
+        return { ok: false, error: notConnectedError(config.name) };
+      }
+
       // Clean up old connection before replacing
       if (client !== undefined) {
         try {
