@@ -525,9 +525,8 @@ describe("wrapModelCall", () => {
       model: "test",
     });
 
-    const originalMessages = [{ role: "user", content: "hello" }];
     const request: ModelRequest = {
-      messages: originalMessages as ModelRequest["messages"],
+      messages: [] as ModelRequest["messages"],
       systemPrompt: "original",
     };
     await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
@@ -536,7 +535,7 @@ describe("wrapModelCall", () => {
     const passedRequest = nextFn.mock.calls[0]?.[0];
     assertDefined(passedRequest);
     // Immutable fields must not be overwritten
-    expect(passedRequest.messages).toBe(originalMessages);
+    expect(passedRequest.messages).toBe(request.messages);
     expect(passedRequest.systemPrompt).toBe("original");
   });
 
