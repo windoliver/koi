@@ -71,9 +71,39 @@ describe("resolveMode", () => {
       expect(decision.effect).toBe("ask");
     });
 
-    test("denies discover actions (not in allowlist)", () => {
-      const decision = resolveMode("plan", discoverQuery, rules);
-      expect(decision.effect).toBe("deny");
+    test("allows discover with explicit allow rule", () => {
+      const discoverRules: readonly CompiledRule[] = [
+        {
+          pattern: "**",
+          action: "discover",
+          effect: "allow",
+          source: "project",
+          compiled: compileGlob("**"),
+        },
+      ];
+      expect(resolveMode("plan", discoverQuery, discoverRules)).toEqual({ effect: "allow" });
+    });
+
+    test("returns ask for discover without matching rule", () => {
+      const decision = resolveMode("plan", discoverQuery, []);
+      expect(decision.effect).toBe("ask");
+    });
+
+    test("honors deny rules for discover in plan mode", () => {
+      const denyDiscoverRules: readonly CompiledRule[] = [
+        {
+          pattern: "**",
+          action: "discover",
+          effect: "deny",
+          reason: "hidden",
+          source: "policy",
+          compiled: compileGlob("**"),
+        },
+      ];
+      expect(resolveMode("plan", discoverQuery, denyDiscoverRules)).toEqual({
+        effect: "deny",
+        reason: "hidden",
+      });
     });
 
     test("denies write actions", () => {

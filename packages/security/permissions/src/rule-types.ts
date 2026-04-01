@@ -73,3 +73,13 @@ export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   "search",
   "list",
 ]) as ReadonlySet<string>;
+
+/**
+ * Actions evaluated against rules in plan mode but NOT auto-allowed.
+ * These require an explicit allow rule to proceed; unmatched queries
+ * return ask. This prevents both hard-denying useful operations
+ * (like discover) and silently allowing them without policy.
+ */
+export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = new Set([
+  "discover",
+]) as ReadonlySet<string>;

@@ -18,4 +18,8 @@ export type {
   RuleSource,
   SourcedRule,
 } from "./rule-types.js";
-export { PLAN_ALLOWED_ACTIONS, SOURCE_PRECEDENCE } from "./rule-types.js";
+export {
+  PLAN_ALLOWED_ACTIONS,
+  PLAN_RULE_EVALUATED_ACTIONS,
+  SOURCE_PRECEDENCE,
+} from "./rule-types.js";
