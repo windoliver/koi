@@ -185,9 +185,22 @@ function validateDecision(raw: unknown): PermissionDecision {
 // Cache key helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Safe JSON serialization — returns undefined on non-serializable values
+ * (cyclic objects, BigInt, etc.) instead of throwing.
+ */
+function safeStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Full serialized key — collision-safe for security-sensitive cache lookups. */
-function decisionCacheKey(query: PermissionQuery): string {
-  const ctx = query.context !== undefined ? JSON.stringify(query.context) : "";
+function decisionCacheKey(query: PermissionQuery): string | undefined {
+  const ctx = query.context !== undefined ? safeStringify(query.context) : "";
+  if (ctx === undefined) return undefined;
   return `${query.principal}\0${query.action}\0${query.resource}\0${ctx}`;
 }
 
@@ -200,20 +213,22 @@ function computeApprovalCacheKey(
   toolId: string,
   input: unknown,
   context: string,
-): string {
-  const sorted = sortTopLevelKeys(input);
+): string | undefined {
+  const sorted = safeSerializeInput(input);
+  if (sorted === undefined) return undefined;
   return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
 function serializeTurnContext(ctx: TurnContext): string {
   const meta = ctx.metadata;
-  return Object.keys(meta).length > 0 ? JSON.stringify(meta) : "";
+  if (Object.keys(meta).length === 0) return "";
+  return safeStringify(meta) ?? "";
 }
 
-function sortTopLevelKeys(value: unknown): string {
+function safeSerializeInput(value: unknown): string | undefined {
   if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+    return safeStringify(value);
   }
   const obj = value as Record<string, unknown>;
   const sorted = Object.keys(obj)
@@ -222,7 +237,17 @@ function sortTopLevelKeys(value: unknown): string {
       acc[key] = obj[key];
       return acc;
     }, {});
-  return JSON.stringify(sorted);
+  return safeStringify(sorted);
+}
+
+/**
+ * Build an unambiguous principal string from structured identity fields.
+ * Uses JSON array encoding to prevent separator collisions — e.g. an
+ * agentId containing ":" cannot produce the same principal as a
+ * different agent/user/session tuple.
+ */
+function buildPrincipal(agentId: string, userId: string, sessionId: string): string {
+  return JSON.stringify([agentId, userId, sessionId]);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,28 +267,43 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       ? createCircuitBreaker(config.circuitBreaker, clock)
       : undefined;
 
-  // Decision cache (optional)
-  const decisionCache =
+  // Per-session decision caches (created on demand, dropped on session end)
+  const cacheConfig =
     config.cache !== undefined && config.cache !== false
-      ? createDecisionCache(
-          typeof config.cache === "object" ? config.cache : DEFAULT_CACHE_CONFIG,
-          clock,
-        )
+      ? typeof config.cache === "object"
+        ? config.cache
+        : DEFAULT_CACHE_CONFIG
       : undefined;
+  const decisionCachesBySession = new Map<string, ReturnType<typeof createDecisionCache>>();
 
-  // Approval cache (optional)
-  const approvalCache =
+  function getDecisionCache(sessionId: string): ReturnType<typeof createDecisionCache> | undefined {
+    if (cacheConfig === undefined) return undefined;
+    let c = decisionCachesBySession.get(sessionId);
+    if (c === undefined) {
+      c = createDecisionCache(cacheConfig, clock);
+      decisionCachesBySession.set(sessionId, c);
+    }
+    return c;
+  }
+
+  // Per-session approval caches (created on demand, dropped on session end)
+  const approvalCacheConfig =
     config.approvalCache !== undefined && config.approvalCache !== false
-      ? createApprovalCache(
-          typeof config.approvalCache === "object"
-            ? config.approvalCache
-            : {
-                ttlMs: DEFAULT_APPROVAL_CACHE_TTL_MS,
-                maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES,
-              },
-          clock,
-        )
+      ? typeof config.approvalCache === "object"
+        ? config.approvalCache
+        : { ttlMs: DEFAULT_APPROVAL_CACHE_TTL_MS, maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES }
       : undefined;
+  const approvalCachesBySession = new Map<string, ReturnType<typeof createApprovalCache>>();
+
+  function getApprovalCache(sessionId: string): ReturnType<typeof createApprovalCache> | undefined {
+    if (approvalCacheConfig === undefined) return undefined;
+    let c = approvalCachesBySession.get(sessionId);
+    if (c === undefined) {
+      c = createApprovalCache(approvalCacheConfig, clock);
+      approvalCachesBySession.set(sessionId, c);
+    }
+    return c;
+  }
 
   // Backend fingerprint for approval cache key isolation (random string per instance)
   const backendFingerprint = String(Math.random());
@@ -290,11 +330,10 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
   function queryForTool(ctx: TurnContext, resource: string): PermissionQuery {
     // Build principal with user/session scope for tenant isolation.
-    // Format: "agentId:userId:sessionId" — ensures decision cache keys
-    // and backend checks are scoped per-user and per-session.
+    // Uses JSON array encoding to prevent separator collisions.
     const userId = ctx.session.userId ?? "__anonymous__";
     const sessionId = ctx.session.sessionId as string;
-    const principal = `${ctx.session.agentId}:${userId}:${sessionId}`;
+    const principal = buildPrincipal(ctx.session.agentId, userId, sessionId);
 
     const meta = ctx.metadata;
     const hasKeys = Object.keys(meta).length > 0;
@@ -330,15 +369,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     });
   }
 
-  async function resolveDecision(query: PermissionQuery): Promise<PermissionDecision> {
+  async function resolveDecision(
+    query: PermissionQuery,
+    sessionId: string,
+  ): Promise<PermissionDecision> {
     // Circuit breaker check
     if (cb !== undefined && !cb.isAllowed()) {
       return { effect: "deny", reason: "Permission backend circuit open — failing closed" };
     }
 
-    // Cache check
-    if (decisionCache !== undefined) {
-      const cached = decisionCache.get(decisionCacheKey(query));
+    // Cache check (per-session, skip if key not serializable)
+    const decisionCache = getDecisionCache(sessionId);
+    const cacheKey = decisionCacheKey(query);
+    if (decisionCache !== undefined && cacheKey !== undefined) {
+      const cached = decisionCache.get(cacheKey);
       if (cached !== undefined) return cached;
     }
 
@@ -354,8 +398,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           cb.recordSuccess();
         }
       }
-      if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY) {
-        decisionCache.set(decisionCacheKey(query), decision);
+      if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY && cacheKey !== undefined) {
+        decisionCache.set(cacheKey, decision);
       }
       return decision;
     } catch (e: unknown) {
@@ -369,8 +413,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
   async function resolveBatch(
     queries: readonly PermissionQuery[],
+    sessionId: string,
   ): Promise<readonly PermissionDecision[]> {
     if (queries.length === 0) return [];
+
+    const decisionCache = getDecisionCache(sessionId);
 
     // Partition into cached and uncached
     const results: (PermissionDecision | undefined)[] = new Array(queries.length).fill(undefined);
@@ -379,7 +426,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     if (decisionCache !== undefined) {
       for (let i = 0; i < queries.length; i++) {
         const query = queries[i]!;
-        const cached = decisionCache.get(decisionCacheKey(query));
+        const key = decisionCacheKey(query);
+        const cached = key !== undefined ? decisionCache.get(key) : undefined;
         if (cached !== undefined) {
           results[i] = cached;
         } else {
@@ -436,7 +484,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         if (decision === FAIL_CLOSED_DENY) hasValidationFailure = true;
         results[idx] = decision;
         if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY) {
-          decisionCache.set(decisionCacheKey(queries[idx]!), decision);
+          const key = decisionCacheKey(queries[idx]!);
+          if (key !== undefined) decisionCache.set(key, decision);
         }
       }
 
@@ -467,7 +516,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     if (tools === undefined || tools.length === 0) return request;
 
     const queries = tools.map((t) => queryForTool(ctx, t.name));
-    const decisions = await resolveBatch(queries);
+    const decisions = await resolveBatch(queries, ctx.session.sessionId as string);
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
@@ -514,11 +563,12 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       // Backend is NOT disposed here: it is shared across sessions and
       // owned by the middleware instance, not by any individual session.
       const sid = ctx.sessionId as string;
-      const sessionTracker = trackersBySession.get(sid);
-      if (sessionTracker !== undefined) {
-        sessionTracker.clear();
-        trackersBySession.delete(sid);
-      }
+      trackersBySession.get(sid)?.clear();
+      trackersBySession.delete(sid);
+      decisionCachesBySession.get(sid)?.clear();
+      decisionCachesBySession.delete(sid);
+      approvalCachesBySession.get(sid)?.clear();
+      approvalCachesBySession.delete(sid);
     },
 
     async wrapModelCall(
@@ -546,7 +596,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     ): Promise<ToolResponse> {
       const query = queryForTool(ctx, request.toolId);
       const startMs = clock();
-      const decision = await resolveDecision(query);
+      const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;
 
       if (auditSink !== undefined) {
@@ -598,7 +648,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       });
     }
 
-    // Check approval cache
+    // Check approval cache (per-session)
+    const approvalCache = getApprovalCache(ctx.session.sessionId as string);
     if (approvalCache !== undefined) {
       const userId = ctx.session.userId ?? "__anonymous__";
       const ctxStr = serializeTurnContext(ctx);
@@ -612,7 +663,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         ctxStr,
       );
 
-      if (approvalCache.has(cacheKey)) {
+      if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
         return next(request);
       }
     }
@@ -677,7 +728,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           request.input,
           ctxStr,
         );
-        approvalCache.set(cacheKey);
+        if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
 
       // "allow"
