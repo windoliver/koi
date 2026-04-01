@@ -118,8 +118,11 @@ export async function* consumeModelStream(
 
       case "error": {
         if (chunk.usage) {
-          inputTokens += chunk.usage.inputTokens;
-          outputTokens += chunk.usage.outputTokens;
+          // Terminal error usage is authoritative — overwrite, not accumulate,
+          // consistent with the done path. Prevents double-counting when
+          // providers emit both incremental usage chunks and a terminal total.
+          inputTokens = chunk.usage.inputTokens;
+          outputTokens = chunk.usage.outputTokens;
         }
         const errorPartialText = textFragments.join("");
         // Surface any in-flight tool calls that never completed
@@ -148,20 +151,23 @@ export async function* consumeModelStream(
       case "done": {
         const responseUsage = chunk.response.usage;
         if (responseUsage) {
-          // Final response usage is authoritative when the provider emits both
-          // incremental usage chunks and a terminal total.
           inputTokens = responseUsage.inputTokens;
           outputTokens = responseUsage.outputTokens;
         }
-        // Use terminal chunk content if provided; fall back to accumulated
-        // text deltas for providers whose terminal chunk omits the full text.
         const finalText =
           chunk.response.content.length > 0 ? chunk.response.content : textFragments.join("");
+
+        // Check for in-flight tool calls that the provider never completed.
+        // If present, downgrade to error so incomplete tool calls cannot
+        // disappear silently behind a "completed" stop reason.
+        const danglingOnDone = buildDanglingToolCalls(accumulators);
+        const stopReason = danglingOnDone.length > 0 ? "error" : "completed";
+
         yield {
           kind: "done",
           output: {
             content: finalText.length > 0 ? [{ kind: "text", text: finalText }] : [],
-            stopReason: "completed",
+            stopReason,
             metrics: {
               totalTokens: inputTokens + outputTokens,
               inputTokens,
@@ -169,6 +175,14 @@ export async function* consumeModelStream(
               turns: 0,
               durationMs: 0,
             },
+            ...(danglingOnDone.length > 0
+              ? {
+                  metadata: {
+                    error: "done received with in-flight tool calls",
+                    danglingToolCalls: danglingOnDone,
+                  },
+                }
+              : {}),
           },
         };
         return;

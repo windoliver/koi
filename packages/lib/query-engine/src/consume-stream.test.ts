@@ -277,6 +277,42 @@ describe("consumeModelStream", () => {
     expect(done.output.content).toEqual([]);
   });
 
+  test("done with in-flight tool calls downgrades to error and surfaces dangling calls", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path":' },
+      // Provider sends done before tool_call_end
+      { kind: "done", response: DONE_RESPONSE },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as {
+      readonly danglingToolCalls: readonly { readonly callId: string }[];
+      readonly error: string;
+    };
+    expect(meta.error).toContain("in-flight tool calls");
+    expect(meta.danglingToolCalls).toHaveLength(1);
+    expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
+  });
+
+  test("error chunk usage overwrites incremental totals instead of accumulating", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "usage", inputTokens: 100, outputTokens: 50 },
+      // Terminal error with authoritative usage — should overwrite, not add
+      { kind: "error", message: "rate limit", usage: { inputTokens: 5, outputTokens: 0 } },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+    // Should be 5, not 105 (overwrite, not accumulate)
+    expect(done.output.metrics.inputTokens).toBe(5);
+    expect(done.output.metrics.outputTokens).toBe(0);
+    expect(done.output.metrics.totalTokens).toBe(5);
+  });
+
   test("empty stream with just done produces done event", async () => {
     const chunks: readonly ModelChunk[] = [{ kind: "done", response: DONE_RESPONSE }];
 

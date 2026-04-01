@@ -74,6 +74,19 @@ describe("matchesHookFilter", () => {
     expect(matchesHookFilter(filter, { ...baseEvent, event: "tool.succeeded" })).toBe(false);
   });
 
-  // Note: empty arrays (events: [], tools: [], channels: []) are rejected
-  // at schema validation time. The filter function is never called with them.
+  // Runtime defense: empty arrays match nothing (not everything) to prevent
+  // accidental fan-out from programmatic callers that bypass schema validation.
+  it("treats empty events array as match-none", () => {
+    expect(matchesHookFilter({ events: [] }, baseEvent)).toBe(false);
+  });
+
+  it("treats empty tools array as match-none", () => {
+    expect(matchesHookFilter({ tools: [] }, { ...baseEvent, toolName: "exec" })).toBe(false);
+  });
+
+  it("treats empty channels array as match-none", () => {
+    expect(matchesHookFilter({ channels: [] }, { ...baseEvent, channelId: "telegram" })).toBe(
+      false,
+    );
+  });
 });

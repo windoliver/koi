@@ -19,23 +19,33 @@ export function matchesHookFilter(filter: HookFilter | undefined, event: HookEve
     return true;
   }
 
-  // Events filter: at least one event kind must match
-  if (filter.events !== undefined && filter.events.length > 0) {
-    if (!filter.events.includes(event.event)) {
+  // Events filter: at least one event kind must match.
+  // Empty array = match-none (not match-all) to prevent accidental fan-out
+  // from programmatic callers that bypass schema validation.
+  if (filter.events !== undefined) {
+    if (filter.events.length === 0 || !filter.events.includes(event.event)) {
       return false;
     }
   }
 
   // Tools filter: tool name must be present and match
-  if (filter.tools !== undefined && filter.tools.length > 0) {
-    if (event.toolName === undefined || !filter.tools.includes(event.toolName)) {
+  if (filter.tools !== undefined) {
+    if (
+      filter.tools.length === 0 ||
+      event.toolName === undefined ||
+      !filter.tools.includes(event.toolName)
+    ) {
       return false;
     }
   }
 
   // Channels filter: channel ID must be present and match
-  if (filter.channels !== undefined && filter.channels.length > 0) {
-    if (event.channelId === undefined || !filter.channels.includes(event.channelId)) {
+  if (filter.channels !== undefined) {
+    if (
+      filter.channels.length === 0 ||
+      event.channelId === undefined ||
+      !filter.channels.includes(event.channelId)
+    ) {
       return false;
     }
   }
