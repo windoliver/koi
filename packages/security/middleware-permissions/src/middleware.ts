@@ -181,6 +181,34 @@ function validateDecision(raw: unknown): PermissionDecision {
   return raw as PermissionDecision;
 }
 
+const VALID_APPROVAL_KINDS = new Set(["allow", "deny", "modify"]);
+
+/**
+ * Validate an approval handler response at the trust boundary.
+ * Returns the validated decision or undefined if malformed (caller
+ * should fail closed).
+ */
+function validateApprovalDecision(
+  raw: unknown,
+):
+  | { readonly kind: "allow" }
+  | { readonly kind: "deny"; readonly reason: string }
+  | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> }
+  | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (!VALID_APPROVAL_KINDS.has(obj.kind as string)) return undefined;
+  if (obj.kind === "deny") {
+    if (typeof obj.reason !== "string") return undefined;
+    return { kind: "deny", reason: obj.reason };
+  }
+  if (obj.kind === "modify") {
+    if (obj.updatedInput === null || typeof obj.updatedInput !== "object") return undefined;
+    return { kind: "modify", updatedInput: obj.updatedInput as Record<string, unknown> };
+  }
+  return { kind: "allow" };
+}
+
 // ---------------------------------------------------------------------------
 // Cache key helpers
 // ---------------------------------------------------------------------------
@@ -477,24 +505,33 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         return results as readonly PermissionDecision[];
       }
 
+      // Validate all decisions first — any malformed element poisons the
+      // entire batch (fail-closed: a corrupted backend response cannot be
+      // partially trusted at a permission boundary)
+      const validated: PermissionDecision[] = [];
       let hasValidationFailure = false;
       for (let j = 0; j < uncachedIndices.length; j++) {
-        const idx = uncachedIndices[j]!;
         const decision = validateDecision(rawDecisions[j]);
         if (decision === FAIL_CLOSED_DENY) hasValidationFailure = true;
-        results[idx] = decision;
-        if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY) {
-          const key = decisionCacheKey(queries[idx]!);
-          if (key !== undefined) decisionCache.set(key, decision);
-        }
+        validated.push(decision);
       }
 
-      // Record success/failure based on whether any decisions were malformed
-      if (cb !== undefined) {
-        if (hasValidationFailure) {
-          cb.recordFailure();
-        } else {
-          cb.recordSuccess();
+      if (hasValidationFailure) {
+        // Poison entire batch — deny all uncached queries, cache nothing
+        if (cb !== undefined) cb.recordFailure();
+        for (const i of uncachedIndices) {
+          results[i] = FAIL_CLOSED_DENY;
+        }
+      } else {
+        if (cb !== undefined) cb.recordSuccess();
+        for (let j = 0; j < uncachedIndices.length; j++) {
+          const idx = uncachedIndices[j]!;
+          const decision = validated[j]!;
+          results[idx] = decision;
+          if (decisionCache !== undefined) {
+            const key = decisionCacheKey(queries[idx]!);
+            if (key !== undefined) decisionCache.set(key, decision);
+          }
         }
       }
     } catch (e: unknown) {
@@ -672,7 +709,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const ac = new AbortController();
 
     try {
-      const approvalResult = await Promise.race([
+      const rawResult = await Promise.race([
         approvalHandler({
           toolId: request.toolId,
           input: request.input,
@@ -691,6 +728,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
         }),
       ]).finally(() => ac.abort());
+
+      // Validate approval response at trust boundary — fail closed on malformed
+      const approvalResult = validateApprovalDecision(rawResult);
+      if (approvalResult === undefined) {
+        throw new KoiRuntimeError({
+          code: "PERMISSION",
+          message: `Malformed approval response for "${request.toolId}" — failing closed`,
+          retryable: false,
+        });
+      }
 
       if (approvalResult.kind === "deny") {
         getTracker(ctx.session.sessionId as string).record({

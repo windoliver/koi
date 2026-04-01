@@ -553,6 +553,57 @@ describe("createPermissionsMiddleware", () => {
       // All 3 should be denied (batch length mismatch = fail-closed for entire batch)
       expect(passedReq.tools?.length).toBe(0);
     });
+
+    test("one malformed batch element poisons the entire batch", async () => {
+      const backend: PermissionBackend = {
+        check: () => ({ effect: "allow" }),
+        checkBatch: () =>
+          [
+            { effect: "allow" },
+            { effect: "bogus" }, // malformed
+            { effect: "allow" },
+          ] as readonly PermissionDecision[],
+      };
+      const mw = createPermissionsMiddleware({ backend });
+      const handler = mock(noopModelHandler);
+
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
+      const passedReq = handler.mock.calls[0]?.[0] as ModelRequest;
+      // All 3 denied — one bad element poisons entire batch
+      expect(passedReq.tools?.length).toBe(0);
+    });
+  });
+
+  describe("malformed approval responses (fail-closed)", () => {
+    test("empty object from approval handler denies tool", async () => {
+      const mw = createPermissionsMiddleware({ backend: askAll() });
+      const approvalHandler = async () => ({}) as ApprovalDecision;
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
+      ).rejects.toThrow("Malformed approval");
+    });
+
+    test("unknown kind from approval handler denies tool", async () => {
+      const mw = createPermissionsMiddleware({ backend: askAll() });
+      const approvalHandler = async () => ({ kind: "bogus" }) as unknown as ApprovalDecision;
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
+      ).rejects.toThrow("Malformed approval");
+    });
+
+    test("modify without updatedInput from approval handler denies tool", async () => {
+      const mw = createPermissionsMiddleware({ backend: askAll() });
+      const approvalHandler = async () => ({ kind: "modify" }) as unknown as ApprovalDecision;
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
+      ).rejects.toThrow("Malformed approval");
+    });
   });
 
   describe("middleware identity", () => {
