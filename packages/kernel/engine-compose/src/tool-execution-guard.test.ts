@@ -514,7 +514,7 @@ describe("createToolExecutionGuard", () => {
       }
     });
 
-    test("no timeout when neither default nor per-tool configured", async () => {
+    test("default config uses 2-min timeout — fast tool succeeds", async () => {
       const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();

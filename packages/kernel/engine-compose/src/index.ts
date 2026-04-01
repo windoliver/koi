@@ -68,6 +68,7 @@ export {
   DEFAULT_LOOP_DETECTION,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
+  DEFAULT_TOOL_EXECUTION,
 } from "./guard-types.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";

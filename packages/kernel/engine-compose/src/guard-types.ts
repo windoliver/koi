@@ -171,8 +171,12 @@ export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
 // ---------------------------------------------------------------------------
 
 export interface ToolExecutionConfig {
-  /** Global timeout for all tool calls in milliseconds. No timeout when absent. */
+  /** Global timeout for all tool calls in milliseconds. Default: 120_000 (2 min). */
   readonly defaultTimeoutMs?: number | undefined;
   /** Per-tool timeout overrides. Takes precedence over defaultTimeoutMs. */
   readonly toolTimeouts?: Readonly<Record<string, number>> | undefined;
 }
+
+export const DEFAULT_TOOL_EXECUTION: ToolExecutionConfig = Object.freeze({
+  defaultTimeoutMs: 120_000,
+});

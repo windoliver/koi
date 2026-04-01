@@ -15,6 +15,7 @@
 import type { KoiMiddleware, ToolRequest } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import type { ToolExecutionConfig } from "./guard-types.js";
+import { DEFAULT_TOOL_EXECUTION } from "./guard-types.js";
 
 // ---------------------------------------------------------------------------
 // Config validation
@@ -190,15 +191,14 @@ function rethrowClassified(
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Create a tool-execution guard middleware. */
+/** Create a tool-execution guard middleware. Defaults to DEFAULT_TOOL_EXECUTION (2 min timeout). */
 export function createToolExecutionGuard(config?: Partial<ToolExecutionConfig>): KoiMiddleware {
-  if (config !== undefined) {
-    validateToolExecutionConfig(config);
-  }
+  const merged: ToolExecutionConfig = { ...DEFAULT_TOOL_EXECUTION, ...config };
+  validateToolExecutionConfig(merged);
 
-  const defaultTimeoutMs = config?.defaultTimeoutMs;
+  const defaultTimeoutMs = merged.defaultTimeoutMs;
   const toolTimeouts: ReadonlyMap<string, number> =
-    config?.toolTimeouts !== undefined ? new Map(Object.entries(config.toolTimeouts)) : new Map();
+    merged.toolTimeouts !== undefined ? new Map(Object.entries(merged.toolTimeouts)) : new Map();
 
   return {
     name: "koi:tool-execution",
