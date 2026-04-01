@@ -16,9 +16,16 @@ export type ParseResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly err: ValidationError };
 
-export function parseString(args: JsonObject, key: string): ParseResult<string> {
+export function parseString(
+  args: JsonObject,
+  key: string,
+  options?: { readonly allowEmpty?: boolean },
+): ParseResult<string> {
   const value = args[key];
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== "string") {
+    return { ok: false, err: { error: `${key} must be a string`, code: "VALIDATION" } };
+  }
+  if (value.length === 0 && !options?.allowEmpty) {
     return { ok: false, err: { error: `${key} must be a non-empty string`, code: "VALIDATION" } };
   }
   return { ok: true, value };

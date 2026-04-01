@@ -8,6 +8,7 @@ import type {
   FileSystemBackend,
   JsonObject,
   Tool,
+  ToolExecuteOptions,
   ToolPolicy,
 } from "@koi/core";
 import { parseArray, parseOptionalBoolean, parseString } from "../parse-args.js";
@@ -47,7 +48,11 @@ export function createFsEditTool(
     },
     origin: "primordial",
     policy,
-    execute: async (args: JsonObject): Promise<unknown> => {
+    execute: async (args: JsonObject, execOptions?: ToolExecuteOptions): Promise<unknown> => {
+      if (execOptions?.signal?.aborted) {
+        return { error: "Operation cancelled", code: "CANCELLED" };
+      }
+
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
       const editsResult = parseArray(args, "edits");
@@ -57,20 +62,31 @@ export function createFsEditTool(
 
       const edits: FileEdit[] = [];
       for (let i = 0; i < editsResult.value.length; i++) {
-        const entry = editsResult.value[i] as Record<string, unknown>;
-        if (typeof entry.oldText !== "string") {
+        const entry = editsResult.value[i];
+        if (entry === null || entry === undefined || typeof entry !== "object") {
           return {
-            error: `edits[${String(i)}].oldText must be a string, got ${typeof entry.oldText}`,
+            error: `edits[${String(i)}] must be an object, got ${entry === null ? "null" : typeof entry}`,
             code: "VALIDATION",
           };
         }
-        if (typeof entry.newText !== "string") {
+        const hunk = entry as Record<string, unknown>;
+        if (typeof hunk.oldText !== "string") {
           return {
-            error: `edits[${String(i)}].newText must be a string, got ${typeof entry.newText}`,
+            error: `edits[${String(i)}].oldText must be a string, got ${typeof hunk.oldText}`,
             code: "VALIDATION",
           };
         }
-        edits.push({ oldText: entry.oldText, newText: entry.newText });
+        if (typeof hunk.newText !== "string") {
+          return {
+            error: `edits[${String(i)}].newText must be a string, got ${typeof hunk.newText}`,
+            code: "VALIDATION",
+          };
+        }
+        edits.push({ oldText: hunk.oldText, newText: hunk.newText });
+      }
+
+      if (execOptions?.signal?.aborted) {
+        return { error: "Operation cancelled", code: "CANCELLED" };
       }
 
       const options: FileEditOptions = {

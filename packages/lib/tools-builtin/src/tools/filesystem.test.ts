@@ -109,6 +109,16 @@ describe("createFsReadTool", () => {
     expect(result.code).toBe("VALIDATION");
     expect(result.error).toContain("offset");
   });
+
+  test("returns validation error when path is wrong type (not empty string)", async () => {
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ path: "" })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("path");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -191,6 +201,35 @@ describe("createFsEditTool", () => {
       edits: [{ oldText: 42, newText: "bar" }],
     })) as { readonly error: string };
     expect(result.error).toContain("oldText");
+  });
+
+  test("returns validation error when edit hunk is null", async () => {
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [null],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("edits[0]");
+  });
+
+  test("returns validation error when edit hunk is a primitive", async () => {
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: ["not-an-object"],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("edits[0]");
+  });
+
+  test("returns cancelled when signal is already aborted", async () => {
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute(
+      { path: "/test", edits: [{ oldText: "a", newText: "b" }] },
+      { signal: AbortSignal.abort() },
+    )) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("CANCELLED");
   });
 });
 
@@ -275,5 +314,24 @@ describe("createFsWriteTool", () => {
     };
     expect(result.code).toBe("VALIDATION");
     expect(result.error).toContain("content");
+  });
+
+  test("allows writing empty content (truncate/placeholder files)", async () => {
+    const tool = createFsWriteTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/tmp/.gitkeep",
+      content: "",
+    })) as { readonly path: string; readonly bytesWritten: number };
+    expect(result.path).toBe("/tmp/.gitkeep");
+    expect(result.bytesWritten).toBe(0);
+  });
+
+  test("returns cancelled when signal is already aborted", async () => {
+    const tool = createFsWriteTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute(
+      { path: "/test", content: "x" },
+      { signal: AbortSignal.abort() },
+    )) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("CANCELLED");
   });
 });
