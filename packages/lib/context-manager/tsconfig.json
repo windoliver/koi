@@ -10,10 +10,10 @@
       "path": "../../kernel/core"
     },
     {
-      "path": "../../lib/errors"
+      "path": "../errors"
     },
     {
-      "path": "../token-estimator"
+      "path": "../../mm/token-estimator"
     }
   ]
 }

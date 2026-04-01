@@ -1,6 +1,6 @@
 # @koi/context-manager — Auto-Compact + Microcompact Policy
 
-`@koi/context-manager` is an L2 package that manages context window pressure through tiered compaction policies: microcompact (truncation at soft threshold) and full compact (LLM summarization at hard threshold), with exponential backoff on failure.
+`@koi/context-manager` is an L0u utility package that manages context window pressure through tiered compaction policies: microcompact (truncation at soft threshold) and full compact (LLM summarization at hard threshold), with exponential backoff on failure. As L0u, it is importable by any L1 or L2 package.
 
 ---
 
@@ -40,7 +40,7 @@ L0  @koi/core                   ─ ContextCompactor, CompactionResult,
 L0u @koi/token-estimator        ─ HEURISTIC_ESTIMATOR, estimateTokens
 L0u @koi/errors                 ─ isContextOverflowError
 
-L2  @koi/context-manager        ─ this package (no L1 dependency)
+L0u @koi/context-manager        ─ this package (importable by L1 + L2)
     imports: @koi/core, @koi/token-estimator, @koi/errors
 ```
 
@@ -262,8 +262,8 @@ L0u @koi/token-estimator ──────────────────�
 L0u @koi/errors ────────────────────────────────┐   │    │
     isContextOverflowError                      │   │    │
                                                 ▼   ▼    ▼
-L2  @koi/context-manager ◄─────────────────────┘───┘────┘
-    imports from L0 + L0u only
+L0u @koi/context-manager ◄─────────────────────┘───┘────┘
+    imports from L0 + peer L0u only
     ✗ never imports @koi/engine (L1)
-    ✗ never imports peer L2 packages
+    ✗ never imports L2 packages
 ```
