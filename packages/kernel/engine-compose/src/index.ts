@@ -61,12 +61,14 @@ export type {
   LoopWarningInfo,
   SpawnPolicy,
   SpawnWarningInfo,
+  ToolExecutionConfig,
 } from "./guard-types.js";
 export {
   DEFAULT_ITERATION_LIMITS,
   DEFAULT_LOOP_DETECTION,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
+  DEFAULT_TOOL_EXECUTION,
 } from "./guard-types.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";
@@ -76,6 +78,8 @@ export {
   createSpawnGuard,
   detectRepeatingPattern,
 } from "./guards.js";
+// tool execution guard
+export { createToolExecutionGuard } from "./tool-execution-guard.js";
 // visibility filter
 export type { VisibilityFilterConfig } from "./visibility-filter.js";
 export { createVisibilityFilter } from "./visibility-filter.js";

@@ -48,6 +48,9 @@ jobs:
       - name: Check doc sync
         run: bun run check:doc-sync
 
+      - name: Check orphaned L2 packages
+        run: bun run check:orphans
+
       - name: Check unused code (knip)
         run: bun run check:unused
 

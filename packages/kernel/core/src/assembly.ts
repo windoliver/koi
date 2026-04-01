@@ -174,6 +174,11 @@ export interface AgentManifest {
   readonly supervision?: SupervisionConfig;
   readonly skills?: readonly SkillConfig[];
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
+  // NOTE: AgentManifest.hooks is intentionally omitted until engine-level
+  // hook dispatch is wired. Hook types exist in @koi/core/hook and the
+  // loader/registry/executor live in @koi/hooks (L2), but adding the field
+  // here would imply runtime support that doesn't exist yet — causing silent
+  // non-execution for users who configure hooks in their manifests.
   /**
    * Lifecycle behavior declaration — "copilot" survives parent death,
    * "worker" is cascade-terminated with parent.

@@ -1,0 +1,29 @@
+{
+  "name": "@koi/hooks",
+  "description": "Hook loader, schema validation, and session-scoped hook lifecycle management",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {},
+  "koi": {
+    "optional": true
+  }
+}
