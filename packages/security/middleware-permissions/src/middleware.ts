@@ -168,9 +168,16 @@ function computeApprovalCacheKey(
   agentId: string,
   toolId: string,
   input: unknown,
+  context: string,
 ): number {
   const sorted = sortTopLevelKeys(input);
-  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${sorted}`);
+  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`);
+}
+
+/** Serialize turn-scoped context for inclusion in approval cache keys. */
+function serializeTurnContext(ctx: TurnContext): string {
+  const meta = ctx.metadata;
+  return Object.keys(meta).length > 0 ? JSON.stringify(meta) : "";
 }
 
 function sortTopLevelKeys(value: unknown): string {
@@ -233,8 +240,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // Denial tracker
   const tracker: DenialTracker = createDenialTracker();
 
-  // Set of tool names that came from forged tools (tracked per model call)
-  let forgedToolNames = new Set<string>();
+  // Forged tool names scoped per turn (keyed by turnId to prevent cross-turn leaks)
+  const forgedToolsByTurn = new Map<string, Set<string>>();
 
   // -----------------------------------------------------------------------
   // Internal helpers
@@ -385,8 +392,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const queries = tools.map((t) => queryForTool(ctx, t.name));
     const decisions = await resolveBatch(queries);
 
-    // Track forged tools for wrapToolCall override
-    const newForged = new Set<string>();
+    // Track forged tools scoped to this turn
+    const turnForged = new Set<string>();
+    const turnKey = ctx.turnId as string;
 
     const filtered = tools.filter((tool, i) => {
       const decision = decisions[i]!;
@@ -408,12 +416,17 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         "origin" in tool &&
         (tool as unknown as { readonly origin: string }).origin === "forged"
       ) {
-        newForged.add(tool.name);
+        turnForged.add(tool.name);
       }
       return true;
     });
 
-    forgedToolNames = newForged;
+    // Store forged tools for this turn only
+    if (turnForged.size > 0) {
+      forgedToolsByTurn.set(turnKey, turnForged);
+    } else {
+      forgedToolsByTurn.delete(turnKey);
+    }
 
     if (filtered.length === tools.length) return request;
     return { ...request, tools: filtered };
@@ -439,6 +452,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       tracker.clear();
       decisionCache?.clear();
       approvalCache?.clear();
+      forgedToolsByTurn.clear();
       await backend.dispose?.();
     },
 
@@ -476,7 +490,14 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
       if (decision.effect === "deny") {
         // Forged tool override: allow if denial is default-deny (not explicit)
-        if (forgedToolNames.has(request.toolId) && decision.reason.includes(DEFAULT_DENY_MARKER)) {
+        // Scoped to the current turn to prevent cross-turn bypass
+        const turnKey = ctx.turnId as string;
+        const turnForged = forgedToolsByTurn.get(turnKey);
+        if (
+          turnForged !== undefined &&
+          turnForged.has(request.toolId) &&
+          decision.reason.includes(DEFAULT_DENY_MARKER)
+        ) {
           return next(request);
         }
 
@@ -527,12 +548,14 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     // Check approval cache
     if (approvalCache !== undefined) {
       const userId = ctx.session.userId ?? "__anonymous__";
+      const ctxStr = serializeTurnContext(ctx);
       const cacheKey = computeApprovalCacheKey(
         backendFingerprint,
         userId,
         ctx.session.agentId,
         request.toolId,
         request.input,
+        ctxStr,
       );
 
       if (approvalCache.has(cacheKey)) {
@@ -580,22 +603,26 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         });
       }
 
-      // Cache the approval
+      // Handle "modify" — use updated input
+      // Never cache modify results: the input rewrite is the safety mechanism,
+      // and caching would replay the original unsafe input on subsequent calls
+      if (approvalResult.kind === "modify") {
+        return next({ ...request, input: approvalResult.updatedInput });
+      }
+
+      // Cache allow-only approvals (never modify — see above)
       if (approvalCache !== undefined) {
         const userId = ctx.session.userId ?? "__anonymous__";
+        const ctxStr = serializeTurnContext(ctx);
         const cacheKey = computeApprovalCacheKey(
           backendFingerprint,
           userId,
           ctx.session.agentId,
           request.toolId,
           request.input,
+          ctxStr,
         );
         approvalCache.set(cacheKey);
-      }
-
-      // Handle "modify" — use updated input
-      if (approvalResult.kind === "modify") {
-        return next({ ...request, input: approvalResult.updatedInput });
       }
 
       // "allow"

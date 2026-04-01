@@ -26,6 +26,8 @@ function makeTurnContext(overrides?: {
   readonly userId?: string;
   readonly agentId?: string;
   readonly turnIndex?: number;
+  readonly turnId?: string;
+  readonly metadata?: JsonObject;
   readonly requestApproval?: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 }): TurnContext {
   const base = {
@@ -37,9 +39,9 @@ function makeTurnContext(overrides?: {
       metadata: {},
     },
     turnIndex: overrides?.turnIndex ?? 0,
-    turnId: "t-1" as never,
+    turnId: (overrides?.turnId ?? "t-1") as never,
     messages: [] as const,
-    metadata: {},
+    metadata: overrides?.metadata ?? {},
   };
   if (overrides?.requestApproval !== undefined) {
     return { ...base, requestApproval: overrides.requestApproval };
@@ -335,6 +337,54 @@ describe("createPermissionsMiddleware", () => {
         noopToolHandler,
       );
       await mw.wrapToolCall!(ctx, makeToolRequest("deploy", { target: "prod" }), noopToolHandler);
+
+      expect(approvalFn).toHaveBeenCalledTimes(2);
+    });
+
+    test("does not cache modify approvals — re-prompts every time", async () => {
+      const approvalFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+          kind: "modify",
+          updatedInput: { safe: true },
+        }),
+      );
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        approvalCache: true,
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalFn });
+      const req = makeToolRequest("deploy", { dangerous: true });
+
+      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+      await mw.wrapToolCall!(ctx, req, noopToolHandler);
+
+      // Must prompt both times since modify results are never cached
+      expect(approvalFn).toHaveBeenCalledTimes(2);
+    });
+
+    test("different turn metadata produces different cache keys", async () => {
+      const approvalFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "allow" }),
+      );
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        approvalCache: true,
+      });
+      const req = makeToolRequest("deploy", { target: "staging" });
+
+      // Approval in context A
+      const ctxA = makeTurnContext({
+        requestApproval: approvalFn,
+        metadata: { tenant: "acme" },
+      });
+      await mw.wrapToolCall!(ctxA, req, noopToolHandler);
+
+      // Same tool+input but different context — must re-prompt
+      const ctxB = makeTurnContext({
+        requestApproval: approvalFn,
+        metadata: { tenant: "globex" },
+      });
+      await mw.wrapToolCall!(ctxB, req, noopToolHandler);
 
       expect(approvalFn).toHaveBeenCalledTimes(2);
     });
