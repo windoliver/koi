@@ -34,12 +34,12 @@ async function main(): Promise<void> {
   const baseBranch = rawBase !== undefined ? `origin/${rawBase}` : "origin/main";
 
   // Check for [test-archive] escape hatch in ANY commit in the PR range.
-  // This handles both local runs (git log -1) and CI where the checkout
-  // creates a merge commit that doesn't carry the contributor's message.
+  // When present, rename-to-archive moves are exempt — but deletions and
+  // test weakening in active code are still enforced.
   const commitMessages = (await $`git log ${baseBranch}..HEAD --format=%B`.text()).trim();
-  if (commitMessages.includes("[test-archive]")) {
-    console.log("ℹ️  [test-archive] escape hatch detected — skipping test integrity check.");
-    return;
+  const archiveMode = commitMessages.includes("[test-archive]");
+  if (archiveMode) {
+    console.log("ℹ️  [test-archive] detected — archive moves exempt, other checks still enforced.");
   }
 
   // Get changed files relative to base
@@ -63,13 +63,15 @@ async function main(): Promise<void> {
     // Renames (R###) — the source is parts[1], destination is parts[2].
     // If a test file is renamed OUT of active code (e.g. into archive/),
     // that's effectively a deletion from the active test suite.
+    // In [test-archive] mode, these moves are exempt.
     if (status.startsWith("R")) {
       const source = parts[1]?.trim();
       const dest = parts[2]?.trim();
       if (source === undefined || dest === undefined) continue;
-      // Only flag if the source was active code and the destination is not
       if (!source.startsWith("archive/") && dest.startsWith("archive/")) {
-        violations.push({ file: source, reason: `test file moved to archive (${dest})` });
+        if (!archiveMode) {
+          violations.push({ file: source, reason: `test file moved to archive (${dest})` });
+        }
       }
       continue;
     }
