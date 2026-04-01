@@ -102,35 +102,35 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
 /**
  * Determine the Chat Completions role for an InboundMessage.
  *
- * TRUST BOUNDARY: metadata.role, metadata.callId, metadata.toolCalls, and
- * metadata.systemPrompt are trusted because InboundMessage is an internal type
- * populated by L1 (engine), middleware, and session-repair — never directly by
- * external user input. The channel adapter layer validates and sanitizes
- * external input before it becomes an InboundMessage. If this assumption
- * changes, these fields must be moved to a separate trusted structure.
+ * TRUST BOUNDARY — privilege escalation prevention:
+ * - "system" role is ONLY granted via `system:*` senderIds (engine-injected).
+ *   metadata.role="system" is IGNORED to prevent callers from promoting
+ *   arbitrary text to system/developer priority in the prompt hierarchy.
+ * - "assistant" and "tool" are non-escalating (lower/equal to user), so
+ *   metadata.role is trusted for those via L1 engine/session-repair convention.
+ * - metadata.callId/toolCalls are trusted as internal L1 state. If
+ *   InboundMessage ever becomes externally constructable, these fields
+ *   must be moved to a separate trusted structure.
  *
  * Priority:
- * 1. metadata.role (explicit, authoritative — set by engine/middleware)
- * 2. senderId heuristic ("assistant", "tool")
- * 3. Default to "user"
+ * 1. senderId "system:*" → system (engine-only, not overridable)
+ * 2. metadata.role for non-escalating roles (assistant, tool, user)
+ * 3. senderId heuristic ("assistant", "tool")
+ * 4. Default to "user"
  */
 function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" | "system" {
+  // Engine-injected control messages — only provenance-based, not metadata
+  if (msg.senderId.startsWith("system:")) return "system";
+
+  // metadata.role for non-escalating roles only (not "system")
   const explicitRole = readStringMeta(msg.metadata, "role");
-  if (
-    explicitRole === "assistant" ||
-    explicitRole === "tool" ||
-    explicitRole === "user" ||
-    explicitRole === "system"
-  ) {
+  if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
     return explicitRole;
   }
+
+  // senderId heuristic fallback
   if (msg.senderId === "assistant") return "assistant";
   if (msg.senderId === "tool") return "tool";
-  // Engine-injected control messages use "system:*" senderIds
-  // (e.g. "system:loop-detector", "system:capabilities").
-  // These must be mapped to system/developer role, NOT user — otherwise
-  // guardrails become ordinary user text that later messages can override.
-  if (msg.senderId.startsWith("system:")) return "system";
   return "user";
 }
 
@@ -271,8 +271,14 @@ function fixTranscriptOrdering(
  *
  * Mutates the messages array in place for performance (called after mapping).
  */
-function maybeAddAnthropicCacheControl(messages: ChatCompletionMessage[], model: string): void {
-  if (!model.startsWith("anthropic/")) return;
+function maybeAddPromptCacheControl(
+  messages: ChatCompletionMessage[],
+  model: string,
+  compat: ResolvedCompat,
+): void {
+  // Only emit cache_control when the provider explicitly supports it AND the
+  // model is Anthropic. Generic OpenAI-compat endpoints would reject the payload.
+  if (!compat.supportsPromptCaching || !model.startsWith("anthropic/")) return;
 
   // Walk backwards to find the last user/assistant message with text content
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -333,9 +339,8 @@ export function buildRequestBody(
   if (systemPrompt !== undefined) {
     const role = config.compat.supportsDeveloperRole ? "developer" : "system";
     const effectiveModel = request.model ?? config.model;
-    // Add cache_control to system prompt for Anthropic models — this is the
-    // most cacheable content (identical across all turns in a conversation)
-    if (effectiveModel.startsWith("anthropic/")) {
+    // Add cache_control to system prompt when provider supports prompt caching
+    if (config.compat.supportsPromptCaching && effectiveModel.startsWith("anthropic/")) {
       messages.push({
         role: role as "system",
         content: [
@@ -350,9 +355,9 @@ export function buildRequestBody(
   // Conversation messages
   messages.push(...mapMessages(request.messages, config.compat));
 
-  // Anthropic prompt caching — add cache_control to last text block
+  // Prompt caching — gated on compat flag + model prefix
   const effectiveModel = request.model ?? config.model;
-  maybeAddAnthropicCacheControl(messages, effectiveModel);
+  maybeAddPromptCacheControl(messages, effectiveModel, config.compat);
 
   const body: Record<string, unknown> = {
     model: request.model ?? config.model,

@@ -32,6 +32,8 @@ export interface ProviderCompat {
   readonly requiresThinkingAsText?: boolean | undefined;
   /** Whether the provider supports `strict` in tool definitions. Default: true. */
   readonly supportsStrictMode?: boolean | undefined;
+  /** Whether the provider supports Anthropic-style prompt caching via cache_control. Default: false (opt-in). */
+  readonly supportsPromptCaching?: boolean | undefined;
 }
 
 /** Fully resolved compat with all fields set. */
@@ -44,6 +46,7 @@ export interface ResolvedCompat {
   readonly requiresAssistantAfterToolResult: boolean;
   readonly requiresThinkingAsText: boolean;
   readonly supportsStrictMode: boolean;
+  readonly supportsPromptCaching: boolean;
 }
 
 const _DEFAULT_COMPAT: ResolvedCompat = {
@@ -55,6 +58,7 @@ const _DEFAULT_COMPAT: ResolvedCompat = {
   requiresAssistantAfterToolResult: false,
   requiresThinkingAsText: false,
   supportsStrictMode: true,
+  supportsPromptCaching: false,
 };
 
 /**
@@ -69,6 +73,7 @@ function detectCompat(baseUrl: string): ResolvedCompat {
   const isDeepSeek = baseUrl.includes("deepseek.com");
   const isGroq = baseUrl.includes("groq.com");
   const isOpenCode = baseUrl.includes("opencode.ai");
+  const isOpenRouter = baseUrl.includes("openrouter.ai");
 
   const isNonStandard = isCerebras || isXai || isChutes || isDeepSeek || isZai || isOpenCode;
 
@@ -81,6 +86,9 @@ function detectCompat(baseUrl: string): ResolvedCompat {
     requiresAssistantAfterToolResult: false,
     requiresThinkingAsText: isGroq || isDeepSeek,
     supportsStrictMode: true,
+    // Prompt caching only for providers that support Anthropic-style
+    // cache_control blocks. Generic endpoints would reject the payload.
+    supportsPromptCaching: isOpenRouter,
   };
 }
 
@@ -99,6 +107,7 @@ export function resolveCompat(baseUrl: string, overrides?: ProviderCompat): Reso
       overrides.requiresAssistantAfterToolResult ?? detected.requiresAssistantAfterToolResult,
     requiresThinkingAsText: overrides.requiresThinkingAsText ?? detected.requiresThinkingAsText,
     supportsStrictMode: overrides.supportsStrictMode ?? detected.supportsStrictMode,
+    supportsPromptCaching: overrides.supportsPromptCaching ?? detected.supportsPromptCaching,
   };
 }
 
