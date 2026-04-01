@@ -594,13 +594,16 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
 export type {
   CommandHookConfig,
   HookConfig,
+  HookDecision,
   HookEvent,
+  HookEventKind,
+  HookEventName,
   HookExecutionResult,
   HookFilter,
   HookType,
   HttpHookConfig,
 } from "./hook.js";
-export { DEFAULT_HOOK_TIMEOUT_MS } from "./hook.js";
+export { DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS } from "./hook.js";
 // inbox — message steering queue for autonomous agents
 export type { InboxComponent, InboxItem, InboxMode, InboxPolicy } from "./inbox.js";
 export { DEFAULT_INBOX_POLICY } from "./inbox.js";

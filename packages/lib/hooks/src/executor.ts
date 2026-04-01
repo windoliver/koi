@@ -8,9 +8,11 @@
 import type {
   CommandHookConfig,
   HookConfig,
+  HookDecision,
   HookEvent,
   HookExecutionResult,
   HttpHookConfig,
+  JsonObject,
 } from "@koi/core";
 import { DEFAULT_HOOK_TIMEOUT_MS as TIMEOUT_DEFAULT } from "@koi/core";
 import { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
@@ -50,6 +52,57 @@ function validateHookUrl(url: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Hook decision parsing
+// ---------------------------------------------------------------------------
+
+const DECISION_CONTINUE: HookDecision = { kind: "continue" } as const;
+
+/**
+ * Parse raw hook output (stdout or HTTP response body) into a HookDecision.
+ *
+ * Expected JSON shape:
+ *   { "decision": "continue" }
+ *   { "decision": "block", "reason": "..." }
+ *   { "decision": "modify", "patch": { ... } }
+ *
+ * Returns `{ kind: "continue" }` when the output is empty, not JSON, or
+ * doesn't match the expected shape — hooks that don't return a decision
+ * are treated as having no opinion.
+ */
+function parseHookDecision(raw: string): HookDecision {
+  const trimmed = raw.trim();
+  if (trimmed === "") return DECISION_CONTINUE;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return DECISION_CONTINUE;
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return DECISION_CONTINUE;
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const decision = obj.decision;
+
+  if (decision === "block") {
+    const reason = typeof obj.reason === "string" ? obj.reason : "blocked by hook";
+    return { kind: "block", reason };
+  }
+
+  if (decision === "modify") {
+    if (typeof obj.patch === "object" && obj.patch !== null && !Array.isArray(obj.patch)) {
+      return { kind: "modify", patch: obj.patch as JsonObject };
+    }
+    return DECISION_CONTINUE;
+  }
+
+  return DECISION_CONTINUE;
+}
+
+// ---------------------------------------------------------------------------
 // Single-hook executors
 // ---------------------------------------------------------------------------
 
@@ -80,12 +133,12 @@ async function executeCommandHook(
 
     const spawnOptions: {
       readonly stdin: ReadableStream<Uint8Array> | null;
-      readonly stdout: "ignore";
+      readonly stdout: "pipe";
       readonly stderr: "pipe";
       readonly env?: Record<string, string | undefined>;
     } = {
       stdin: new Response(JSON.stringify(event)).body,
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "pipe",
     };
 
@@ -108,9 +161,10 @@ async function executeCommandHook(
       void forceKill(proc);
     }
 
-    // Drain stderr concurrently with waiting for exit to avoid pipe buffer deadlock
-    const [exitCode, stderrText] = await Promise.all([
+    // Drain stdout + stderr concurrently with waiting for exit to avoid pipe buffer deadlock
+    const [exitCode, stdoutText, stderrText] = await Promise.all([
       proc.exited,
+      new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
     ]);
     signal.removeEventListener("abort", onAbort);
@@ -130,7 +184,8 @@ async function executeCommandHook(
       };
     }
 
-    return { ok: true, hookName: hook.name, durationMs };
+    const decision = parseHookDecision(stdoutText);
+    return { ok: true, hookName: hook.name, durationMs, decision };
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
@@ -216,7 +271,9 @@ async function executeHttpHook(
       };
     }
 
-    return { ok: true, hookName: hook.name, durationMs };
+    const body = await response.text();
+    const decision = parseHookDecision(body);
+    return { ok: true, hookName: hook.name, durationMs, decision };
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
@@ -245,6 +302,10 @@ function executeSingleHook(
       return executeCommandHook(hook, event, composedSignal);
     case "http":
       return executeHttpHook(hook, event, composedSignal);
+    default: {
+      const _exhaustive: never = hook;
+      throw new Error(`Unknown hook kind: ${(_exhaustive as HookConfig).kind}`);
+    }
   }
 }
 

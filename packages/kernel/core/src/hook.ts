@@ -20,6 +20,38 @@ import type { JsonObject } from "./common.js";
 export type HookType = "command" | "http";
 
 // ---------------------------------------------------------------------------
+// Hook event kind — typed lifecycle event discriminator
+// ---------------------------------------------------------------------------
+
+/** Canonical list of hook lifecycle events. Single source of truth. */
+export const HOOK_EVENT_KINDS = [
+  "session.started",
+  "session.ended",
+  "turn.started",
+  "turn.ended",
+  "tool.before",
+  "tool.succeeded",
+  "tool.failed",
+  "permission.request",
+  "permission.denied",
+  "compact.before",
+  "compact.after",
+  "subagent.started",
+  "subagent.stopped",
+  "config.changed",
+] as const;
+
+/** Typed hook lifecycle event discriminator (known events). */
+export type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
+
+/**
+ * Event kind accepted by hook interfaces. Known `HookEventKind` values get
+ * autocomplete, but any string is accepted for forward compatibility with
+ * newer event kinds and custom/third-party events.
+ */
+export type HookEventName = HookEventKind | (string & {});
+
+// ---------------------------------------------------------------------------
 // Hook filter — controls which events trigger a hook
 // ---------------------------------------------------------------------------
 
@@ -31,7 +63,7 @@ export type HookType = "command" | "http";
  */
 export interface HookFilter {
   /** Session event kinds to match (e.g., "session.started", "tool.succeeded"). */
-  readonly events?: readonly string[] | undefined;
+  readonly events?: readonly HookEventName[] | undefined;
   /** Tool names to match. */
   readonly tools?: readonly string[] | undefined;
   /** Channel IDs to match. */
@@ -47,7 +79,7 @@ export interface HookFilter {
  */
 export interface HookEvent {
   /** The event kind that triggered this hook (e.g., "session.started"). */
-  readonly event: string;
+  readonly event: HookEventName;
   /** Agent ID that owns the session. */
   readonly agentId: string;
   /** Session ID. */
@@ -128,6 +160,23 @@ export interface HttpHookConfig {
 export type HookConfig = CommandHookConfig | HttpHookConfig;
 
 // ---------------------------------------------------------------------------
+// Hook decision — structured response from hook executors
+// ---------------------------------------------------------------------------
+
+/**
+ * Decision returned by a hook execution, expressing the hook's intent.
+ *
+ * Hooks return one of:
+ * - `continue` — no opinion, proceed normally (default when no response)
+ * - `block` — stop this operation with a reason visible to the model
+ * - `modify` — patch the operation's input before proceeding
+ */
+export type HookDecision =
+  | { readonly kind: "continue" }
+  | { readonly kind: "block"; readonly reason: string }
+  | { readonly kind: "modify"; readonly patch: JsonObject };
+
+// ---------------------------------------------------------------------------
 // Hook execution result
 // ---------------------------------------------------------------------------
 
@@ -137,6 +186,7 @@ export type HookExecutionResult =
       readonly ok: true;
       readonly hookName: string;
       readonly durationMs: number;
+      readonly decision: HookDecision;
     }
   | {
       readonly ok: false;
