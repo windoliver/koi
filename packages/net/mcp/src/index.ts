@@ -7,7 +7,7 @@
  */
 
 // Auth
-export type { McpAuthProvider, UnauthorizedContext } from "./auth.js";
+export type { McpAuthProvider } from "./auth.js";
 export { createBearerAuthProvider } from "./auth.js";
 // Config — external schema (CC-compatible)
 // Config — internal types (Koi convention)

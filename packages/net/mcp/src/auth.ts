@@ -2,34 +2,29 @@
  * MCP authentication provider interface.
  *
  * Pluggable auth for MCP transports. The transport calls token() before
- * each request and onUnauthorized() when it receives a 401/403.
+ * each request to get the current bearer token.
  *
- * Simple bearer token providers implement token() only.
- * OAuth 2.1 providers implement the full interface (future package).
+ * This is intentionally sync-only. Async token refresh (OAuth 2.1, token
+ * rotation) and 401/403 retry are not yet implemented — they will be added
+ * in a future PR with a separate AsyncMcpAuthProvider interface. Keeping
+ * the contract narrow prevents callers from depending on unimplemented behavior.
  */
 
 // ---------------------------------------------------------------------------
 // Auth provider interface
 // ---------------------------------------------------------------------------
 
-export interface UnauthorizedContext {
-  readonly status: number;
-  readonly headers: Readonly<Record<string, string>>;
-  readonly serverName: string;
-}
-
 /**
- * Pluggable authentication provider for MCP transports.
+ * Synchronous authentication provider for MCP transports.
  *
  * - `token()`: returns the current auth token (bearer, API key, etc.)
  *   Return `undefined` to skip authentication for this request.
- * - `onUnauthorized()`: called when the transport receives a 401 or 403.
- *   The provider should refresh/rotate credentials. If it returns without
- *   error, the transport retries the request once.
+ *
+ * For async token refresh or OAuth 2.1 flows, a future AsyncMcpAuthProvider
+ * will extend this interface.
  */
 export interface McpAuthProvider {
-  readonly token: () => string | undefined | Promise<string | undefined>;
-  readonly onUnauthorized?: (context: UnauthorizedContext) => void | Promise<void>;
+  readonly token: () => string | undefined;
 }
 
 // ---------------------------------------------------------------------------

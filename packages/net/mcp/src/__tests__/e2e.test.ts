@@ -418,8 +418,8 @@ describe("E2E: CC config normalization", () => {
     }
   });
 
-  test("headersHelper and oauth accepted but not surfaced", () => {
-    const { servers } = normalizeMcpServers({
+  test("headersHelper and oauth are rejected with clear error", () => {
+    const { servers, rejected } = normalizeMcpServers({
       "oauth-server": {
         type: "http",
         url: "https://example.com",
@@ -427,11 +427,9 @@ describe("E2E: CC config normalization", () => {
         oauth: { clientId: "my-client", callbackPort: 8080 },
       },
     });
-    expect(servers).toHaveLength(1);
-    expect(servers[0]?.kind).toBe("http");
-    // headersHelper/oauth fields don't appear in internal config
-    if (servers[0]?.kind === "http") {
-      expect(servers[0].headers).toBeUndefined();
-    }
+    // Server is rejected — not silently accepted
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("headersHelper");
   });
 });

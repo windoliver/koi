@@ -189,7 +189,10 @@ const SUPPORTED_TYPES: ReadonlySet<string> = new Set(["stdio", "http", "sse"]);
 
 export interface NormalizeResult {
   readonly servers: readonly McpServerConfig[];
+  /** Servers with unsupported transport types (ws, sdk, etc.). */
   readonly unsupported: readonly string[];
+  /** Servers that use unimplemented auth features (headersHelper, oauth). */
+  readonly rejected: readonly string[];
 }
 
 /**
@@ -201,6 +204,7 @@ export function normalizeMcpServers(
 ): NormalizeResult {
   const servers: McpServerConfig[] = [];
   const unsupported: string[] = [];
+  const rejected: string[] = [];
 
   for (const [name, config] of Object.entries(mcpServers)) {
     const transportType = config.type ?? "stdio";
@@ -210,13 +214,24 @@ export function normalizeMcpServers(
       continue;
     }
 
+    // Reject configs using auth features that are not yet implemented.
+    // Silently dropping these would cause opaque 401/403 failures at runtime.
+    if (config.headersHelper !== undefined) {
+      rejected.push(`${name}: headersHelper is not yet supported`);
+      continue;
+    }
+    if (config.oauth !== undefined) {
+      rejected.push(`${name}: oauth is not yet supported`);
+      continue;
+    }
+
     const internal = normalizeOne(name, config);
     if (internal !== undefined) {
       servers.push(internal);
     }
   }
 
-  return { servers, unsupported };
+  return { servers, unsupported, rejected };
 }
 
 function normalizeOne(name: string, config: ExternalServerConfig): McpServerConfig | undefined {

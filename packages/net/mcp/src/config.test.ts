@@ -158,11 +158,12 @@ describe("validateMcpJson", () => {
 
 describe("normalizeMcpServers", () => {
   test("normalizes stdio server", () => {
-    const { servers, unsupported } = normalizeMcpServers({
+    const { servers, unsupported, rejected } = normalizeMcpServers({
       "my-server": { command: "npx", args: ["-y", "server"] },
     });
     expect(servers).toHaveLength(1);
     expect(unsupported).toHaveLength(0);
+    expect(rejected).toHaveLength(0);
     expect(servers[0]?.kind).toBe("stdio");
     expect(servers[0]?.name).toBe("my-server");
     if (servers[0]?.kind === "stdio") {
@@ -284,6 +285,42 @@ describe("normalizeMcpServers", () => {
       "my-special-server": { command: "npx" },
     });
     expect(servers[0]?.name).toBe("my-special-server");
+  });
+
+  test("rejects config with headersHelper (not yet implemented)", () => {
+    const { servers, rejected } = normalizeMcpServers({
+      authed: {
+        type: "http",
+        url: "https://example.com",
+        headersHelper: "/path/to/helper.sh",
+      },
+    });
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("headersHelper");
+  });
+
+  test("rejects config with oauth (not yet implemented)", () => {
+    const { servers, rejected } = normalizeMcpServers({
+      "oauth-server": {
+        type: "http",
+        url: "https://example.com",
+        oauth: { clientId: "my-client" },
+      },
+    });
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("oauth");
+  });
+
+  test("allows supported servers alongside rejected auth servers", () => {
+    const { servers, rejected } = normalizeMcpServers({
+      good: { type: "http", url: "https://example.com" },
+      "needs-oauth": { type: "http", url: "https://authed.com", oauth: { clientId: "x" } },
+    });
+    expect(servers).toHaveLength(1);
+    expect(servers[0]?.name).toBe("good");
+    expect(rejected).toHaveLength(1);
   });
 });
 

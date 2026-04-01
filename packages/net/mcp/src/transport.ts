@@ -76,11 +76,9 @@ function createStdio(config: StdioServerConfig): SdkTransportLike {
 
 function createHttp(config: HttpServerConfig, authProvider?: McpAuthProvider): SdkTransportLike {
   const headers: Record<string, string> = config.headers !== undefined ? { ...config.headers } : {};
-  // Auth injected via header — SDK's OAuthClientProvider requires full OAuth 2.1 flow.
   if (authProvider !== undefined) {
     const token = authProvider.token();
-    const resolved = token instanceof Promise ? undefined : token;
-    if (resolved !== undefined) headers.Authorization = `Bearer ${resolved}`;
+    if (token !== undefined) headers.Authorization = `Bearer ${token}`;
   }
   return new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: { headers },

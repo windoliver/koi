@@ -8,6 +8,7 @@
 
 import type { JsonObject, KoiError, Result } from "@koi/core";
 import { computeBackoff, DEFAULT_RECONNECT_CONFIG, sleep } from "@koi/errors";
+import { Client as SdkClient } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpAuthProvider } from "./auth.js";
 import type { ResolvedMcpServerConfig } from "./config.js";
 import {
@@ -464,11 +465,5 @@ function defaultCreateClient(info: {
   readonly name: string;
   readonly version: string;
 }): SdkClientLike {
-  // Dynamic import avoided — the SDK Client is imported at module level
-  // but we defer to the factory for DI. In production, this creates a
-  // real MCP SDK Client.
-  const { Client } = require("@modelcontextprotocol/sdk/client/index.js") as {
-    Client: new (info: { name: string; version: string }) => SdkClientLike;
-  };
-  return new Client(info) as unknown as SdkClientLike;
+  return new SdkClient(info) as unknown as SdkClientLike;
 }

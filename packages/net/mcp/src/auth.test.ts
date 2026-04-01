@@ -13,11 +13,6 @@ describe("createBearerAuthProvider", () => {
     expect(auth.token()).toBe("stable");
   });
 
-  test("does not define onUnauthorized", () => {
-    const auth = createBearerAuthProvider("tok");
-    expect(auth.onUnauthorized).toBeUndefined();
-  });
-
   test("handles empty string token", () => {
     const auth = createBearerAuthProvider("");
     expect(auth.token()).toBe("");
