@@ -36,12 +36,6 @@ const STREAM_IDLE_TIMEOUT_MS = 90_000;
 export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): ModelAdapter {
   const resolved = resolveConfig(config);
 
-  // Pre-warm TLS connection in the background
-  void fetch(`${resolved.baseUrl}/models`, {
-    method: "HEAD",
-    headers: { Authorization: `Bearer ${resolved.apiKey}` },
-  }).catch(() => {});
-
   // Resolve retry config from user overrides
   const retryConfig: RetryConfig = {
     maxRetries: config.retry?.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries,
@@ -53,13 +47,30 @@ export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): Mo
   // Track whether keep-alive should be disabled (ECONNRESET recovery)
   let disableKeepAlive = false;
 
+  // Lazy TLS pre-warm — fires on first stream()/complete() call, not at
+  // construction. Avoids leaking credentials to a misconfigured baseUrl
+  // during dry runs or test setup where no real request is intended.
+  let prewarmed = false;
+  function lazyPrewarm(): void {
+    if (prewarmed) return;
+    prewarmed = true;
+    void fetch(`${resolved.baseUrl}/models`, {
+      method: "HEAD",
+      headers: { Authorization: `Bearer ${resolved.apiKey}` },
+    }).catch(() => {});
+  }
+
   const adapter: ModelAdapter = {
     id: `${resolved.provider}:${resolved.model}`,
     provider: resolved.provider,
     capabilities: resolved.capabilities,
-    complete: (request) => complete(resolved, request, retryConfig, () => disableKeepAlive),
-    stream: (request) =>
-      streamWithRetry(
+    complete: (request) => {
+      lazyPrewarm();
+      return complete(resolved, request, retryConfig, () => disableKeepAlive);
+    },
+    stream: (request) => {
+      lazyPrewarm();
+      return streamWithRetry(
         resolved,
         request,
         retryConfig,
@@ -67,7 +78,8 @@ export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): Mo
         (v) => {
           disableKeepAlive = v;
         },
-      ),
+      );
+    },
   };
 
   return adapter;

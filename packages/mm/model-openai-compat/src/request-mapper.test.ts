@@ -40,6 +40,35 @@ describe("mapMessages", () => {
     expect(result[0]?.content).toBe("hello");
   });
 
+  test("maps system:* senderIds to system role (engine guardrails)", () => {
+    const loopDetector: InboundMessage = {
+      content: [{ kind: "text", text: "Loop detected — halting." }],
+      senderId: "system:loop-detector",
+      timestamp: Date.now(),
+    };
+    const capabilities: InboundMessage = {
+      content: [{ kind: "text", text: "You have access to: search, code." }],
+      senderId: "system:capabilities",
+      timestamp: Date.now(),
+    };
+    const result = mapMessages([loopDetector, capabilities], DEFAULT_COMPAT);
+    expect(result[0]?.role).toBe("system");
+    expect(result[0]?.content).toBe("Loop detected — halting.");
+    expect(result[1]?.role).toBe("system");
+    expect(result[1]?.content).toBe("You have access to: search, code.");
+  });
+
+  test("explicit metadata.role=system maps to system", () => {
+    const msg: InboundMessage = {
+      content: [{ kind: "text", text: "System instruction." }],
+      senderId: "custom-sender",
+      timestamp: Date.now(),
+      metadata: { role: "system" },
+    };
+    const result = mapMessages([msg], DEFAULT_COMPAT);
+    expect(result[0]?.role).toBe("system");
+  });
+
   test("maps assistant messages with role assistant", () => {
     const msg: InboundMessage = {
       content: [{ kind: "text", text: "I can help with that." }],

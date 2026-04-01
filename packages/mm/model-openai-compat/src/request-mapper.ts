@@ -83,13 +83,23 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
  * 2. senderId heuristic ("assistant", "tool")
  * 3. Default to "user"
  */
-function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" {
+function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" | "system" {
   const explicitRole = readStringMeta(msg.metadata, "role");
-  if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
+  if (
+    explicitRole === "assistant" ||
+    explicitRole === "tool" ||
+    explicitRole === "user" ||
+    explicitRole === "system"
+  ) {
     return explicitRole;
   }
   if (msg.senderId === "assistant") return "assistant";
   if (msg.senderId === "tool") return "tool";
+  // Engine-injected control messages use "system:*" senderIds
+  // (e.g. "system:loop-detector", "system:capabilities").
+  // These must be mapped to system/developer role, NOT user — otherwise
+  // guardrails become ordinary user text that later messages can override.
+  if (msg.senderId.startsWith("system:")) return "system";
   return "user";
 }
 
@@ -158,6 +168,12 @@ function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatComplet
       ...(toolCallId !== undefined ? { tool_call_id: normalizeToolCallId(toolCallId) } : {}),
       ...(compat.requiresToolResultName && toolName !== undefined ? { name: toolName } : {}),
     };
+  }
+
+  // Engine-injected system messages (system:loop-detector, system:capabilities)
+  // must retain system/developer semantics so guardrails can't be overridden.
+  if (role === "system") {
+    return { role: "system", content: text };
   }
 
   return { role: "user", content: text };
