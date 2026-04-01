@@ -2,7 +2,7 @@
  * Per-call tool execution middleware factory.
  *
  * Wraps every tool call with:
- * - Abort signal composition (parent + per-call timeout via AbortSignal.any)
+ * - Abort signal composition (parent + per-call timeout)
  * - Per-tool timeout enforcement via Promise.race
  * - Pre-aborted signal short-circuit
  *
@@ -54,7 +54,7 @@ function validateConfig(config: ToolExecutionConfig): void {
 }
 
 // ---------------------------------------------------------------------------
-// Signal + timeout composition
+// Timeout resolution
 // ---------------------------------------------------------------------------
 
 /**
@@ -69,109 +69,137 @@ function resolveTimeoutMs(
   return toolTimeouts.get(toolId) ?? defaultTimeoutMs;
 }
 
+// ---------------------------------------------------------------------------
+// Signal composition with full cleanup
+// ---------------------------------------------------------------------------
+
 /**
- * Result of composing a signal with a timeout.
- * The caller MUST invoke cleanup() in a finally block to clear the timer
- * and remove the abort listener — prevents timer leaks and listener
- * accumulation on reused signals.
+ * Composed signal result. The caller MUST invoke cleanup() in a finally block
+ * to clear the timeout timer and remove all listeners — prevents timer leaks,
+ * listener accumulation, and AbortSignal.any() subscription leaks.
  */
 interface ComposedSignal {
   readonly signal: AbortSignal;
   /** Racing promise that rejects when the signal fires. */
   readonly racePromise: Promise<never>;
-  /** Clear timeout timer + remove abort listener. MUST be called in finally. */
+  /** Whether the abort was caused by our timeout (true) or by the parent signal (false). */
+  readonly isOurTimeout: () => boolean;
+  /** Clear timer + remove all listeners. MUST be called in finally. */
   readonly cleanup: () => void;
 }
 
 /**
- * Compose a parent signal with a per-call timeout, returning an abort race
- * promise and a cleanup function that cancels the timer immediately.
+ * Sentinel reason used to tag our timeout abort. Allows distinguishing
+ * "our timer fired" from "parent signal fired" when both share a controller.
+ */
+const TIMEOUT_SENTINEL = Symbol("koi:tool-execution:timeout");
+
+interface TimeoutAbortReason {
+  readonly __brand: typeof TIMEOUT_SENTINEL;
+  readonly timeoutMs: number;
+}
+
+function createTimeoutReason(timeoutMs: number): TimeoutAbortReason {
+  return { __brand: TIMEOUT_SENTINEL, timeoutMs };
+}
+
+function isTimeoutReason(reason: unknown): reason is TimeoutAbortReason {
+  return (
+    typeof reason === "object" &&
+    reason !== null &&
+    "__brand" in reason &&
+    (reason as Record<string, unknown>).__brand === TIMEOUT_SENTINEL
+  );
+}
+
+/**
+ * Build a composed signal that merges a parent signal with a per-call timeout.
+ * Uses a single AbortController with manual parent-signal forwarding instead
+ * of AbortSignal.any() — so all subscriptions can be fully cleaned up.
  *
- * Uses a manual AbortController + setTimeout instead of AbortSignal.timeout()
- * so the timer can be cleared when the tool completes — preventing timer
- * accumulation under load with long default timeouts.
+ * Returns undefined when neither parent signal nor timeout exist.
  */
 function createComposedSignal(
   parentSignal: AbortSignal | undefined,
   timeoutMs: number | undefined,
 ): ComposedSignal | undefined {
-  // No timeout and no parent signal → nothing to compose
   if (timeoutMs === undefined && parentSignal === undefined) {
     return undefined;
   }
 
-  // No timeout → just race against the parent signal (no timer to clean up)
-  if (timeoutMs === undefined && parentSignal !== undefined) {
-    return createAbortRace(parentSignal, undefined);
-  }
+  const controller = new AbortController();
 
-  // Create a manually-managed timeout controller so we can clear the timer
-  const timeoutController = new AbortController();
-  const timer = setTimeout(() => {
-    timeoutController.abort(new DOMException("The operation timed out", "TimeoutError"));
-  }, timeoutMs);
-
-  // Compose parent + timeout signals, or just use timeout signal
-  const composedSignal =
-    parentSignal !== undefined
-      ? AbortSignal.any([parentSignal, timeoutController.signal])
-      : timeoutController.signal;
-
-  return createAbortRace(composedSignal, () => {
-    clearTimeout(timer);
-  });
-}
-
-/**
- * Create a racing promise + cleanup from a composed signal.
- * The optional extraCleanup callback clears any timer resources.
- */
-function createAbortRace(
-  signal: AbortSignal,
-  extraCleanup: (() => void) | undefined,
-): ComposedSignal {
-  // If already aborted, return an immediately-rejecting promise (no listener needed)
-  if (signal.aborted) {
-    const reason: unknown = signal.reason;
-    const error =
-      reason instanceof DOMException
-        ? reason
-        : new DOMException("The operation was aborted", "AbortError");
-    extraCleanup?.();
-    return {
-      signal,
-      racePromise: Promise.reject(error),
-      cleanup: () => {},
-    };
-  }
-
-  // let justified: mutable binding swapped by doReject/cleanup to break the closure
-  let rejectFn: ((reason: unknown) => void) | undefined;
-
-  const doReject = (): void => {
-    if (rejectFn === undefined) return;
-    const reason: unknown = signal.reason;
-    if (reason instanceof DOMException) {
-      rejectFn(reason);
+  // --- Parent signal forwarding (fully cleanable) ---
+  let parentListener: (() => void) | undefined;
+  if (parentSignal !== undefined) {
+    // If parent already aborted, abort immediately with its reason
+    if (parentSignal.aborted) {
+      controller.abort(parentSignal.reason);
     } else {
-      rejectFn(new DOMException("The operation was aborted", "AbortError"));
+      parentListener = () => {
+        controller.abort(parentSignal.reason);
+      };
+      parentSignal.addEventListener("abort", parentListener, { once: true });
     }
-    rejectFn = undefined;
-  };
+  }
+
+  // --- Timeout timer (fully cleanable) ---
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined && !controller.signal.aborted) {
+    timer = setTimeout(() => {
+      controller.abort(createTimeoutReason(timeoutMs));
+    }, timeoutMs);
+  }
+
+  // --- Race promise ---
+  // let justified: mutable binding swapped by doReject/cleanup
+  let rejectFn: ((reason: unknown) => void) | undefined;
 
   const racePromise = new Promise<never>((_resolve, reject) => {
     rejectFn = reject;
   });
 
-  signal.addEventListener("abort", doReject, { once: true });
-
-  const cleanup = (): void => {
-    signal.removeEventListener("abort", doReject);
+  const doReject = (): void => {
+    if (rejectFn === undefined) return;
+    const reason: unknown = controller.signal.reason;
+    if (isTimeoutReason(reason)) {
+      rejectFn(new DOMException("The operation timed out", "TimeoutError"));
+    } else if (reason instanceof DOMException) {
+      rejectFn(reason);
+    } else {
+      // Preserve the original abort reason (e.g., "user_cancel", "shutdown")
+      rejectFn(new DOMException(String(reason ?? "aborted"), "AbortError"));
+    }
     rejectFn = undefined;
-    extraCleanup?.();
   };
 
-  return { signal, racePromise, cleanup };
+  if (controller.signal.aborted) {
+    // Already aborted (parent was pre-aborted) — reject immediately
+    doReject();
+  } else {
+    controller.signal.addEventListener("abort", doReject, { once: true });
+  }
+
+  const cleanup = (): void => {
+    // Clear timeout timer
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    // Remove parent forwarding listener (prevents AbortSignal.any()-style leaks)
+    if (parentListener !== undefined && parentSignal !== undefined) {
+      parentSignal.removeEventListener("abort", parentListener);
+    }
+    // Remove race listener from our controller's signal
+    controller.signal.removeEventListener("abort", doReject);
+    rejectFn = undefined;
+  };
+
+  return {
+    signal: controller.signal,
+    racePromise,
+    isOurTimeout: () => isTimeoutReason(controller.signal.reason),
+    cleanup,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -181,36 +209,37 @@ function createAbortRace(
 /**
  * Classify a caught error and re-throw appropriately.
  *
- * Only rewrites DOMException as KoiRuntimeError when the composed signal
- * actually fired — preventing misclassification of tool-originated
- * AbortError/TimeoutError (e.g., from fetch or browser APIs).
+ * - Our timeout → KoiRuntimeError("TIMEOUT") with retryable: false
+ * - External cancellation (user_cancel, shutdown, etc.) → re-thrown as-is
+ *   to preserve the abort reason for upstream middleware
+ * - Tool-originated errors → re-thrown as-is
+ *
+ * Only classifies DOMExceptions when the composed signal actually fired
+ * AND the abort was our timeout — preventing misclassification of
+ * tool-originated or parent-originated aborts.
  */
 function rethrowClassified(
   error: unknown,
   toolId: string,
-  timeoutMs: number | undefined,
-  composedSignal: AbortSignal | undefined,
+  composed: ComposedSignal | undefined,
 ): never {
-  // Only classify DOMExceptions that came from OUR signal, not from the tool
-  if (error instanceof DOMException && composedSignal?.aborted === true) {
-    if (error.name === "TimeoutError") {
-      const msg =
-        timeoutMs !== undefined
-          ? `Tool "${toolId}" timed out after ${timeoutMs}ms`
-          : `Tool "${toolId}" timed out`;
-      throw KoiRuntimeError.from("TIMEOUT", msg, {
+  // Only classify as TIMEOUT when our timer caused the abort
+  if (
+    error instanceof DOMException &&
+    composed?.signal.aborted === true &&
+    composed.isOurTimeout()
+  ) {
+    const reason = composed.signal.reason as TimeoutAbortReason;
+    throw KoiRuntimeError.from(
+      "TIMEOUT",
+      `Tool "${toolId}" timed out after ${reason.timeoutMs}ms`,
+      {
         retryable: false,
-        context: { toolId, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
-      });
-    }
-    if (error.name === "AbortError") {
-      throw KoiRuntimeError.from("TIMEOUT", `Tool "${toolId}" was aborted`, {
-        retryable: false,
-        context: { toolId, abortReason: error.message },
-      });
-    }
+        context: { toolId, timeoutMs: reason.timeoutMs },
+      },
+    );
   }
-  // Re-throw as-is — preserves error type for outer middleware
+  // Everything else (tool errors, parent aborts) re-thrown as-is
   throw error;
 }
 
@@ -239,10 +268,10 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
     wrapToolCall: async (_ctx, request, next) => {
       // 1. Check: is signal already aborted?
       if (request.signal?.aborted === true) {
-        throw KoiRuntimeError.from("TIMEOUT", `Tool "${request.toolId}" was aborted`, {
-          retryable: false,
-          context: { toolId: request.toolId },
-        });
+        // Re-throw as DOMException preserving the original reason — do NOT
+        // collapse into TIMEOUT. Upstream middleware inspects signal.reason
+        // to distinguish user_cancel/shutdown/token_limit from timeout.
+        throw new DOMException(String(request.signal.reason ?? "aborted"), "AbortError");
       }
 
       // 2. Resolve timeout for this toolId
@@ -260,7 +289,7 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
         try {
           return await Promise.race([next(forwardRequest), composed.racePromise]);
         } catch (error: unknown) {
-          rethrowClassified(error, request.toolId, timeoutMs, composed.signal);
+          rethrowClassified(error, request.toolId, composed);
         } finally {
           composed.cleanup();
         }
