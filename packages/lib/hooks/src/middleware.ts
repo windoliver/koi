@@ -6,9 +6,9 @@
  *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
  *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
- *   wrapToolCall    → "tool.pre" (blocking) + "tool.post" (fire-and-forget, drained)
- *   wrapModelCall   → "model.pre" (blocking) + "model.post" (fire-and-forget, drained)
- *   wrapModelStream → "model.pre" (blocking) + "model.post" (fire-and-forget, drained)
+ *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
+ *   wrapModelCall   → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelStream → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
  * Post-call hooks are fire-and-forget during the turn but drained with a bounded
@@ -219,7 +219,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     | { readonly blocked: true; readonly reason: string }
     | { readonly blocked: false; readonly request: ModelRequest }
   > {
-    const preEvent = buildEvent(ctx.session, "model.pre", {
+    const preEvent = buildEvent(ctx.session, "compact.before", {
       data: buildModelPreData(request),
     });
     const preResults = await registry.execute(sessionId, preEvent);
@@ -292,7 +292,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const sessionId = ctx.session.sessionId as string;
 
       // Pre-call: blocking dispatch with decision aggregation
-      const preEvent = buildEvent(ctx.session, "tool.pre", {
+      const preEvent = buildEvent(ctx.session, "tool.before", {
         toolName: request.toolId,
         data: { input: request.input } as JsonObject,
       });
@@ -314,7 +314,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const response = await next(effectiveRequest);
 
       // Post-call: fire-and-forget (use effective input, not original, for audit consistency)
-      const postEvent = buildEvent(ctx.session, "tool.post", {
+      const postEvent = buildEvent(ctx.session, "tool.succeeded", {
         toolName: request.toolId,
         data: { input: effectiveRequest.input, output: response.output } as JsonObject,
       });
@@ -342,7 +342,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const response = await next(preResult.request);
 
       // Post-call: fire-and-forget
-      const postEvent = buildEvent(ctx.session, "model.post", {
+      const postEvent = buildEvent(ctx.session, "compact.after", {
         data: { model: response.model } as JsonObject,
       });
       fireAndForget(sessionId, postEvent);
@@ -371,7 +371,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       } finally {
         // Post-call: fire-and-forget after stream completes or errors
         // Use effective model (from preResult), not original request model
-        const postEvent = buildEvent(ctx.session, "model.post", {
+        const postEvent = buildEvent(ctx.session, "compact.after", {
           data: { model: preResult.request.model ?? "default" } as JsonObject,
         });
         fireAndForget(sessionId, postEvent);

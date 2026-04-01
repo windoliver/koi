@@ -77,6 +77,11 @@ declare function matchesHookFilter(filter: HookFilter | undefined, event: HookEv
  * Entry point for parsing hook definitions from agent manifests.
  */
 
+/** Successful load result including optional warnings for unknown event kinds. */
+interface LoadHooksResult {
+    readonly hooks: readonly HookConfig[];
+    readonly warnings: readonly string[];
+}
 /**
  * Validates an array of raw hook config objects and returns typed \`HookConfig[]\`.
  *
@@ -86,6 +91,15 @@ declare function matchesHookFilter(filter: HookFilter | undefined, event: HookEv
  * @returns Result with validated hook configs or a KoiError with schema violation details.
  */
 declare function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError>;
+/**
+ * Like \`loadHooks\`, but also returns warnings for unknown event kinds in
+ * \`filter.events\`. Unknown events are accepted (forward-compatible) but
+ * flagged so typos and version skew are visible at load time.
+ *
+ * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
+ * @returns Result with validated hook configs + warnings, or a KoiError.
+ */
+declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult, KoiError>;
 
 /**
  * Hook registry — session-scoped hook registration and cleanup.
@@ -135,6 +149,6 @@ declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { type HookRegistry, commandHookSchema, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, matchesHookFilter };
+export { type HookRegistry, type LoadHooksResult, commandHookSchema, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
 "
 `;

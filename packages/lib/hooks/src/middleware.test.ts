@@ -41,7 +41,7 @@ const TEST_HOOKS: readonly HookConfig[] = [
     kind: "command",
     name: "on-tool-pre",
     cmd: ["echo", "ok"],
-    filter: { events: ["tool.pre"] },
+    filter: { events: ["tool.before"] },
   },
   {
     kind: "http",
@@ -237,7 +237,7 @@ describe("createHookMiddleware", () => {
       let _callIndex = 0;
       executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
         _callIndex++;
-        if (event.event === "tool.post") {
+        if (event.event === "tool.succeeded") {
           // Simulate a slow post-hook (50ms) — must complete before cleanup
           await new Promise((resolve) => setTimeout(resolve, 50));
           postHookCompleted = true;
@@ -663,7 +663,7 @@ describe("wrapModelStream", () => {
         return [successResult("rerouter", { kind: "modify", patch: { model: "cheap-model" } })];
       }
       // model.post — capture event
-      if (event.event === "model.post") {
+      if (event.event === "compact.after") {
         postCallEvent = event;
       }
       return [];
@@ -696,7 +696,7 @@ describe("wrapModelStream", () => {
     let callIndex = 0;
     executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
       callIndex++;
-      if (callIndex >= 3 && event.event === "model.post") {
+      if (callIndex >= 3 && event.event === "compact.after") {
         postCallFired = true;
       }
       return [successResult("observer")];

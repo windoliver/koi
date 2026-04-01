@@ -8,7 +8,8 @@
 export { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 export { executeHooks } from "./executor.js";
 export { matchesHookFilter } from "./filter.js";
-export { loadHooks } from "./loader.js";
+export type { LoadHooksResult } from "./loader.js";
+export { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
 export type { CreateHookMiddlewareOptions } from "./middleware.js";
 export { aggregateDecisions, createHookMiddleware } from "./middleware.js";
 export type { HookRegistry } from "./registry.js";

@@ -19,6 +19,40 @@ events.
 > the engine lifecycle. `AgentManifest` does not yet include a `hooks`
 > field — until then, callers wire hooks via `createHookMiddleware()`.
 
+## Hook Event Kinds
+
+All hook events use the `HookEventKind` string union — a closed set of
+dot-separated lifecycle discriminators. The canonical list lives in
+`@koi/core` as `HOOK_EVENT_KINDS` (array) and `HookEventKind` (type).
+
+| Event | Fires when |
+|-------|-----------|
+| `session.started` | A new agent session begins |
+| `session.ended` | A session terminates (success or abort) |
+| `turn.started` | A new conversation turn begins |
+| `turn.ended` | A conversation turn completes |
+| `tool.before` | Immediately before a tool is invoked |
+| `tool.succeeded` | A tool invocation completes successfully |
+| `tool.failed` | A tool invocation fails |
+| `permission.request` | A permission check is about to be evaluated |
+| `permission.denied` | A permission check was denied |
+| `compact.before` | Context compaction is about to run |
+| `compact.after` | Context compaction has completed |
+| `subagent.started` | A sub-agent has been spawned |
+| `subagent.stopped` | A sub-agent has terminated |
+| `config.changed` | Agent configuration was modified at runtime |
+
+Adding new events is additive — extend the `HOOK_EVENT_KINDS` array in
+`@koi/core`. Existing hooks are unaffected because filters use OR logic
+within the `events` field.
+
+**Forward compatibility:** The Zod schema accepts any non-empty string in
+`filter.events`, not just known `HookEventKind` values. This ensures that
+manifests referencing newly added events load successfully on nodes running
+older `@koi/hooks` versions. Compile-time type safety is enforced by
+`HookEventKind` in TypeScript — runtime validation guards structure, not
+vocabulary.
+
 ## Hook Types
 
 ### Phase 1 (this package)
@@ -121,12 +155,12 @@ during the engine lifecycle.
 | `onSessionEnd` | `session.ended` | No — awaited but decisions ignored |
 | `onBeforeTurn` | `turn.started` | Yes — `block` throws (turn fails) |
 | `onAfterTurn` | `turn.ended` | No (fire-and-forget) |
-| `wrapToolCall` (pre) | `tool.pre` | Yes — `block`/`modify` enforced |
-| `wrapToolCall` (post) | `tool.post` | No (fire-and-forget) |
-| `wrapModelCall` (pre) | `model.pre` | Yes — `block`/`modify` enforced |
-| `wrapModelCall` (post) | `model.post` | No (fire-and-forget) |
-| `wrapModelStream` (pre) | `model.pre` | Yes — `block`/`modify` enforced |
-| `wrapModelStream` (post) | `model.post` | No (fire-and-forget) |
+| `wrapToolCall` (pre) | `tool.before` | Yes — `block`/`modify` enforced |
+| `wrapToolCall` (post) | `tool.succeeded` | No (fire-and-forget) |
+| `wrapModelCall` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
+| `wrapModelCall` (post) | `compact.after` | No (fire-and-forget) |
+| `wrapModelStream` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
+| `wrapModelStream` (post) | `compact.after` | No (fire-and-forget) |
 
 ### Hook Decisions
 
