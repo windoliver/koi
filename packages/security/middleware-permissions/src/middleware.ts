@@ -252,21 +252,27 @@ function computeApprovalCacheKey(
   input: unknown,
   context: string | undefined,
   requestMeta: unknown,
+  approvalReason: string,
 ): string | undefined {
   if (context === undefined) return undefined;
   const sorted = safeSerializeInput(input);
   if (sorted === undefined) return undefined;
   const reqMeta = requestMeta !== undefined ? safeStringify(requestMeta) : "";
   if (reqMeta === undefined) return undefined;
-  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}\0${reqMeta}`;
+  // Include approval reason so policy/risk changes invalidate cached approvals
+  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}\0${reqMeta}\0${approvalReason}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
 /** Returns undefined when metadata is not serializable — caller must skip caching. */
 function serializeTurnContext(ctx: TurnContext): string | undefined {
-  const meta = ctx.metadata;
-  if (Object.keys(meta).length === 0) return "";
-  return safeStringify(meta);
+  const sessionMeta = ctx.session.metadata;
+  const turnMeta = ctx.metadata;
+  const hasSession = Object.keys(sessionMeta).length > 0;
+  const hasTurn = Object.keys(turnMeta).length > 0;
+  if (!hasSession && !hasTurn) return "";
+  const combined = { ...(hasSession ? { _s: sessionMeta } : {}), ...(hasTurn ? turnMeta : {}) };
+  return safeStringify(combined);
 }
 
 function safeSerializeInput(value: unknown): string | undefined {
@@ -386,12 +392,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const sessionId = ctx.session.sessionId as string;
     const principal = buildPrincipal(ctx.session.agentId, userId, sessionId);
 
-    // Merge turn metadata + per-request metadata into query context
+    // Merge session + turn + per-request metadata into query context.
+    // All three layers participate in backend checks and cache keys.
+    const sessionMeta = ctx.session.metadata;
     const turnMeta = ctx.metadata;
+    const hasSessionMeta = Object.keys(sessionMeta).length > 0;
     const hasTurnMeta = Object.keys(turnMeta).length > 0;
     const hasReqMeta = requestMetadata !== undefined && Object.keys(requestMetadata).length > 0;
-    if (hasTurnMeta || hasReqMeta) {
+    if (hasSessionMeta || hasTurnMeta || hasReqMeta) {
       const merged = {
+        ...(hasSessionMeta ? { _session: sessionMeta } : {}),
         ...(hasTurnMeta ? turnMeta : {}),
         ...(hasReqMeta ? { _request: requestMetadata } : {}),
       };
@@ -728,6 +738,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         request.input,
         ctxStr,
         request.metadata,
+        decision.reason,
       );
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
@@ -747,6 +758,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       request.input,
       dedupCtx,
       request.metadata,
+      decision.reason,
     );
 
     // Coalesce concurrent identical asks onto a single pending approval
@@ -851,6 +863,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           request.input,
           ctxStr,
           request.metadata,
+          decision.reason,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
