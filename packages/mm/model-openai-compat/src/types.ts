@@ -124,6 +124,14 @@ export interface OpenAICompatAdapterConfig {
   readonly headers?: Readonly<Record<string, string>> | undefined;
   /** Provider name for telemetry. Defaults to "openai-compat". */
   readonly provider?: string | undefined;
+  /** Override retry configuration. Set maxRetries: 0 to disable retry. */
+  readonly retry?:
+    | {
+        readonly maxRetries?: number | undefined;
+        readonly baseDelayMs?: number | undefined;
+        readonly maxDelayMs?: number | undefined;
+      }
+    | undefined;
 }
 
 /** Resolved config with defaults applied. */

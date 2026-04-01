@@ -86,6 +86,7 @@ describe("adapter: text stream", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -128,6 +129,7 @@ describe("adapter: tool call stream", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -167,6 +169,7 @@ describe("adapter: HTTP 429 rate limit", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -197,6 +200,7 @@ describe("adapter: HTTP 401 auth error", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "bad-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -231,6 +235,7 @@ describe("adapter: complete()", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -256,6 +261,7 @@ describe("adapter: complete()", () => {
 
     const controller = new AbortController();
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -277,6 +283,7 @@ describe("adapter: complete()", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -309,6 +316,7 @@ describe("adapter: mid-stream abort", () => {
 
     const controller = new AbortController();
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -358,6 +366,7 @@ describe("adapter: truncated stream detection", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -391,6 +400,7 @@ describe("adapter: retry metadata propagation", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -426,6 +436,7 @@ describe("adapter: model override in response", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "default-model",
@@ -462,6 +473,7 @@ describe("adapter: [DONE] without finish_reason", () => {
     });
 
     const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -496,4 +508,34 @@ describe("adapter: config validation", () => {
       }),
     ).toThrow("vision");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Retry behavior
+// ---------------------------------------------------------------------------
+
+describe("adapter: retry", () => {
+  test("surfaces error after exhausting retries on 500", async () => {
+    routes.set("/v1/chat/completions", {
+      status: 500,
+      body: JSON.stringify({ error: { message: "Persistent failure" } }),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 1, baseDelayMs: 10, maxDelayMs: 50 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.message).toContain("Persistent failure");
+    }
+    // No done chunk
+    expect(chunks.find((c) => c.kind === "done")).toBeUndefined();
+  }, 10_000);
 });

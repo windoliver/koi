@@ -1,41 +1,72 @@
 /**
- * OpenRouter model adapter — implements ModelAdapter for OpenAI Chat Completions API.
+ * OpenAI-compatible model adapter with production resilience.
+ *
+ * Features from Claude Code's production implementation:
+ * - Stream idle watchdog (90s timeout, resets per chunk)
+ * - Retry with exponential backoff + jitter (500ms * 2^attempt, cap 32s)
+ * - ECONNRESET detection → disable keep-alive for fresh TCP
+ * - 529 overloaded: retryable error (caller decides foreground/background policy)
  */
 
 import type { ModelAdapter, ModelChunk, ModelRequest, ModelResponse } from "@koi/core";
 import { mapProviderError } from "./error-mapper.js";
 import { buildRequestBody } from "./request-mapper.js";
 import { buildModelResponse, createEmptyAccumulator } from "./response-mapper.js";
+import type { RetryConfig } from "./retry.js";
+import {
+  computeRetryDelay,
+  DEFAULT_RETRY_CONFIG,
+  isConnectionResetError,
+  isRetryableStatus,
+  sleepWithSignal,
+} from "./retry.js";
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
 import type { OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
 import { resolveConfig } from "./types.js";
 
-/**
- * Create a provider-agnostic model adapter for OpenRouter and any
- * OpenAI Chat Completions-compatible API.
- *
- * The adapter uses `async function*` for streaming with natural backpressure.
- * All request preparation happens before `fetch()` — zero blocking in the
- * streaming path.
- */
+/** Stream idle timeout — abort hung streams after 90s of no data. */
+const STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
 export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): ModelAdapter {
   const resolved = resolveConfig(config);
 
-  // Pre-warm TLS connection in the background to eliminate cold-start latency
-  // on the first stream()/complete() call (~300ms saving on cold connections).
-  // The fetch is fire-and-forget; failures are silently ignored.
+  // Pre-warm TLS connection in the background
   void fetch(`${resolved.baseUrl}/models`, {
     method: "HEAD",
     headers: { Authorization: `Bearer ${resolved.apiKey}` },
   }).catch(() => {});
 
+  // Resolve retry config from user overrides
+  const retryConfig: RetryConfig = {
+    maxRetries: config.retry?.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries,
+    baseDelayMs: config.retry?.baseDelayMs ?? DEFAULT_RETRY_CONFIG.baseDelayMs,
+    maxDelayMs: config.retry?.maxDelayMs ?? DEFAULT_RETRY_CONFIG.maxDelayMs,
+    jitterFactor: DEFAULT_RETRY_CONFIG.jitterFactor,
+  };
+
+  // Track whether keep-alive should be disabled (ECONNRESET recovery)
+  let disableKeepAlive = false;
+
   const adapter: ModelAdapter = {
     id: `${resolved.provider}:${resolved.model}`,
     provider: resolved.provider,
     capabilities: resolved.capabilities,
-    complete: (request) => complete(resolved, request),
-    stream: (request) => stream(resolved, request),
+    complete: (request) => complete(resolved, request, retryConfig, () => disableKeepAlive),
+    stream: (request) =>
+      streamWithRetry(
+        resolved,
+        request,
+        retryConfig,
+        () => disableKeepAlive,
+        (v) => {
+          disableKeepAlive = v;
+        },
+      ),
   };
 
   return adapter;
@@ -45,20 +76,27 @@ export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): Mo
 // Non-streaming: accumulate stream into ModelResponse
 // ---------------------------------------------------------------------------
 
-async function complete(config: ResolvedConfig, request: ModelRequest): Promise<ModelResponse> {
+async function complete(
+  config: ResolvedConfig,
+  request: ModelRequest,
+  retryConfig: RetryConfig,
+  getDisableKeepAlive: () => boolean,
+): Promise<ModelResponse> {
   let lastResponse: ModelResponse | undefined;
 
-  for await (const chunk of stream(config, request)) {
+  for await (const chunk of streamWithRetry(
+    config,
+    request,
+    retryConfig,
+    getDisableKeepAlive,
+    () => {},
+  )) {
     if (chunk.kind === "done") {
       lastResponse = chunk.response;
     }
     if (chunk.kind === "error") {
       throw new Error(chunk.message, {
-        cause: {
-          code: chunk.code,
-          retryable: chunk.retryable,
-          retryAfterMs: chunk.retryAfterMs,
-        },
+        cause: { code: chunk.code, retryable: chunk.retryable, retryAfterMs: chunk.retryAfterMs },
       });
     }
   }
@@ -74,11 +112,60 @@ async function complete(config: ResolvedConfig, request: ModelRequest): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// Streaming: async generator yielding ModelChunk
+// Streaming with retry wrapper
 // ---------------------------------------------------------------------------
 
-async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIterable<ModelChunk> {
-  // --- All prep before fetch() (Issue #15: first-chunk latency) ---
+async function* streamWithRetry(
+  config: ResolvedConfig,
+  request: ModelRequest,
+  retryConfig: RetryConfig,
+  getDisableKeepAlive: () => boolean,
+  setDisableKeepAlive: (v: boolean) => void,
+): AsyncIterable<ModelChunk> {
+  for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
+    let shouldRetry = false;
+    let retryAfterMs: number | undefined;
+
+    for await (const chunk of streamOnce(config, request, getDisableKeepAlive)) {
+      if (chunk.kind === "error") {
+        // ECONNRESET → disable keep-alive for subsequent requests
+        if (
+          chunk.message.toLowerCase().includes("econnreset") ||
+          chunk.message.toLowerCase().includes("epipe") ||
+          chunk.message.toLowerCase().includes("socket hang up")
+        ) {
+          setDisableKeepAlive(true);
+        }
+
+        // Check if retryable and we have attempts left
+        if (chunk.retryable === true && attempt < retryConfig.maxRetries) {
+          shouldRetry = true;
+          retryAfterMs = chunk.retryAfterMs;
+          break; // Exit inner loop, retry
+        }
+      }
+
+      yield chunk;
+    }
+
+    if (!shouldRetry) return;
+
+    // Wait before retry
+    const delay = computeRetryDelay(attempt, retryConfig, retryAfterMs);
+    const continued = await sleepWithSignal(delay, request.signal);
+    if (!continued) return; // Aborted during backoff
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Single stream attempt (no retry)
+// ---------------------------------------------------------------------------
+
+async function* streamOnce(
+  config: ResolvedConfig,
+  request: ModelRequest,
+  getDisableKeepAlive: () => boolean,
+): AsyncIterable<ModelChunk> {
   const tools =
     request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
@@ -86,11 +173,11 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${config.apiKey}`,
-    Connection: "keep-alive",
+    Connection: getDisableKeepAlive() ? "close" : "keep-alive",
     ...config.headers,
   };
 
-  // --- Fetch with abort signal propagation ---
+  // --- Fetch ---
   let response: Response;
   try {
     response = await fetch(url, {
@@ -100,17 +187,18 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
       signal: request.signal ?? null,
     });
   } catch (error: unknown) {
-    const isAbort = request.signal?.aborted === true;
-    if (isAbort) return; // Clean abort — no error chunk
+    if (request.signal?.aborted === true) return;
+    const isConnReset = isConnectionResetError(error);
     yield {
       kind: "error",
       message: error instanceof Error ? error.message : String(error),
       code: "EXTERNAL",
+      retryable: isConnReset,
     };
     return;
   }
 
-  // --- Handle HTTP errors ---
+  // --- HTTP errors ---
   if (!response.ok) {
     const errorBody = await response.text();
     const koiError = mapProviderError(
@@ -123,19 +211,20 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
       kind: "error",
       message: koiError.message,
       code: koiError.code,
-      retryable: koiError.retryable,
+      retryable: isRetryableStatus(response.status),
       retryAfterMs: koiError.retryAfterMs,
     };
     return;
   }
 
-  // --- Parse SSE stream ---
+  // --- Parse SSE stream with idle watchdog ---
   const responseBody = response.body;
   if (responseBody === null) {
     yield {
       kind: "error",
       message: `${config.provider} returned 200 OK with no response body`,
       code: "EXTERNAL",
+      retryable: true,
     };
     return;
   }
@@ -148,18 +237,53 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
   let sawDone = false;
   let hadError = false;
 
+  // Stream idle watchdog — abort hung streams after 90s of no data
+  const idleController = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function resetIdleTimer(): void {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => idleController.abort("stream_idle_timeout"),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
+  }
+
+  function clearIdleTimer(): void {
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  }
+
+  // Combine user signal with idle watchdog
+  const combinedSignal = request.signal
+    ? AbortSignal.any([request.signal, idleController.signal])
+    : idleController.signal;
+
+  resetIdleTimer();
+
   try {
     for await (const rawChunk of responseBody) {
-      // Check abort between chunks (edge case #5)
-      if (request.signal?.aborted === true) return;
+      resetIdleTimer();
+
+      if (combinedSignal.aborted) {
+        if (request.signal?.aborted === true) return; // User abort — clean
+        // Idle timeout — emit error
+        yield {
+          kind: "error",
+          message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
+          code: "TIMEOUT",
+          retryable: true,
+        };
+        return;
+      }
 
       const text = decoder.decode(rawChunk as Uint8Array, { stream: true });
       if (text.includes("[DONE]")) sawDone = true;
       buffer += text;
 
-      // Process complete SSE events (split on double newline)
       const parts = buffer.split("\n\n");
-      // Keep the last incomplete part in the buffer
       buffer = parts.pop() ?? "";
 
       for (const part of parts) {
@@ -181,7 +305,9 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
       }
     }
 
-    // Process any remaining buffered data
+    clearIdleTimer();
+
+    // Process remaining buffer
     if (buffer.trim().length > 0) {
       if (buffer.includes("[DONE]")) sawDone = true;
       for (const sseResult of parseSSELines(`${buffer}\n`)) {
@@ -201,12 +327,8 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
       }
     }
 
-    // If any error was emitted during streaming, do not finalize
     if (hadError) return;
 
-    // Verify stream integrity BEFORE finalizing tool calls.
-    // This prevents emitting tool_call_end events from a truncated stream
-    // that consumers might act on before the error arrives.
     const acc = parser.getAccumulator();
     if (!acc.receivedFinishReason) {
       yield {
@@ -215,26 +337,41 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
           ? "Stream sent [DONE] without a finish_reason — possible truncation"
           : "Stream terminated without [DONE] marker or finish_reason — possible truncation",
         code: "EXTERNAL",
+        retryable: true,
       };
       return;
     }
 
-    // Stream verified — safe to finalize and emit tool_call_end events
     for (const chunk of parser.finish()) {
       if (chunk.kind === "error") {
         yield chunk;
-        return; // Malformed tool args — stop, don't emit done
+        return;
       }
       yield chunk;
     }
 
     yield { kind: "done", response: buildModelResponse(acc) };
   } catch (error: unknown) {
+    clearIdleTimer();
     if (request.signal?.aborted === true) return;
+
+    // Check if idle timeout triggered
+    if (idleController.signal.aborted) {
+      yield {
+        kind: "error",
+        message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
+        code: "TIMEOUT",
+        retryable: true,
+      };
+      return;
+    }
+
+    const isConnReset = isConnectionResetError(error);
     yield {
       kind: "error",
       message: error instanceof Error ? error.message : String(error),
       code: "EXTERNAL",
+      retryable: isConnReset,
     };
   }
 }

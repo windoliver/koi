@@ -221,6 +221,7 @@ afterAll(() => {
 
 runModelAdapterContractTests("OpenRouter", () => ({
   adapter: createOpenAICompatAdapter({
+    retry: { maxRetries: 0 },
     apiKey: "contract-test-key",
     baseUrl: `http://localhost:${server.port}/v1`,
     model: "test-model",
