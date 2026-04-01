@@ -14,6 +14,7 @@ import type {
   ComposedCallHandlers,
   EngineEvent,
   EngineInput,
+  EngineStopReason,
   InboxComponent,
   InboxItem,
   KoiMiddleware,
