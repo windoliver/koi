@@ -5,7 +5,7 @@
 <h1 align="center">Koi</h1>
 
 <p align="center">
-  <strong>The self-extending agent operating system.</strong><br/>
+  <strong>The self-evolving agent operating system.</strong><br/>
   7 contracts. One YAML file.
 </p>
 
@@ -57,17 +57,15 @@ L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + select
 
 ### 7 Contracts
 
-The kernel defines 7 extension contracts — the syscall table of the agent OS:
-
 | Contract | Purpose | Surface |
 |----------|---------|---------|
-| **Middleware** | Sole interposition layer for model/tool calls | 7 optional hooks |
-| **Message** | Inbound/outbound data format | `ContentBlock[]` |
-| **Channel** | I/O interface to users | `send()` + `onMessage()` |
-| **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |
-| **Assembly** | What an agent IS (manifest) | Declarative YAML config |
+| **Middleware** | Sole interposition for model + tool calls | 7 hooks |
+| **Message** | Data format | `ContentBlock[]` |
+| **Channel** | User I/O | `send()` + `onMessage()` |
+| **Resolver** | Tool/skill/agent discovery | `discover()` + `load()` |
+| **Assembly** | Agent definition | Declarative YAML |
 | **Engine** | Swappable agent loop | `stream()` |
-| **AgentRegistry** | Agent lifecycle management | CAS transitions + `watch()` |
+| **AgentRegistry** | Lifecycle management | CAS + `watch()` |
 
 Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
 
@@ -81,8 +79,6 @@ Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
 
 <details>
 <summary><strong>Linux → Koi mental model</strong></summary>
-
-Every Koi concept maps 1:1 to a Linux kernel equivalent:
 
 | Linux | Koi | Where it lives |
 |-------|-----|----------------|
