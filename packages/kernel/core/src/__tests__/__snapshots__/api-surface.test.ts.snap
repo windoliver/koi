@@ -18,6 +18,7 @@ export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './eli
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
+export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HookConfig, HookEvent, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
@@ -2762,6 +2763,124 @@ interface HealthMonitor extends AsyncDisposable {
 }
 
 export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorConfig, type HealthMonitorStats, type HealthSnapshot, type HealthStatus };
+"
+`;
+
+exports[`@koi/core API surface ./hook has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * Hook contract — L0 types for session-scoped side-effect triggers.
+ *
+ * Hooks fire in response to session lifecycle events. Two transport types
+ * are supported in Phase 1: \`command\` (local process via Bun.spawn) and
+ * \`http\` (network request). The \`prompt\` type is deferred.
+ *
+ * Phase 1 scope: type definitions (this file), loader, schema validation,
+ * and session-scoped registry (@koi/hooks). Engine-level integration
+ * (automatic dispatch during session lifecycle) is separate work.
+ */
+
+/** Supported hook transport types. */
+type HookType = "command" | "http";
+/**
+ * Filter conditions for hook dispatch. All specified fields must match (AND).
+ * Within a field, any value can match (OR).
+ *
+ * When no filter is set on a hook config, the hook fires on all events.
+ */
+interface HookFilter {
+    /** Session event kinds to match (e.g., "session.started", "tool.succeeded"). */
+    readonly events?: readonly string[] | undefined;
+    /** Tool names to match. */
+    readonly tools?: readonly string[] | undefined;
+    /** Channel IDs to match. */
+    readonly channels?: readonly string[] | undefined;
+}
+/**
+ * Context passed to hook executors when a hook fires.
+ */
+interface HookEvent {
+    /** The event kind that triggered this hook (e.g., "session.started"). */
+    readonly event: string;
+    /** Agent ID that owns the session. */
+    readonly agentId: string;
+    /** Session ID. */
+    readonly sessionId: string;
+    /** Tool name, if the event is tool-related. */
+    readonly toolName?: string | undefined;
+    /** Channel ID, if the event is channel-related. */
+    readonly channelId?: string | undefined;
+    /** Arbitrary event data. */
+    readonly data?: JsonObject | undefined;
+}
+/**
+ * A hook that spawns a local process via \`Bun.spawn\`.
+ *
+ * The command receives hook event data as a JSON string via stdin.
+ * The process is killed (SIGTERM) when the session ends or on timeout.
+ */
+interface CommandHookConfig {
+    readonly kind: "command";
+    /** Human-readable hook name (unique within a manifest). */
+    readonly name: string;
+    /** Command and arguments to spawn (e.g., ["./scripts/on-start.sh", "--verbose"]). */
+    readonly cmd: readonly string[];
+    /** Optional environment variables for the spawned process. */
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    /** Filter conditions — when absent, fires on all events. */
+    readonly filter?: HookFilter | undefined;
+    /** Whether this hook is active. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** Timeout in milliseconds. Default: 30_000. */
+    readonly timeoutMs?: number | undefined;
+    /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+    readonly serial?: boolean | undefined;
+}
+/**
+ * A hook that sends an HTTP request to a URL.
+ *
+ * The hook event data is sent as the JSON request body.
+ * Supports HMAC-SHA256 signing (same pattern as outbound webhooks).
+ */
+interface HttpHookConfig {
+    readonly kind: "http";
+    /** Human-readable hook name (unique within a manifest). */
+    readonly name: string;
+    /** Target URL. Must be HTTPS (HTTP allowed for localhost in dev). */
+    readonly url: string;
+    /** HTTP method. Default: "POST". */
+    readonly method?: "POST" | "PUT" | undefined;
+    /** Additional request headers. Supports env-var substitution (e.g., "\${TOKEN}"). */
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+    /** HMAC-SHA256 signing secret. Supports env-var substitution. */
+    readonly secret?: string | undefined;
+    /** Filter conditions — when absent, fires on all events. */
+    readonly filter?: HookFilter | undefined;
+    /** Whether this hook is active. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** Timeout in milliseconds. Default: 30_000. */
+    readonly timeoutMs?: number | undefined;
+    /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+    readonly serial?: boolean | undefined;
+}
+/** Discriminated union of all hook config types. */
+type HookConfig = CommandHookConfig | HttpHookConfig;
+/** Outcome of a single hook execution. */
+type HookExecutionResult = {
+    readonly ok: true;
+    readonly hookName: string;
+    readonly durationMs: number;
+} | {
+    readonly ok: false;
+    readonly hookName: string;
+    readonly error: string;
+    readonly durationMs: number;
+};
+/** Default hook timeout in milliseconds. */
+declare const DEFAULT_HOOK_TIMEOUT_MS: 30000;
+
+export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, type HookConfig, type HookEvent, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
 "
 `;
 

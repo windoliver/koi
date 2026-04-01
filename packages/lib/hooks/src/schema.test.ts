@@ -1,0 +1,228 @@
+import { describe, expect, it } from "bun:test";
+import { commandHookSchema, hookConfigSchema, hookFilterSchema, httpHookSchema } from "./schema.js";
+
+describe("hookFilterSchema", () => {
+  it("accepts empty filter", () => {
+    const result = hookFilterSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts filter with events", () => {
+    const result = hookFilterSchema.safeParse({ events: ["session.started"] });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts filter with all fields", () => {
+    const result = hookFilterSchema.safeParse({
+      events: ["session.started", "tool.succeeded"],
+      tools: ["exec"],
+      channels: ["telegram"],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty string in events array", () => {
+    const result = hookFilterSchema.safeParse({ events: [""] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty string in tools array", () => {
+    const result = hookFilterSchema.safeParse({ tools: [""] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty events array", () => {
+    const result = hookFilterSchema.safeParse({ events: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty tools array", () => {
+    const result = hookFilterSchema.safeParse({ tools: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty channels array", () => {
+    const result = hookFilterSchema.safeParse({ channels: [] });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("commandHookSchema", () => {
+  const validCommand = {
+    kind: "command",
+    name: "on-start",
+    cmd: ["./scripts/on-start.sh"],
+  } as const;
+
+  it("accepts minimal valid command hook", () => {
+    const result = commandHookSchema.safeParse(validCommand);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts command hook with all optional fields", () => {
+    const result = commandHookSchema.safeParse({
+      ...validCommand,
+      env: { FOO: "bar" },
+      filter: { events: ["session.started"] },
+      enabled: true,
+      timeoutMs: 5000,
+      serial: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty name", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, name: "" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty cmd array", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, cmd: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects cmd with empty string", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, cmd: [""] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative timeoutMs", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, timeoutMs: -1 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects zero timeoutMs", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, timeoutMs: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects fractional timeoutMs", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, timeoutMs: 1.5 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects wrong kind", () => {
+    const result = commandHookSchema.safeParse({ ...validCommand, kind: "http" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("httpHookSchema", () => {
+  const validHttp = {
+    kind: "http",
+    name: "notify-backend",
+    url: "https://api.example.com/hooks",
+  } as const;
+
+  it("accepts minimal valid http hook", () => {
+    const result = httpHookSchema.safeParse(validHttp);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts http hook with all optional fields", () => {
+    const result = httpHookSchema.safeParse({
+      ...validHttp,
+      method: "PUT",
+      headers: { Authorization: "Bearer token" },
+      secret: "my-secret",
+      filter: { events: ["session.ended"] },
+      enabled: false,
+      timeoutMs: 10000,
+      serial: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid URL", () => {
+    const result = httpHookSchema.safeParse({ ...validHttp, url: "not-a-url" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-HTTPS URL in production", () => {
+    const result = httpHookSchema.safeParse({
+      ...validHttp,
+      url: "http://api.example.com/hooks",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("allows HTTP URL for localhost", () => {
+    for (const url of [
+      "http://localhost:3000/hooks",
+      "http://127.0.0.1:3000/hooks",
+      "http://[::1]:3000/hooks",
+    ]) {
+      const result = httpHookSchema.safeParse({ ...validHttp, url });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("allows HTTPS URL", () => {
+    const result = httpHookSchema.safeParse({
+      ...validHttp,
+      url: "https://api.example.com/hooks",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid method", () => {
+    const result = httpHookSchema.safeParse({ ...validHttp, method: "GET" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty name", () => {
+    const result = httpHookSchema.safeParse({ ...validHttp, name: "" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("hookConfigSchema (discriminated union)", () => {
+  it("accepts command hook", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "command",
+      name: "test",
+      cmd: ["echo", "hi"],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("command");
+    }
+  });
+
+  it("accepts http hook", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "http",
+      name: "test",
+      url: "https://example.com",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("http");
+    }
+  });
+
+  it("rejects unsupported hook kind", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "prompt",
+      name: "test",
+      prompt: "hello",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing kind", () => {
+    const result = hookConfigSchema.safeParse({
+      name: "test",
+      cmd: ["echo"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects unknown kind clearly", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "websocket",
+      name: "test",
+    });
+    expect(result.success).toBe(false);
+  });
+});

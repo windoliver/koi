@@ -113,6 +113,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/hooks": {
+      "name": "@koi/hooks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -318,6 +327,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
