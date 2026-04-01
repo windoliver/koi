@@ -5,8 +5,10 @@
 
 import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@koi/core";
 
+import type { PlanModeOptions } from "./mode-resolver.js";
 import { resolveMode } from "./mode-resolver.js";
 import type { PermissionConfig } from "./rule-types.js";
+import { PLAN_ALLOWED_ACTIONS, PLAN_RULE_EVALUATED_ACTIONS } from "./rule-types.js";
 
 const VALID_MODES = new Set(["default", "bypass", "plan", "auto"]);
 
@@ -25,8 +27,13 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     );
   }
 
+  const planOptions: PlanModeOptions = {
+    allowedActions: config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS,
+    ruleEvaluatedActions: config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS,
+  };
+
   function check(query: PermissionQuery): PermissionDecision {
-    return resolveMode(mode, query, rules);
+    return resolveMode(mode, query, rules, planOptions);
   }
 
   function checkBatch(queries: readonly PermissionQuery[]): readonly PermissionDecision[] {

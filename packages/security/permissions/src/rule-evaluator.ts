@@ -96,7 +96,21 @@ function matchContext(
 }
 
 /**
- * Normalize a resource string to prevent path traversal bypasses.
+ * Check whether a resource looks like a filesystem path (vs URL, namespace, etc.).
+ * Filesystem paths start with `/`, `./`, `../`, or a bare segment followed by `/`.
+ * URLs (containing `://`) and non-slash resources are NOT filesystem paths.
+ */
+function isFilesystemPath(resource: string): boolean {
+  // URLs: scheme://... — not a filesystem path
+  if (resource.includes("://")) {
+    return false;
+  }
+  // Must contain at least one / to be path-like
+  return resource.includes("/");
+}
+
+/**
+ * Normalize a filesystem resource string to prevent path traversal bypasses.
  *
  * - Collapses `//` to `/`
  * - Resolves `.` and `..` segments
@@ -105,11 +119,11 @@ function matchContext(
  * - For relative paths, `..` that escapes above the starting point returns `null`
  *   (unresolvable without a known cwd — must be denied)
  *
- * Non-path resources (e.g., `agent:foo`) pass through unchanged.
+ * Non-filesystem resources (URLs, namespaces like `agent:foo`) pass through unchanged.
  */
 export function normalizeResource(resource: string): string | null {
-  // Non-path resources (no / at all) pass through as-is
-  if (!resource.includes("/")) {
+  // Only normalize filesystem paths — URLs and non-path resources pass through verbatim
+  if (!isFilesystemPath(resource)) {
     return resource;
   }
 
@@ -123,11 +137,9 @@ export function normalizeResource(resource: string): string | null {
     }
     if (seg === "..") {
       if (resolved.length === 0) {
-        // For relative paths, escaping above start is unresolvable
         if (!isAbsolute) {
           return null;
         }
-        // For absolute paths, clamp at root (can't go above /)
         continue;
       }
       resolved.pop();

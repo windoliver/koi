@@ -99,4 +99,26 @@ describe("createPermissionBackend", () => {
       "Invalid permission mode",
     );
   });
+
+  test("custom planAllowedActions extends plan mode vocabulary", async () => {
+    const backend = createPermissionBackend({
+      mode: "plan",
+      rules: [
+        {
+          pattern: "**",
+          action: "metadata",
+          effect: "allow",
+          source: "project",
+          compiled: compileGlob("**"),
+        },
+      ],
+      planAllowedActions: new Set(["read", "metadata"]),
+    });
+    const query: PermissionQuery = {
+      principal: "agent-1",
+      action: "metadata",
+      resource: "src/index.ts",
+    };
+    expect(await backend.check(query)).toEqual({ effect: "allow" });
+  });
 });

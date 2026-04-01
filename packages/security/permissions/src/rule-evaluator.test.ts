@@ -170,6 +170,15 @@ describe("normalizeResource", () => {
   test("absolute paths clamp .. at root", () => {
     expect(normalizeResource("/../../etc/passwd")).toBe("/etc/passwd");
   });
+
+  test("URLs pass through unchanged", () => {
+    expect(normalizeResource("https://svc/internal")).toBe("https://svc/internal");
+    expect(normalizeResource("http://example.com/api//v2")).toBe("http://example.com/api//v2");
+  });
+
+  test("URIs with schemes pass through unchanged", () => {
+    expect(normalizeResource("s3://bucket/key/../other")).toBe("s3://bucket/key/../other");
+  });
 });
 
 // ---------------------------------------------------------------------------

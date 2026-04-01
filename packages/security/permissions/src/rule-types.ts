@@ -59,6 +59,16 @@ export type PermissionMode = "default" | "bypass" | "plan" | "auto";
 export interface PermissionConfig {
   readonly mode: PermissionMode;
   readonly rules: readonly CompiledRule[];
+  /**
+   * Override the default set of actions auto-allowed in plan mode.
+   * When omitted, uses `PLAN_ALLOWED_ACTIONS`.
+   */
+  readonly planAllowedActions?: ReadonlySet<string> | undefined;
+  /**
+   * Override the default set of actions that are rule-evaluated (not auto-allowed,
+   * not hard-denied) in plan mode. When omitted, uses `PLAN_RULE_EVALUATED_ACTIONS`.
+   */
+  readonly planRuleEvaluatedActions?: ReadonlySet<string> | undefined;
 }
 
 /** Source precedence order — index 0 is highest priority. */
