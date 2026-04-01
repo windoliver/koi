@@ -223,26 +223,29 @@ function rethrowClassified(
   toolId: string,
   composed: ComposedSignal | undefined,
 ): never {
-  // Only classify when our timer caused the abort.
-  // Uses EXTERNAL (not TIMEOUT) because the engine maps TIMEOUT → max_turns
-  // (budget exhaustion) which is wrong for tool-level timeouts. EXTERNAL
-  // maps to stopReason "error" which correctly surfaces as a tool failure.
-  if (
-    error instanceof DOMException &&
-    composed?.signal.aborted === true &&
-    composed.isOurTimeout()
-  ) {
-    const reason = composed.signal.reason as TimeoutAbortReason;
-    throw KoiRuntimeError.from(
-      "EXTERNAL",
-      `Tool "${toolId}" timed out after ${reason.timeoutMs}ms`,
-      {
-        retryable: false,
-        context: { toolId, timeoutMs: reason.timeoutMs },
-      },
-    );
+  if (error instanceof DOMException && composed?.signal.aborted === true) {
+    if (composed.isOurTimeout()) {
+      // Our timer fired → EXTERNAL (not TIMEOUT, which maps to max_turns)
+      const reason = composed.signal.reason as TimeoutAbortReason;
+      throw KoiRuntimeError.from(
+        "EXTERNAL",
+        `Tool "${toolId}" timed out after ${reason.timeoutMs}ms`,
+        {
+          retryable: false,
+          context: { toolId, timeoutMs: reason.timeoutMs },
+        },
+      );
+    }
+    // Parent abort (user_cancel, shutdown, token_limit) → KoiRuntimeError
+    // so the engine catch block handles it gracefully instead of treating
+    // a raw DOMException as an unexpected error and re-throwing.
+    const abortReason = String(composed.signal.reason ?? "aborted");
+    throw KoiRuntimeError.from("INTERNAL", `Tool "${toolId}" interrupted: ${abortReason}`, {
+      retryable: false,
+      context: { toolId, abortReason },
+    });
   }
-  // Everything else (tool errors, parent aborts) re-thrown as-is
+  // Tool errors re-thrown as-is — preserves error type for outer middleware
   throw error;
 }
 
@@ -271,10 +274,17 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
     wrapToolCall: async (_ctx, request, next) => {
       // 1. Check: is signal already aborted?
       if (request.signal?.aborted === true) {
-        // Re-throw as DOMException preserving the original reason — do NOT
-        // collapse into TIMEOUT. Upstream middleware inspects signal.reason
-        // to distinguish user_cancel/shutdown/token_limit from timeout.
-        throw new DOMException(String(request.signal.reason ?? "aborted"), "AbortError");
+        // Throw KoiRuntimeError so the engine catch block handles it
+        // gracefully instead of treating a raw DOMException as unexpected.
+        const abortReason = String(request.signal.reason ?? "aborted");
+        throw KoiRuntimeError.from(
+          "INTERNAL",
+          `Tool "${request.toolId}" interrupted: ${abortReason}`,
+          {
+            retryable: false,
+            context: { toolId: request.toolId, abortReason },
+          },
+        );
       }
 
       // 2. Resolve timeout for this toolId

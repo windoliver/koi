@@ -176,14 +176,15 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(handler).not.toHaveBeenCalled();
-        // Abort reason preserved — NOT collapsed into KoiRuntimeError("EXTERNAL")
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).name).toBe("AbortError");
-        expect((e as DOMException).message).toContain("user_cancel");
+        // Parent abort → KoiRuntimeError("INTERNAL") so engine handles gracefully
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("user_cancel");
+        expect((e as KoiRuntimeError).retryable).toBe(false);
       }
     });
 
-    test("scenario 2: parent abort during execution throws DOMException preserving reason", async () => {
+    test("scenario 2: parent abort during execution throws KoiRuntimeError preserving reason", async () => {
       const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -198,10 +199,10 @@ describe("createToolExecution", () => {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        // Parent abort reason preserved — NOT mapped to TIMEOUT
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).name).toBe("AbortError");
-        expect((e as DOMException).message).toContain("shutdown");
+        // Parent abort reason preserved in KoiRuntimeError context
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("shutdown");
       }
     });
 
@@ -240,9 +241,10 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(handler).not.toHaveBeenCalled();
-        // Pre-aborted parent → DOMException, NOT KoiRuntimeError("EXTERNAL")
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).message).toContain("user_cancel");
+        // Pre-aborted parent → KoiRuntimeError("INTERNAL")
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("user_cancel");
       }
     });
 
@@ -742,7 +744,7 @@ describe("createToolExecution", () => {
   // ---------------------------------------------------------------------------
 
   describe("abort reason preservation", () => {
-    test("user_cancel reason is preserved in thrown error", async () => {
+    test("user_cancel reason is preserved in KoiRuntimeError context", async () => {
       const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -757,14 +759,15 @@ describe("createToolExecution", () => {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).message).toContain("user_cancel");
-        // Must NOT be KoiRuntimeError — that would misreport as max_turns
-        expect(e).not.toBeInstanceOf(KoiRuntimeError);
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("user_cancel");
+        // Must NOT be EXTERNAL/TIMEOUT — those have wrong stop reason semantics
+        expect((e as KoiRuntimeError).code).not.toBe("EXTERNAL");
       }
     });
 
-    test("shutdown reason is preserved in thrown error", async () => {
+    test("shutdown reason is preserved in KoiRuntimeError context", async () => {
       const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -779,13 +782,13 @@ describe("createToolExecution", () => {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).message).toContain("shutdown");
-        expect(e).not.toBeInstanceOf(KoiRuntimeError);
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("shutdown");
       }
     });
 
-    test("token_limit reason is preserved in thrown error", async () => {
+    test("token_limit reason is preserved in KoiRuntimeError context", async () => {
       const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
@@ -800,9 +803,9 @@ describe("createToolExecution", () => {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).message).toContain("token_limit");
-        expect(e).not.toBeInstanceOf(KoiRuntimeError);
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("token_limit");
       }
     });
 
@@ -820,8 +823,9 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(handler).not.toHaveBeenCalled();
-        expect(e).toBeInstanceOf(DOMException);
-        expect((e as DOMException).message).toContain("shutdown");
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("INTERNAL");
+        expect((e as KoiRuntimeError).message).toContain("shutdown");
       }
     });
   });
