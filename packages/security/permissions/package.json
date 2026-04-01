@@ -3,6 +3,9 @@
   "description": "Rule-based tool access control implementing PermissionBackend",
   "version": "0.0.0",
   "private": true,
+  "koi": {
+    "optional": true
+  },
   "type": "module",
   "exports": {
     ".": {
