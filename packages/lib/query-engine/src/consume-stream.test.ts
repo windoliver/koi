@@ -149,6 +149,20 @@ describe("consumeModelStream", () => {
     expect(kinds).toEqual(["text_delta", "done"]);
   });
 
+  test("final done usage overrides incremental usage totals", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "usage", inputTokens: 3, outputTokens: 2 },
+      { kind: "done", response: DONE_RESPONSE },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.metrics.inputTokens).toBe(10);
+    expect(done.output.metrics.outputTokens).toBe(5);
+    expect(done.output.metrics.totalTokens).toBe(15);
+  });
+
   test("error chunk yields error-shaped done event", async () => {
     const chunks: readonly ModelChunk[] = [
       { kind: "text_delta", delta: "partial" },
@@ -173,8 +187,26 @@ describe("consumeModelStream", () => {
     expect(events[0]?.kind).toBe("done");
     const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("completed");
+    expect(done.output.content).toEqual([]);
     expect(done.output.metrics.inputTokens).toBe(10);
     expect(done.output.metrics.outputTokens).toBe(5);
+  });
+
+  test("done event preserves final response text", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "done",
+        response: {
+          content: "final answer",
+          model: "test-model",
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.content).toEqual([{ kind: "text", text: "final answer" }]);
   });
 
   test("thinking_delta chunks are passed through", async () => {

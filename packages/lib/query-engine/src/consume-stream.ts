@@ -112,13 +112,18 @@ export async function* consumeModelStream(
       case "done": {
         const responseUsage = chunk.response.usage;
         if (responseUsage) {
-          inputTokens += responseUsage.inputTokens;
-          outputTokens += responseUsage.outputTokens;
+          // Final response usage is authoritative when the provider emits both
+          // incremental usage chunks and a terminal total.
+          inputTokens = responseUsage.inputTokens;
+          outputTokens = responseUsage.outputTokens;
         }
         yield {
           kind: "done",
           output: {
-            content: [],
+            content:
+              chunk.response.content.length > 0
+                ? [{ kind: "text", text: chunk.response.content }]
+                : [],
             stopReason: "completed",
             metrics: {
               totalTokens: inputTokens + outputTokens,
