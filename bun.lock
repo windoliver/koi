@@ -54,6 +54,15 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/context-manager": {
+      "name": "@koi/context-manager",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/edit-match": {
       "name": "@koi/edit-match",
       "version": "0.0.0",
@@ -285,6 +294,8 @@
     "@jscpd/html-reporter": ["@jscpd/html-reporter@4.0.4", "", { "dependencies": { "colors": "1.4.0", "fs-extra": "^11.2.0", "pug": "^3.0.3" } }, "sha512-YiepyeYkeH74Kx59PJRdUdonznct0wHPFkf6FLQN+mCBoy6leAWCcOfHtcexnp+UsBFDlItG5nRdKrDSxSH+Kg=="],
 
     "@jscpd/tokenizer": ["@jscpd/tokenizer@4.0.4", "", { "dependencies": { "@jscpd/core": "4.0.4", "reprism": "^0.0.11", "spark-md5": "^3.0.2" } }, "sha512-xxYYY/qaLah/FlwogEbGIxx9CjDO+G9E6qawcy26WwrflzJb6wsnhjwdneN6Wb0RNCDsqvzY+bzG453jsin4UQ=="],
+
+    "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
