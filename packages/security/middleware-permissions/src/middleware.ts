@@ -410,6 +410,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     return { principal, action: "invoke", resource };
   }
 
+  /** Audit a permission decision at execution time (wrapToolCall). */
   function auditDecision(
     ctx: TurnContext,
     resource: string,
@@ -426,6 +427,34 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       durationMs,
       metadata: {
         permissionCheck: true,
+        phase: "execute",
+        resource,
+        effect: decision.effect,
+        ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
+      },
+    };
+    void sink.log(entry).catch((e: unknown) => {
+      swallowError(e, { package: PKG, operation: "audit" });
+    });
+  }
+
+  /** Audit a permission decision at model-time filtering (wrapModelCall). */
+  function auditFilterDecision(
+    ctx: TurnContext,
+    resource: string,
+    decision: PermissionDecision,
+    sink: AuditSink,
+  ): void {
+    const entry: AuditEntry = {
+      timestamp: clock(),
+      sessionId: ctx.session.sessionId as string,
+      agentId: ctx.session.agentId,
+      turnIndex: ctx.turnIndex,
+      kind: "model_call",
+      durationMs: 0,
+      metadata: {
+        permissionCheck: true,
+        phase: "filter",
         resource,
         effect: decision.effect,
         ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
@@ -591,7 +620,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const tools = request.tools;
     if (tools === undefined || tools.length === 0) return request;
 
-    const queries = tools.map((t) => queryForTool(ctx, t.name));
+    // Include model request metadata so filtering uses the same policy
+    // inputs as execution-time wrapToolCall (prevents visibility/auth mismatch)
+    const queries = tools.map((t) => queryForTool(ctx, t.name, request.metadata));
     const decisions = await resolveBatch(queries, ctx.session.sessionId as string);
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
@@ -599,7 +630,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const filtered = tools.filter((tool, i) => {
       const decision = decisions[i]!;
       if (auditSink !== undefined) {
-        auditDecision(ctx, tool.name, decision, 0, auditSink);
+        auditFilterDecision(ctx, tool.name, decision, auditSink);
       }
       if (decision.effect === "deny") {
         sessionTracker.record({
