@@ -67,5 +67,4 @@ export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   "grep",
   "search",
   "list",
-  "discover",
 ]) as ReadonlySet<string>;

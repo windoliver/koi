@@ -66,8 +66,9 @@ describe("resolveMode", () => {
       expect(resolveMode("plan", readQuery, rules)).toEqual({ effect: "allow" });
     });
 
-    test("allows discover actions", () => {
-      expect(resolveMode("plan", discoverQuery, rules)).toEqual({ effect: "allow" });
+    test("denies discover actions (not in allowlist)", () => {
+      const decision = resolveMode("plan", discoverQuery, rules);
+      expect(decision.effect).toBe("deny");
     });
 
     test("denies write actions", () => {

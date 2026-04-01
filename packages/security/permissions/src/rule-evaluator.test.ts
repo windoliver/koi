@@ -49,6 +49,23 @@ describe("compileGlob", () => {
     expect(re.test("index.ts")).toBe(true);
   });
 
+  test("**/segment requires path separator boundary", () => {
+    const re = compileGlob("foo/**/bar");
+    expect(re.test("foo/bar")).toBe(true);
+    expect(re.test("foo/a/bar")).toBe(true);
+    expect(re.test("foo/a/b/bar")).toBe(true);
+    // Must NOT match without separator before "bar"
+    expect(re.test("foo/xbar")).toBe(false);
+  });
+
+  test("**/ at start requires separator before next segment", () => {
+    const re = compileGlob("**/secret.txt");
+    expect(re.test("secret.txt")).toBe(true);
+    expect(re.test("a/secret.txt")).toBe(true);
+    expect(re.test("a/b/secret.txt")).toBe(true);
+    expect(re.test("notsecret.txt")).toBe(false);
+  });
+
   test("escapes regex special characters", () => {
     const re = compileGlob("file.ts");
     expect(re.test("file.ts")).toBe(true);

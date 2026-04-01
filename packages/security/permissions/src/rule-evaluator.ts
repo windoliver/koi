@@ -31,10 +31,14 @@ export function compileGlob(pattern: string): RegExp {
     const char = pattern.charAt(i);
 
     if (char === "*" && pattern.charAt(i + 1) === "*") {
-      result += ".*";
       i += 2;
       if (pattern.charAt(i) === "/") {
+        // `**/` — match zero or more path segments followed by separator
+        result += "(?:.*/)?";
         i += 1;
+      } else {
+        // `**` at end — match anything remaining
+        result += ".*";
       }
     } else if (char === "*") {
       result += "[^/]*";
