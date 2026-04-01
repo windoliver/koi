@@ -133,25 +133,24 @@ function resolveRole(
   msg: InboundMessage,
   trusted: boolean,
 ): "user" | "assistant" | "tool" | "system" {
-  // Engine-injected control messages — only provenance-based, not metadata
+  // In untrusted mode, ALL messages are user — senderId and metadata are
+  // both caller-controlled and cannot determine privileged roles.
+  if (!trusted) return "user";
+
+  // --- Trusted mode only below this line ---
+
+  // Engine-injected control messages (system:loop-detector, system:capabilities)
   if (msg.senderId.startsWith("system:")) return "system";
 
-  // metadata.role for non-escalating roles — only when trusted (L1 engine).
-  // When untrusted, metadata.role is ignored to prevent external callers
-  // from injecting fake assistant/tool turns into the transcript.
-  if (trusted) {
-    const explicitRole = readStringMeta(msg.metadata, "role");
-    if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
-      return explicitRole;
-    }
+  // metadata.role for non-escalating roles (L1 engine / session-repair)
+  const explicitRole = readStringMeta(msg.metadata, "role");
+  if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
+    return explicitRole;
   }
 
-  // senderId heuristic — only in trusted mode. In untrusted mode, senderId
-  // is caller-controlled and could inject fake assistant/tool turns.
-  if (trusted) {
-    if (msg.senderId === "assistant") return "assistant";
-    if (msg.senderId === "tool") return "tool";
-  }
+  // senderId heuristic fallback
+  if (msg.senderId === "assistant") return "assistant";
+  if (msg.senderId === "tool") return "tool";
   return "user";
 }
 
