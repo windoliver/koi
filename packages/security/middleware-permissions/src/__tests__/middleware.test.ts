@@ -718,23 +718,6 @@ describe("createPermissionsMiddleware", () => {
     });
   });
 
-  describe("forged-tool bypass uses structured flag", () => {
-    test("does not bypass explicit deny even with marker text in reason", async () => {
-      // Backend returns explicit deny with marker text in reason — should NOT be bypassed
-      const backend: PermissionBackend = {
-        check: () => ({
-          effect: "deny" as const,
-          reason: `Explicitly blocked (default deny)`,
-        }),
-      };
-      const mw = createPermissionsMiddleware({ backend });
-
-      await expect(
-        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("forged-tool"), noopToolHandler),
-      ).rejects.toThrow();
-    });
-  });
-
   describe("cross-session isolation", () => {
     test("approval cache is scoped per session", async () => {
       const approvalFn = mock(

@@ -32,7 +32,7 @@ import {
   swallowError,
 } from "@koi/errors";
 // fnv1a no longer used for cache keys (collision-unsafe for security decisions)
-import { isDefaultDeny } from "./classifier.js";
+// isDefaultDeny no longer used — forged-tool bypass removed in v2
 import type {
   ApprovalCacheConfig,
   PermissionCacheConfig,
@@ -280,8 +280,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     return t;
   }
 
-  // Forged tool names scoped per turn (keyed by turnId to prevent cross-turn leaks)
-  const forgedToolsByTurn = new Map<string, Set<string>>();
+  // Forged-tool default-deny bypass removed (v2): forged tools must be
+  // explicitly allowed via backend rules. Name-based bypasses are unsafe
+  // because tool identity can change between model filtering and execution.
 
   // -----------------------------------------------------------------------
   // Internal helpers
@@ -342,9 +343,18 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     }
 
     try {
-      const decision = validateDecision(await backend.check(query));
-      if (cb !== undefined) cb.recordSuccess();
-      if (decisionCache !== undefined) {
+      const raw = await backend.check(query);
+      const decision = validateDecision(raw);
+
+      // Malformed response = backend failure for circuit breaker purposes
+      if (cb !== undefined) {
+        if (decision === FAIL_CLOSED_DENY) {
+          cb.recordFailure();
+        } else {
+          cb.recordSuccess();
+        }
+      }
+      if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY) {
         decisionCache.set(decisionCacheKey(query), decision);
       }
       return decision;
@@ -410,22 +420,32 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         )) as readonly unknown[];
       }
 
-      if (cb !== undefined) cb.recordSuccess();
-
-      // Validate batch length — fail closed on mismatch
+      // Validate batch length — fail closed on mismatch (counts as backend failure)
       if (!Array.isArray(rawDecisions) || rawDecisions.length !== uncachedQueries.length) {
+        if (cb !== undefined) cb.recordFailure();
         for (const i of uncachedIndices) {
           results[i] = FAIL_CLOSED_DENY;
         }
         return results as readonly PermissionDecision[];
       }
 
+      let hasValidationFailure = false;
       for (let j = 0; j < uncachedIndices.length; j++) {
         const idx = uncachedIndices[j]!;
         const decision = validateDecision(rawDecisions[j]);
+        if (decision === FAIL_CLOSED_DENY) hasValidationFailure = true;
         results[idx] = decision;
-        if (decisionCache !== undefined) {
+        if (decisionCache !== undefined && decision !== FAIL_CLOSED_DENY) {
           decisionCache.set(decisionCacheKey(queries[idx]!), decision);
+        }
+      }
+
+      // Record success/failure based on whether any decisions were malformed
+      if (cb !== undefined) {
+        if (hasValidationFailure) {
+          cb.recordFailure();
+        } else {
+          cb.recordSuccess();
         }
       }
     } catch (e: unknown) {
@@ -449,11 +469,6 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const queries = tools.map((t) => queryForTool(ctx, t.name));
     const decisions = await resolveBatch(queries);
 
-    // Track forged tools scoped to this session+turn (composite key
-    // ensures no cross-session bypass even if turnIds are not globally unique)
-    const turnForged = new Set<string>();
-    const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
-
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
     const filtered = tools.filter((tool, i) => {
@@ -471,22 +486,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         });
         return false;
       }
-      // Track forged tools that bypassed deny
-      if (
-        "origin" in tool &&
-        (tool as unknown as { readonly origin: string }).origin === "forged"
-      ) {
-        turnForged.add(tool.name);
-      }
       return true;
     });
-
-    // Store forged tools for this turn only
-    if (turnForged.size > 0) {
-      forgedToolsByTurn.set(turnKey, turnForged);
-    } else {
-      forgedToolsByTurn.delete(turnKey);
-    }
 
     if (filtered.length === tools.length) return request;
     return { ...request, tools: filtered };
@@ -518,20 +519,6 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         sessionTracker.clear();
         trackersBySession.delete(sid);
       }
-      // Remove forged-tool entries belonging to this session only
-      const prefix = `${sid}:`;
-      for (const key of forgedToolsByTurn.keys()) {
-        if (key.startsWith(prefix)) {
-          forgedToolsByTurn.delete(key);
-        }
-      }
-    },
-
-    async onAfterTurn(ctx: TurnContext): Promise<void> {
-      // Eagerly clean forged-tool state after each turn to prevent
-      // unbounded memory growth in long-lived sessions
-      const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
-      forgedToolsByTurn.delete(turnKey);
     },
 
     async wrapModelCall(
@@ -567,15 +554,6 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       if (decision.effect === "deny") {
-        // Forged tool override: allow if denial is default-deny (not explicit).
-        // Uses structured symbol flag — never parses reason text.
-        // Scoped to the current turn to prevent cross-turn bypass.
-        const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
-        const turnForged = forgedToolsByTurn.get(turnKey);
-        if (turnForged?.has(request.toolId) && isDefaultDeny(decision)) {
-          return next(request);
-        }
-
         getTracker(ctx.session.sessionId as string).record({
           toolId: request.toolId,
           reason: decision.reason,
