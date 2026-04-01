@@ -54,7 +54,7 @@ const VALID_TRANSITIONS: Readonly<
   connected: ["reconnecting", "error", "closed"],
   reconnecting: ["connected", "error", "auth-needed", "closed"],
   "auth-needed": ["connecting", "closed"],
-  error: ["connecting", "closed"],
+  error: ["connecting", "reconnecting", "closed"],
   closed: [],
 };
 

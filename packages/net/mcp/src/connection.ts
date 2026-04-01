@@ -128,7 +128,11 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    stateMachine.transition({ kind: "connecting", attempt: 1 });
+    // Only transition to connecting if not already in reconnecting
+    // (ensureConnected transitions to reconnecting before calling connect)
+    if (stateMachine.current.kind !== "reconnecting") {
+      stateMachine.transition({ kind: "connecting", attempt: 1 });
+    }
 
     try {
       const newTransport = makeTransport({
