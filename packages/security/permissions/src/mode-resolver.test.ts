@@ -62,8 +62,13 @@ describe("resolveMode", () => {
   });
 
   describe("plan", () => {
-    test("allows read actions", () => {
+    test("allows read actions when rules explicitly allow", () => {
       expect(resolveMode("plan", readQuery, rules)).toEqual({ effect: "allow" });
+    });
+
+    test("returns ask for read actions when no rule matches", () => {
+      const decision = resolveMode("plan", readQuery, []);
+      expect(decision.effect).toBe("ask");
     });
 
     test("denies discover actions (not in allowlist)", () => {

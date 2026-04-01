@@ -26,17 +26,18 @@ export function resolveMode(
       return { effect: "allow" };
 
     case "plan": {
-      // Evaluate rules first — explicit deny rules always apply, even for read actions.
+      const isReadOnly = PLAN_ALLOWED_ACTIONS.has(query.action);
+      // Non-read actions are always denied in plan mode, regardless of rules.
+      if (!isReadOnly) {
+        return { effect: "deny", reason: "Only read-only actions are allowed in plan mode" };
+      }
+      // Read-only actions: evaluate rules. Deny and ask propagate;
+      // only an explicit allow rule permits the action.
       const ruleDecision = evaluateRules(query, rules);
-      if (ruleDecision.effect === "deny") {
+      if (ruleDecision.effect === "deny" || ruleDecision.effect === "ask") {
         return ruleDecision;
       }
-      // For read-only actions: allow (if rules didn't deny).
-      if (PLAN_ALLOWED_ACTIONS.has(query.action)) {
-        return { effect: "allow" };
-      }
-      // Non-read actions are denied in plan mode.
-      return { effect: "deny", reason: "Only read-only actions are allowed in plan mode" };
+      return { effect: "allow" };
     }
 
     case "default": {
