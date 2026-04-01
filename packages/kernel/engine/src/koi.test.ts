@@ -3078,6 +3078,31 @@ describe("createKoi error paths", () => {
     expect(runtime.agent.state).toBe("terminated");
   });
 
+  test("guard error while run signal aborted → stopReason is interrupted, not error", async () => {
+    const { KoiRuntimeError } = await import("@koi/errors");
+    const abortController = new AbortController();
+    const onBeforeTurn = mock(() => {
+      // Simulate: signal aborts then guard throws (e.g., tool-execution middleware)
+      abortController.abort("user_cancel");
+      throw KoiRuntimeError.from("INTERNAL", "Tool interrupted: user_cancel");
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "abort-guard", describeCapabilities: () => undefined, onBeforeTurn }],
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(
+      runtime.run({ kind: "text", text: "test", signal: abortController.signal }),
+    );
+    const doneEvt = events.find((e) => e.kind === "done");
+    expect(doneEvt).toBeDefined();
+    if (doneEvt?.kind === "done") {
+      expect(doneEvt.output.stopReason).toBe("interrupted");
+    }
+  });
+
   test("refreshForgeState throws at turn boundary → error propagates", async () => {
     // let justified: counter to allow first call to succeed
     let callCount = 0;

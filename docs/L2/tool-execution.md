@@ -144,12 +144,20 @@ Invalid config values (negative, NaN, Infinity, zero) throw `KoiRuntimeError("VA
 1. **Errors thrown, not normalized into ToolResponse** — Outer middleware (governance extension) distinguishes success/failure by whether `next()` throws. Normalizing errors into fulfilled ToolResponse would corrupt governance accounting. Error-to-ToolResponse normalization belongs at the engine adapter boundary.
 2. **Manual signal composition, no `AbortSignal.any()`** — `AbortSignal.any()` creates internal subscriptions on the parent signal that cannot be cleaned up. Manual parent-signal forwarding via addEventListener/removeEventListener is fully cleanable in the `finally` block.
 3. **Cancellable manual timer** — `AbortSignal.timeout()` creates uncancellable timers. Manual `setTimeout`/`clearTimeout` releases timer resources immediately when the tool completes.
-4. **Sentinel-tagged timeout reason** — A branded symbol distinguishes "our timer fired" from "parent signal fired" so only our timeouts become `KoiRuntimeError("EXTERNAL")`. Parent aborts (user_cancel, shutdown, token_limit) re-throw as `DOMException` preserving the original reason end-to-end.
+4. **Sentinel-tagged timeout reason** — A branded symbol distinguishes "our timer fired" from "parent signal fired" so only our timeouts become `KoiRuntimeError("EXTERNAL")`. Parent aborts (user_cancel, shutdown, token_limit) throw `KoiRuntimeError("INTERNAL")` preserving the abort reason in the message and context.
 5. **EXTERNAL error code for tool timeouts** — The engine maps `TIMEOUT` → `max_turns` (success). Tool-level timeouts must surface as `stopReason: "error"`, which `EXTERNAL` provides.
-6. **Config validated at construction** — Rejects invalid timeout values with `KoiRuntimeError("VALIDATION")` instead of opaque `RangeError` at call time.
-7. **Pure transparency on success** — no metadata enrichment. Timing belongs in observe-phase middleware.
-8. **`retryable: false` for tool timeouts** — the tool may still be running after `Promise.race` returns. Automatic retry could cause duplicate side effects.
-9. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
+6. **Parent aborts → INTERNAL + engine abort-awareness** — Parent aborts throw `KoiRuntimeError("INTERNAL")`. The engine catch block checks `runSignal.aborted` before choosing the stop reason — if the run was cancelled, it uses `"interrupted"` regardless of error code, so parent aborts during tool calls correctly surface as interrupted runs, not errors.
+7. **Config validated at construction** — Rejects invalid timeout values with `KoiRuntimeError("VALIDATION")` instead of opaque `RangeError` at call time.
+8. **Pure transparency on success** — no metadata enrichment. Timing belongs in observe-phase middleware.
+9. **`retryable: false` for tool timeouts** — the tool may still be running after `Promise.race` returns. Automatic retry could cause duplicate side effects.
+10. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
+
+## Known limitations
+
+**Tool timeout does not force-stop the tool.** When a timeout fires, `Promise.race` returns immediately but the underlying tool promise may continue running. JavaScript has no mechanism to force-cancel a running Promise — the AbortSignal is forwarded to the tool, but non-cooperative tools may ignore it. Mitigations:
+- `retryable: false` prevents automatic retry (avoids duplicate side effects)
+- Tools that perform irreversible side effects SHOULD honor the AbortSignal
+- For hard isolation, tools should run in a subprocess/sandbox with OS-level kill
 
 ## Layer compliance
 
