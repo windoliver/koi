@@ -146,9 +146,12 @@ function resolveRole(
     }
   }
 
-  // senderId heuristic fallback
-  if (msg.senderId === "assistant") return "assistant";
-  if (msg.senderId === "tool") return "tool";
+  // senderId heuristic — only in trusted mode. In untrusted mode, senderId
+  // is caller-controlled and could inject fake assistant/tool turns.
+  if (trusted) {
+    if (msg.senderId === "assistant") return "assistant";
+    if (msg.senderId === "tool") return "tool";
+  }
   return "user";
 }
 
