@@ -41,13 +41,22 @@ export function isRetryableStatus(status: number): boolean {
 }
 
 /**
- * Check if a fetch error is a connection reset (ECONNRESET/EPIPE).
+ * Check if a message or error indicates a connection reset (ECONNRESET/EPIPE).
  * These indicate dead pooled connections that need fresh TCP.
+ */
+export function isConnectionResetMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("econnreset") || lower.includes("epipe") || lower.includes("socket hang up")
+  );
+}
+
+/**
+ * Check if a thrown error is a connection reset.
  */
 export function isConnectionResetError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const msg = error.message.toLowerCase();
-  return msg.includes("econnreset") || msg.includes("epipe") || msg.includes("socket hang up");
+  return isConnectionResetMessage(error.message);
 }
 
 /**

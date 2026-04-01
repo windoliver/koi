@@ -7,7 +7,9 @@ import {
   computeRetryDelay,
   DEFAULT_RETRY_CONFIG,
   isConnectionResetError,
+  isConnectionResetMessage,
   isRetryableStatus,
+  sleepWithSignal,
 } from "./retry.js";
 
 describe("isRetryableStatus", () => {
@@ -21,6 +23,15 @@ describe("isRetryableStatus", () => {
   test("403 is not retryable", () => expect(isRetryableStatus(403)).toBe(false));
   test("404 is not retryable", () => expect(isRetryableStatus(404)).toBe(false));
   test("200 is not retryable", () => expect(isRetryableStatus(200)).toBe(false));
+});
+
+describe("isConnectionResetMessage", () => {
+  test("detects ECONNRESET", () => expect(isConnectionResetMessage("read ECONNRESET")).toBe(true));
+  test("detects EPIPE", () => expect(isConnectionResetMessage("write EPIPE")).toBe(true));
+  test("detects socket hang up", () =>
+    expect(isConnectionResetMessage("socket hang up")).toBe(true));
+  test("case insensitive", () => expect(isConnectionResetMessage("Read econnreset")).toBe(true));
+  test("rejects generic messages", () => expect(isConnectionResetMessage("timeout")).toBe(false));
 });
 
 describe("isConnectionResetError", () => {
@@ -69,5 +80,26 @@ describe("computeRetryDelay", () => {
     // 500 ± 25% = [375, 625]
     expect(min).toBeGreaterThanOrEqual(375);
     expect(max).toBeLessThanOrEqual(625);
+  });
+});
+
+describe("sleepWithSignal", () => {
+  test("resolves true after delay", async () => {
+    const result = await sleepWithSignal(10);
+    expect(result).toBe(true);
+  });
+
+  test("resolves false when signal already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await sleepWithSignal(1000, controller.signal);
+    expect(result).toBe(false);
+  });
+
+  test("resolves false when signal aborted during sleep", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const result = await sleepWithSignal(5000, controller.signal);
+    expect(result).toBe(false);
   });
 });

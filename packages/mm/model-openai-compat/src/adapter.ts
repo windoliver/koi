@@ -17,6 +17,7 @@ import {
   computeRetryDelay,
   DEFAULT_RETRY_CONFIG,
   isConnectionResetError,
+  isConnectionResetMessage,
   isRetryableStatus,
   sleepWithSignal,
 } from "./retry.js";
@@ -129,11 +130,7 @@ async function* streamWithRetry(
     for await (const chunk of streamOnce(config, request, getDisableKeepAlive)) {
       if (chunk.kind === "error") {
         // ECONNRESET → disable keep-alive for subsequent requests
-        if (
-          chunk.message.toLowerCase().includes("econnreset") ||
-          chunk.message.toLowerCase().includes("epipe") ||
-          chunk.message.toLowerCase().includes("socket hang up")
-        ) {
+        if (isConnectionResetMessage(chunk.message)) {
           setDisableKeepAlive(true);
         }
 

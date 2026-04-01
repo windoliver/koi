@@ -45,7 +45,7 @@ afterAll(() => {
   server.stop();
 });
 
-function makeRequest(text: string): ModelRequest {
+function makeRequest(text: string, opts?: Partial<ModelRequest>): ModelRequest {
   return {
     messages: [
       {
@@ -54,6 +54,7 @@ function makeRequest(text: string): ModelRequest {
         timestamp: Date.now(),
       },
     ],
+    ...opts,
   };
 }
 
@@ -537,5 +538,69 @@ describe("adapter: retry", () => {
     }
     // No done chunk
     expect(chunks.find((c) => c.kind === "done")).toBeUndefined();
+  }, 10_000);
+
+  test("does not retry non-retryable errors (401)", async () => {
+    routes.set("/v1/chat/completions", {
+      status: 401,
+      body: JSON.stringify({ error: { message: "Unauthorized" } }),
+    });
+
+    // With retry enabled but 401 not retryable, should return immediately
+    const start = performance.now();
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 2000 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const elapsed = performance.now() - start;
+
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    // Should return fast — no retry backoff (500ms+) waited
+    expect(elapsed).toBeLessThan(400);
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------------
+// Abort during streaming
+// ---------------------------------------------------------------------------
+
+describe("adapter: abort during stream", () => {
+  test("user abort signal produces clean exit with no error", async () => {
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"a","choices":[{"index":0,"delta":{"content":"hello "},"finish_reason":null}]}\n`,
+        `data: {"id":"a","choices":[{"index":0,"delta":{"content":"world"},"finish_reason":null}]}\n`,
+        `data: {"id":"a","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n`,
+        `data: [DONE]\n`,
+      ].join("\n"),
+    });
+
+    const controller = new AbortController();
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+    });
+
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of adapter.stream(makeRequest("hi", { signal: controller.signal }))) {
+      chunks.push(chunk);
+      // Abort after first chunk
+      if (chunks.length >= 1) {
+        controller.abort();
+        break;
+      }
+    }
+
+    // Should have at least one chunk, no errors from clean abort
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    expect(chunks.filter((c) => c.kind === "error")).toHaveLength(0);
   }, 10_000);
 });
