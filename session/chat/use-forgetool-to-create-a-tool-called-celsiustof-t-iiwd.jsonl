@@ -1,6 +1,0 @@
-{"kind":"lifecycle","event":"Attached to agent koi-demo (running)","timestamp":1774659615277}
-{"kind":"user","text":"Use forge_tool to create a tool called celsius_to_f that converts Celsius to Fahrenheit. Implementation: return { fahrenheit: Number(input.celsius) * 9/5 + 32 }; Schema: { type: \"object\", properties: { celsius: { type: \"number\" } }, required: [\"celsius\"] }","timestamp":1774659617333}
-{"kind":"lifecycle","event":"Run started","timestamp":1774659617358}
-{"kind":"lifecycle","event":"Step: agent","timestamp":1774659617358}
-{"kind":"lifecycle","event":"Turns: 1, tokens: 0","timestamp":1774659617811}
-{"kind":"lifecycle","event":"Run finished","timestamp":1774659621400}
