@@ -409,8 +409,12 @@ bun run check:duplicates  # no copy-paste blocks
 - ALWAYS read `.claude/plans/v2-rewrite.md` before starting v2 work
 - ALWAYS read `docs/L2/<package>.md` before modifying a package
 - ALWAYS run affected tests before submitting (`bun run test --filter=<package>`)
+- ALWAYS research the v1 archive before building a new v2 package — check `archive/v1/packages/` for the equivalent v1 implementation. Study its patterns, types, tests, and edge cases. Port what works, simplify what was over-engineered, and document what you learned in the PR description
+- ALWAYS check `archive/v1/packages/meta/` (cli, koi, forge, starter) — these L3/L4 meta-packages show how v1 wired everything together: feature composition, middleware stacking, command dispatch, E2E test patterns, and real-world integration edge cases. They are the best reference for how packages interact at the integration boundary
 
 ### Harness Integration Rule (every new package)
+
+> **Applies once `@koi/harness` (#1188) lands.** Until then, new packages wire into the harness issue's stub list and add their planned assertions to the tracking issue.
 
 Every new v2 package PR **must** update `@koi/harness` (#1188). No exceptions.
 
