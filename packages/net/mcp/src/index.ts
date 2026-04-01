@@ -1,39 +1,45 @@
 /**
  * @koi/mcp — MCP transport layer + connection management.
  *
- * Provides the transport abstraction, connection lifecycle state machine,
- * config validation, error mapping, and auth provider interface for
- * connecting to MCP servers.
+ * Provides CC-compatible .mcp.json config loading, transport abstraction,
+ * connection lifecycle state machine, error mapping, and auth provider
+ * interface for connecting to MCP servers.
  */
 
 // Auth
 export type { McpAuthProvider, UnauthorizedContext } from "./auth.js";
 export { createBearerAuthProvider } from "./auth.js";
-
-// Config
+// Config — external schema (CC-compatible)
+// Config — internal types (Koi convention)
 export type {
-  HttpTransportConfig,
+  ExternalServerConfig,
+  HttpServerConfig,
+  McpJsonConfig,
   McpServerConfig,
-  McpTransportConfig,
+  McpTransportKind,
+  NormalizeResult,
   ResolvedMcpServerConfig,
-  SseTransportConfig,
-  StdioTransportConfig,
+  ResolveOptions,
+  SseServerConfig,
+  StdioServerConfig,
 } from "./config.js";
 export {
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_MAX_RECONNECT_ATTEMPTS,
   DEFAULT_TIMEOUT_MS,
-  mcpServerArraySchema,
-  mcpServerConfigSchema,
-  mcpTransportConfigSchema,
+  externalServerConfigSchema,
+  mcpJsonSchema,
+  normalizeMcpServers,
   resolveServerConfig,
-  validateServerConfig,
-  validateServerConfigs,
+  validateMcpJson,
 } from "./config.js";
 
 // Connection
 export type { ConnectionDeps, McpConnection, McpToolInfo } from "./connection.js";
 export { createMcpConnection } from "./connection.js";
+
+// Env expansion
+export { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 
 // Errors
 export type { McpErrorContext } from "./errors.js";
@@ -44,6 +50,9 @@ export {
   reconnectExhaustedError,
   sessionExpiredError,
 } from "./errors.js";
+
+// .mcp.json loader
+export { loadMcpJsonFile, loadMcpJsonString } from "./mcp-json.js";
 
 // State
 export type {

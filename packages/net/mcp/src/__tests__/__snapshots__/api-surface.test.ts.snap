@@ -38,40 +38,69 @@ interface McpAuthProvider {
 declare function createBearerAuthProvider(bearerToken: string): McpAuthProvider;
 
 /**
- * MCP server configuration types and Zod validation.
+ * MCP server configuration — three-layer schema pipeline.
  *
- * Uses z.discriminatedUnion on the transport field so that Zod validates
- * transport-specific required fields (command for stdio, url for http/sse)
- * in a single pass. No secondary extraction step needed.
+ * Layer 1 (External): CC-compatible \`.mcp.json\` format — \`type\` discriminator,
+ *   record-keyed, accepts all CC transport types + headersHelper/oauth fields.
+ * Layer 2 (Internal): Koi convention — \`kind\` discriminator, named objects,
+ *   only supported transports (stdio, http, sse), env vars resolved.
+ * Layer 3 (Resolved): Defaults applied, ready for createMcpConnection().
  */
 
-interface StdioTransportConfig {
-    readonly transport: "stdio";
+/** CC-compatible server config (all CC transport types). */
+interface ExternalServerConfig {
+    readonly type?: "stdio" | "sse" | "http" | "ws" | "sdk" | "sse-ide" | "ws-ide" | "claudeai-proxy";
+    readonly command?: string;
+    readonly args?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+    readonly url?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly headersHelper?: string;
+    readonly oauth?: {
+        readonly clientId?: string;
+        readonly callbackPort?: number;
+        readonly authServerMetadataUrl?: string;
+        readonly xaa?: boolean;
+    };
+    readonly name?: string;
+    readonly id?: string;
+    readonly ideName?: string;
+    readonly authToken?: string;
+    readonly ideRunningInWindows?: boolean;
+}
+/** CC-compatible \`.mcp.json\` top-level structure. */
+interface McpJsonConfig {
+    readonly mcpServers: Readonly<Record<string, ExternalServerConfig>>;
+}
+/** CC-compatible server config Zod schema. */
+declare const externalServerConfigSchema: z.ZodType<ExternalServerConfig>;
+/** CC-compatible \`.mcp.json\` Zod schema. */
+declare const mcpJsonSchema: z.ZodType<McpJsonConfig>;
+/** Supported transport kinds in Koi (subset of CC's transport types). */
+type McpTransportKind = "stdio" | "http" | "sse";
+interface StdioServerConfig {
+    readonly kind: "stdio";
+    readonly name: string;
     readonly command: string;
     readonly args?: readonly string[] | undefined;
     readonly env?: Readonly<Record<string, string>> | undefined;
 }
-interface HttpTransportConfig {
-    readonly transport: "http";
-    readonly url: string;
-    readonly headers?: Readonly<Record<string, string>> | undefined;
-}
-interface SseTransportConfig {
-    readonly transport: "sse";
-    readonly url: string;
-    readonly headers?: Readonly<Record<string, string>> | undefined;
-}
-type McpTransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;
-interface McpServerConfig {
+interface HttpServerConfig {
+    readonly kind: "http";
     readonly name: string;
-    readonly transport: McpTransportConfig;
-    readonly timeoutMs?: number | undefined;
-    readonly connectTimeoutMs?: number | undefined;
-    readonly maxReconnectAttempts?: number | undefined;
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
 }
+interface SseServerConfig {
+    readonly kind: "sse";
+    readonly name: string;
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+type McpServerConfig = StdioServerConfig | HttpServerConfig | SseServerConfig;
 interface ResolvedMcpServerConfig {
     readonly name: string;
-    readonly transport: McpTransportConfig;
+    readonly server: McpServerConfig;
     readonly timeoutMs: number;
     readonly connectTimeoutMs: number;
     readonly maxReconnectAttempts: number;
@@ -79,41 +108,23 @@ interface ResolvedMcpServerConfig {
 declare const DEFAULT_TIMEOUT_MS = 30000;
 declare const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
 declare const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
-declare const stdioTransportSchema: z.ZodObject<{
-    transport: z.ZodLiteral<"stdio">;
-    command: z.ZodString;
-    args: z.ZodOptional<z.ZodArray<z.ZodString>>;
-    env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}>;
-declare const httpTransportSchema: z.ZodObject<{
-    transport: z.ZodLiteral<"http">;
-    url: z.ZodString;
-    headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}>;
-declare const sseTransportSchema: z.ZodObject<{
-    transport: z.ZodLiteral<"sse">;
-    url: z.ZodString;
-    headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}>;
-declare const mcpTransportConfigSchema: z.ZodDiscriminatedUnion<[
-    typeof stdioTransportSchema,
-    typeof httpTransportSchema,
-    typeof sseTransportSchema
-]>;
-declare const mcpServerConfigSchema: z.ZodObject<{
-    name: z.ZodString;
-    transport: typeof mcpTransportConfigSchema;
-    timeoutMs: z.ZodOptional<z.ZodNumber>;
-    connectTimeoutMs: z.ZodOptional<z.ZodNumber>;
-    maxReconnectAttempts: z.ZodOptional<z.ZodNumber>;
-}>;
-declare const mcpServerArraySchema: z.ZodArray<typeof mcpServerConfigSchema>;
-/** Validates a single server config entry. Returns typed Result. */
-declare function validateServerConfig(raw: unknown): Result<McpServerConfig, KoiError>;
-/** Validates an array of server configs. */
-declare function validateServerConfigs(raw: unknown): Result<readonly McpServerConfig[], KoiError>;
-/** Resolves a server config by applying defaults. No re-validation needed. */
-declare function resolveServerConfig(config: McpServerConfig): ResolvedMcpServerConfig;
+interface NormalizeResult {
+    readonly servers: readonly McpServerConfig[];
+    readonly unsupported: readonly string[];
+}
+/**
+ * Normalizes a CC-compatible mcpServers record into Koi's internal format.
+ * Filters unsupported transport types and expands env vars.
+ */
+declare function normalizeMcpServers(mcpServers: Readonly<Record<string, ExternalServerConfig>>): NormalizeResult;
+/** Validates a CC-compatible \`.mcp.json\` config object. */
+declare function validateMcpJson(raw: unknown): Result<McpJsonConfig, KoiError>;
+interface ResolveOptions {
+    readonly timeoutMs?: number | undefined;
+    readonly connectTimeoutMs?: number | undefined;
+    readonly maxReconnectAttempts?: number | undefined;
+}
+declare function resolveServerConfig(server: McpServerConfig, options?: ResolveOptions): ResolvedMcpServerConfig;
 
 /**
  * Transport connection state machine.
@@ -171,7 +182,6 @@ declare function createTransportStateMachine(): TransportStateMachine;
  * into the Koi API surface.
  */
 
-/** Lifecycle event fired when the underlying transport changes state. */
 type TransportEvent = {
     readonly kind: "closed";
 } | {
@@ -179,31 +189,17 @@ type TransportEvent = {
     readonly error: Error;
 };
 type TransportEventListener = (event: TransportEvent) => void;
-/**
- * Koi's wrapper around MCP SDK transports.
- * Exposes lifecycle events and session state without leaking SDK internals.
- */
 interface KoiMcpTransport {
-    /** Start the transport (called by Client.connect). */
     readonly start: () => Promise<void>;
-    /** Close the transport and release resources. */
     readonly close: () => Promise<void>;
-    /** The underlying SDK transport for passing to Client.connect(). */
     readonly sdkTransport: unknown;
-    /** Session ID from Streamable HTTP (undefined for stdio/SSE). */
     readonly sessionId: string | undefined;
-    /** Subscribe to transport lifecycle events. Returns unsubscribe function. */
     readonly onEvent: (listener: TransportEventListener) => () => void;
 }
 interface CreateTransportOptions {
-    readonly config: McpTransportConfig;
+    readonly config: McpServerConfig;
     readonly authProvider?: McpAuthProvider | undefined;
 }
-/**
- * Creates a KoiMcpTransport from a transport config.
- * The returned transport has not been started — pass .sdkTransport
- * to Client.connect() to start it.
- */
 declare function createTransport(options: CreateTransportOptions): KoiMcpTransport;
 type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport;
 
@@ -273,6 +269,34 @@ interface ConnectionDeps {
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
 
 /**
+ * Environment variable expansion with \${VAR} and \${VAR:-default} syntax.
+ *
+ * Compatible with Claude Code's env var expansion format.
+ * Cannot import from @koi/hooks (L2 peer import rule).
+ */
+/**
+ * Expands environment variables in a string.
+ *
+ * Supports:
+ * - \`\${VAR}\` — expands to process.env.VAR
+ * - \`\${VAR:-default}\` — expands to process.env.VAR, or "default" if not set
+ *
+ * Returns the expanded string and a list of unresolved variables (missing + no default).
+ */
+declare function expandEnvVars(value: string): {
+    readonly expanded: string;
+    readonly missing: readonly string[];
+};
+/**
+ * Expands env vars in all string values of a record (shallow).
+ * Returns the expanded record and all missing variables.
+ */
+declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>): {
+    readonly expanded: Record<string, string>;
+    readonly missing: readonly string[];
+};
+
+/**
  * Structured error mapping from MCP SDK / HTTP errors to KoiError.
  *
  * Strategy: check structured signals first (HTTP status code, JSON-RPC error
@@ -286,18 +310,36 @@ interface McpErrorContext {
     readonly httpStatus?: number | undefined;
     readonly jsonRpcCode?: number | undefined;
 }
-/**
- * Maps an MCP error to a KoiError using structured signals first,
- * then message pattern fallback.
- *
- * Priority: HTTP status code > JSON-RPC code > message pattern > EXTERNAL fallback
- */
 declare function mapMcpError(error: unknown, context: McpErrorContext): KoiError;
 declare function connectionTimeoutError(serverName: string, timeoutMs: number): KoiError;
 declare function notConnectedError(serverName: string): KoiError;
 declare function reconnectExhaustedError(serverName: string, attempts: number): KoiError;
 declare function sessionExpiredError(serverName: string): KoiError;
 
-export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type HttpTransportConfig, type KoiMcpTransport, type McpAuthProvider, type McpConnection, type McpErrorContext, type McpServerConfig, type McpToolInfo, type McpTransportConfig, type ResolvedMcpServerConfig, type SseTransportConfig, type StdioTransportConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedContext, connectionTimeoutError, createBearerAuthProvider, createMcpConnection, createTransport, createTransportStateMachine, mapMcpError, mcpServerArraySchema, mcpServerConfigSchema, mcpTransportConfigSchema, notConnectedError, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateServerConfig, validateServerConfigs };
+/**
+ * .mcp.json file loader — reads CC-compatible MCP server configuration.
+ *
+ * Pipeline: file read → JSON parse → external schema validation →
+ * normalization (CC type → Koi kind, env expansion) → internal configs.
+ */
+
+/**
+ * Loads and parses a \`.mcp.json\` file from the given path.
+ *
+ * Returns normalized Koi server configs. Unsupported transport types
+ * (ws, sdk, etc.) are silently filtered — available in the \`unsupported\`
+ * list for logging.
+ */
+declare function loadMcpJsonFile(filePath: string): Promise<Result<{
+    readonly servers: readonly McpServerConfig[];
+    readonly unsupported: readonly string[];
+}, KoiError>>;
+/**
+ * Parses a JSON string as \`.mcp.json\` config.
+ * Useful for manifest embedding or testing.
+ */
+declare function loadMcpJsonString(json: string): Result<NormalizeResult, KoiError>;
+
+export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpServerConfig, type McpToolInfo, type McpTransportKind, type NormalizeResult, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedContext, connectionTimeoutError, createBearerAuthProvider, createMcpConnection, createTransport, createTransportStateMachine, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mcpJsonSchema, normalizeMcpServers, notConnectedError, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson };
 "
 `;

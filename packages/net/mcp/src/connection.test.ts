@@ -107,11 +107,7 @@ function makeDeps(
 }
 
 function makeConfig(overrides?: { maxReconnectAttempts?: number; connectTimeoutMs?: number }) {
-  return resolveServerConfig({
-    name: "test-server",
-    transport: { transport: "stdio", command: "echo" },
-    ...overrides,
-  });
+  return resolveServerConfig({ kind: "stdio", name: "test-server", command: "echo" }, overrides);
 }
 
 // ---------------------------------------------------------------------------

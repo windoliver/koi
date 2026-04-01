@@ -1,159 +1,295 @@
 /**
- * MCP server configuration types and Zod validation.
+ * MCP server configuration — three-layer schema pipeline.
  *
- * Uses z.discriminatedUnion on the transport field so that Zod validates
- * transport-specific required fields (command for stdio, url for http/sse)
- * in a single pass. No secondary extraction step needed.
+ * Layer 1 (External): CC-compatible `.mcp.json` format — `type` discriminator,
+ *   record-keyed, accepts all CC transport types + headersHelper/oauth fields.
+ * Layer 2 (Internal): Koi convention — `kind` discriminator, named objects,
+ *   only supported transports (stdio, http, sse), env vars resolved.
+ * Layer 3 (Resolved): Defaults applied, ready for createMcpConnection().
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
+import { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 
-// ---------------------------------------------------------------------------
-// Transport config types
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Layer 1 — External Schema (CC-compatible input)
+// ===========================================================================
 
-export interface StdioTransportConfig {
-  readonly transport: "stdio";
+/**
+ * Builds all external schemas. Wrapped in a function so that
+ * isolatedDeclarations doesn't require explicit annotations on
+ * every intermediate schema const.
+ */
+function buildExternalSchemas() {
+  const oauth = z.object({
+    clientId: z.string().optional(),
+    callbackPort: z.number().int().positive().optional(),
+    authServerMetadataUrl: z.string().url().optional(),
+    xaa: z.boolean().optional(),
+  });
+
+  const stdio = z.object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  });
+
+  const sse = z.object({
+    type: z.literal("sse"),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),
+    oauth: oauth.optional(),
+  });
+
+  const http = z.object({
+    type: z.literal("http"),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),
+    oauth: oauth.optional(),
+  });
+
+  const ws = z.object({
+    type: z.literal("ws"),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),
+  });
+
+  const sdk = z.object({ type: z.literal("sdk"), name: z.string() });
+
+  const sseIde = z.object({
+    type: z.literal("sse-ide"),
+    url: z.string(),
+    ideName: z.string(),
+    ideRunningInWindows: z.boolean().optional(),
+  });
+
+  const wsIde = z.object({
+    type: z.literal("ws-ide"),
+    url: z.string(),
+    ideName: z.string(),
+    authToken: z.string().optional(),
+    ideRunningInWindows: z.boolean().optional(),
+  });
+
+  const claudeAiProxy = z.object({
+    type: z.literal("claudeai-proxy"),
+    url: z.string(),
+    id: z.string(),
+  });
+
+  // Stdio last — its `type` is optional, so it's the fallback.
+  const serverConfig = z.union([sse, http, ws, sdk, sseIde, wsIde, claudeAiProxy, stdio]);
+
+  const mcpJson = z.object({
+    mcpServers: z.record(z.string(), serverConfig),
+  });
+
+  return {
+    serverConfig: serverConfig as z.ZodType<ExternalServerConfig>,
+    mcpJson: mcpJson as z.ZodType<McpJsonConfig>,
+  };
+}
+
+/** CC-compatible server config (all CC transport types). */
+export interface ExternalServerConfig {
+  readonly type?: "stdio" | "sse" | "http" | "ws" | "sdk" | "sse-ide" | "ws-ide" | "claudeai-proxy";
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+  readonly url?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly headersHelper?: string;
+  readonly oauth?: {
+    readonly clientId?: string;
+    readonly callbackPort?: number;
+    readonly authServerMetadataUrl?: string;
+    readonly xaa?: boolean;
+  };
+  readonly name?: string;
+  readonly id?: string;
+  readonly ideName?: string;
+  readonly authToken?: string;
+  readonly ideRunningInWindows?: boolean;
+}
+
+/** CC-compatible `.mcp.json` top-level structure. */
+export interface McpJsonConfig {
+  readonly mcpServers: Readonly<Record<string, ExternalServerConfig>>;
+}
+
+const _schemas: {
+  serverConfig: z.ZodType<ExternalServerConfig>;
+  mcpJson: z.ZodType<McpJsonConfig>;
+} = buildExternalSchemas();
+
+/** CC-compatible server config Zod schema. */
+export const externalServerConfigSchema: z.ZodType<ExternalServerConfig> = _schemas.serverConfig;
+/** CC-compatible `.mcp.json` Zod schema. */
+export const mcpJsonSchema: z.ZodType<McpJsonConfig> = _schemas.mcpJson;
+
+// ===========================================================================
+// Layer 2 — Internal Config (Koi convention)
+// ===========================================================================
+
+/** Supported transport kinds in Koi (subset of CC's transport types). */
+export type McpTransportKind = "stdio" | "http" | "sse";
+
+export interface StdioServerConfig {
+  readonly kind: "stdio";
+  readonly name: string;
   readonly command: string;
   readonly args?: readonly string[] | undefined;
   readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
-export interface HttpTransportConfig {
-  readonly transport: "http";
-  readonly url: string;
-  readonly headers?: Readonly<Record<string, string>> | undefined;
-}
-
-export interface SseTransportConfig {
-  readonly transport: "sse";
-  readonly url: string;
-  readonly headers?: Readonly<Record<string, string>> | undefined;
-}
-
-export type McpTransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;
-
-// ---------------------------------------------------------------------------
-// Server config
-// ---------------------------------------------------------------------------
-
-export interface McpServerConfig {
+export interface HttpServerConfig {
+  readonly kind: "http";
   readonly name: string;
-  readonly transport: McpTransportConfig;
-  readonly timeoutMs?: number | undefined;
-  readonly connectTimeoutMs?: number | undefined;
-  readonly maxReconnectAttempts?: number | undefined;
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Resolved config (defaults applied)
-// ---------------------------------------------------------------------------
+export interface SseServerConfig {
+  readonly kind: "sse";
+  readonly name: string;
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+
+export type McpServerConfig = StdioServerConfig | HttpServerConfig | SseServerConfig;
+
+// ===========================================================================
+// Layer 3 — Resolved Config (defaults applied)
+// ===========================================================================
 
 export interface ResolvedMcpServerConfig {
   readonly name: string;
-  readonly transport: McpTransportConfig;
+  readonly server: McpServerConfig;
   readonly timeoutMs: number;
   readonly connectTimeoutMs: number;
   readonly maxReconnectAttempts: number;
 }
 
-// ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
 
-// ---------------------------------------------------------------------------
-// Zod schemas — discriminated union on transport.transport
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Normalization: External → Internal
+// ===========================================================================
 
-const stdioTransportSchema: z.ZodObject<{
-  transport: z.ZodLiteral<"stdio">;
-  command: z.ZodString;
-  args: z.ZodOptional<z.ZodArray<z.ZodString>>;
-  env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}> = z.object({
-  transport: z.literal("stdio"),
-  command: z.string().min(1, "stdio transport requires a non-empty command"),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-});
+/** Transport types that Koi supports. Others are silently filtered. */
+const SUPPORTED_TYPES: ReadonlySet<string> = new Set(["stdio", "http", "sse"]);
 
-const httpTransportSchema: z.ZodObject<{
-  transport: z.ZodLiteral<"http">;
-  url: z.ZodString;
-  headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}> = z.object({
-  transport: z.literal("http"),
-  url: z.string().url("http transport requires a valid URL"),
-  headers: z.record(z.string(), z.string()).optional(),
-});
+export interface NormalizeResult {
+  readonly servers: readonly McpServerConfig[];
+  readonly unsupported: readonly string[];
+}
 
-const sseTransportSchema: z.ZodObject<{
-  transport: z.ZodLiteral<"sse">;
-  url: z.ZodString;
-  headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}> = z.object({
-  transport: z.literal("sse"),
-  url: z.string().url("sse transport requires a valid URL"),
-  headers: z.record(z.string(), z.string()).optional(),
-});
+/**
+ * Normalizes a CC-compatible mcpServers record into Koi's internal format.
+ * Filters unsupported transport types and expands env vars.
+ */
+export function normalizeMcpServers(
+  mcpServers: Readonly<Record<string, ExternalServerConfig>>,
+): NormalizeResult {
+  const servers: McpServerConfig[] = [];
+  const unsupported: string[] = [];
 
-export const mcpTransportConfigSchema: z.ZodDiscriminatedUnion<
-  [typeof stdioTransportSchema, typeof httpTransportSchema, typeof sseTransportSchema]
-> = z.discriminatedUnion("transport", [
-  stdioTransportSchema,
-  httpTransportSchema,
-  sseTransportSchema,
-]);
+  for (const [name, config] of Object.entries(mcpServers)) {
+    const transportType = config.type ?? "stdio";
 
-export const mcpServerConfigSchema: z.ZodObject<{
-  name: z.ZodString;
-  transport: typeof mcpTransportConfigSchema;
-  timeoutMs: z.ZodOptional<z.ZodNumber>;
-  connectTimeoutMs: z.ZodOptional<z.ZodNumber>;
-  maxReconnectAttempts: z.ZodOptional<z.ZodNumber>;
-}> = z.object({
-  name: z.string().min(1, "server name must not be empty"),
-  transport: mcpTransportConfigSchema,
-  timeoutMs: z.number().int().positive().optional(),
-  connectTimeoutMs: z.number().int().positive().optional(),
-  maxReconnectAttempts: z.number().int().nonnegative().optional(),
-});
+    if (!SUPPORTED_TYPES.has(transportType)) {
+      unsupported.push(`${name} (${transportType})`);
+      continue;
+    }
 
-export const mcpServerArraySchema: z.ZodArray<typeof mcpServerConfigSchema> = z
-  .array(mcpServerConfigSchema)
-  .min(1);
+    const internal = normalizeOne(name, config);
+    if (internal !== undefined) {
+      servers.push(internal);
+    }
+  }
 
-// ---------------------------------------------------------------------------
+  return { servers, unsupported };
+}
+
+function normalizeOne(name: string, config: ExternalServerConfig): McpServerConfig | undefined {
+  const type = config.type ?? "stdio";
+
+  switch (type) {
+    case "stdio": {
+      // config is the stdio variant — has command, args, env
+      const c = config as { command: string; args?: string[]; env?: Record<string, string> };
+      const env = c.env !== undefined ? expandEnvVarsInRecord(c.env).expanded : undefined;
+      return {
+        kind: "stdio",
+        name,
+        command: expandEnvVars(c.command).expanded,
+        args: c.args !== undefined && c.args.length > 0 ? c.args : undefined,
+        env: env !== undefined && Object.keys(env).length > 0 ? env : undefined,
+      };
+    }
+    case "http": {
+      const c = config as { url: string; headers?: Record<string, string> };
+      const headers =
+        c.headers !== undefined ? expandEnvVarsInRecord(c.headers).expanded : undefined;
+      return {
+        kind: "http",
+        name,
+        url: expandEnvVars(c.url).expanded,
+        headers: headers !== undefined && Object.keys(headers).length > 0 ? headers : undefined,
+      };
+    }
+    case "sse": {
+      const c = config as { url: string; headers?: Record<string, string> };
+      const headers =
+        c.headers !== undefined ? expandEnvVarsInRecord(c.headers).expanded : undefined;
+      return {
+        kind: "sse",
+        name,
+        url: expandEnvVars(c.url).expanded,
+        headers: headers !== undefined && Object.keys(headers).length > 0 ? headers : undefined,
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+// ===========================================================================
 // Validation
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
-/** Validates a single server config entry. Returns typed Result. */
-export function validateServerConfig(raw: unknown): Result<McpServerConfig, KoiError> {
-  return validateWith(mcpServerConfigSchema, raw, "MCP server config");
+/** Validates a CC-compatible `.mcp.json` config object. */
+export function validateMcpJson(raw: unknown): Result<McpJsonConfig, KoiError> {
+  return validateWith(mcpJsonSchema, raw, ".mcp.json");
 }
 
-/** Validates an array of server configs. */
-export function validateServerConfigs(raw: unknown): Result<readonly McpServerConfig[], KoiError> {
-  return validateWith(mcpServerArraySchema, raw, "MCP server configs");
+// ===========================================================================
+// Resolution (apply defaults)
+// ===========================================================================
+
+export interface ResolveOptions {
+  readonly timeoutMs?: number | undefined;
+  readonly connectTimeoutMs?: number | undefined;
+  readonly maxReconnectAttempts?: number | undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Config resolution (apply defaults)
-// ---------------------------------------------------------------------------
-
-/** Resolves a server config by applying defaults. No re-validation needed. */
-export function resolveServerConfig(config: McpServerConfig): ResolvedMcpServerConfig {
+export function resolveServerConfig(
+  server: McpServerConfig,
+  options?: ResolveOptions,
+): ResolvedMcpServerConfig {
   return {
-    name: config.name,
-    transport: config.transport,
-    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    connectTimeoutMs: config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-    maxReconnectAttempts: config.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    name: server.name,
+    server,
+    timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    connectTimeoutMs: options?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+    maxReconnectAttempts: options?.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
   };
 }

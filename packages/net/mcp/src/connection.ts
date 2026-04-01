@@ -132,7 +132,7 @@ export function createMcpConnection(
 
     try {
       const newTransport = makeTransport({
-        config: config.transport,
+        config: config.server,
         authProvider,
       });
 
