@@ -74,6 +74,12 @@ function createHttpHookSchema(): z.ZodType<HttpHookConfig> {
           const parsed = new URL(val);
           if (parsed.protocol === "https:") return true;
           if (parsed.protocol === "http:") {
+            // HTTP loopback only allowed in development mode
+            const isDev =
+              process.env.NODE_ENV === "development" ||
+              process.env.NODE_ENV === "test" ||
+              process.env.KOI_DEV === "1";
+            if (!isDev) return false;
             const host = parsed.hostname;
             return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
           }
@@ -81,7 +87,7 @@ function createHttpHookSchema(): z.ZodType<HttpHookConfig> {
         } catch {
           return false;
         }
-      }, "url must be HTTPS (HTTP allowed only for localhost)"),
+      }, "url must be HTTPS (HTTP loopback requires NODE_ENV=development or KOI_DEV=1)"),
     method: z.enum(["POST", "PUT"]).optional(),
     headers: z.record(z.string(), z.string()).optional(),
     secret: z.string().optional(),

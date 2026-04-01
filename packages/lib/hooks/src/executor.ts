@@ -76,6 +76,12 @@ async function executeCommandHook(
     };
     signal.addEventListener("abort", onAbort, { once: true });
 
+    // Close the spawn/abort race: if the signal fired between Bun.spawn()
+    // and addEventListener(), the listener missed it. Check and kill now.
+    if (signal.aborted) {
+      void forceKill(proc);
+    }
+
     // Drain stderr concurrently with waiting for exit to avoid pipe buffer deadlock
     const [exitCode, stderrText] = await Promise.all([
       proc.exited,

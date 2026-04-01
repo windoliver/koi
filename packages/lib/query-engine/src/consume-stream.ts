@@ -20,10 +20,16 @@ export async function* consumeModelStream(
   let inputTokens = 0;
   let outputTokens = 0;
   const completedToolCalls: AccumulatedToolCall[] = [];
+  const textFragments: string[] = [];
 
   for await (const chunk of chunks) {
     switch (chunk.kind) {
-      case "text_delta":
+      case "text_delta": {
+        textFragments.push(chunk.delta);
+        yield chunk;
+        break;
+      }
+
       case "thinking_delta": {
         yield chunk;
         break;
@@ -117,13 +123,14 @@ export async function* consumeModelStream(
           inputTokens = responseUsage.inputTokens;
           outputTokens = responseUsage.outputTokens;
         }
+        // Use terminal chunk content if provided; fall back to accumulated
+        // text deltas for providers whose terminal chunk omits the full text.
+        const finalText =
+          chunk.response.content.length > 0 ? chunk.response.content : textFragments.join("");
         yield {
           kind: "done",
           output: {
-            content:
-              chunk.response.content.length > 0
-                ? [{ kind: "text", text: chunk.response.content }]
-                : [],
+            content: finalText.length > 0 ? [{ kind: "text", text: finalText }] : [],
             stopReason: "completed",
             metrics: {
               totalTokens: inputTokens + outputTokens,
@@ -142,11 +149,13 @@ export async function* consumeModelStream(
   // Stream ended without a terminal "done" or "error" chunk — transport
   // breakage, iterator cancellation, or provider version skew. Synthesize
   // a terminal error so downstream consumers always get a deterministic
-  // end-of-stream signal.
+  // end-of-stream signal. Include any accumulated text so partial output
+  // is not lost.
+  const partialText = textFragments.join("");
   yield {
     kind: "done",
     output: {
-      content: [],
+      content: partialText.length > 0 ? [{ kind: "text", text: partialText }] : [],
       stopReason: "error",
       metrics: {
         totalTokens: inputTokens + outputTokens,

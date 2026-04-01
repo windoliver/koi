@@ -209,10 +209,10 @@ describe("consumeModelStream", () => {
     expect(done.output.content).toEqual([{ kind: "text", text: "final answer" }]);
   });
 
-  test("truncated stream without terminal chunk yields error done event", async () => {
-    // Simulate a stream that ends abruptly (no "done" or "error" chunk)
+  test("truncated stream without terminal chunk preserves partial text", async () => {
     const chunks: readonly ModelChunk[] = [
-      { kind: "text_delta", delta: "partial response" },
+      { kind: "text_delta", delta: "partial " },
+      { kind: "text_delta", delta: "response" },
       { kind: "usage", inputTokens: 7, outputTokens: 3 },
     ];
 
@@ -223,6 +223,7 @@ describe("consumeModelStream", () => {
 
     const done = last as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("error");
+    expect(done.output.content).toEqual([{ kind: "text", text: "partial response" }]);
     expect(done.output.metrics.inputTokens).toBe(7);
     expect(done.output.metrics.outputTokens).toBe(3);
     expect((done.output.metadata as { readonly error: string }).error).toBe(
@@ -239,6 +240,36 @@ describe("consumeModelStream", () => {
     const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("error");
     expect(done.output.metrics.totalTokens).toBe(0);
+  });
+
+  test("done with empty content falls back to accumulated text deltas", async () => {
+    // Some providers stream text via deltas but send an empty terminal content
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "Hello " },
+      { kind: "text_delta", delta: "world" },
+      {
+        kind: "done",
+        response: { content: "", model: "test-model", usage: { inputTokens: 5, outputTokens: 2 } },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("completed");
+    expect(done.output.content).toEqual([{ kind: "text", text: "Hello world" }]);
+  });
+
+  test("done with non-empty content takes precedence over accumulated deltas", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "streamed" },
+      { kind: "done", response: { content: "authoritative", model: "test-model" } },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.content).toEqual([{ kind: "text", text: "authoritative" }]);
   });
 
   test("thinking_delta chunks are passed through", async () => {

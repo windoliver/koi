@@ -146,7 +146,8 @@ describe("httpHookSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("allows HTTP URL for localhost", () => {
+  it("allows HTTP URL for localhost in dev/test mode", () => {
+    // bun:test sets NODE_ENV=test, so loopback is allowed
     for (const url of [
       "http://localhost:3000/hooks",
       "http://127.0.0.1:3000/hooks",
@@ -154,6 +155,29 @@ describe("httpHookSchema", () => {
     ]) {
       const result = httpHookSchema.safeParse({ ...validHttp, url });
       expect(result.success).toBe(true);
+    }
+  });
+
+  it("rejects HTTP localhost in production mode", () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origKoiDev = process.env.KOI_DEV;
+    process.env.NODE_ENV = "production";
+    delete process.env.KOI_DEV;
+
+    const result = httpHookSchema.safeParse({
+      ...validHttp,
+      url: "http://localhost:3000/hooks",
+    });
+    expect(result.success).toBe(false);
+
+    // Restore
+    if (origNodeEnv !== undefined) {
+      process.env.NODE_ENV = origNodeEnv;
+    } else {
+      delete process.env.NODE_ENV;
+    }
+    if (origKoiDev !== undefined) {
+      process.env.KOI_DEV = origKoiDev;
     }
   });
 
