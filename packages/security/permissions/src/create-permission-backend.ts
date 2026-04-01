@@ -37,10 +37,23 @@ function validatePlanActions(actions: ReadonlySet<string>, label: string): void 
  * Deep-freeze a rules array so neither the array nor individual rule objects
  * can be mutated after backend construction.
  */
+/**
+ * Recursively freeze an object and all nested objects.
+ */
+function deepFreeze<T>(obj: T): T {
+  Object.freeze(obj);
+  for (const value of Object.values(obj as Record<string, unknown>)) {
+    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+      deepFreeze(value);
+    }
+  }
+  return obj;
+}
+
 function freezeRules(rules: readonly CompiledRule[]): readonly CompiledRule[] {
   const frozen = [...rules];
   for (const rule of frozen) {
-    Object.freeze(rule);
+    deepFreeze(rule);
   }
   return Object.freeze(frozen);
 }

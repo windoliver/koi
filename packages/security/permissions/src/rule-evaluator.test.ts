@@ -159,6 +159,14 @@ describe("normalizeResource", () => {
     expect(normalizeResource("src/deep/../../secrets.env")).toBe("secrets.env");
   });
 
+  test("rejects bare .. as unresolvable traversal", () => {
+    expect(normalizeResource("..")).toBeNull();
+  });
+
+  test("normalizes bare . to empty string", () => {
+    expect(normalizeResource(".")).toBe("");
+  });
+
   test("rejects relative paths with leading ..", () => {
     expect(normalizeResource("../secrets.env")).toBeNull();
   });

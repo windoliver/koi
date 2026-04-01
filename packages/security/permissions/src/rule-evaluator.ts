@@ -105,6 +105,10 @@ function isFilesystemPath(resource: string): boolean {
   if (resource.includes("://")) {
     return false;
   }
+  // Bare dot segments are filesystem traversal attempts
+  if (resource === "." || resource === "..") {
+    return true;
+  }
   // Must contain at least one path separator to be path-like
   return resource.includes("/") || resource.includes("\\");
 }
