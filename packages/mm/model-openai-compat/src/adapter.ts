@@ -321,7 +321,11 @@ async function* streamOnce(
     for await (const rawChunk of responseBody) {
       resetIdleTimer();
 
-      const text = decoder.decode(rawChunk as Uint8Array, { stream: true });
+      const raw = decoder.decode(rawChunk as Uint8Array, { stream: true });
+      // Normalize CRLF → LF before event boundary detection.
+      // SSE spec allows \r\n, \r, or \n as line endings. Without this,
+      // \r\n\r\n-delimited events accumulate in the buffer until EOF.
+      const text = raw.includes("\r") ? raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n") : raw;
       if (text.includes("[DONE]")) sawDone = true;
       buffer += text;
 

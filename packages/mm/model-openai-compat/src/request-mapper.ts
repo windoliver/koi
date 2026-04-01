@@ -28,11 +28,42 @@ import type {
  * - Sanitizes to allowed chars (alphanumeric, underscore, hyphen)
  * - Truncates to 40 chars (OpenAI limit)
  */
-function normalizeToolCallId(id: string): string {
-  // Handle pipe-separated IDs — extract just the call_id part
-  const base = id.includes("|") ? (id.split("|")[0] ?? id) : id;
-  // Sanitize to allowed characters and truncate
-  return base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+/**
+ * Stateful ID normalizer that detects collisions.
+ * Two different source IDs that normalize to the same output would silently
+ * corrupt tool-call linkage — this guard fails closed by appending a
+ * disambiguating suffix when a collision is detected.
+ */
+function createIdNormalizer(): (id: string) => string {
+  // Maps original source ID → stable normalized output. Same source ID
+  // always returns the same normalized value across the transcript.
+  const cache = new Map<string, string>();
+  // Tracks which normalized values are taken to detect collisions.
+  const taken = new Set<string>();
+
+  return (id: string): string => {
+    // Fast path: same source ID seen before → return cached result
+    const cached = cache.get(id);
+    if (cached !== undefined) return cached;
+
+    // Handle pipe-separated IDs — extract just the call_id part
+    const base = id.includes("|") ? (id.split("|")[0] ?? id) : id;
+    // Sanitize to allowed characters and truncate
+    let normalized = base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+
+    // Collision — a different source ID already claimed this normalized value
+    if (taken.has(normalized)) {
+      let suffix = 1;
+      while (taken.has(`${normalized.slice(0, 36)}_c${suffix}`)) {
+        suffix++;
+      }
+      normalized = `${normalized.slice(0, 36)}_c${suffix}`;
+    }
+
+    cache.set(id, normalized);
+    taken.add(normalized);
+    return normalized;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +142,11 @@ function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" | "syst
  * Map a single InboundMessage to a Chat Completions message.
  * Uses metadata.callId for tool linkage (session-repair convention).
  */
-function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatCompletionMessage {
+function mapOneMessage(
+  msg: InboundMessage,
+  compat: ResolvedCompat,
+  normalizeId: (id: string) => string,
+): ChatCompletionMessage {
   const text = extractText(msg);
   const role = resolveRole(msg);
 
@@ -139,7 +174,7 @@ function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatComplet
       toolCalls !== undefined && toolCalls.length > 0
         ? toolCalls.map((tc) => ({
             ...tc,
-            id: normalizeToolCallId(tc.id),
+            id: normalizeId(tc.id),
           }))
         : undefined;
 
@@ -165,7 +200,7 @@ function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatComplet
     return {
       role: "tool",
       content: text,
-      ...(toolCallId !== undefined ? { tool_call_id: normalizeToolCallId(toolCallId) } : {}),
+      ...(toolCallId !== undefined ? { tool_call_id: normalizeId(toolCallId) } : {}),
       ...(compat.requiresToolResultName && toolName !== undefined ? { name: toolName } : {}),
     };
   }
@@ -276,7 +311,9 @@ export function mapMessages(
     );
   }
 
-  const mapped = messages.map((msg) => mapOneMessage(msg, compat));
+  // Stateful normalizer scoped to this transcript — detects ID collisions
+  const normalizeId = createIdNormalizer();
+  const mapped = messages.map((msg) => mapOneMessage(msg, compat, normalizeId));
   return fixTranscriptOrdering(mapped, compat);
 }
 

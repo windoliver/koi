@@ -604,3 +604,45 @@ describe("adapter: abort during stream", () => {
     expect(chunks.filter((c) => c.kind === "error")).toHaveLength(0);
   }, 10_000);
 });
+
+// ---------------------------------------------------------------------------
+// CRLF SSE framing
+// ---------------------------------------------------------------------------
+
+describe("adapter: CRLF SSE event boundaries", () => {
+  test("streams events delimited by CRLF line endings", async () => {
+    // SSE spec allows \r\n as line ending — events separated by \r\n\r\n
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"cr","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\r\n`,
+        `\r\n`,
+        `data: {"id":"cr","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}\r\n`,
+        `\r\n`,
+        `data: {"id":"cr","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\r\n`,
+        `\r\n`,
+        `data: [DONE]\r\n`,
+        `\r\n`,
+      ].join(""),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const textDeltas = chunks.filter((c) => c.kind === "text_delta");
+    const done = chunks.find((c) => c.kind === "done");
+    const errors = chunks.filter((c) => c.kind === "error");
+
+    expect(errors).toHaveLength(0);
+    expect(textDeltas).toHaveLength(2);
+    expect(done?.kind).toBe("done");
+    if (done?.kind === "done") {
+      expect(done.response.content).toBe("hello world");
+    }
+  });
+});

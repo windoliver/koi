@@ -358,6 +358,53 @@ describe("mapMessages", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Tool call ID collision detection
+  // ---------------------------------------------------------------------------
+
+  test("disambiguates two IDs that normalize to the same value", () => {
+    // Two IDs that differ only after char 40 — would collide without guard
+    const id1 = `${"a".repeat(40)}_suffix1`;
+    const id2 = `${"a".repeat(40)}_suffix2`;
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          toolCalls: [
+            { id: id1, type: "function", function: { name: "fn1", arguments: "{}" } },
+            { id: id2, type: "function", function: { name: "fn2", arguments: "{}" } },
+          ],
+        },
+      },
+      {
+        content: [{ kind: "text", text: "r1" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: id1 },
+      },
+      {
+        content: [{ kind: "text", text: "r2" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: id2 },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT);
+    const tc = result[0]?.tool_calls;
+    expect(tc).toHaveLength(2);
+    // The two IDs must be different after normalization
+    expect(tc?.[0]?.id).not.toBe(tc?.[1]?.id);
+    // Both tool results preserved (not dropped as orphan)
+    expect(result).toHaveLength(3);
+    expect(result[1]?.role).toBe("tool");
+    expect(result[2]?.role).toBe("tool");
+    // Tool result IDs match their respective call IDs
+    expect(result[1]?.tool_call_id).toBe(tc?.[0]?.id);
+    expect(result[2]?.tool_call_id).toBe(tc?.[1]?.id);
+  });
+
+  // ---------------------------------------------------------------------------
   // Thinking replay with requiresThinkingAsText
   // ---------------------------------------------------------------------------
 
