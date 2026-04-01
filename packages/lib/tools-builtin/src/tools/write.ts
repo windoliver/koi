@@ -64,9 +64,8 @@ export function createFsWriteTool(
         ...(createDirsResult.value !== undefined && { createDirectories: createDirsResult.value }),
       };
       const result = await backend.write(pathResult.value, contentResult.value, options);
-      if (execOptions?.signal?.aborted) {
-        return { error: "Operation cancelled", code: "CANCELLED" };
-      }
+      // No post-write cancellation check: if the backend committed, report
+      // the real outcome so callers don't retry an already-applied write.
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }

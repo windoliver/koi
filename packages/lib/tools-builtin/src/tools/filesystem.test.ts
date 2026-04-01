@@ -482,7 +482,7 @@ describe("createFsWriteTool", () => {
     expect(result.bytesWritten).toBe(0);
   });
 
-  test("returns cancelled when signal aborts during backend write", async () => {
+  test("returns success even if signal aborts during backend write (committed is committed)", async () => {
     const controller = new AbortController();
     const backend = {
       ...createMockBackend(),
@@ -495,8 +495,9 @@ describe("createFsWriteTool", () => {
     const result = (await tool.execute(
       { path: "/test", content: "x" },
       { signal: controller.signal },
-    )) as { readonly code: string };
-    expect(result.code).toBe("CANCELLED");
+    )) as { readonly path: string; readonly bytesWritten: number };
+    expect(result.path).toBe("/test");
+    expect(result.bytesWritten).toBe(1);
   });
 
   test("returns cancelled when signal is already aborted", async () => {
