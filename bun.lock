@@ -109,6 +109,13 @@
         "@koi/hash": "workspace:*",
       },
     },
+    "packages/lib/event-trace": {
+      "name": "@koi/event-trace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/execution-context": {
       "name": "@koi/execution-context",
       "version": "0.0.0",
@@ -164,6 +171,13 @@
         "@koi/core": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/mm/model-openai-compat": {
+      "name": "@koi/model-openai-compat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/mm/session-repair": {
@@ -361,6 +375,8 @@
 
     "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/lib/event-delivery"],
 
+    "@koi/event-trace": ["@koi/event-trace@workspace:packages/lib/event-trace"],
+
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
@@ -372,6 +388,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 

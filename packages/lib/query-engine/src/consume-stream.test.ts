@@ -175,7 +175,7 @@ describe("consumeModelStream", () => {
     expect((end2.result as { readonly parsedArgs: unknown }).parsedArgs).toEqual({ b: 2 });
   });
 
-  test("usage chunks are not yielded as separate events", async () => {
+  test("usage chunks are yielded as custom events for partial tracking", async () => {
     const chunks: readonly ModelChunk[] = [
       { kind: "text_delta", delta: "hi" },
       { kind: "usage", inputTokens: 10, outputTokens: 5 },
@@ -185,8 +185,9 @@ describe("consumeModelStream", () => {
     const events = await collect(consumeModelStream(toStream(chunks)));
     const kinds = events.map((e) => e.kind);
 
+    // Usage is yielded as "custom" with type "usage", not as raw "usage"
     expect(kinds).not.toContain("usage");
-    expect(kinds).toEqual(["text_delta", "done"]);
+    expect(kinds).toEqual(["text_delta", "custom", "done"]);
   });
 
   test("final done usage overrides incremental usage totals", async () => {

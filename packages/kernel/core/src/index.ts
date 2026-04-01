@@ -681,6 +681,15 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model adapter
+export type {
+  ModelAdapter,
+  ModelContentBlock,
+  ModelStopReason,
+  ModelTextBlock,
+  ModelThinkingBlock,
+  ModelToolCallBlock,
+} from "./model-adapter.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // name service — DNS-like name resolution for agents and bricks
