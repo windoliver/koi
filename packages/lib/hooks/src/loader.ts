@@ -5,21 +5,62 @@
  */
 
 import type { HookConfig, KoiError, Result } from "@koi/core";
+import { HOOK_EVENT_KINDS } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { hookConfigArraySchema } from "./schema.js";
+
+// ---------------------------------------------------------------------------
+// Load result with optional warnings
+// ---------------------------------------------------------------------------
+
+/** Successful load result including optional warnings for unknown event kinds. */
+export interface LoadHooksResult {
+  readonly hooks: readonly HookConfig[];
+  readonly warnings: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+const knownEvents = new Set<string>(HOOK_EVENT_KINDS);
+
+/** Collect warnings for filter event names not in HOOK_EVENT_KINDS. */
+function collectEventWarnings(hooks: readonly HookConfig[]): readonly string[] {
+  const warnings: string[] = [];
+  for (const hook of hooks) {
+    if (hook.filter?.events === undefined) continue;
+    for (const event of hook.filter.events) {
+      if (!knownEvents.has(event)) {
+        warnings.push(
+          `Hook "${hook.name}": unknown event kind "${event}" — ` +
+            "this event will never fire on the current runtime version. " +
+            "Check for typos or ensure your packages are up to date.",
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
  * Validates an array of raw hook config objects and returns typed `HookConfig[]`.
  *
  * Filters out disabled hooks (enabled === false) from the result.
+ * Warns (but does not reject) unknown event kinds in filter.events for
+ * forward compatibility with newer HOOK_EVENT_KINDS additions.
  *
  * @param raw - Unknown input to validate (typically from parsed YAML/JSON manifest).
- * @returns Result with validated hook configs or a KoiError with schema violation details.
+ * @returns Result with validated hook configs + warnings, or a KoiError.
  */
-export function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError> {
+export function loadHooks(raw: unknown): Result<LoadHooksResult, KoiError> {
   // AgentManifest.hooks is optional — treat undefined/null as empty
   if (raw === undefined || raw === null) {
-    return { ok: true, value: [] };
+    return { ok: true, value: { hooks: [], warnings: [] } };
   }
 
   const result = validateWith(hookConfigArraySchema, raw, "Hook config validation failed");
@@ -47,5 +88,7 @@ export function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError>
     seen.add(hook.name);
   }
 
-  return { ok: true, value: active };
+  const warnings = collectEventWarnings(active);
+
+  return { ok: true, value: { hooks: active, warnings } };
 }

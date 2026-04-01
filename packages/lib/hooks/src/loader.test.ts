@@ -9,9 +9,9 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(2);
-      expect(result.value[0]?.kind).toBe("command");
-      expect(result.value[1]?.kind).toBe("http");
+      expect(result.value.hooks).toHaveLength(2);
+      expect(result.value.hooks[0]?.kind).toBe("command");
+      expect(result.value.hooks[1]?.kind).toBe("http");
     }
   });
 
@@ -19,7 +19,7 @@ describe("loadHooks", () => {
     const result = loadHooks([]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(0);
+      expect(result.value.hooks).toHaveLength(0);
     }
   });
 
@@ -31,9 +31,9 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(2);
-      expect(result.value[0]?.name).toBe("active");
-      expect(result.value[1]?.name).toBe("also-active");
+      expect(result.value.hooks).toHaveLength(2);
+      expect(result.value.hooks[0]?.name).toBe("active");
+      expect(result.value.hooks[1]?.name).toBe("also-active");
     }
   });
 
@@ -65,7 +65,7 @@ describe("loadHooks", () => {
     const result = loadHooks(undefined);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(0);
+      expect(result.value.hooks).toHaveLength(0);
     }
   });
 
@@ -73,7 +73,7 @@ describe("loadHooks", () => {
     const result = loadHooks(null);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(0);
+      expect(result.value.hooks).toHaveLength(0);
     }
   });
 
@@ -97,7 +97,7 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(1);
+      expect(result.value.hooks).toHaveLength(1);
     }
   });
 
@@ -108,7 +108,7 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(2);
+      expect(result.value.hooks).toHaveLength(2);
     }
   });
 
@@ -126,8 +126,8 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(1);
-      const hook = result.value[0];
+      expect(result.value.hooks).toHaveLength(1);
+      const hook = result.value.hooks[0];
       if (hook === undefined) throw new Error("expected hook");
       expect(hook.kind).toBe("command");
       if (hook.kind === "command") {
@@ -155,8 +155,8 @@ describe("loadHooks", () => {
     ]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(1);
-      const hook = result.value[0];
+      expect(result.value.hooks).toHaveLength(1);
+      const hook = result.value.hooks[0];
       if (hook === undefined) throw new Error("expected hook");
       expect(hook.kind).toBe("http");
       if (hook.kind === "http") {
@@ -165,6 +165,56 @@ describe("loadHooks", () => {
         expect(hook.headers).toEqual({ Authorization: "Bearer token" });
         expect(hook.secret).toBe("my-secret");
       }
+    }
+  });
+
+  it("warns on unknown event kinds without rejecting", () => {
+    const result = loadHooks([
+      {
+        kind: "command",
+        name: "future-hook",
+        cmd: ["echo"],
+        filter: { events: ["session.started", "future.event"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hooks).toHaveLength(1);
+      expect(result.value.warnings).toHaveLength(1);
+      expect(result.value.warnings[0]).toContain("future.event");
+      expect(result.value.warnings[0]).toContain("unknown event kind");
+    }
+  });
+
+  it("returns no warnings for known event kinds", () => {
+    const result = loadHooks([
+      {
+        kind: "command",
+        name: "known-hook",
+        cmd: ["echo"],
+        filter: { events: ["session.started", "tool.succeeded"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.warnings).toHaveLength(0);
+    }
+  });
+
+  it("warns on typos in event kinds", () => {
+    const result = loadHooks([
+      {
+        kind: "command",
+        name: "typo-hook",
+        cmd: ["echo"],
+        filter: { events: ["sesion.started"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hooks).toHaveLength(1);
+      expect(result.value.warnings).toHaveLength(1);
+      expect(result.value.warnings[0]).toContain("sesion.started");
     }
   });
 });
