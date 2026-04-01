@@ -3,6 +3,7 @@ dist/
 .turbo/
 coverage/
 *.tsbuildinfo
+tsup.config.bundled_*.mjs
 .env
 .env.*
 !.env.example
