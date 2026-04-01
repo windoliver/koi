@@ -80,6 +80,28 @@ describe("resolveMode", () => {
       expect(decision.effect).toBe("deny");
     });
 
+    test("honors policy deny rules even for read actions", () => {
+      const denyReadRules: readonly CompiledRule[] = [
+        {
+          pattern: "/etc/**",
+          action: "read",
+          effect: "deny",
+          reason: "system files",
+          source: "policy",
+          compiled: compileGlob("/etc/**"),
+        },
+      ];
+      const etcReadQuery: PermissionQuery = {
+        principal: "agent-1",
+        action: "read",
+        resource: "/etc/passwd",
+      };
+      expect(resolveMode("plan", etcReadQuery, denyReadRules)).toEqual({
+        effect: "deny",
+        reason: "system files",
+      });
+    });
+
     test("denies unknown actions (deny-by-default)", () => {
       const decision = resolveMode("plan", invokeQuery, rules);
       expect(decision.effect).toBe("deny");

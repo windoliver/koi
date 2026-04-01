@@ -55,9 +55,23 @@ describe("compileGlob", () => {
     expect(re.test("filexts")).toBe(false);
   });
 
-  test("throws on invalid regex pattern", () => {
-    // Unbalanced bracket produces invalid regex
-    expect(() => compileGlob("[invalid")).toThrow();
+  test("escapes ? as literal", () => {
+    const re = compileGlob("file?.txt");
+    expect(re.test("file?.txt")).toBe(true);
+    expect(re.test("fileX.txt")).toBe(false);
+  });
+
+  test("escapes [ and ] as literals", () => {
+    const re = compileGlob("agent:[prod]");
+    expect(re.test("agent:[prod]")).toBe(true);
+    expect(re.test("agent:p")).toBe(false);
+  });
+
+  test("handles previously-invalid patterns as literals", () => {
+    // Unbalanced bracket is now escaped, not a regex error
+    const re = compileGlob("[invalid");
+    expect(re.test("[invalid")).toBe(true);
+    expect(re.test("i")).toBe(false);
   });
 });
 

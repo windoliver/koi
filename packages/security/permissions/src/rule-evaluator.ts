@@ -39,10 +39,8 @@ export function compileGlob(pattern: string): RegExp {
     } else if (char === "*") {
       result += "[^/]*";
       i += 1;
-    } else if (char === "?" || char === "[" || char === "]") {
-      result += char;
-      i += 1;
     } else {
+      // All non-glob characters (including ?, [, ]) are escaped as literals.
       result += escapeRegex(char);
       i += 1;
     }

@@ -74,17 +74,18 @@ describe("loadRules", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("returns error for invalid glob pattern", () => {
+  test("compiles patterns with special characters as literals", () => {
     const sources = new Map<RuleSource, readonly PermissionRule[]>([
       ["project", [{ pattern: "[invalid", action: "read", effect: "allow" }]],
     ]);
 
     const result = loadRules(sources);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
 
-    expect(result.error.code).toBe("VALIDATION");
-    expect(result.error.message).toContain("Invalid glob pattern");
+    // Brackets are escaped as literals, not regex character classes
+    expect(result.value[0]?.compiled.test("[invalid")).toBe(true);
+    expect(result.value[0]?.compiled.test("i")).toBe(false);
   });
 
   test("preserves rule order within a source", () => {
