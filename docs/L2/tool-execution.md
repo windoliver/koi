@@ -57,24 +57,27 @@ L2  @koi/tool-execution      ─ this package
 wrapToolCall(ctx, request, next)
   │
   ├─ 1. Check: is request.signal already aborted?
-  │     └─ YES → throw KoiRuntimeError("TIMEOUT", "aborted")
+  │     └─ YES → throw DOMException("AbortError") preserving signal.reason
   │
   ├─ 2. Resolve timeout for this toolId
   │     ├─ toolTimeouts.get(toolId) → per-tool override
   │     └─ fallback to defaultTimeoutMs → global default
   │     └─ undefined → no timeout, forward signal unchanged
   │
-  ├─ 3. Compose signal (only if timeout configured)
-  │     └─ AbortSignal.any([request.signal, AbortSignal.timeout(ms)])
+  ├─ 3. Compose signal via manual AbortController + parent forwarding
+  │     └─ Timer: setTimeout + clearTimeout (cancellable, no timer leak)
+  │     └─ Parent: explicit listener on parent signal (fully removable)
   │
-  ├─ 4. Promise.race([next(request), rejectOnAbort(signal)])
+  ├─ 4. Promise.race([next(request), racePromise])
   │     │
   │     ├─ SUCCESS → return response unchanged (pure transparency)
   │     │
-  │     └─ FAILURE → classify error
-  │           ├─ DOMException "AbortError"   → throw KoiRuntimeError("TIMEOUT")
-  │           ├─ DOMException "TimeoutError" → throw KoiRuntimeError("TIMEOUT")
-  │           └─ other                       → re-throw as-is
+  │     └─ FAILURE → classify error (signal-gated)
+  │           ├─ Our timer fired    → throw KoiRuntimeError("EXTERNAL")
+  │           ├─ Parent abort fired → re-throw DOMException (reason preserved)
+  │           └─ Tool error         → re-throw as-is
+  │
+  ├─ finally: cleanup() clears timer + removes all listeners
   │
   └─ Errors propagate to outer middleware. Engine adapter handles ToolResponse.
 ```
@@ -116,10 +119,12 @@ Invalid config values (negative, NaN, Infinity, zero) throw `KoiRuntimeError("VA
 | Failure mode | Detection | Behavior |
 |---|---|---|
 | Tool throws any error | `catch` block | Re-thrown as-is — preserves error type for governance |
-| Abort signal fires | `DOMException.name === "AbortError"` | Throws `KoiRuntimeError("TIMEOUT")` with `retryable: false` |
-| Timeout fires | `DOMException.name === "TimeoutError"` | Throws `KoiRuntimeError("TIMEOUT")` with `retryable: false` |
-| Signal pre-aborted | `signal.aborted` check | Throws `KoiRuntimeError("TIMEOUT")` immediately, handler not called |
+| Our timeout fires | Sentinel-tagged reason on composed signal | Throws `KoiRuntimeError("EXTERNAL")` with `retryable: false` |
+| Parent abort fires | `signal.aborted` + reason is NOT our sentinel | Re-throws `DOMException("AbortError")` preserving original reason |
+| Signal pre-aborted | `signal.aborted` check | Throws `DOMException("AbortError")` preserving reason, handler not called |
 | Invalid config | Construction time | Throws `KoiRuntimeError("VALIDATION")` |
+
+**Why EXTERNAL, not TIMEOUT?** The engine maps `TIMEOUT` → `stopReason: "max_turns"` → `"success"` outcome. A tool-level timeout must surface as `stopReason: "error"`, which `EXTERNAL` provides. `TIMEOUT` is reserved for engine-level budget exhaustion (iteration guard).
 
 ## Testing
 
@@ -127,19 +132,24 @@ Invalid config values (negative, NaN, Infinity, zero) throw `KoiRuntimeError("VA
 - **Abort matrix**: 6 scenarios (pre-aborted, mid-abort, abort-during-next race, timeout, signal race, missing signal, both present)
 - **Error propagation**: 8 shapes (Error, KoiRuntimeError, string, null, object, AbortError, TimeoutError, non-standard DOMException)
 - **Transparency**: successful calls pass through unchanged (referential equality)
-- **Governance integration**: 4 tests proving outer middleware sees correct success/failure signals
+- **Governance integration**: 5 tests proving outer middleware sees correct success/failure signals
+- **Listener + timer cleanup**: 3 tests (reused signals, error path, timer leak)
+- **Signal-gated classification**: 3 tests (tool-originated DOMExceptions not misclassified)
+- **Abort reason preservation**: 4 tests (user_cancel, shutdown, token_limit, pre-aborted)
 
-40 tests, 100% line coverage, 100% function coverage.
+49 tests, 98% line coverage, 100% function coverage.
 
 ## Design decisions
 
 1. **Errors thrown, not normalized into ToolResponse** — Outer middleware (governance extension) distinguishes success/failure by whether `next()` throws. Normalizing errors into fulfilled ToolResponse would corrupt governance accounting. Error-to-ToolResponse normalization belongs at the engine adapter boundary.
-2. **`AbortSignal.any()` + `Promise.race`** — Web standard signal composition (Bun 1.3.x). `Promise.race` with `rejectOnAbort()` ensures timeout fires even when tools ignore the signal. `rejectOnAbort` checks `signal.aborted` before attaching listener to prevent the race where the signal fires between the pre-check and `addEventListener`.
-3. **Config validated at construction** — `AbortSignal.timeout()` throws `RangeError` for negative/NaN/Infinity. Validating early produces a clear `KoiRuntimeError("VALIDATION")` instead of an opaque runtime crash.
-4. **Conditional signal composition** — only allocate `AbortSignal.any()` when timeout is configured. Zero overhead on the happy path.
-5. **Pure transparency on success** — no metadata enrichment. Timing belongs in observe-phase middleware.
-6. **`retryable: false` for timeout/abort** — the tool may still be running in the background after `Promise.race` returns. Automatic retry could cause duplicate side effects.
-7. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
+2. **Manual signal composition, no `AbortSignal.any()`** — `AbortSignal.any()` creates internal subscriptions on the parent signal that cannot be cleaned up. Manual parent-signal forwarding via addEventListener/removeEventListener is fully cleanable in the `finally` block.
+3. **Cancellable manual timer** — `AbortSignal.timeout()` creates uncancellable timers. Manual `setTimeout`/`clearTimeout` releases timer resources immediately when the tool completes.
+4. **Sentinel-tagged timeout reason** — A branded symbol distinguishes "our timer fired" from "parent signal fired" so only our timeouts become `KoiRuntimeError("EXTERNAL")`. Parent aborts (user_cancel, shutdown, token_limit) re-throw as `DOMException` preserving the original reason end-to-end.
+5. **EXTERNAL error code for tool timeouts** — The engine maps `TIMEOUT` → `max_turns` (success). Tool-level timeouts must surface as `stopReason: "error"`, which `EXTERNAL` provides.
+6. **Config validated at construction** — Rejects invalid timeout values with `KoiRuntimeError("VALIDATION")` instead of opaque `RangeError` at call time.
+7. **Pure transparency on success** — no metadata enrichment. Timing belongs in observe-phase middleware.
+8. **`retryable: false` for tool timeouts** — the tool may still be running after `Promise.race` returns. Automatic retry could cause duplicate side effects.
+9. **`describeCapabilities` returns `undefined`** — tool execution wrapping is infrastructure, invisible to the LLM.
 
 ## Layer compliance
 
