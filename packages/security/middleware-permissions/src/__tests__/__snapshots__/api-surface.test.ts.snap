@@ -1,0 +1,121 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-permissions API surface . has stable type surface 1`] = `
+"import { PermissionBackend } from '@koi/core/permission-backend';
+export { PermissionBackend, PermissionDecision, PermissionQuery } from '@koi/core/permission-backend';
+import { ApprovalRequest, ApprovalDecision, KoiMiddleware } from '@koi/core/middleware';
+import { AuditSink } from '@koi/core';
+import { Result } from '@koi/core/errors';
+import { CircuitBreakerConfig } from '@koi/errors';
+
+/**
+ * Pattern-based permission classifier.
+ *
+ * Evaluates tool names against allow/deny/ask pattern rules with
+ * named group expansion. Groups are expanded at construction time
+ * (compile-once, validate-per-call).
+ */
+
+interface PermissionRules {
+    readonly allow: readonly string[];
+    readonly deny: readonly string[];
+    readonly ask: readonly string[];
+}
+interface PatternBackendConfig {
+    /** Tool name patterns for allow/deny/ask decisions. */
+    readonly rules: PermissionRules;
+    /** Deny unmatched tools. Default: true (fail-closed). */
+    readonly defaultDeny?: boolean;
+    /** Named tool group expansions. Use \`group:<name>\` in rules. */
+    readonly groups?: Readonly<Record<string, readonly string[]>>;
+}
+declare const DEFAULT_GROUPS: Readonly<Record<string, readonly string[]>>;
+declare const DEFAULT_DENY_MARKER = "(default deny)";
+declare function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend;
+declare function createAutoApprovalHandler(): (request: ApprovalRequest) => Promise<ApprovalDecision>;
+
+/**
+ * Configuration types and validation for @koi/middleware-permissions.
+ */
+
+interface PermissionCacheConfig {
+    /** TTL for cached allow decisions. Default: 300_000 (5 min). */
+    readonly allowTtlMs?: number;
+    /** TTL for cached deny decisions. Default: 10_000 (10 sec). */
+    readonly denyTtlMs?: number;
+    /** Max cached entries. Default: 1024. */
+    readonly maxEntries?: number;
+}
+interface ApprovalCacheConfig {
+    /** TTL for cached human approvals. Default: 300_000 (5 min). 0 = no expiry. */
+    readonly ttlMs?: number;
+    /** Max cached approvals. Default: 256. */
+    readonly maxEntries?: number;
+}
+declare const DEFAULT_CACHE_CONFIG: Required<PermissionCacheConfig>;
+declare const DEFAULT_APPROVAL_CACHE_TTL_MS: number;
+declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number;
+declare const DEFAULT_APPROVAL_TIMEOUT_MS: number;
+interface PermissionsMiddlewareConfig {
+    /** Pluggable authorization backend. Required. */
+    readonly backend: PermissionBackend;
+    /** Timeout in ms before auto-deny on ask decisions. Default: 30_000. */
+    readonly approvalTimeoutMs?: number;
+    /** Enable/configure decision caching. Default: false. */
+    readonly cache?: boolean | PermissionCacheConfig;
+    /** Enable/configure approval caching. Default: false. */
+    readonly approvalCache?: boolean | ApprovalCacheConfig;
+    /** Human-readable description for capability fragment. */
+    readonly description?: string;
+    /** Injectable clock for deterministic testing. Default: Date.now. */
+    readonly clock?: () => number;
+    /** Structured audit logging sink. Fire-and-forget. */
+    readonly auditSink?: AuditSink;
+    /** Circuit breaker config for remote backends. */
+    readonly circuitBreaker?: CircuitBreakerConfig;
+}
+declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
+
+/**
+ * Per-session denial accumulator for observability and diagnostics.
+ *
+ * Records every denied tool call within a session. Queryable for
+ * UI overlays, debug views, and audit analysis. Cleared on session end.
+ */
+interface DenialRecord {
+    readonly toolId: string;
+    readonly reason: string;
+    readonly timestamp: number;
+    readonly principal: string;
+    readonly turnIndex: number;
+}
+interface DenialTracker {
+    /** Record a denied tool call. */
+    readonly record: (denial: DenialRecord) => void;
+    /** Get all denial records (oldest first). */
+    readonly getAll: () => readonly DenialRecord[];
+    /** Get denial records for a specific tool. */
+    readonly getByTool: (toolId: string) => readonly DenialRecord[];
+    /** Total number of recorded denials. */
+    readonly count: () => number;
+    /** Clear all records (called on session end). */
+    readonly clear: () => void;
+}
+declare function createDenialTracker(maxEntries?: number): DenialTracker;
+
+/**
+ * Permissions middleware — sole interposition layer for tool-level access control.
+ *
+ * Two interception points:
+ * - wrapModelCall: batch-checks all tools, filters denied ones from LLM context
+ * - wrapToolCall: re-checks at invocation, handles ask → approval flow
+ *
+ * Supports decision caching, approval caching, audit logging, circuit breaker,
+ * and denial tracking.
+ */
+
+declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware;
+
+export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialRecord, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, validatePermissionsConfig };
+"
+`;

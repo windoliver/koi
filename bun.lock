@@ -192,6 +192,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/security/middleware-permissions": {
+      "name": "@koi/middleware-permissions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -372,6 +381,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
