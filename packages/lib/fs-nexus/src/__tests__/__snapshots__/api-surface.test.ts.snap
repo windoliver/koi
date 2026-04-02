@@ -16,12 +16,30 @@ import { FileSystemBackend, Result, KoiError } from '@koi/core';
  */
 
 interface LocalTransportConfig {
-    /** Nexus mount URI, e.g. "local://./workspace" or "local:///tmp/agent-data". */
-    readonly mountUri: string;
+    /**
+     * Nexus mount URI(s). Supports any URI that nexus-fs accepts:
+     *   - "local://./workspace"
+     *   - "s3://my-bucket/agents"
+     *   - "gcs://my-bucket/agents"
+     *
+     * Pass an array to mount multiple sources simultaneously.
+     */
+    readonly mountUri: string | readonly string[];
     /** Path to Python 3 executable. Default: "python3". */
     readonly pythonPath?: string | undefined;
     /** Max time to wait for the bridge process to start (ms). Default: 10_000. */
     readonly startupTimeoutMs?: number | undefined;
+    /**
+     * Environment variables forwarded to the bridge subprocess.
+     * Use for credentials that nexus-fs needs:
+     *   - AWS: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_PROFILE
+     *   - GCS: GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT
+     *   - OAuth: NEXUS_AUTH_TOKEN
+     *
+     * These are merged with (and override) the parent process env.
+     * Never logged or included in error messages.
+     */
+    readonly env?: Readonly<Record<string, string>> | undefined;
 }
 /**
  * Spawn a local nexus-fs bridge process and return a NexusTransport.

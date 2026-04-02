@@ -84,10 +84,13 @@ async def dispatch(fs, method, params):
         return {"files": files, "has_more": False}
 
     if method == "grep":
+        import fnmatch
+
         pattern_str = params.get("pattern", "")
         search_path = params.get("path", "/")
         ignore_case = params.get("ignore_case", False)
         max_results = params.get("max_results", 100)
+        file_pattern = params.get("file_pattern")  # glob filter from caller
 
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern_str, flags)
@@ -98,6 +101,9 @@ async def dispatch(fs, method, params):
         for fp in file_list or []:
             if len(results) >= max_results:
                 break
+            # Honor file_pattern: skip files that don't match the glob
+            if file_pattern and not fnmatch.fnmatch(fp, file_pattern):
+                continue
             try:
                 data = await fs.read(fp)
                 text = data.decode("utf-8") if isinstance(data, bytes) else str(data)

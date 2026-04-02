@@ -4,6 +4,10 @@
  * Used when Nexus's native `edit` RPC is unavailable (METHOD_NOT_FOUND).
  * Uses @koi/edit-match for cascading hunk matching (exact → fuzzy).
  *
+ * Concurrency safety: uses `if_match` (ETag) on the write to detect
+ * concurrent modifications. If the file changed between read and write,
+ * the write fails with CONFLICT rather than silently clobbering.
+ *
  * Atomic: if any hunk fails, the file is not modified.
  */
 
@@ -19,7 +23,10 @@ import type { NexusTransport } from "./types.js";
 
 interface NexusReadResponse {
   readonly content: string;
-  readonly metadata?: { readonly size?: number };
+  readonly metadata?: {
+    readonly size?: number;
+    readonly etag?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -30,6 +37,7 @@ interface NexusReadResponse {
  * Apply edits as a composite read → hunks → write operation.
  * Atomic: all hunks are applied in-memory before writing.
  * If any hunk fails to match, returns an error and the file is unchanged.
+ * Uses ETag-based optimistic concurrency to prevent lost updates.
  */
 export async function applyEditsComposite(
   transport: NexusTransport,
@@ -44,7 +52,7 @@ export async function applyEditsComposite(
   }
 
   return withSafePath(basePath, path, async (fullPath) => {
-    // Step 1: Read current content
+    // Step 1: Read current content + ETag for concurrency check
     const readResult = await transport.call<NexusReadResponse>("read", {
       path: fullPath,
       return_metadata: true,
@@ -53,6 +61,7 @@ export async function applyEditsComposite(
 
     const raw = readResult.value;
     const originalContent = typeof raw === "string" ? raw : raw.content;
+    const etag = typeof raw === "object" && raw !== null ? raw.metadata?.etag : undefined;
 
     // Step 2: Apply all hunks sequentially in-memory
     let workingContent = originalContent;
@@ -75,11 +84,15 @@ export async function applyEditsComposite(
       workingContent = result.content;
     }
 
-    // Step 3: Write back (skip for dryRun)
+    // Step 3: Write back with OCC guard (skip for dryRun)
     if (options?.dryRun !== true) {
       const writeResult = await transport.call<unknown>("write", {
         path: fullPath,
         content: workingContent,
+        // Use if_match when ETag is available to prevent lost updates.
+        // If the file was modified between our read and this write,
+        // Nexus returns CONFLICT (-32006) instead of silently clobbering.
+        ...(etag !== undefined ? { if_match: etag } : {}),
       });
       if (!writeResult.ok) return writeResult;
     }

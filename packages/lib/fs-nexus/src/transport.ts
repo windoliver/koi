@@ -16,6 +16,18 @@ const DEFAULT_DEADLINE_MS = 45_000;
 const DEFAULT_RETRIES = 2;
 const BACKOFF_BASE_MS = 500;
 
+/** Methods safe to retry on transient failure (read-only / idempotent). */
+const RETRYABLE_METHODS: ReadonlySet<string> = new Set([
+  "read",
+  "list",
+  "grep",
+  "search",
+  "stat",
+  "exists",
+  "glob",
+  "is_directory",
+]);
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -33,9 +45,11 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     params: Record<string, unknown>,
   ): Promise<Result<T, KoiError>> {
     const deadline = Date.now() + deadlineMs;
+    const isSafeToRetry = RETRYABLE_METHODS.has(method);
+    const effectiveRetries = isSafeToRetry ? maxRetries : 0;
     let lastError: KoiError | undefined;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= effectiveRetries; attempt++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         return {
