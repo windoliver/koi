@@ -41,6 +41,7 @@ const hookBaseFields = {
   enabled: z.boolean().optional(),
   timeoutMs: z.number().int().positive("timeoutMs must be positive").optional(),
   serial: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ function createHttpHookSchema(): z.ZodType<HttpHookConfig> {
     method: z.enum(["POST", "PUT"]).optional(),
     headers: z.record(z.string(), z.string()).optional(),
     secret: z.string().optional(),
+    allowedEnvVars: z.array(z.string().min(1)).min(1).optional(),
   });
 }
 

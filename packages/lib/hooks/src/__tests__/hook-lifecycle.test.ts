@@ -278,7 +278,7 @@ describe("http hook execution (integration)", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.ok).toBe(false);
     if (results[0] && !results[0].ok) {
-      expect(results[0].error).toContain("unresolved env vars");
+      expect(results[0].error).toContain("env var errors in headers");
       expect(results[0].error).toContain("MISSING_HOOK_VAR_99999");
     }
   });
@@ -299,7 +299,7 @@ describe("http hook execution (integration)", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.ok).toBe(false);
     if (results[0] && !results[0].ok) {
-      expect(results[0].error).toContain("unresolved env vars in secret");
+      expect(results[0].error).toContain("env var errors in secret");
     }
   });
 

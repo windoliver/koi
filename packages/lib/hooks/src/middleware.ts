@@ -6,13 +6,16 @@
  *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
  *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
- *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
+ *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (bounded-await for transform)
  *   wrapModelCall   → "compact.before" (blocking — throws on block) + "compact.after" (fire-and-forget, drained)
  *   wrapModelStream → "compact.before" (blocking — yields error chunk on block) + "compact.after" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
- * Post-call hooks are fire-and-forget during the turn but drained with a bounded
- * wait before session cleanup to prevent last-turn hooks from being aborted.
+ * Post-tool hooks are awaited with a bounded deadline for output mutation via
+ * transform decisions. If the deadline expires, the original response is returned
+ * to avoid blocking tool completion after the side effect has been committed.
+ * Other post-call hooks are fire-and-forget during the turn but drained with a
+ * bounded wait before session cleanup to prevent last-turn hooks from being aborted.
  *
  * Phase: "resolve" (priority 400). Hooks are business logic, not permissions.
  */
@@ -21,6 +24,7 @@ import type {
   CapabilityFragment,
   HookConfig,
   HookDecision,
+  HookEnvPolicy,
   HookEvent,
   HookExecutionResult,
   JsonObject,
@@ -46,6 +50,13 @@ import { createHookRegistry } from "./registry.js";
 export interface CreateHookMiddlewareOptions {
   /** Validated hook configs to dispatch. Typically from `loadHooks()`. */
   readonly hooks: readonly HookConfig[];
+  /** System-wide env-var policy for allowlisting. */
+  readonly envPolicy?: HookEnvPolicy | undefined;
+  /**
+   * Maximum time (ms) to wait for post-tool hooks before suppressing output.
+   * Defaults to `POST_TOOL_HOOK_DEADLINE_MS` (5000ms).
+   */
+  readonly postToolHookDeadlineMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,11 +64,12 @@ export interface CreateHookMiddlewareOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Aggregate hook decisions with most-restrictive-wins precedence:
+ * Aggregate **pre-call** hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
  *
  * - First `block` wins immediately (short-circuits).
  * - Multiple `modify` patches are merged (later patches override earlier keys).
+ * - `transform` decisions are ignored — they are post-call only.
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
  */
 export function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision {
@@ -70,6 +82,9 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Hoo
     switch (result.decision.kind) {
       case "block":
         return result.decision;
+      case "transform":
+        // Ignored in pre-call — transform is post-call only
+        break;
       case "modify":
         hasModify = true;
         mergedPatch = { ...mergedPatch, ...result.decision.patch };
@@ -81,6 +96,61 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Hoo
 
   if (hasModify) {
     return { kind: "modify", patch: mergedPatch };
+  }
+
+  return { kind: "continue" };
+}
+
+/**
+ * Aggregate post-execution hook decisions.
+ *
+ * Unlike pre-call aggregation, `block` decisions from hooks are ignored
+ * because the operation has already completed — you cannot un-execute a
+ * tool call.
+ *
+ * However, hook execution *failures* (ok: false) signal that post-processing
+ * (e.g., redaction) could not run. These return `block` so the caller can
+ * taint the response with a warning — but the caller must NOT suppress the
+ * response or return an error, as that would cause retry/duplicate risk.
+ *
+ * Only `transform`, `continue`, and failure-`block` are meaningful after execution.
+ */
+export function aggregatePostDecisions(results: readonly HookExecutionResult[]): HookDecision {
+  const failedHooks = results.filter((r) => !r.ok).map((r) => r.hookName);
+
+  let hasTransform = false;
+  let mergedOutputPatch: JsonObject = {};
+  let mergedTransformMeta: JsonObject | undefined;
+
+  for (const result of results) {
+    if (!result.ok) continue;
+
+    if (result.decision.kind === "transform") {
+      hasTransform = true;
+      mergedOutputPatch = { ...mergedOutputPatch, ...result.decision.outputPatch };
+      if (result.decision.metadata !== undefined) {
+        mergedTransformMeta = { ...(mergedTransformMeta ?? {}), ...result.decision.metadata };
+      }
+    }
+    // block, modify, continue are all no-ops post-execution
+  }
+
+  // Hook failures dominate transforms — partial redaction is worse than no
+  // redaction because it gives a false sense of safety. When any hook failed,
+  // signal block so the caller taints the response with a warning.
+  if (failedHooks.length > 0) {
+    return {
+      kind: "block",
+      reason: `Post-hook(s) failed: ${failedHooks.join(", ")}`,
+    };
+  }
+
+  if (hasTransform) {
+    return {
+      kind: "transform",
+      outputPatch: mergedOutputPatch,
+      ...(mergedTransformMeta !== undefined ? { metadata: mergedTransformMeta } : {}),
+    };
   }
 
   return { kind: "continue" };
@@ -120,6 +190,14 @@ function filterModelPatch(patch: JsonObject): JsonObject | undefined {
 /** Maximum time (ms) to wait for pending post-hooks before session cleanup. */
 const POST_HOOK_DRAIN_TIMEOUT_MS = 5_000;
 
+/**
+ * Maximum time (ms) to wait for post-tool hooks before returning the original
+ * response. Prevents slow/hung post-hooks from blocking tool completion after
+ * the side effect has already been committed — avoiding duplicate-action paths
+ * where callers retry because the response was delayed by a hook timeout.
+ */
+const POST_TOOL_HOOK_DEADLINE_MS = 5_000;
+
 // ---------------------------------------------------------------------------
 // Middleware factory
 // ---------------------------------------------------------------------------
@@ -132,7 +210,7 @@ const POST_HOOK_DRAIN_TIMEOUT_MS = 5_000;
  * @returns A KoiMiddleware at resolve phase, priority 400.
  */
 export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware {
-  const { hooks } = options;
+  const { hooks, envPolicy, postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS } = options;
   const registry = createHookRegistry();
 
   /**
@@ -246,7 +324,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       const sessionId = ctx.sessionId as string;
-      registry.register(sessionId, ctx.agentId, hooks);
+      registry.register(sessionId, ctx.agentId, hooks, envPolicy);
       const event = buildEvent(ctx, "session.started");
       const results = await registry.execute(sessionId, event);
       const decision = aggregateDecisions(results);
@@ -313,12 +391,61 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
       const response = await next(effectiveRequest);
 
-      // Post-call: fire-and-forget (use effective input, not original, for audit consistency)
+      // Post-call: bounded-await for output mutation via transform decisions.
+      // Uses effective input (not original) for audit consistency.
+      // Raced against a deadline to prevent slow/hung hooks from blocking tool
+      // completion after the side effect has already been committed.
       const postEvent = buildEvent(ctx.session, "tool.succeeded", {
         toolName: request.toolId,
         data: { input: effectiveRequest.input, output: response.output } as JsonObject,
       });
-      fireAndForget(sessionId, postEvent);
+
+      const DEADLINE_SENTINEL = Symbol("deadline");
+      const postResultsOrTimeout = await Promise.race([
+        registry.execute(sessionId, postEvent),
+        new Promise<typeof DEADLINE_SENTINEL>((resolve) =>
+          setTimeout(() => resolve(DEADLINE_SENTINEL), postToolHookDeadlineMs),
+        ),
+      ]);
+
+      // Deadline expired — suppress raw output to prevent leaking unredacted
+      // data. Use a plain string (not an error object) so callers preserve
+      // committed-success semantics and don't retry the side effect.
+      if (postResultsOrTimeout === DEADLINE_SENTINEL) {
+        return {
+          output: "[output redacted: post-tool hooks timed out]",
+          metadata: { ...(response.metadata ?? {}), committedButRedacted: true },
+        };
+      }
+
+      const postDecision = aggregatePostDecisions(postResultsOrTimeout);
+
+      if (postDecision.kind === "transform") {
+        const isPlainObject =
+          typeof response.output === "object" &&
+          response.output !== null &&
+          !Array.isArray(response.output);
+        const transformedOutput = isPlainObject
+          ? { ...(response.output as JsonObject), ...postDecision.outputPatch }
+          : postDecision.outputPatch;
+        const hasMetaPatch = postDecision.metadata !== undefined;
+        const transformedMetadata = hasMetaPatch
+          ? { ...(response.metadata ?? {}), ...postDecision.metadata }
+          : response.metadata;
+        return transformedMetadata !== undefined
+          ? { output: transformedOutput, metadata: transformedMetadata }
+          : { output: transformedOutput };
+      }
+
+      // Post-hooks failed (aggregatePostDecisions returns block). Suppress
+      // raw output to prevent leaking unredacted data, but use a string so
+      // callers don't interpret this as a tool failure and retry.
+      if (postDecision.kind === "block") {
+        return {
+          output: `[output redacted: ${postDecision.reason}]`,
+          metadata: { ...(response.metadata ?? {}), committedButRedacted: true },
+        };
+      }
 
       return response;
     },
