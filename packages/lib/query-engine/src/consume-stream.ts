@@ -148,6 +148,10 @@ export async function* consumeModelStream(
             },
             metadata: {
               error: chunk.message,
+              // Propagate structured error fields so consumers can distinguish
+              // hook blocks (code: "PERMISSION") from provider errors.
+              ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
+              ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
               ...(danglingOnError.length > 0 ? { danglingToolCalls: danglingOnError } : {}),
             },
           },

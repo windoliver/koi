@@ -278,6 +278,36 @@ describe("consumeModelStream", () => {
     expect(done.output.content).toEqual([]);
   });
 
+  test("error chunk propagates structured errorCode and retryable to metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "error",
+        message: "Hook blocked model_stream: budget exceeded",
+        code: "PERMISSION",
+        retryable: false,
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.error).toBe("Hook blocked model_stream: budget exceeded");
+    expect(meta.errorCode).toBe("PERMISSION");
+    expect(meta.retryable).toBe(false);
+  });
+
+  test("error chunk without code/retryable omits those fields from metadata", async () => {
+    const chunks: readonly ModelChunk[] = [{ kind: "error", message: "provider timeout" }];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.error).toBe("provider timeout");
+    expect(meta.errorCode).toBeUndefined();
+    expect(meta.retryable).toBeUndefined();
+  });
+
   test("done with in-flight tool calls downgrades to error and surfaces dangling calls", async () => {
     const chunks: readonly ModelChunk[] = [
       { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
