@@ -52,14 +52,18 @@ interface GoalSessionState {
 
 const MIN_KEYWORD_LENGTH = 4;
 
+/** Normalize text by stripping punctuation and lowercasing — shared between keyword extraction and matching. */
+export function normalizeText(text: string): string {
+  return text.replace(/[^a-zA-Z0-9\s]/g, "").toLowerCase();
+}
+
 /** Extract keywords (>= 4 chars) from objective text for matching. */
 export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
   const keywords = new Set<string>();
   for (const obj of objectives) {
-    for (const word of obj.split(/\s+/)) {
-      const clean = word.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-      if (clean.length >= MIN_KEYWORD_LENGTH) {
-        keywords.add(clean);
+    for (const word of normalizeText(obj).split(/\s+/)) {
+      if (word.length >= MIN_KEYWORD_LENGTH) {
+        keywords.add(word);
       }
     }
   }
@@ -94,13 +98,13 @@ export function detectCompletions(
     return items;
   }
 
-  const lower = responseText.toLowerCase();
+  const normalized = normalizeText(responseText);
   return items.map((item) => {
     if (item.completed) return item;
     const keywords = extractKeywords([item.text]);
     if (keywords.size === 0) return item;
 
-    const matchCount = [...keywords].filter((kw) => lower.includes(kw)).length;
+    const matchCount = [...keywords].filter((kw) => normalized.includes(kw)).length;
     // Require majority match: at least half the keywords, minimum 2 if available
     const threshold = keywords.size === 1 ? 1 : Math.max(2, Math.ceil(keywords.size / 2));
     if (matchCount >= threshold) {
@@ -117,15 +121,16 @@ export function isDrifting(
 ): boolean {
   if (keywords.size === 0) return false;
   const recent = messages.slice(-3);
-  const text = recent
-    .map((m) =>
-      m.content
-        .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-        .map((b) => b.text)
-        .join(" "),
-    )
-    .join(" ")
-    .toLowerCase();
+  const text = normalizeText(
+    recent
+      .map((m) =>
+        m.content
+          .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+          .map((b) => b.text)
+          .join(" "),
+      )
+      .join(" "),
+  );
 
   return ![...keywords].some((kw) => text.includes(kw));
 }

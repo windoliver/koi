@@ -35,12 +35,32 @@ import type { ProgressSnapshot, ReportHandle } from "./types.js";
 interface ReportSessionState {
   readonly accumulator: Accumulator;
   readonly startedAt: number;
-  turnCount: number;
+  /** Highest turnIndex observed across any hook/wrapper. */
+  highestTurnIndex: number;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const CALLBACK_TIMEOUT_MS = 5_000;
+
+/** Run an async callback with a timeout. Swallows errors and timeouts. */
+async function safeCallback(fn: () => void | Promise<void>, operation: string): Promise<void> {
+  try {
+    const result = fn();
+    if (result && typeof result === "object" && "then" in result) {
+      await Promise.race([
+        result,
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error(`${operation} timed out`)), CALLBACK_TIMEOUT_MS);
+        }),
+      ]);
+    }
+  } catch (e: unknown) {
+    swallowError(e, { package: "@koi/middleware-report", operation });
+  }
+}
 
 function generateTemplateSummary(
   totalActions: number,
@@ -61,10 +81,22 @@ function generateTemplateSummary(
   return parts.join(" ");
 }
 
+/** Track highest turn index seen — called from every wrapper/hook. */
+function observeTurn(state: ReportSessionState, turnIndex: number): void {
+  if (turnIndex > state.highestTurnIndex) {
+    state.highestTurnIndex = turnIndex;
+  }
+}
+
+/** Total turns = highest observed turn index + 1 (0-based). */
+function totalTurns(state: ReportSessionState): number {
+  return state.highestTurnIndex >= 0 ? state.highestTurnIndex + 1 : 0;
+}
+
 function makeProgressSnapshot(state: ReportSessionState): ProgressSnapshot {
   const snap = state.accumulator.snapshot();
   return {
-    turnIndex: state.turnCount,
+    turnIndex: totalTurns(state),
     totalActions: snap.totalActions,
     inputTokens: snap.inputTokens,
     outputTokens: snap.outputTokens,
@@ -113,12 +145,13 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
       sessions.set(ctx.sessionId, {
         accumulator: createAccumulator(maxActions),
         startedAt: Date.now(),
-        turnCount: 0,
+        highestTurnIndex: -1,
       });
     },
 
     async wrapModelCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
+      if (state) observeTurn(state, ctx.turnIndex);
       const start = Date.now();
 
       try {
@@ -179,6 +212,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       const state = sessions.get(ctx.session.sessionId);
+      if (state) observeTurn(state, ctx.turnIndex);
       const start = Date.now();
       let inputTokens = 0;
       let outputTokens = 0;
@@ -244,6 +278,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
 
     async wrapToolCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
+      if (state) observeTurn(state, ctx.turnIndex);
       const start = Date.now();
 
       try {
@@ -292,15 +327,11 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
 
-      state.turnCount++;
+      observeTurn(state, ctx.turnIndex);
 
       if (config?.onProgress) {
         const snap = makeProgressSnapshot(state);
-        try {
-          await config.onProgress(snap);
-        } catch (e: unknown) {
-          swallowError(e, { package: "@koi/middleware-report", operation: "onProgress" });
-        }
+        await safeCallback(() => config.onProgress!(snap), "onProgress");
       }
     },
 
@@ -312,9 +343,10 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
       const snap = state.accumulator.snapshot();
       const durationMs = completedAt - state.startedAt;
 
+      const turns = totalTurns(state);
       const summary = generateTemplateSummary(
         snap.totalActions,
-        state.turnCount,
+        turns,
         durationMs,
         snap.inputTokens,
         snap.outputTokens,
@@ -331,7 +363,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
           startedAt: state.startedAt,
           completedAt,
           durationMs,
-          totalTurns: state.turnCount,
+          totalTurns: turns,
           totalActions: snap.totalActions,
           truncated: snap.truncated,
         },
@@ -365,11 +397,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
             swallowError(e, { package: "@koi/middleware-report", operation: "formatter" });
             formatted = "";
           }
-          try {
-            await config.onReport(report, formatted);
-          } catch (e: unknown) {
-            swallowError(e, { package: "@koi/middleware-report", operation: "onReport" });
-          }
+          await safeCallback(() => config.onReport!(report, formatted), "onReport");
         }
       } finally {
         sessions.delete(ctx.sessionId);

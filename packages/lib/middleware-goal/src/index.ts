@@ -15,5 +15,6 @@ export {
   detectCompletions,
   extractKeywords,
   isDrifting,
+  normalizeText,
   renderGoalBlock,
 } from "./goal.js";
