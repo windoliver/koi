@@ -14,6 +14,9 @@
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*"
   },
+  "koi": {
+    "optional": true
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
