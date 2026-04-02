@@ -154,7 +154,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const startWorkspaceRoot = resolve(dirname(manifestPath));
 
   // 2. VALIDATE: Load and validate manifest
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: true });
   if (!loadResult.ok) {
     process.stderr.write(await formatManifestLoadFailure(manifestPath, loadResult.error.message));
     process.stderr.write("hint: run `koi doctor --repair` to auto-fix common issues\n");

@@ -6,6 +6,7 @@
  * 2. Transform layer (transform.ts) normalizes shorthand → L0 types
  */
 
+import { HOOK_EVENT_KINDS } from "@koi/core";
 import { credentialRequirementSchema } from "@koi/validation";
 import { z } from "zod";
 
@@ -112,6 +113,13 @@ interface RawDelegation {
   readonly namespaceMode?: "copy" | "clean" | "shared" | undefined;
 }
 
+/** Raw hook config as parsed from YAML — matches L0 HookConfig shape. */
+interface RawHookConfig {
+  readonly kind: "command" | "http" | "prompt" | "agent";
+  readonly name: string;
+  readonly [key: string]: unknown;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -132,6 +140,7 @@ export interface RawManifest {
   readonly schedule?: string | undefined;
   readonly webhooks?: readonly RawWebhook[] | undefined;
   readonly outboundWebhooks?: readonly RawOutboundWebhook[] | undefined;
+  readonly hooks?: readonly RawHookConfig[] | undefined;
   readonly forge?: RawForge | undefined;
   readonly context?: unknown;
   readonly soul?: string | RawSoulUserConfig | undefined;
@@ -494,6 +503,57 @@ const dataSourceEntrySchema = z.object({
 /** Optional array of data source entries. */
 const dataSourcesSchema = z.array(dataSourceEntrySchema).optional();
 
+// ── Hook config schema ──
+
+/** Base fields shared by all hook config types. */
+const hookConfigBaseSchema = z.object({
+  name: z.string().min(1),
+  filter: z
+    .object({
+      events: z.array(z.enum(HOOK_EVENT_KINDS)).optional(),
+      toolNames: z.array(z.string()).optional(),
+    })
+    .optional(),
+  enabled: z.boolean().optional(),
+  serial: z.boolean().optional(),
+  failMode: z.enum(["open", "closed"]).optional(),
+});
+
+/** Discriminated union of all hook config types — matches L0 HookConfig. */
+const hookConfigSchema = z.discriminatedUnion("kind", [
+  hookConfigBaseSchema.extend({
+    kind: z.literal("command"),
+    command: z.string().min(1),
+    cwd: z.string().optional(),
+    timeoutMs: z.number().optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  hookConfigBaseSchema.extend({
+    kind: z.literal("http"),
+    url: z.string().min(1),
+    headers: z.record(z.string(), z.string()).optional(),
+    timeoutMs: z.number().optional(),
+  }),
+  hookConfigBaseSchema.extend({
+    kind: z.literal("prompt"),
+    prompt: z.string().min(1),
+    model: z.string().optional(),
+    timeoutMs: z.number().optional(),
+    maxTokens: z.number().optional(),
+  }),
+  hookConfigBaseSchema.extend({
+    kind: z.literal("agent"),
+    prompt: z.string().min(1),
+    model: z.string().optional(),
+    timeoutMs: z.number().optional(),
+    maxTurns: z.number().optional(),
+    toolDenylist: z.array(z.string()).optional(),
+  }),
+]);
+
+/** Optional array of hook configs. */
+const hooksSchema = z.array(hookConfigSchema).optional();
+
 // ── Raw manifest schema ──
 
 /**
@@ -518,6 +578,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     schedule: scheduleSchema.optional(),
     webhooks: webhooksSchema.optional(),
     outboundWebhooks: outboundWebhooksSchema.optional(),
+    hooks: hooksSchema,
     forge: forgeSchema.optional(),
     context: z.unknown().optional(),
     soul: soulUserSchema.optional(),

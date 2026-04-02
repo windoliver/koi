@@ -16,13 +16,16 @@ import type { LogsFlags } from "../args.js";
 export async function runLogs(flags: LogsFlags): Promise<void> {
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: false });
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
     process.exit(EXIT_CONFIG);
   }
 
-  const { manifest } = loadResult.value;
+  const { manifest, warnings } = loadResult.value;
+  for (const w of warnings) {
+    process.stderr.write(`warn: ${w.message}\n`);
+  }
   const platform = detectPlatform();
   const serviceName = resolveServiceName(manifest.name);
   const system = manifest.deploy?.system ?? false;

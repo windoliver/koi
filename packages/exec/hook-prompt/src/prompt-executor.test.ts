@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { HookEvent, PromptHookConfig } from "@koi/core";
-import { createPromptExecutor } from "./prompt-executor.js";
 import type { PromptModelCaller, PromptModelRequest } from "./prompt-executor.js";
+import { createPromptExecutor } from "./prompt-executor.js";
 
 function makeEvent(overrides?: Partial<HookEvent>): HookEvent {
   return {
@@ -142,5 +142,66 @@ describe("createPromptExecutor", () => {
   test("executor kind is prompt", () => {
     const executor = createPromptExecutor(makeCaller("ok"));
     expect(executor.kind).toBe("prompt");
+  });
+
+  // ── Malformed model output + failMode interaction ──
+
+  test("ambiguous malformed output blocks with default failMode (closed)", async () => {
+    const caller = makeCaller("hmm I think maybe");
+    const executor = createPromptExecutor(caller);
+
+    const result = await executor.execute(makeConfig(), makeEvent());
+
+    expect(result.kind).toBe("block");
+    if (result.kind === "block") {
+      expect(result.reason).toContain("fail-closed");
+    }
+  });
+
+  test("ambiguous malformed output continues with failMode open", async () => {
+    const caller = makeCaller("hmm I think maybe");
+    const executor = createPromptExecutor(caller);
+
+    const result = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+
+    expect(result.kind).toBe("continue");
+  });
+
+  test('{ ok: "false" } is coerced to false — blocks regardless of failMode', async () => {
+    const caller = makeCaller('{ "ok": "false", "reason": "block" }');
+    const executor = createPromptExecutor(caller);
+
+    // failMode:open — still blocks because the model expressed a clear denial
+    const resultOpen = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    expect(resultOpen.kind).toBe("block");
+    if (resultOpen.kind === "block") {
+      expect(resultOpen.reason).toBe("block");
+    }
+
+    // failMode:closed — also blocks
+    const resultClosed = await executor.execute(makeConfig({ failMode: "closed" }), makeEvent());
+    expect(resultClosed.kind).toBe("block");
+  });
+
+  test("plain-text denial blocks even under failMode:open", async () => {
+    const caller = makeCaller("This is dangerous and should be blocked");
+    const executor = createPromptExecutor(caller);
+
+    const result = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    expect(result.kind).toBe("block");
+    if (result.kind === "block") {
+      expect(result.reason).toContain("dangerous");
+    }
+  });
+
+  test("empty model response triggers failMode", async () => {
+    const caller = makeCaller("");
+    const executor = createPromptExecutor(caller);
+
+    const resultOpen = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    expect(resultOpen.kind).toBe("continue");
+
+    const resultClosed = await executor.execute(makeConfig(), makeEvent());
+    expect(resultClosed.kind).toBe("block");
   });
 });

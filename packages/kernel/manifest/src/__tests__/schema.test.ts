@@ -758,3 +758,168 @@ describe("rawManifestSchema — context field", () => {
     expect(parse({}).success).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hooks field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — hooks field", () => {
+  test("accepts valid prompt hook", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "prompt",
+          name: "safety-check",
+          prompt: "Is this action safe?",
+          model: "haiku",
+          failMode: "closed",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts valid command hook", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "command",
+          name: "audit-log",
+          command: "echo audit",
+          timeoutMs: 5000,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts valid http hook", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "http",
+          name: "webhook-check",
+          url: "https://hooks.example.com/check",
+          headers: { Authorization: "Bearer token" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts valid agent hook", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "agent",
+          name: "review-agent",
+          prompt: "Review this change",
+          maxTurns: 3,
+          toolDenylist: ["dangerous_tool"],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts multiple hooks of different kinds", () => {
+    const result = parse({
+      hooks: [
+        { kind: "prompt", name: "check-1", prompt: "safe?" },
+        { kind: "command", name: "check-2", command: "echo ok" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts hook with filter", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "prompt",
+          name: "tool-guard",
+          prompt: "Is this tool call safe?",
+          filter: {
+            events: ["beforeToolCall"],
+            toolNames: ["exec_command"],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts manifest without hooks", () => {
+    expect(parse({}).success).toBe(true);
+  });
+
+  test("rejects hook with unknown kind", () => {
+    const result = parse({
+      hooks: [{ kind: "unknown", name: "bad" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects hook without name", () => {
+    const result = parse({
+      hooks: [{ kind: "prompt", prompt: "safe?" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects hook with empty name", () => {
+    const result = parse({
+      hooks: [{ kind: "prompt", name: "", prompt: "safe?" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects prompt hook without prompt field", () => {
+    const result = parse({
+      hooks: [{ kind: "prompt", name: "no-prompt" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects command hook without command field", () => {
+    const result = parse({
+      hooks: [{ kind: "command", name: "no-cmd" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects invalid failMode", () => {
+    const result = parse({
+      hooks: [{ kind: "prompt", name: "x", prompt: "y", failMode: "maybe" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects typo in filter.events", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "prompt",
+          name: "guard",
+          prompt: "safe?",
+          filter: { events: ["beforeToolcall"] },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects unknown filter event name", () => {
+    const result = parse({
+      hooks: [
+        {
+          kind: "command",
+          name: "log",
+          command: "echo ok",
+          filter: { events: ["onStartup"] },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+});

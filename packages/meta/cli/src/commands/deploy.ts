@@ -31,7 +31,7 @@ export async function runDeploy(flags: DeployFlags): Promise<void> {
   // 1. Load manifest
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: true });
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
     process.exit(EXIT_CONFIG);

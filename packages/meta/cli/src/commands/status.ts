@@ -25,13 +25,16 @@ import type { StatusFlags } from "../args.js";
 export async function runStatus(flags: StatusFlags): Promise<void> {
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: false });
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
     process.exit(EXIT_CONFIG);
   }
 
-  const { manifest } = loadResult.value;
+  const { manifest, warnings } = loadResult.value;
+  for (const w of warnings) {
+    process.stderr.write(`warn: ${w.message}\n`);
+  }
   const workspaceRoot = resolve(dirname(manifestPath));
 
   // Basic agent info

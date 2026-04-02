@@ -225,7 +225,9 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                 dispatch({ id: "manifest", label: "Manifest", status: "running" });
                 try {
                   const { loadManifest } = await import("@koi/manifest");
-                  const loadResult = await loadManifest("koi.yaml");
+                  const loadResult = await loadManifest("koi.yaml", undefined, {
+                    rejectUnsupportedHooks: true,
+                  });
                   if (!loadResult.ok) {
                     dispatch({
                       id: "manifest",

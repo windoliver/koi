@@ -32,7 +32,19 @@ const KNOWN_FIELDS = [
   "user",
   "deploy",
   "scope",
+  "hooks",
 ] as const;
+
+/** Options for manifest loading. */
+export interface LoadOptions {
+  /**
+   * When true (default), manifests declaring hooks are rejected with an error
+   * because the engine does not enforce them yet. Non-runtime callers
+   * (catalog discovery, introspection, doctor) should pass `false` to load
+   * hook-bearing manifests with a warning instead of an error.
+   */
+  readonly rejectUnsupportedHooks?: boolean | undefined;
+}
 
 /**
  * Loads and validates a koi.yaml manifest from a file path.
@@ -41,11 +53,13 @@ const KNOWN_FIELDS = [
  *
  * @param filePath - Absolute or relative path to the koi.yaml file
  * @param env - Environment variables map (defaults to `process.env`)
+ * @param options - Loading options (e.g., strict hook rejection)
  * @returns `Result<LoadResult, KoiError>` — success with manifest + warnings, or validation error
  */
 export async function loadManifest(
   filePath: string,
   env?: Readonly<Record<string, string | undefined>>,
+  options?: LoadOptions,
 ): Promise<Result<LoadResult, KoiError>> {
   // Read file
   let raw: string;
@@ -64,7 +78,7 @@ export async function loadManifest(
     };
   }
 
-  return loadManifestFromString(raw, env);
+  return loadManifestFromString(raw, env, options);
 }
 
 /**
@@ -74,12 +88,16 @@ export async function loadManifest(
  *
  * @param yaml - Raw YAML string (may contain `${VAR}` references)
  * @param env - Environment variables map (defaults to `process.env`)
+ * @param options - Loading options (e.g., strict hook rejection)
  * @returns `Result<LoadResult, KoiError>` — success with manifest + warnings, or validation error
  */
 export function loadManifestFromString(
   yaml: string,
   env?: Readonly<Record<string, string | undefined>>,
+  options?: LoadOptions,
 ): Result<LoadResult, KoiError> {
+  const rejectHooks = options?.rejectUnsupportedHooks ?? true;
+
   // Interpolate env vars
   const interpolated = interpolateEnv(yaml, env);
 
@@ -106,13 +124,49 @@ export function loadManifestFromString(
   }
 
   // Detect unknown fields (warnings, not errors)
-  const warnings =
+  const unknownFieldWarnings =
     typeof parsed === "object" && parsed !== null
       ? detectUnknownFields(parsed as Record<string, unknown>, KNOWN_FIELDS)
       : [];
 
+  const hooks = validation.data.hooks;
+  const hasHooks = hooks !== undefined && hooks.length > 0;
+
+  // In strict mode (default), reject hooks — the engine does not enforce them yet.
+  // Non-runtime callers (catalog, introspection) can set rejectUnsupportedHooks:false
+  // to parse hook-bearing manifests without assuming enforcement.
+  if (hasHooks && rejectHooks) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "Manifest declares hooks, but hook execution is not yet supported. " +
+          "Remove the hooks section or wait for runtime hook support before deploying. " +
+          "Hook configs are validated but not enforced — declaring them would silently skip safety policies.",
+        retryable: false,
+        context: { hookCount: hooks.length },
+      },
+    };
+  }
+
   // Transform to LoadedManifest
   const manifest = transformToLoadedManifest(validation.data);
+
+  // In non-strict mode, warn about unenforced hooks so the info is available
+  const hooksWarning =
+    hasHooks && !rejectHooks
+      ? [
+          {
+            path: "hooks",
+            message:
+              "Hooks are declared but not yet enforced at runtime. " +
+              "Do not rely on them for safety gating until runtime support ships.",
+          },
+        ]
+      : [];
+
+  const warnings = [...unknownFieldWarnings, ...hooksWarning];
 
   return { ok: true, value: { manifest, warnings } };
 }

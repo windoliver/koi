@@ -85,7 +85,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   // 1. Load manifest
   // ------------------------------------------------------------------
   progress("manifest", "Loading manifest");
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: true });
   if (!loadResult.ok) {
     throw new Error(`Failed to load manifest: ${loadResult.error.message}`);
   }

@@ -200,7 +200,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 2. VALIDATE
   output.spinner.start("Loading manifest...");
-  const loadResult = await timer.time("manifest", () => loadManifest(manifestPath));
+  const loadResult = await timer.time("manifest", () =>
+    loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: true }),
+  );
   if (!loadResult.ok) {
     output.spinner.stop();
 
