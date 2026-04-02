@@ -25,15 +25,14 @@ describe("edge cases", () => {
     expect((result.value as Record<string, string>).safe).toBe("ok");
   });
 
-  test("deep nesting beyond maxDepth stops recursion", () => {
+  test("deep nesting beyond maxDepth is replaced with placeholder (fail-closed)", () => {
     const r2 = createRedactor({ maxDepth: 2 });
     const deep = { a: { b: { c: { password: "secret" } } } };
     const result = r2.redactObject(deep);
-    // depth 0 -> a, depth 1 -> b, depth 2 -> c, depth 3 -> password exceeds maxDepth=2
-    const innerC = (
-      result.value as Record<string, Record<string, Record<string, Record<string, string>>>>
-    ).a?.b?.c;
-    expect(innerC?.password).toBe("secret"); // Not redacted — too deep
+    // depth 0 -> root, depth 1 -> a, depth 2 -> b, depth 3 -> c exceeds maxDepth=2
+    const innerB = (result.value as Record<string, Record<string, Record<string, unknown>>>).a?.b;
+    expect(innerB?.c).toBe("[DEPTH_EXCEEDED]"); // Fail-closed — subtree replaced
+    expect(result.changed).toBe(true);
   });
 
   test("overlapping patterns resolve to longest match", () => {

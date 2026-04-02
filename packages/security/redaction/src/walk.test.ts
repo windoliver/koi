@@ -82,16 +82,51 @@ describe("walkAndRedact", () => {
     expect((result.value as Record<string, unknown>).self).toBe("[Circular]");
   });
 
-  test("respects maxDepth", () => {
+  test("replaces depth-exceeded subtrees with placeholder (fail-closed)", () => {
     const deep = { a: { b: { c: { password: "secret" } } } };
     const shallowCtx = { ...ctx, maxDepth: 2 };
     const result = walkAndRedact(deep, shallowCtx);
-    // Depth 0 -> a, depth 1 -> b, depth 2 -> c, depth 3 -> password (exceeds maxDepth=2)
-    // The password field at depth 3 should NOT be redacted
-    const innerC = (
-      result.value as Record<string, Record<string, Record<string, Record<string, string>>>>
-    ).a?.b?.c;
-    expect(innerC?.password).toBe("secret");
+    // depth 0 -> root, depth 1 -> a, depth 2 -> b, depth 3 -> c (exceeds maxDepth=2)
+    // c and everything below it should be replaced with a placeholder
+    const innerB = (result.value as Record<string, Record<string, Record<string, unknown>>>).a?.b;
+    expect(innerB?.c).toBe("[DEPTH_EXCEEDED]");
+    expect(result.changed).toBe(true);
+  });
+
+  test("secrets nested beyond maxDepth are not leaked", () => {
+    const deep = { a: { b: { c: { secret: "sk-ant-api03-" + "A".repeat(85) } } } };
+    const shallowCtx = { ...ctx, maxDepth: 2 };
+    const result = walkAndRedact(deep, shallowCtx);
+    // Secret must NOT appear in the output
+    expect(JSON.stringify(result.value)).not.toContain("sk-ant-api03-");
+  });
+
+  test("redacts numeric sensitive fields (e.g., pin, cvv)", () => {
+    const numCtx = { ...ctx, fieldMatcher: createFieldMatcher(["pin", "cvv"]) };
+    const obj = { pin: 1234, cvv: 567, amount: 100 };
+    const result = walkAndRedact(obj, numCtx);
+    expect((result.value as Record<string, unknown>).pin).toBe("[REDACTED]");
+    expect((result.value as Record<string, unknown>).cvv).toBe("[REDACTED]");
+    expect((result.value as Record<string, unknown>).amount).toBe(100);
+    expect(result.fieldCount).toBe(2);
+  });
+
+  test("redacts object-valued sensitive fields", () => {
+    const obj = { credential: { user: "admin", pass: "secret" }, name: "test" };
+    const credCtx = { ...ctx, fieldMatcher: createFieldMatcher(["credential"]) };
+    const result = walkAndRedact(obj, credCtx);
+    expect((result.value as Record<string, unknown>).credential).toBe("[REDACTED]");
+    expect((result.value as Record<string, unknown>).name).toBe("test");
+  });
+
+  test("preserves shared non-cyclic references instead of marking as Circular", () => {
+    const shared = { key: "value" };
+    const obj = { a: shared, b: shared };
+    const result = walkAndRedact(obj, ctx);
+    const v = result.value as Record<string, Record<string, string>>;
+    // Both references should be preserved, not replaced with [Circular]
+    expect(v.a?.key).toBe("value");
+    expect(v.b?.key).toBe("value");
   });
 
   test("preserves non-secret __proto__ values but does not recurse into them", () => {
