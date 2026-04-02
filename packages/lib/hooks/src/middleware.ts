@@ -368,7 +368,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         fireAndForget(sessionId, blockEvent);
 
         return {
-          content: "",
+          content: formatBlockMessage("model_call", preResult.reason),
           model: request.model ?? "unknown",
           stopReason: "hook_blocked",
           metadata: {

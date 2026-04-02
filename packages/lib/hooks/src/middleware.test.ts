@@ -609,7 +609,7 @@ describe("wrapModelCall", () => {
     assertDefined(result);
 
     expect(nextFn).not.toHaveBeenCalled();
-    expect(result.content).toBe("");
+    expect(result.content).toBe("Hook blocked model_call: context too large");
     expect(result.stopReason).toBe("hook_blocked");
     expect(result.model).toBe("test-model");
     expect(result.metadata).toEqual({

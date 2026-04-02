@@ -384,7 +384,7 @@ describe("consumeModelStream", () => {
       {
         kind: "done",
         response: {
-          content: "",
+          content: "Hook blocked model_call: budget exceeded",
           model: "test-model",
           stopReason: "hook_blocked",
           metadata: { blockedByHook: true, reason: "budget exceeded", hookName: "quota-guard" },
@@ -397,7 +397,9 @@ describe("consumeModelStream", () => {
 
     // Must NOT be "completed" — the model call was denied
     expect(done.output.stopReason).toBe("error");
-    expect(done.output.content).toEqual([]);
+    expect(done.output.content).toEqual([
+      { kind: "text", text: "Hook blocked model_call: budget exceeded" },
+    ]);
     const meta = done.output.metadata as Record<string, unknown>;
     expect(meta.modelStopReason).toBe("hook_blocked");
     expect(meta.blockedByHook).toBe(true);
