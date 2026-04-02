@@ -118,7 +118,7 @@ async function collectChunks(stream: AsyncIterable<ModelChunk>): Promise<readonl
 describe("aggregateDecisions", () => {
   it("returns continue when all hooks continue", () => {
     const result = aggregateDecisions([successResult("a"), successResult("b")]);
-    expect(result).toEqual({ kind: "continue" });
+    expect(result.decision).toEqual({ kind: "continue" });
   });
 
   it("returns block when any hook blocks (most restrictive wins)", () => {
@@ -127,7 +127,7 @@ describe("aggregateDecisions", () => {
       successResult("b", { kind: "block", reason: "not allowed" }),
       successResult("c", { kind: "modify", patch: { x: 1 } }),
     ]);
-    expect(result).toEqual({ kind: "block", reason: "not allowed" });
+    expect(result.decision).toEqual({ kind: "block", reason: "not allowed" });
   });
 
   it("merges modify patches when multiple hooks modify", () => {
@@ -135,7 +135,7 @@ describe("aggregateDecisions", () => {
       successResult("a", { kind: "modify", patch: { x: 1 } }),
       successResult("b", { kind: "modify", patch: { y: 2 } }),
     ]);
-    expect(result).toEqual({ kind: "modify", patch: { x: 1, y: 2 } });
+    expect(result.decision).toEqual({ kind: "modify", patch: { x: 1, y: 2 } });
   });
 
   it("later modify patches override earlier keys", () => {
@@ -143,17 +143,17 @@ describe("aggregateDecisions", () => {
       successResult("a", { kind: "modify", patch: { x: 1 } }),
       successResult("b", { kind: "modify", patch: { x: 99 } }),
     ]);
-    expect(result).toEqual({ kind: "modify", patch: { x: 99 } });
+    expect(result.decision).toEqual({ kind: "modify", patch: { x: 99 } });
   });
 
   it("ignores failed hooks (fail-open)", () => {
     const result = aggregateDecisions([failureResult("broken", "timeout"), successResult("ok")]);
-    expect(result).toEqual({ kind: "continue" });
+    expect(result.decision).toEqual({ kind: "continue" });
   });
 
   it("returns continue for empty results", () => {
     const result = aggregateDecisions([]);
-    expect(result).toEqual({ kind: "continue" });
+    expect(result.decision).toEqual({ kind: "continue" });
   });
 
   it("merges transform outputPatch from multiple hooks (later overrides earlier)", () => {
@@ -162,7 +162,7 @@ describe("aggregateDecisions", () => {
       successResult("b", { kind: "transform", outputPatch: { y: 99, z: 3 } }),
     ]);
     // transform is post-call only — ignored in pre-call aggregation
-    expect(result).toEqual({ kind: "continue" });
+    expect(result.decision).toEqual({ kind: "continue" });
   });
 
   it("ignores transform metadata in pre-call aggregation", () => {
@@ -170,7 +170,7 @@ describe("aggregateDecisions", () => {
       successResult("a", { kind: "transform", outputPatch: { x: 1 }, metadata: { ctx: "a" } }),
     ]);
     // transform is post-call only — ignored in pre-call aggregation
-    expect(result).toEqual({ kind: "continue" });
+    expect(result.decision).toEqual({ kind: "continue" });
   });
 
   it("block wins even with transform present", () => {
@@ -178,7 +178,7 @@ describe("aggregateDecisions", () => {
       successResult("a", { kind: "transform", outputPatch: { x: 1 } }),
       successResult("b", { kind: "block", reason: "denied" }),
     ]);
-    expect(result).toEqual({ kind: "block", reason: "denied" });
+    expect(result.decision).toEqual({ kind: "block", reason: "denied" });
   });
 
   it("modify applies when transform is also present (transform ignored pre-call)", () => {
@@ -186,7 +186,27 @@ describe("aggregateDecisions", () => {
       successResult("a", { kind: "modify", patch: { x: 1 } }),
       successResult("b", { kind: "transform", outputPatch: { y: 2 } }),
     ]);
-    expect(result).toEqual({ kind: "modify", patch: { x: 1 } });
+    expect(result.decision).toEqual({ kind: "modify", patch: { x: 1 } });
+  });
+
+  it("returns hookName of blocking hook", () => {
+    const result = aggregateDecisions([
+      successResult("observer"),
+      successResult("quota-guard", { kind: "block", reason: "over limit" }),
+    ]);
+    expect(result.hookName).toBe("quota-guard");
+  });
+
+  it("returns undefined hookName for modify", () => {
+    const result = aggregateDecisions([
+      successResult("rerouter", { kind: "modify", patch: { model: "cheap" } }),
+    ]);
+    expect(result.hookName).toBeUndefined();
+  });
+
+  it("returns undefined hookName for continue", () => {
+    const result = aggregateDecisions([successResult("observer")]);
+    expect(result.hookName).toBeUndefined();
   });
 });
 
@@ -288,7 +308,7 @@ describe("createHookMiddleware", () => {
       const mw = createHookMiddleware({ hooks: TEST_HOOKS });
       const ctx = makeSessionCtx();
 
-      await expect(mw.onSessionStart?.(ctx)).rejects.toThrow("Session blocked by hook");
+      await expect(mw.onSessionStart?.(ctx)).rejects.toThrow("Hook blocked session");
     });
   });
 
@@ -374,7 +394,7 @@ describe("createHookMiddleware", () => {
         successResult("rate-limiter", { kind: "block", reason: "rate limited" }),
       ]);
 
-      await expect(mw.onBeforeTurn?.(ctx)).rejects.toThrow("Turn blocked by hook");
+      await expect(mw.onBeforeTurn?.(ctx)).rejects.toThrow("Hook blocked turn");
     });
   });
 
@@ -449,8 +469,8 @@ describe("wrapToolCall", () => {
     // next() must NOT have been called
     expect(nextFn).not.toHaveBeenCalled();
     // Response indicates the block
-    expect(result.output).toEqual({ error: "Blocked by hook: bash not allowed" });
-    expect(result.metadata).toEqual({ blockedByHook: true });
+    expect(result.output).toEqual({ error: "Hook blocked tool_call: bash not allowed" });
+    expect(result.metadata).toEqual({ blockedByHook: true, hookName: "blocker" });
   });
 
   it("modifies tool input when hook returns modify decision", async () => {
@@ -490,7 +510,7 @@ describe("wrapToolCall", () => {
     assertDefined(result);
 
     expect(nextFn).not.toHaveBeenCalled();
-    expect(result.output).toEqual({ error: "Blocked by hook: denied" });
+    expect(result.output).toEqual({ error: "Hook blocked tool_call: denied" });
   });
 
   it("pre-call hooks fail-open (failed hooks = no opinion)", async () => {
@@ -873,7 +893,7 @@ describe("wrapModelCall", () => {
     expect(passedRequest.systemPrompt).toBe("original");
   });
 
-  it("throws when hook returns block decision (consistent with onBeforeTurn)", async () => {
+  it("blocks model call with hook_blocked stop reason and denial message in content", async () => {
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await startSessionThen(mw, executeSpy, [
       successResult("guard", { kind: "block", reason: "context too large" }),
@@ -885,11 +905,51 @@ describe("wrapModelCall", () => {
     });
 
     const request: ModelRequest = { messages: [], model: "test-model" };
+    const result = await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
-    await expect(mw.wrapModelCall?.(makeTurnCtx(), request, nextFn)).rejects.toThrow(
-      "Model call blocked by hook: context too large",
-    );
     expect(nextFn).not.toHaveBeenCalled();
+    expect(result.content).toBe("Hook blocked model_call: context too large");
+    expect(result.stopReason).toBe("hook_blocked");
+    expect(result.model).toBe("test-model");
+    expect(result.metadata).toEqual({
+      blockedByHook: true,
+      reason: "context too large",
+      hookName: "guard",
+    });
+  });
+
+  it("emits compact.blocked event when hook blocks model call", async () => {
+    let blockEvent: HookEvent | undefined;
+    let callIndex = 0;
+    executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) {
+        return [successResult("quota-guard", { kind: "block", reason: "over budget" })];
+      }
+      if (event.event === "compact.blocked") {
+        blockEvent = event;
+      }
+      return [];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ModelRequest) => Promise<ModelResponse>>().mockResolvedValue({
+      content: "nope",
+      model: "test",
+    });
+
+    await mw.wrapModelCall?.(makeTurnCtx(), { messages: [] }, nextFn);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assertDefined(blockEvent);
+    expect(blockEvent.event).toBe("compact.blocked");
+    const data = blockEvent.data as Record<string, unknown>;
+    expect(data.reason).toBe("over budget");
+    expect(data.hookName).toBe("quota-guard");
   });
 });
 
@@ -930,7 +990,7 @@ describe("wrapModelStream", () => {
     expect(chunks[2]?.kind).toBe("done");
   });
 
-  it("yields error chunk when hook returns block decision", async () => {
+  it("yields error chunk with structured fields when hook returns block decision", async () => {
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await startSessionThen(mw, executeSpy, [
       successResult("guard", { kind: "block", reason: "not today" }),
@@ -948,8 +1008,10 @@ describe("wrapModelStream", () => {
     expect(chunks[0]?.kind).toBe("error");
     if (chunks[0]?.kind === "error") {
       expect(chunks[0].message).toContain("not today");
+      expect(chunks[0].message).toContain("Hook blocked model_stream");
       expect(chunks[0].code).toBe("PERMISSION");
       expect(chunks[0].retryable).toBe(false);
+      expect(chunks[0].retryAfterMs).toBeUndefined();
     }
   });
 
