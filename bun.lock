@@ -181,6 +181,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/tools-web": {
+      "name": "@koi/tools-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/validation": {
       "name": "@koi/validation",
       "version": "0.0.0",
@@ -441,6 +448,8 @@
     "@koi/tools-builtin": ["@koi/tools-builtin@workspace:packages/lib/tools-builtin"],
 
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
+
+    "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
