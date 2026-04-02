@@ -684,6 +684,7 @@ export {
   parseMemoryFrontmatter,
   parseMemoryIndexEntry,
   serializeMemoryFrontmatter,
+  validateMemoryFilePath,
   validateMemoryRecordInput,
 } from "./memory.js";
 // message

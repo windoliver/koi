@@ -10,8 +10,19 @@ import {
   parseMemoryFrontmatter,
   parseMemoryIndexEntry,
   serializeMemoryFrontmatter,
+  validateMemoryFilePath,
   validateMemoryRecordInput,
 } from "./memory.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Asserts a value is defined and returns it typed. Avoids `!` lint violations. */
+function defined<T>(value: T | undefined, msg = "expected defined"): T {
+  if (value === undefined) throw new Error(msg);
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // memoryRecordId branded constructor
@@ -292,7 +303,7 @@ describe("parseMemoryIndexEntry", () => {
       hook: "integration tests must hit real DB",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toEqual(entry);
   });
 });
@@ -432,7 +443,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "v2 config reference",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toEqual(entry);
   });
 
@@ -443,7 +454,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "a hook",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toEqual(entry);
   });
 
@@ -454,7 +465,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "tagged memory",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toEqual(entry);
   });
 
@@ -465,7 +476,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "first part — second part",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     // The hook captures everything after the first " — ", including embedded em dashes
     expect(parsed).toBeDefined();
     expect(parsed?.title).toBe("Test");
@@ -479,7 +490,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "path with percent-encoded parens",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toEqual(entry);
   });
 
@@ -491,9 +502,9 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
     };
     const formatted = formatMemoryIndexEntry(entry);
     // Must be exactly one line
-    expect(formatted.split("\n")).toHaveLength(1);
+    expect(defined(formatted).split("\n")).toHaveLength(1);
     // Must roundtrip (with sanitized hook)
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toBeDefined();
     expect(parsed?.hook).not.toContain("\n");
     expect(parsed?.title).toBe("Safe");
@@ -506,8 +517,8 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "a hook",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    expect(formatted.split("\n")).toHaveLength(1);
-    const parsed = parseMemoryIndexEntry(formatted);
+    expect(defined(formatted).split("\n")).toHaveLength(1);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toBeDefined();
     expect(parsed?.title).toBe("line1 line2");
   });
@@ -519,7 +530,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
       hook: "a hook",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    expect(formatted.split("\n")).toHaveLength(1);
+    expect(defined(formatted).split("\n")).toHaveLength(1);
   });
 });
 
@@ -589,7 +600,7 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (backslash paths)", () 
       hook: "a hook",
     };
     const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toBeDefined();
     // Backslashes normalized to forward slashes
     expect(parsed?.filePath).toBe("a/b/c.md");
@@ -602,9 +613,125 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (backslash paths)", () 
       hook: "user role info",
     };
     const formatted = formatMemoryIndexEntry(entry);
+    expect(formatted).toBeDefined();
     expect(formatted).not.toContain("\\");
-    const parsed = parseMemoryIndexEntry(formatted);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
     expect(parsed).toBeDefined();
     expect(parsed?.filePath).toBe("memories/user_role.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateMemoryFilePath
+// ---------------------------------------------------------------------------
+
+describe("validateMemoryFilePath", () => {
+  test("accepts valid relative .md path", () => {
+    expect(validateMemoryFilePath("user_role.md")).toBeUndefined();
+    expect(validateMemoryFilePath("memories/feedback.md")).toBeUndefined();
+  });
+
+  test("rejects empty path", () => {
+    expect(validateMemoryFilePath("")).toBeDefined();
+    expect(validateMemoryFilePath("  ")).toBeDefined();
+  });
+
+  test("rejects absolute paths", () => {
+    expect(validateMemoryFilePath("/etc/passwd.md")).toBeDefined();
+    expect(validateMemoryFilePath("/memories/test.md")).toBeDefined();
+  });
+
+  test("rejects drive letter paths", () => {
+    expect(validateMemoryFilePath("C:\\memories\\test.md")).toBeDefined();
+    expect(validateMemoryFilePath("D:test.md")).toBeDefined();
+  });
+
+  test("rejects path traversal", () => {
+    expect(validateMemoryFilePath("../../secret.md")).toBeDefined();
+    expect(validateMemoryFilePath("memories/../../../etc/passwd.md")).toBeDefined();
+  });
+
+  test("rejects non-.md extensions", () => {
+    expect(validateMemoryFilePath("test.txt")).toBeDefined();
+    expect(validateMemoryFilePath("test.json")).toBeDefined();
+    expect(validateMemoryFilePath("test")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: empty body rejection
+// ---------------------------------------------------------------------------
+
+describe("parseMemoryFrontmatter (empty body)", () => {
+  test("rejects empty body after closing delimiter", () => {
+    const raw = "---\nname: test\ndescription: desc\ntype: user\n---\n";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects whitespace-only body", () => {
+    const raw = "---\nname: test\ndescription: desc\ntype: user\n---\n   \n  \n";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("accepts non-empty body", () => {
+    const raw = "---\nname: test\ndescription: desc\ntype: user\n---\nactual content";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result).toBeDefined();
+    expect(result?.content).toBe("actual content");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: index path validation in format/parse
+// ---------------------------------------------------------------------------
+
+describe("formatMemoryIndexEntry (path validation)", () => {
+  test("rejects path traversal", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Evil",
+      filePath: "../../secret.md",
+      hook: "steal data",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("rejects absolute path", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Evil",
+      filePath: "/etc/passwd.md",
+      hook: "steal data",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("rejects non-.md path", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Evil",
+      filePath: "config.json",
+      hook: "wrong extension",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("accepts valid relative .md path", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Valid",
+      filePath: "memories/user.md",
+      hook: "valid path",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeDefined();
+  });
+});
+
+describe("parseMemoryIndexEntry (path validation)", () => {
+  test("rejects parsed line with path traversal", () => {
+    const line = "- [Evil](../../secret.md) — steal data";
+    expect(parseMemoryIndexEntry(line)).toBeUndefined();
+  });
+
+  test("rejects parsed line with absolute path", () => {
+    // Manually crafted — bypasses formatMemoryIndexEntry validation
+    const line = "- [Evil](/etc/passwd.md) — steal data";
+    expect(parseMemoryIndexEntry(line)).toBeUndefined();
   });
 });

@@ -223,6 +223,10 @@ export function parseMemoryFrontmatter(
   if (!name || !description || !type) return undefined;
   if (!isMemoryType(type)) return undefined;
 
+  // Reject empty/whitespace-only bodies — a truncated write should not
+  // deserialize as a valid record
+  if (content.trim().length === 0) return undefined;
+
   return {
     frontmatter: { name, description, type },
     content,
@@ -305,6 +309,32 @@ export function validateMemoryRecordInput(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Index file path validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates that a file path is safe for use in MEMORY.md index entries.
+ *
+ * Requirements:
+ * - Must be a relative path (no leading `/` or drive letters like `C:`)
+ * - Must not contain `..` path traversal segments
+ * - Must end with `.md` extension
+ * - Must not be empty
+ *
+ * Returns undefined if valid, or an error message string if invalid.
+ */
+export function validateMemoryFilePath(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/g, "/").trim();
+  if (normalized.length === 0) return "file path must not be empty";
+  if (normalized.startsWith("/")) return "file path must be relative, not absolute";
+  if (/^[a-zA-Z]:/.test(normalized)) return "file path must not contain drive letters";
+  if (normalized.split("/").some((seg) => seg === ".."))
+    return "file path must not contain '..' traversal";
+  if (!normalized.endsWith(".md")) return "file path must end with .md extension";
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Index entry escaping
 // ---------------------------------------------------------------------------
 
@@ -368,10 +398,17 @@ function unescapeFilePath(value: string): string {
  * All fields are sanitized (newlines/control chars stripped) to guarantee
  * exactly one output line. Title brackets and path parentheses/percents
  * are escaped for roundtrip fidelity with `parseMemoryIndexEntry`.
+ *
+ * File paths are validated: must be relative, no `..` traversal, `.md` extension.
+ * Returns undefined if the file path is invalid.
  */
-export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string {
+export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined {
+  const sanitizedPath = sanitizeIndexValue(entry.filePath);
+  const pathError = validateMemoryFilePath(sanitizedPath);
+  if (pathError !== undefined) return undefined;
+
   const title = escapeTitle(sanitizeIndexValue(entry.title));
-  const filePath = escapeFilePath(sanitizeIndexValue(entry.filePath));
+  const filePath = escapeFilePath(sanitizedPath);
   const hook = sanitizeIndexValue(entry.hook);
   return `- [${title}](${filePath}) — ${hook}`;
 }
@@ -381,7 +418,8 @@ export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string {
  *
  * Expected format: `- [Title](file.md) — one-line hook`
  * Handles escaped brackets in titles and percent-encoded chars in paths.
- * Returns undefined if the line doesn't match the expected format.
+ * Validates that the parsed file path is safe (relative, no traversal, .md).
+ * Returns undefined if the line doesn't match or the path is invalid.
  */
 export function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined {
   // Match with support for escaped brackets in title and percent-encoded chars in path
@@ -389,9 +427,13 @@ export function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefine
   if (!match) return undefined;
   const [, rawTitle, rawFilePath, hook] = match;
   if (!rawTitle || !rawFilePath || !hook) return undefined;
+
+  const filePath = unescapeFilePath(rawFilePath);
+  if (validateMemoryFilePath(filePath) !== undefined) return undefined;
+
   return {
     title: unescapeTitle(rawTitle),
-    filePath: unescapeFilePath(rawFilePath),
+    filePath,
     hook,
   };
 }
