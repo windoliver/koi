@@ -25,6 +25,7 @@ export type TurnInput =
   | { readonly kind: "start" }
   | { readonly kind: "model_done"; readonly hasToolCalls: boolean }
   | { readonly kind: "tools_done" }
+  | { readonly kind: "stop_blocked" }
   | { readonly kind: "abort" }
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "max_turns" };
@@ -114,8 +115,18 @@ export function transitionTurn(state: TurnState, input: TurnInput): TurnState {
       }
     }
 
-    case "complete":
+    case "complete": {
+      // stop_blocked: a turn.stop hook blocked completion — re-enter the loop
+      if (input.kind === "stop_blocked") {
+        return {
+          ...state,
+          phase: "continue",
+          turnIndex: state.turnIndex + 1,
+          stopReason: undefined,
+        };
+      }
       return invalidTransition(state.phase, input.kind);
+    }
 
     default: {
       const _exhaustive: never = state.phase;

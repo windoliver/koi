@@ -620,6 +620,7 @@ export {
   DEFAULT_AGENT_MAX_TURNS,
   DEFAULT_AGENT_SESSION_TOKEN_BUDGET,
   DEFAULT_HOOK_TIMEOUT_MS,
+  DEFAULT_MAX_STOP_RETRIES,
   HOOK_EVENT_KINDS,
 } from "./hook.js";
 // inbox — message steering queue for autonomous agents
@@ -721,6 +722,7 @@ export type {
   ModelResponse,
   ModelStreamHandler,
   SessionContext,
+  StopGateResult,
   ToolHandler,
   ToolRequest,
   ToolResponse,

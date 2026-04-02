@@ -31,7 +31,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { INBOX, runId, sessionId, toolToken } from "@koi/core";
+import { DEFAULT_MAX_STOP_RETRIES, INBOX, runId, sessionId, toolToken } from "@koi/core";
 import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
 import {
   composeExtensions,
@@ -41,6 +41,7 @@ import {
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
+  runStopGate,
   runTurnHooks,
 } from "@koi/engine-compose";
 import { createGovernanceExtension, createGovernanceProvider } from "@koi/engine-reconcile";
@@ -543,6 +544,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // completion and waits for inbox messages before restarting.
       // let justified: mutable flag for idle-wake flow control
       let enterIdle = false;
+      // let justified: mutable counter for stop-gate re-prompts across the session
+      let stopRetryCount = 0;
+      const maxStopRetries = DEFAULT_MAX_STOP_RETRIES;
 
       while (true) {
         adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
@@ -720,6 +724,69 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
 
             if (event.kind === "done") {
+              // Stop gate: when model completes normally, check if any middleware
+              // blocks completion before yielding the done event.
+              if (event.output.stopReason === "completed" && stopRetryCount < maxStopRetries) {
+                const stopCtx = createTurnContext({
+                  session: sessionCtx,
+                  turnIndex: currentTurnIndex,
+                  messages: [],
+                  signal: runSignal,
+                  approvalHandler: options.approvalHandler,
+                  sendStatus: options.sendStatus,
+                });
+                const gateResult = await runStopGate(allMiddleware, stopCtx);
+                if (gateResult.kind === "block") {
+                  stopRetryCount++;
+                  // Inject block reason via adapter.inject() if available,
+                  // then re-create adapter stream to continue the loop
+                  if (adapter.inject !== undefined) {
+                    await adapter.inject({
+                      senderId: "system",
+                      content: [
+                        {
+                          kind: "text",
+                          text: `[Completion blocked]: ${gateResult.reason}. Address this before completing.`,
+                        },
+                      ],
+                      timestamp: Date.now(),
+                    });
+                  }
+                  // Re-create adapter stream with a follow-up message containing
+                  // the block reason so the model can address it
+                  const stopInput: EngineInput = {
+                    kind: "messages",
+                    messages: [
+                      {
+                        senderId: "system",
+                        content: [
+                          {
+                            kind: "text",
+                            text: `[Completion blocked]: ${gateResult.reason}. Address this before completing.`,
+                          },
+                        ],
+                        timestamp: Date.now(),
+                      },
+                    ],
+                    ...(effectiveInput.callHandlers !== undefined
+                      ? { callHandlers: effectiveInput.callHandlers }
+                      : {}),
+                    signal: runSignal,
+                  };
+                  // Clean up previous adapter iterator before re-creating
+                  if (adapterIterator?.return !== undefined) {
+                    try {
+                      await adapterIterator.return();
+                    } catch (_cleanupError: unknown) {
+                      // Cleanup failure is non-fatal
+                    }
+                  }
+                  adapterIterator = adapter.stream(stopInput)[Symbol.asyncIterator]();
+                  // Continue the turn loop — don't yield done, don't return
+                  break; // breaks inner while(true), continues turnLoop
+                }
+              }
+
               // Idle on normal completion if reusable; errors/timeouts always terminate
               if (agent.manifest.reuse === true && event.output.stopReason === "completed") {
                 enterIdle = true;

@@ -26,6 +26,7 @@ export const HOOK_EVENT_KINDS = [
   "session.ended",
   "turn.started",
   "turn.ended",
+  "turn.stop",
   "tool.before",
   "tool.succeeded",
   "tool.failed",
@@ -390,6 +391,15 @@ export type HookExecutionResult =
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/**
+ * Default maximum stop-gate re-prompts per session.
+ *
+ * When a `turn.stop` hook blocks completion, the engine re-prompts the model
+ * with the block reason. This limit prevents infinite loops when the model
+ * can never satisfy the stop condition.
+ */
+export const DEFAULT_MAX_STOP_RETRIES = 3 as const;
 
 /** Default hook timeout in milliseconds (command + http). */
 export const DEFAULT_HOOK_TIMEOUT_MS = 30_000 as const;

@@ -36,6 +36,7 @@ import type {
   ModelStreamHandler,
   SessionContext,
   SpawnFn,
+  StopGateResult,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -412,6 +413,17 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const event = buildEvent(ctx.session, "turn.ended");
       // After-turn hooks are fire-and-forget but tracked for drain
       fireAndForget(sessionId, event);
+    },
+
+    async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
+      const sessionId = ctx.session.sessionId as string;
+      const event = buildEvent(ctx.session, "turn.stop");
+      const results = await registry.execute(sessionId, event);
+      const aggregated = aggregateDecisions(results);
+      if (aggregated.decision.kind === "block") {
+        return { kind: "block", reason: aggregated.decision.reason };
+      }
+      return { kind: "continue" };
     },
 
     async wrapToolCall(

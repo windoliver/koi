@@ -1128,3 +1128,64 @@ describe("agent hook spawnFn validation", () => {
     expect(() => createHookMiddleware({ hooks: TEST_HOOKS, spawnFn })).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// onBeforeStop (turn.stop gate)
+// ---------------------------------------------------------------------------
+
+describe("onBeforeStop", () => {
+  it("returns continue when no hooks match turn.stop", async () => {
+    const spy = spyOn(executorModule, "executeHooks");
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, spy, []);
+
+    const result = await mw.onBeforeStop?.(makeTurnCtx());
+    assertDefined(result);
+    expect(result.kind).toBe("continue");
+  });
+
+  it("returns block when a hook blocks turn.stop", async () => {
+    const spy = spyOn(executorModule, "executeHooks");
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, spy, [
+      successResult("gate-hook", { kind: "block", reason: "tests not passing" }),
+    ]);
+
+    const result = await mw.onBeforeStop?.(makeTurnCtx());
+    assertDefined(result);
+    expect(result).toEqual({ kind: "block", reason: "tests not passing" });
+  });
+
+  it("dispatches turn.stop event to registry", async () => {
+    const spy = spyOn(executorModule, "executeHooks");
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, spy, [successResult("gate-hook")]);
+
+    await mw.onBeforeStop?.(makeTurnCtx());
+
+    // Find the call that dispatched turn.stop
+    const stopCall = spy.mock.calls.find((call) => {
+      const event = call[1] as HookEvent;
+      return event.event === "turn.stop";
+    });
+    expect(stopCall).toBeDefined();
+    if (stopCall !== undefined) {
+      const event = stopCall[1] as HookEvent;
+      expect(event.event).toBe("turn.stop");
+      expect(event.agentId).toBe("agent-1");
+    }
+  });
+
+  it("returns continue when hooks return modify (only block matters)", async () => {
+    const spy = spyOn(executorModule, "executeHooks");
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, spy, [
+      successResult("mod-hook", { kind: "modify", patch: { x: 1 } }),
+    ]);
+
+    const result = await mw.onBeforeStop?.(makeTurnCtx());
+    assertDefined(result);
+    // modify aggregates to modify, not block — onBeforeStop only cares about block
+    expect(result.kind).toBe("continue");
+  });
+});
