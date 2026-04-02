@@ -106,7 +106,21 @@ async function clientSideSearch(
 ): Promise<Result<FileSearchResult, KoiError>> {
   const maxResults = options?.maxResults ?? 100;
   const flags = options?.caseSensitive === false ? "gi" : "g";
-  const regex = new RegExp(pattern, flags);
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, flags);
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Invalid search pattern: ${e instanceof Error ? e.message : String(e)}`,
+        retryable: false,
+        context: { pattern },
+      },
+    };
+  }
 
   // List all files recursively
   const listResult = await transport.call<NexusListResponse>("list", {
@@ -176,11 +190,26 @@ function simpleGlobMatch(filePath: string, pattern: string): boolean {
 
 /** Create a Nexus-backed FileSystemBackend for remote file operations. */
 export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend {
-  // Validate config (skip url check when transport is injected)
   if (config.transport === undefined) {
+    // Full validation for HTTP transport (URL + mountPoint + all fields)
     const validated = validateNexusFileSystemConfig(config);
     if (!validated.ok) {
       throw new Error(validated.error.message, { cause: validated.error });
+    }
+  } else {
+    // Injected transport: still validate mountPoint to prevent namespace escape.
+    // Only skip URL/HTTP-specific checks.
+    const mountPoint = config.mountPoint;
+    if (mountPoint !== undefined) {
+      const stripped = mountPoint.replace(/^\/+/, "").replace(/\/+$/, "");
+      if (stripped.length === 0) {
+        throw new Error(
+          "mountPoint must be a non-empty namespace prefix (e.g., 'fs', 'workspace/agent1')",
+        );
+      }
+      if (mountPoint.includes("..")) {
+        throw new Error("mountPoint must not contain '..'");
+      }
     }
   }
 
