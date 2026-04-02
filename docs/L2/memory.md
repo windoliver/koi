@@ -1,12 +1,13 @@
 # @koi/memory
 
-Persistent memory system for Koi agents — file-per-memory with YAML frontmatter.
+Persistent memory system for Koi agents — file-per-memory with key-value frontmatter.
 
 ## Domain Model
 
 ### Memory Record
 
-A `MemoryRecord` is a single persisted fact stored as a Markdown file with YAML frontmatter:
+A `MemoryRecord` is a single persisted fact stored as a Markdown file with
+key-value frontmatter (a bespoke format, **not standard YAML**):
 
 ```markdown
 ---
@@ -18,6 +19,11 @@ type: user | feedback | project | reference
 {{content body — structured per type guidelines}}
 ```
 
+The frontmatter format uses `key: value` lines delimited by `---`. It does
+**not** support YAML features like comments (`#`), quoting, multi-line
+scalars, anchors, or flow syntax. Values are treated as raw strings after
+the first colon.
+
 **Fields:**
 
 | Field | Type | Description |
@@ -27,7 +33,7 @@ type: user | feedback | project | reference
 | `description` | `string` | One-line summary for relevance matching |
 | `type` | `MemoryType` | Category: `user`, `feedback`, `project`, `reference` |
 | `content` | `string` | The memory body (Markdown) |
-| `filePath` | `string` | Path to the `.md` file |
+| `filePath` | `string` | Path to the `.md` file (relative, POSIX, no percent-encoding) |
 | `createdAt` | `number` | Unix timestamp of creation |
 | `updatedAt` | `number` | Unix timestamp of last update |
 
@@ -59,9 +65,11 @@ No state machine — records are either present or deleted. Updates replace cont
 ### Validation
 
 - All frontmatter fields (`name`, `description`, `type`) are required
-- `type` must be one of the 4 valid `MemoryType` values
-- `content` must be non-empty
-- Frontmatter parsing rejects malformed YAML delimiters
+- Fields are validated after sanitization (control chars stripped, newlines collapsed)
+- `type` must be one of the 4 valid `MemoryType` values (validated at runtime)
+- `content` must be non-empty (enforced in both parser and serializer)
+- Frontmatter parsing rejects malformed delimiters, duplicate keys, unknown keys
+- File paths must be relative, `.md` extension, no `..` traversal, no percent-encoding
 
 ## L0 Types
 
@@ -72,13 +80,15 @@ All types are in `@koi/core` (`packages/kernel/core/src/memory.ts`):
 - `MemoryRecord` — full state
 - `MemoryRecordInput` — creation input
 - `MemoryRecordPatch` — sparse update
-- `MemoryFrontmatter` — YAML frontmatter fields
+- `MemoryFrontmatter` — frontmatter fields (bespoke key: value format, not YAML)
 - `MemoryIndex` / `MemoryIndexEntry` — index model
 
 ### Pure Functions
 
 - `isMemoryType()` — type guard
-- `parseMemoryFrontmatter()` — parse YAML frontmatter from raw Markdown
+- `parseMemoryFrontmatter()` — parse frontmatter from raw Markdown
 - `serializeMemoryFrontmatter()` — serialize frontmatter + content to Markdown
-- `validateMemoryRecordInput()` — validate input fields
+- `validateMemoryRecordInput()` — validate input fields (post-sanitization)
+- `validateMemoryFilePath()` — validate file path safety
 - `formatMemoryIndexEntry()` / `parseMemoryIndexEntry()` — index line formatting
+- `hasFrontmatterUnsafeChars()` — detect unsafe characters in field values
