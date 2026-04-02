@@ -530,26 +530,30 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     query: PermissionQuery,
     sessionId: string,
   ): Promise<PermissionDecision> {
-    // Denial escalation: skip backend if this tool+context has enough recent policy denials
+    // Denial escalation: skip backend if this tool+context has enough recent policy denials.
+    // If the query context is not serializable (cacheKey undefined), skip escalation
+    // entirely — we cannot scope it safely and must not match across contexts.
     if (escalationEnabled) {
-      const tracker = getTracker(sessionId);
       const cacheKey = decisionCacheKey(query);
-      const now = clock();
-      const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
-      const recentPolicyDenials = tracker
-        .getByTool(query.resource)
-        .filter(
-          (r) =>
-            r.source === "policy" &&
-            r.timestamp >= cutoff &&
-            (cacheKey === undefined || r.queryKey === undefined || r.queryKey === cacheKey),
-        );
-      if (recentPolicyDenials.length >= escalationThreshold) {
-        return {
-          effect: "deny",
-          reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
-          [IS_ESCALATED]: true,
-        } as PermissionDecision;
+      if (cacheKey !== undefined) {
+        const tracker = getTracker(sessionId);
+        const now = clock();
+        const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
+        const recentPolicyDenials = tracker
+          .getByTool(query.resource)
+          .filter(
+            (r) =>
+              r.source === "policy" &&
+              r.timestamp >= cutoff &&
+              (r.queryKey === undefined || r.queryKey === cacheKey),
+          );
+        if (recentPolicyDenials.length >= escalationThreshold) {
+          return {
+            effect: "deny",
+            reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
+            [IS_ESCALATED]: true,
+          } as PermissionDecision;
+        }
       }
     }
 
@@ -602,7 +606,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const results: (PermissionDecision | undefined)[] = new Array(queries.length).fill(undefined);
     const uncachedIndices: number[] = [];
 
-    // Denial escalation: resolve escalated tools before cache/backend
+    // Denial escalation: resolve escalated tools before cache/backend.
+    // Skip escalation for queries with non-serializable context (undefined cacheKey).
     if (escalationEnabled) {
       const tracker = getTracker(sessionId);
       const now = clock();
@@ -610,13 +615,14 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       for (let i = 0; i < queries.length; i++) {
         const query = queries[i]!;
         const cacheKey = decisionCacheKey(query);
+        if (cacheKey === undefined) continue;
         const recentPolicyDenials = tracker
           .getByTool(query.resource)
           .filter(
             (r) =>
               r.source === "policy" &&
               r.timestamp >= cutoff &&
-              (cacheKey === undefined || r.queryKey === undefined || r.queryKey === cacheKey),
+              (r.queryKey === undefined || r.queryKey === cacheKey),
           );
         if (recentPolicyDenials.length >= escalationThreshold) {
           results[i] = {

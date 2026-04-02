@@ -377,3 +377,34 @@ export function collectRefsFromOutcomes(
   }
   return refs;
 }
+
+// ---------------------------------------------------------------------------
+// Ref extraction from surviving messages
+// ---------------------------------------------------------------------------
+
+/** Pattern matching `ref:<hex-hash>` in preview text. */
+const REF_PATTERN = /\bref:([0-9a-f]{64})\b/g;
+
+/**
+ * Extract replacement refs from message text content.
+ *
+ * Scans for `ref:<sha256-hex>` patterns embedded in preview strings.
+ * Use this to build the active ref set from surviving conversation messages
+ * before calling `store.cleanup()` — ensures refs from older turns that
+ * survived compaction are not prematurely deleted.
+ *
+ * @param texts — Message text contents to scan (e.g. from conversation history).
+ * @returns Set of replacement refs found in the text.
+ */
+export function extractRefsFromTexts(texts: readonly string[]): ReadonlySet<ReplacementRef> {
+  const refs = new Set<ReplacementRef>();
+  for (const text of texts) {
+    for (const m of text.matchAll(REF_PATTERN)) {
+      const hash = m[1];
+      if (hash !== undefined) {
+        refs.add(replacementRef(hash));
+      }
+    }
+  }
+  return refs;
+}
