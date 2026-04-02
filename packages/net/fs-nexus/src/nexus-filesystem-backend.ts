@@ -361,7 +361,11 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         }
       }
 
-      return { ok: true, value: { entries, truncated: false } };
+      // Preserve truncation from flat response if present; fail closed
+      // (assume truncated) if the flat shape cannot express completeness.
+      const flatObj = raw as Record<string, unknown>;
+      const flatTruncated = typeof flatObj.truncated === "boolean" ? flatObj.truncated : true;
+      return { ok: true, value: { entries, truncated: flatTruncated } };
     }
 
     // Structured response — validate shape, filter to scope, remap paths
@@ -376,7 +380,21 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         },
       };
     }
-    const entries = (structured as unknown as FileListResult).entries
+    const rawEntries = (structured as unknown as FileListResult).entries;
+    // Validate each element has a string path before processing
+    for (const entry of rawEntries) {
+      if (typeof entry?.path !== "string") {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "Nexus returned list entry with missing or non-string 'path'",
+            retryable: false,
+          },
+        };
+      }
+    }
+    const entries = rawEntries
       .filter((entry) => {
         const normalized = normalizeServerPath(entry.path);
         return isWithinBasePath(basePath, normalized);
@@ -429,6 +447,19 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     }
 
     const validated = searchRaw as FileSearchResult;
+    // Validate each match has a string path before processing
+    for (const match of validated.matches) {
+      if (typeof match?.path !== "string") {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "Nexus returned search match with missing or non-string 'path'",
+            retryable: false,
+          },
+        };
+      }
+    }
     const matches = validated.matches
       .filter((match) => {
         const normalized = normalizeServerPath(match.path);
