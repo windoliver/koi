@@ -283,6 +283,49 @@ describe("wrapModelStream", () => {
     expect(step?.durationMs).toBe(300);
   });
 
+  test("accumulates text_delta when done chunk has empty content", async () => {
+    let time = 1000;
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => time,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Real streaming: done chunk has empty content, text arrives via deltas
+    const response = makeModelResponse("");
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "The answer " },
+      { kind: "text_delta", delta: "is 12." },
+      { kind: "done", response },
+    ];
+
+    async function* mockStream(): AsyncIterable<ModelChunk> {
+      for (const chunk of chunks) {
+        time += 100;
+        yield chunk;
+      }
+    }
+
+    const collected: ModelChunk[] = [];
+    const stream = middleware.wrapModelStream?.(makeTurnCtx(0), makeModelRequest(), () =>
+      mockStream(),
+    );
+    for await (const chunk of stream ?? []) {
+      collected.push(chunk);
+    }
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const step = store.steps[0]?.[0];
+    expect(step?.kind).toBe("model_call");
+    expect(step?.response?.text).toBe("The answer is 12.");
+  });
+
   test("error path: records failure when stream throws mid-iteration", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({

@@ -206,19 +206,24 @@ describe("simple-text ATIF trajectory (golden file)", () => {
     expect(doc.schema_version).toBe("ATIF-v1.6");
   });
 
-  test("model call with prompt containing 2+2 and metrics", async () => {
+  test("model call with prompt, response text, and metrics", async () => {
     const doc = (await Bun.file(`${FIXTURES}/simple-text.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
         readonly model_name?: string;
         readonly message?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
         readonly metrics?: Record<string, unknown>;
       }[];
     };
 
     const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
     expect(modelSteps.length).toBeGreaterThan(0);
+    // User prompt captured in message
     expect(modelSteps[0]?.message).toContain("2+2");
+    // Model response text captured from streaming text_delta accumulation
+    const responseText = modelSteps[0]?.observation?.results?.[0]?.content ?? "";
+    expect(responseText).toContain("4");
     expect(modelSteps[0]?.metrics?.prompt_tokens).toBeGreaterThan(0);
   });
 

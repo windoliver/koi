@@ -358,6 +358,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       let finalResponse: ModelResponse | undefined;
       let caughtError: unknown;
       const thinkingParts: string[] = [];
+      const textParts: string[] = [];
 
       try {
         for await (const chunk of next(request)) {
@@ -365,6 +366,8 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             finalResponse = chunk.response;
           } else if (chunk.kind === "thinking_delta") {
             thinkingParts.push(chunk.delta);
+          } else if (chunk.kind === "text_delta") {
+            textParts.push(chunk.delta);
           }
           yield chunk;
         }
@@ -373,6 +376,12 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         throw e;
       } finally {
         try {
+          // Streaming responses may have empty content in the done chunk —
+          // the actual text arrives via text_delta chunks. Use accumulated
+          // text when the done response content is empty.
+          if (finalResponse !== undefined && finalResponse.content === "" && textParts.length > 0) {
+            finalResponse = { ...finalResponse, content: textParts.join("") };
+          }
           const reasoning = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
           state.pendingSteps.push(
             buildModelStep(state, startTime, request, finalResponse, caughtError, reasoning),
