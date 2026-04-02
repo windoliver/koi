@@ -247,6 +247,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/net/fs-nexus": {
+      "name": "@koi/fs-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/net/mcp": {
       "name": "@koi/mcp",
       "version": "0.0.0",
@@ -466,6 +474,8 @@
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
+
+    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/net/fs-nexus"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
