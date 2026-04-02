@@ -106,15 +106,20 @@ export interface WebExecutorConfig {
   /** Max cache entries (default: 100). */
   readonly maxCacheEntries?: number | undefined;
   /**
-   * Whether to allow HTTPS URLs (default: false).
+   * Allow HTTPS URLs (**required** — no default).
    *
-   * HTTPS URLs cannot be IP-pinned because Bun's `fetch` does not support
-   * custom TLS SNI (serverName). This creates a TOCTOU window: a DNS record
-   * may resolve to a public IP during validation then rebind to a private IP
-   * before the actual TLS connection. Set to `true` only when network-level
-   * egress controls (e.g., firewall rules blocking RFC 1918) are in place.
+   * HTTPS URLs cannot be IP-pinned because Bun's `fetch` does not expose TLS
+   * SNI control. After `resolveAndValidateUrl()` confirms a public IP, the
+   * actual TLS connect resolves DNS again, creating a TOCTOU window where an
+   * attacker with DNS control could rebind to a private IP. HTTP requests are
+   * immune because the resolved IP is substituted directly into the URL.
+   *
+   * - `true`:  Accept the residual SSRF risk for HTTPS. Appropriate when
+   *            network-level egress controls block RFC 1918 outbound, or
+   *            when the deployment context tolerates the narrow TOCTOU window.
+   * - `false`: Reject all HTTPS URLs. Only HTTP (with IP pinning) is allowed.
    */
-  readonly allowHttps?: boolean | undefined;
+  readonly allowHttps: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,14 +132,14 @@ export interface WebExecutorConfig {
  * Side-effect: makes HTTP requests when `fetch()` is called.
  * Search requires a `searchProvider` in config — returns VALIDATION error without one.
  */
-export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
+export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   const fetchFn = config.fetchFn ?? globalThis.fetch;
   const dnsResolver = config.dnsResolver;
   const maxBodyChars = config.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS;
   const defaultTimeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const maxCacheEntries = config.maxCacheEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
-  const allowHttps = config.allowHttps ?? false;
+  const { allowHttps } = config;
 
   const fetchCache =
     cacheTtlMs > 0 ? createLruCache<WebFetchResult>(maxCacheEntries, cacheTtlMs) : undefined;
@@ -148,11 +153,13 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
       url: string,
       options?: WebFetchOptions,
     ): Promise<Result<WebFetchResult, KoiError>> => {
-      // Reject HTTPS when strict SSRF protection is enabled
-      if (!allowHttps && url.startsWith("https://")) {
+      // Block HTTPS when strict SSRF mode is opted into.
+      // Case-insensitive check: URL schemes are case-insensitive per RFC 3986.
+      if (!allowHttps && url.slice(0, 8).toLowerCase() === "https://") {
         return permissionError(
           "HTTPS URLs are blocked (allowHttps: false). HTTPS cannot be IP-pinned, " +
-            "creating a DNS rebinding TOCTOU window.",
+            "creating a DNS rebinding TOCTOU window. Use allowHttps: true to accept " +
+            "this residual risk, or add network-level egress controls.",
         );
       }
 
@@ -186,7 +193,13 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
-        // DNS rebinding mitigation: resolve and validate the initial URL's IP
+        // SSRF first pass: fast string-based pattern match before DNS
+        if (isBlockedUrl(url)) {
+          clearTimeout(timer);
+          return permissionError(`Access to private/internal URL blocked: ${url}`);
+        }
+
+        // SSRF second pass: resolve and validate the IP to mitigate DNS rebinding
         const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
         if (dnsResult.blocked) {
           clearTimeout(timer);
@@ -240,7 +253,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
-        return catchFetchError(url, e);
+        return catchFetchError(url, method, e);
       }
     },
 
@@ -449,15 +462,21 @@ function abortedError<T>(): Result<T, KoiError> {
   };
 }
 
-function catchFetchError<T>(url: string, e: unknown): Result<T, KoiError> {
+/** Safe (idempotent) HTTP methods that can be retried without side effects. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
+
+function catchFetchError<T>(url: string, method: string, e: unknown): Result<T, KoiError> {
   const message = e instanceof Error ? e.message : String(e);
   const isTimeout = message.includes("abort") || message.includes("timeout");
+  // Only retry safe/idempotent methods — retrying POST/PUT/DELETE after a
+  // timeout risks duplicating mutations the server already committed.
+  const retryable = !isTimeout && SAFE_METHODS.has(method);
   return {
     ok: false,
     error: {
       code: isTimeout ? "TIMEOUT" : "EXTERNAL",
       message: `Fetch failed for ${url}: ${message}`,
-      retryable: true,
+      retryable,
     },
   };
 }

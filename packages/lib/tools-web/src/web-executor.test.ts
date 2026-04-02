@@ -10,7 +10,7 @@ import { createWebExecutor } from "./web-executor.js";
 const PUBLIC_IP = "93.184.216.34"; // example.com's real public IP
 const mockDnsResolver: DnsResolverFn = async (): Promise<readonly string[]> => [PUBLIC_IP];
 
-/** Base config for tests that use HTTPS URLs (most tests). */
+/** Base config for tests — mock DNS + HTTPS opt-in (default is false). */
 const HTTPS_DEFAULTS = { dnsResolver: mockDnsResolver, allowHttps: true } as const;
 
 // ---------------------------------------------------------------------------
@@ -128,6 +128,128 @@ describe("createWebExecutor.fetch", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.finalUrl).toBe("https://example.com/page");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetch — initial SSRF string-level gate
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.fetch initial SSRF gate", () => {
+  test("blocks localhost even when DNS resolver returns public IP", async () => {
+    const fetchFn = mock(async () => new Response("secret")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+    const result = await executor.fetch("http://localhost/admin");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toContain("localhost");
+    }
+  });
+
+  test("blocks .internal domain even when DNS resolver returns public IP", async () => {
+    const fetchFn = mock(async () => new Response("secret")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+    const result = await executor.fetch("http://service.internal/api");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+    }
+  });
+
+  test("blocks private IP URL before DNS resolution", async () => {
+    let dnsResolved = false;
+    const trackingResolver: DnsResolverFn = async () => {
+      dnsResolved = true;
+      return [PUBLIC_IP];
+    };
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: trackingResolver,
+      allowHttps: false,
+    });
+    const result = await executor.fetch("http://10.0.0.1/internal");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+    }
+    // DNS should never have been called — blocked at string level
+    expect(dnsResolved).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetch — retryable flag respects HTTP method safety
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.fetch retryable", () => {
+  test("GET failure is retryable", async () => {
+    const fetchFn = mock(async () => {
+      throw new Error("Connection reset");
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  test("POST failure is NOT retryable", async () => {
+    const fetchFn = mock(async () => {
+      throw new Error("Connection reset");
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://example.com", { method: "POST" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("DELETE failure is NOT retryable", async () => {
+    const fetchFn = mock(async () => {
+      throw new Error("Connection reset");
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://example.com", { method: "DELETE" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("timeout is never retryable regardless of method", async () => {
+    const fetchFn = mock(async () => {
+      throw new Error("The operation was aborted");
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.retryable).toBe(false);
     }
   });
 });
@@ -628,7 +750,7 @@ describe("createWebExecutor.fetch caching", () => {
 
 describe("createWebExecutor.search", () => {
   test("returns VALIDATION when no searchProvider provided", async () => {
-    const executor = createWebExecutor({});
+    const executor = createWebExecutor({ allowHttps: false });
     const result = await executor.search("test query");
 
     expect(result.ok).toBe(false);
@@ -648,7 +770,7 @@ describe("createWebExecutor.search", () => {
       })),
     };
 
-    const executor = createWebExecutor({ searchProvider });
+    const executor = createWebExecutor({ searchProvider, allowHttps: false });
     const result = await executor.search("test");
 
     expect(result.ok).toBe(true);
@@ -666,7 +788,7 @@ describe("createWebExecutor.search", () => {
       },
     };
 
-    const executor = createWebExecutor({ searchProvider });
+    const executor = createWebExecutor({ searchProvider, allowHttps: false });
     const result = await executor.search("test");
 
     expect(result.ok).toBe(false);
@@ -685,7 +807,7 @@ describe("createWebExecutor.search", () => {
       },
     };
 
-    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000 });
+    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000, allowHttps: false });
 
     await executor.search("query");
     await executor.search("query");
@@ -702,7 +824,7 @@ describe("createWebExecutor.search", () => {
       },
     };
 
-    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000 });
+    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000, allowHttps: false });
 
     await executor.search("Hello World");
     await executor.search("hello world");
@@ -712,11 +834,11 @@ describe("createWebExecutor.search", () => {
 });
 
 // ---------------------------------------------------------------------------
-// allowHttps — strict SSRF mode
+// HTTPS support (SSRF relies on URL check + DNS validation)
 // ---------------------------------------------------------------------------
 
-describe("createWebExecutor.fetch allowHttps", () => {
-  test("rejects HTTPS URLs when allowHttps is false", async () => {
+describe("createWebExecutor.fetch HTTPS", () => {
+  test("blocks HTTPS by default (DNS rebinding TOCTOU)", async () => {
     const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
     const executor = createWebExecutor({
       fetchFn,
@@ -729,39 +851,7 @@ describe("createWebExecutor.fetch allowHttps", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("HTTPS");
-      expect(result.error.message).toContain("DNS rebinding");
-    }
-    expect(fetchFn).not.toHaveBeenCalled();
-  });
-
-  test("allows HTTP URLs when allowHttps is false", async () => {
-    const fetchFn = mock(
-      async () => new Response("ok", { status: 200 }),
-    ) as unknown as typeof globalThis.fetch;
-    const executor = createWebExecutor({
-      fetchFn,
-      dnsResolver: mockDnsResolver,
-      allowHttps: false,
-    });
-
-    const result = await executor.fetch("http://example.com");
-
-    expect(result.ok).toBe(true);
-  });
-
-  test("blocks HTTPS by default (DNS rebinding TOCTOU)", async () => {
-    const fetchFn = mock(
-      async () => new Response("ok", { status: 200 }),
-    ) as unknown as typeof globalThis.fetch;
-    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
-
-    const result = await executor.fetch("https://example.com");
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("HTTPS");
+      expect(result.error.message).toContain("allowHttps");
     }
     expect(fetchFn).not.toHaveBeenCalled();
   });
@@ -777,6 +867,76 @@ describe("createWebExecutor.fetch allowHttps", () => {
     });
 
     const result = await executor.fetch("https://example.com");
+
+    expect(result.ok).toBe(true);
+  });
+
+  test("blocks HTTPS URLs targeting private IPs even with allowHttps", async () => {
+    const privateResolver: DnsResolverFn = async () => ["10.0.0.1"];
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: privateResolver,
+      allowHttps: true,
+    });
+
+    const result = await executor.fetch("https://evil.example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toContain("private/reserved");
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  test("blocks HTTPS when allowHttps is false", async () => {
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+
+    const result = await executor.fetch("https://example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toContain("allowHttps");
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  test("blocks mixed-case HTTPS schemes (case-insensitive)", async () => {
+    const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+
+    for (const scheme of ["HTTPS://", "Https://", "HtTpS://"]) {
+      const result = await executor.fetch(`${scheme}example.com`);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("PERMISSION");
+      }
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  test("allows HTTP when allowHttps is false", async () => {
+    const fetchFn = mock(
+      async () => new Response("ok", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+
+    const result = await executor.fetch("http://example.com");
 
     expect(result.ok).toBe(true);
   });
