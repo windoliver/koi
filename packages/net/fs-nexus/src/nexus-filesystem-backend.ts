@@ -28,7 +28,8 @@ import {
   computeFullPath,
   DEFAULT_BASE_PATH,
   DEFAULT_RETRIES,
-  rpc,
+  rpcMutate,
+  rpcRead,
   stripBasePath,
 } from "./nexus-rpc.js";
 import type { NexusFileSystemConfig } from "./types.js";
@@ -57,7 +58,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await rpc<string | FileReadResult>(
+    const result = await rpcRead<string | FileReadResult>(
       transport,
       "read",
       {
@@ -106,19 +107,14 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await rpc<null>(
-      transport,
-      "write",
-      {
-        path: fullPathResult.value,
-        content,
-        ...(options?.createDirectories !== undefined
-          ? { createDirectories: options.createDirectories }
-          : {}),
-        ...(options?.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
-      },
-      retries,
-    );
+    const result = await rpcMutate<null>(transport, "write", {
+      path: fullPathResult.value,
+      content,
+      ...(options?.createDirectories !== undefined
+        ? { createDirectories: options.createDirectories }
+        : {}),
+      ...(options?.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
+    });
 
     if (!result.ok) return result;
 
@@ -140,7 +136,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     if (!fullPathResult.ok) return fullPathResult;
 
     // Read current content
-    const readResult = await rpc<string | Record<string, unknown>>(
+    const readResult = await rpcRead<string | Record<string, unknown>>(
       transport,
       "read",
       { path: fullPathResult.value },
@@ -191,12 +187,42 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     // Write back (unless dry run)
     if (!options?.dryRun) {
-      const writeResult = await rpc<null>(
+      // Optimistic concurrency: re-read to detect concurrent modifications
+      const verifyResult = await rpcRead<string | Record<string, unknown>>(
         transport,
-        "write",
-        { path: fullPathResult.value, content: modified },
+        "read",
+        { path: fullPathResult.value },
         retries,
       );
+      if (!verifyResult.ok) return verifyResult;
+      const verifyRaw = verifyResult.value;
+      let verifyContent: string;
+      if (typeof verifyRaw === "string") {
+        verifyContent = verifyRaw;
+      } else if (
+        typeof verifyRaw === "object" &&
+        verifyRaw !== null &&
+        typeof verifyRaw.content === "string"
+      ) {
+        verifyContent = verifyRaw.content;
+      } else {
+        verifyContent = String(verifyRaw);
+      }
+      if (verifyContent !== currentContent) {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `File '${path}' was modified concurrently — edit aborted to prevent data loss`,
+            retryable: false,
+          },
+        };
+      }
+
+      const writeResult = await rpcMutate<null>(transport, "write", {
+        path: fullPathResult.value,
+        content: modified,
+      });
       if (!writeResult.ok) return writeResult;
     }
 
@@ -210,7 +236,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await rpc<FileListResult | { readonly files: readonly string[] }>(
+    const result = await rpcRead<FileListResult | { readonly files: readonly string[] }>(
       transport,
       "list",
       {
@@ -241,11 +267,13 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         if (relative.length === 0) continue;
         const slashIdx = relative.indexOf("/");
         if (slashIdx === -1) {
-          const hasExt = relative.lastIndexOf(".") > 0;
-          const kind = hasExt ? ("file" as const) : ("directory" as const);
+          // Flat list gives no metadata — conservatively treat all immediate
+          // children as files. Inferring kind from extension presence would
+          // misclassify extensionless files (Dockerfile, LICENSE, Makefile)
+          // as directories.
           if (!seen.has(relative)) {
             seen.add(relative);
-            entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind });
+            entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind: "file" });
           }
         } else {
           const dirName = relative.slice(0, slashIdx);
@@ -274,7 +302,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     options?: FileSearchOptions,
   ): Promise<Result<FileSearchResult, KoiError>> {
     const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
-    const result = await rpc<FileSearchResult>(
+    const result = await rpcRead<FileSearchResult>(
       transport,
       "search",
       {
@@ -301,7 +329,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await rpc<null>(transport, "delete", { path: fullPathResult.value }, retries);
+    const result = await rpcMutate<null>(transport, "delete", { path: fullPathResult.value });
     if (!result.ok) return result;
 
     return { ok: true, value: { path } };
@@ -313,15 +341,10 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullToResult = computeFullPath(basePath, to);
     if (!fullToResult.ok) return fullToResult;
 
-    const result = await rpc<null>(
-      transport,
-      "rename",
-      {
-        from: fullFromResult.value,
-        to: fullToResult.value,
-      },
-      retries,
-    );
+    const result = await rpcMutate<null>(transport, "rename", {
+      from: fullFromResult.value,
+      to: fullToResult.value,
+    });
 
     if (!result.ok) return result;
 

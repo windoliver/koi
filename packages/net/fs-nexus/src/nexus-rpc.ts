@@ -138,7 +138,7 @@ export function mapTransportError(error: unknown, method: string): KoiError {
 }
 
 // ---------------------------------------------------------------------------
-// RPC with retry
+// RPC helpers
 // ---------------------------------------------------------------------------
 
 const RETRY_CONFIG: RetryConfig = {
@@ -149,8 +149,11 @@ const RETRY_CONFIG: RetryConfig = {
   jitter: true,
 };
 
-/** Wrap a transport call with error mapping and retry. */
-export async function rpc<T>(
+/**
+ * Read-only RPC — retries transient failures with exponential backoff.
+ * Safe because reads are idempotent.
+ */
+export async function rpcRead<T>(
   transport: NexusTransport,
   method: string,
   params: Record<string, unknown>,
@@ -181,4 +184,25 @@ export async function rpc<T>(
       retryable: false,
     },
   };
+}
+
+/**
+ * Mutating RPC — no automatic retries.
+ *
+ * Write, delete, and rename are not idempotent. Retrying after an ambiguous
+ * failure (e.g. timeout where the server did apply the mutation) can cause
+ * data loss or misleading errors. Callers must handle transient failures
+ * explicitly if they need retry semantics (e.g. with idempotency keys).
+ */
+export async function rpcMutate<T>(
+  transport: NexusTransport,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<Result<T, KoiError>> {
+  try {
+    const result = await transport.call<T>(method, params);
+    return { ok: true, value: result };
+  } catch (error: unknown) {
+    return { ok: false, error: mapTransportError(error, method) };
+  }
 }

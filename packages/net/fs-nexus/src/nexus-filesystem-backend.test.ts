@@ -606,3 +606,162 @@ describe("backend metadata", () => {
     expect(backend.name).toBe("nexus");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mutation safety — no automatic retries for writes
+// ---------------------------------------------------------------------------
+
+describe("mutation safety", () => {
+  test("write does not retry on transient failure", async () => {
+    let callCount = 0;
+    const transport: NexusTransport = {
+      call: async <T>(method: string, _params: Record<string, unknown>): Promise<T> => {
+        callCount += 1;
+        if (method === "write") {
+          throw new Error("connection refused");
+        }
+        return null as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.write("/test.txt", "data");
+    expect(result.ok).toBe(false);
+    // Should only have been called once — no retries for mutations
+    expect(callCount).toBe(1);
+  });
+
+  test("delete does not retry on transient failure", async () => {
+    let callCount = 0;
+    const transport: NexusTransport = {
+      call: async () => {
+        callCount += 1;
+        throw new Error("request timed out");
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const deleteFn = backend.delete;
+    if (deleteFn === undefined) throw new Error("delete not defined");
+    const result = await deleteFn("/test.txt");
+    expect(result.ok).toBe(false);
+    expect(callCount).toBe(1);
+  });
+
+  test("rename does not retry on transient failure", async () => {
+    let callCount = 0;
+    const transport: NexusTransport = {
+      call: async () => {
+        callCount += 1;
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const renameFn = backend.rename;
+    if (renameFn === undefined) throw new Error("rename not defined");
+    const result = await renameFn("/a.txt", "/b.txt");
+    expect(result.ok).toBe(false);
+    expect(callCount).toBe(1);
+  });
+
+  test("read retries on transient failure", async () => {
+    let callCount = 0;
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        callCount += 1;
+        if (callCount <= 2) {
+          throw new Error("connection refused");
+        }
+        return { content: "ok", path: "/fs/test.txt", size: 2 } as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.read("/test.txt");
+    expect(result.ok).toBe(true);
+    expect(callCount).toBe(3); // 1 initial + 2 retries
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edit concurrency guard
+// ---------------------------------------------------------------------------
+
+describe("edit concurrency", () => {
+  test("edit detects concurrent modification and returns CONFLICT", async () => {
+    const { backend, transport } = createTestBackend();
+    await backend.write("/race.txt", "original");
+
+    // Simulate concurrent modification: after the edit's initial read,
+    // another writer changes the file before the verify-read
+    let readCount = 0;
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      const result = await originalCall<T>(method, params);
+      if (method === "read") {
+        readCount += 1;
+        // After the first read returns, mutate the file so the verify-read sees different content
+        if (readCount === 1) {
+          transport.store.set("/fs/race.txt", "modified-by-other");
+        }
+      }
+      return result;
+    };
+    // Patch the transport's call method for this test
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const result = await backend.edit("/race.txt", [{ oldText: "original", newText: "my-edit" }]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CONFLICT");
+      expect(result.error.message).toContain("concurrently");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Flat list — extensionless files
+// ---------------------------------------------------------------------------
+
+describe("list extensionless files", () => {
+  test("extensionless files are listed as files, not directories", async () => {
+    const transport = createMockTransport();
+    // Simulate Nexus returning flat file list with extensionless entries
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "list") {
+        return {
+          files: ["/fs/Dockerfile", "/fs/LICENSE", "/fs/Makefile", "/fs/README", "/fs/src/main.ts"],
+        } as T;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const fileEntries = result.value.entries.filter((e) => e.kind === "file");
+      const dirEntries = result.value.entries.filter((e) => e.kind === "directory");
+
+      // Extensionless entries should be files
+      const filePaths = fileEntries.map((e) => e.path);
+      expect(filePaths).toContain("/Dockerfile");
+      expect(filePaths).toContain("/LICENSE");
+      expect(filePaths).toContain("/Makefile");
+      expect(filePaths).toContain("/README");
+
+      // Nested path (src/) should still be a directory
+      const dirPaths = dirEntries.map((e) => e.path);
+      expect(dirPaths).toContain("/src");
+    }
+  });
+});
