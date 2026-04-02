@@ -12,6 +12,10 @@
  * - @koi/hooks: hook dispatch on model/tool events (middleware)
  * - @koi/mcp: transport state machine lifecycle recording
  * - @koi/channel-cli: channel adapter (verified via runtime boot)
+ * - @koi/permissions: permission backend (bypass mode, allow-all rules)
+ * - @koi/middleware-permissions: permission gating middleware (MW spans)
+ * - @koi/tools-core: buildTool() — ToolDefinition → Tool factory
+ * - @koi/tools-builtin: builtin search tools (Glob provider)
  *
  * Gated on E2E_TESTS=1 + OPENROUTER_API_KEY for live API.
  * VCR replay version (full-stack.cassette.json) runs in CI.
@@ -22,15 +26,8 @@ import { rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 // @koi/channel-cli: channel adapter
 import { createCliChannel } from "@koi/channel-cli";
-import type {
-  EngineAdapter,
-  EngineEvent,
-  EngineInput,
-  JsonObject,
-  ModelChunk,
-  Tool,
-} from "@koi/core";
-import { createSingleToolProvider, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import type { EngineAdapter, EngineEvent, EngineInput, JsonObject, ModelChunk } from "@koi/core";
+import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 // @koi/event-trace: trajectory recording middleware
 import { createEventTraceMiddleware } from "@koi/event-trace";
@@ -38,10 +35,18 @@ import { createEventTraceMiddleware } from "@koi/event-trace";
 import { loadHooks } from "@koi/hooks";
 // @koi/mcp: transport state machine
 import { createTransportStateMachine } from "@koi/mcp";
+// @koi/middleware-permissions: permission gating middleware
+import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 // @koi/model-openai-compat: model adapter
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+// @koi/permissions: permission backend
+import { createPermissionBackend } from "@koi/permissions";
 // @koi/query-engine: stream consumer
 import { consumeModelStream } from "@koi/query-engine";
+// @koi/tools-builtin: builtin search tools
+import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+// @koi/tools-core: tool building
+import { buildTool } from "@koi/tools-core";
 
 import { createHookDispatchMiddleware } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
@@ -72,35 +77,37 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool: add_numbers
+// Tool: add_numbers (built via @koi/tools-core buildTool)
 // ---------------------------------------------------------------------------
 
-const addTool: Tool = {
-  descriptor: {
-    name: "add_numbers",
-    description: "Add two numbers together",
-    inputSchema: {
-      type: "object",
-      properties: {
-        a: { type: "number", description: "First number" },
-        b: { type: "number", description: "Second number" },
-      },
-      required: ["a", "b"],
+const addToolResult = buildTool({
+  name: "add_numbers",
+  description: "Add two numbers together",
+  inputSchema: {
+    type: "object",
+    properties: {
+      a: { type: "number", description: "First number" },
+      b: { type: "number", description: "Second number" },
     },
+    required: ["a", "b"],
   },
   origin: "primordial",
-  policy: DEFAULT_UNSANDBOXED_POLICY,
   execute: async (args: JsonObject): Promise<unknown> => ({
     result: (args.a as number) + (args.b as number),
   }),
-};
+});
+
+if (!addToolResult.ok) {
+  throw new Error(`buildTool failed: ${addToolResult.error.message}`);
+}
+const addTool = addToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Full-stack golden query (E2E with real LLM)
 // ---------------------------------------------------------------------------
 
 describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
-  test("complete trajectory with hooks, MCP, event-trace, model, tool, channel", async () => {
+  test("complete trajectory with hooks, MCP, event-trace, model, tool, channel, permissions", async () => {
     const trajDir = `/tmp/koi-full-stack-${Date.now()}`;
     trajDirs.push(trajDir);
     const docId = "full-stack";
@@ -133,6 +140,16 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       hooks: hookConfigs,
       store,
       docId,
+    });
+
+    // --- @koi/permissions + @koi/middleware-permissions: permission gating ---
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permMiddleware = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "test permissions (bypass mode)",
     });
 
     // --- @koi/mcp: transport state machine lifecycle ---
@@ -269,7 +286,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     const runtime = await createKoi({
       manifest: { name: "full-stack-agent", version: "0.1.0", model: { name: MODEL } },
       adapter: bridgeAdapter,
-      middleware: [eventTrace, hookMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMiddleware, permMiddleware].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -278,6 +295,8 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
           toolName: "add_numbers",
           createTool: () => addTool,
         }),
+        // @koi/tools-builtin: builtin search tools (Glob, Grep, ToolSearch)
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
       ],
       loopDetection: false,
     });
@@ -341,10 +360,12 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     // --- Middleware span steps (source: system, type: middleware_span) ---
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     expect(mwSpans.length).toBeGreaterThan(0);
-    // Should have spans for event-trace and hook-dispatch middleware
+    // Should have spans for hook-dispatch and permissions middleware
+    // (event-trace is excluded from trace wrapper — see TRACE_EXCLUDED)
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
-    expect(mwNames.has("event-trace")).toBe(true);
     expect(mwNames.has("hook-dispatch")).toBe(true);
+    // @koi/middleware-permissions: permission checks show up as MW spans
+    expect(mwNames.has("permissions")).toBe(true);
     // Each span should have hook, phase, priority, nextCalled
     for (const span of mwSpans) {
       expect(span.metadata?.hook).toBeDefined();
@@ -371,6 +392,8 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     // Harbor v1.6 compliance: agent-level metadata
     expect(atifDoc.agent?.model_name).toBe(MODEL);
     expect(atifDoc.agent?.tool_definitions?.some((t) => t.name === "add_numbers")).toBe(true);
+    // @koi/tools-builtin: builtin tools appear in agent metadata
+    expect(atifDoc.agent?.tool_definitions?.some((t) => t.name === "Glob")).toBe(true);
   }, 30000);
 });
 

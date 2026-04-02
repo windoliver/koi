@@ -4,6 +4,17 @@
  *
  * Run: OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts
  *
+ * ALL L2 packages wired:
+ *   @koi/model-openai-compat  — model adapter (stream + complete)
+ *   @koi/query-engine         — stream consumer (ModelChunk → EngineEvent)
+ *   @koi/event-trace          — trajectory recording middleware
+ *   @koi/hooks                — hook dispatch middleware
+ *   @koi/mcp                  — transport state machine lifecycle
+ *   @koi/permissions          — permission backend (bypass mode)
+ *   @koi/middleware-permissions — permission gating middleware (MW spans)
+ *   @koi/tools-core           — buildTool() for add_numbers
+ *   @koi/tools-builtin        — Glob/Grep/ToolSearch providers
+ *
  * Produces:
  *   fixtures/simple-text.cassette.json      — VCR replay: text response
  *   fixtures/simple-text.trajectory.json    — Full ATIF: simple text (no tools)
@@ -11,21 +22,22 @@
  *   fixtures/tool-use.trajectory.json       — Full ATIF: tool use (model → tool → model)
  */
 
-import type {
-  EngineAdapter,
-  EngineEvent,
-  EngineInput,
-  JsonObject,
-  ModelChunk,
-  Tool,
-} from "@koi/core";
-import { createSingleToolProvider, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import type { EngineAdapter, EngineEvent, EngineInput, JsonObject, ModelChunk } from "@koi/core";
+import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
+// @koi/middleware-permissions: permission gating middleware
+import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+// @koi/permissions: permission backend
+import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
+// @koi/tools-builtin: builtin search tools
+import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+// @koi/tools-core: tool building
+import { buildTool } from "@koi/tools-core";
 import type { Cassette } from "../src/cassette/types.js";
 import { createHookDispatchMiddleware } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
@@ -49,22 +61,29 @@ const modelAdapter = createOpenAICompatAdapter({
   retry: { maxRetries: 1 },
 });
 
-const addTool: Tool = {
-  descriptor: {
-    name: "add_numbers",
-    description: "Add two numbers together",
-    inputSchema: {
-      type: "object",
-      properties: { a: { type: "number" }, b: { type: "number" } },
-      required: ["a", "b"],
-    },
+// ---------------------------------------------------------------------------
+// Tool: add_numbers (built via @koi/tools-core buildTool)
+// ---------------------------------------------------------------------------
+
+const addToolResult = buildTool({
+  name: "add_numbers",
+  description: "Add two numbers together",
+  inputSchema: {
+    type: "object",
+    properties: { a: { type: "number" }, b: { type: "number" } },
+    required: ["a", "b"],
   },
   origin: "primordial",
-  policy: DEFAULT_UNSANDBOXED_POLICY,
   execute: async (args: JsonObject): Promise<unknown> => ({
     result: (args.a as number) + (args.b as number),
   }),
-};
+});
+
+if (!addToolResult.ok) {
+  console.error(`buildTool failed: ${addToolResult.error.message}`);
+  process.exit(1);
+}
+const addTool = addToolResult.value;
 
 // =========================================================================
 // Helpers
@@ -92,7 +111,7 @@ async function recordCassette(
  * Records a full-stack ATIF trajectory with ALL L2 packages active.
  * @param name - fixture name (e.g., "simple-text" or "tool-use")
  * @param prompt - the user prompt
- * @param withTools - whether to register add_numbers tool
+ * @param withTools - whether to register add_numbers tool + builtin tools
  */
 async function recordFullStackTrajectory(
   name: string,
@@ -138,6 +157,16 @@ async function recordFullStackTrajectory(
     hooks: hookResult.ok ? hookResult.value : [],
     store,
     docId,
+  });
+
+  // @koi/permissions + @koi/middleware-permissions
+  const permBackend = createPermissionBackend({
+    mode: "bypass",
+    rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+  });
+  const permMiddleware = createPermissionsMiddleware({
+    backend: permBackend,
+    description: "golden query permissions (bypass mode)",
   });
 
   // @koi/mcp
@@ -237,7 +266,8 @@ async function recordFullStackTrajectory(
   };
 
   // Wrap middleware with trace (auto-captures all MW I/O)
-  const tracedMiddleware = [eventTrace, hookMw].map((mw) =>
+  // event-trace excluded from trace wrapper (TRACE_EXCLUDED), hook-dispatch + permissions traced
+  const tracedMiddleware = [eventTrace, hookMw, permMiddleware].map((mw) =>
     wrapMiddlewareWithTrace(mw, { store, docId }),
   );
 
@@ -248,6 +278,8 @@ async function recordFullStackTrajectory(
           toolName: "add_numbers",
           createTool: () => addTool,
         }),
+        // @koi/tools-builtin: builtin search tools (Glob, Grep, ToolSearch)
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
       ]
     : [];
 
@@ -353,6 +385,8 @@ await recordCassette("tool-use", () =>
 );
 
 // Full-stack ATIF trajectories (both golden queries)
+// simple-text: covers model call, MCP lifecycle, MW spans (hook-dispatch + permissions), hooks
+// tool-use: covers model call, tool call, MCP lifecycle, MW spans, hooks, permissions wrapToolCall
 await recordFullStackTrajectory("simple-text", "What is 2+2? Answer with just the number.", false);
 await recordFullStackTrajectory(
   "tool-use",
