@@ -248,14 +248,9 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
       ...(options?.maxResults !== undefined ? { max_results: options.maxResults } : {}),
     });
 
-    // If grep is unavailable, return empty (search fallback is Phase 3)
     if (!result.ok) {
-      if (
-        result.error.context !== undefined &&
-        result.error.context.rpcCode === METHOD_NOT_FOUND_CODE
-      ) {
-        return { ok: true, value: { matches: [], truncated: false } };
-      }
+      // Make search unavailability explicit — don't mask it as empty results.
+      // Callers must handle EXTERNAL errors, not silently assume "no matches".
       return result;
     }
 

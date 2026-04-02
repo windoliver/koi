@@ -25,8 +25,13 @@ import sys
 FILE_NOT_FOUND = -32000
 INVALID_PATH = -32002
 VALIDATION_ERROR = -32005
+CONFLICT = -32006
 METHOD_NOT_FOUND = -32601
 INTERNAL_ERROR = -32603
+
+
+class ConflictError(Exception):
+    """Raised when if_match fails (optimistic concurrency violation)."""
 
 
 async def dispatch(fs, method, params):
@@ -41,7 +46,20 @@ async def dispatch(fs, method, params):
 
     if method == "write":
         content = params.get("content", "")
+        if_match = params.get("if_match")
         raw = content.encode("utf-8") if isinstance(content, str) else content
+
+        # Enforce optimistic concurrency: if if_match is set,
+        # verify the current etag matches before writing.
+        if if_match is not None:
+            current_stat = await fs.stat(path)
+            if current_stat is not None:
+                current_etag = current_stat.get("etag")
+                if current_etag is not None and current_etag != if_match:
+                    raise ConflictError(
+                        f"Conflict: file was modified (expected etag {if_match}, got {current_etag})"
+                    )
+
         result = await fs.write(path, raw) or {}
         size = len(raw)
         return {"bytes_written": size, "size": size, **result}
@@ -148,6 +166,8 @@ async def handle_request(fs, request):
     try:
         result = await dispatch(fs, method, params)
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
+    except ConflictError as e:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": CONFLICT, "message": str(e)}}
     except FileNotFoundError as e:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": FILE_NOT_FOUND, "message": str(e)}}
     except NotImplementedError as e:

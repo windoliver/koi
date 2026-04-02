@@ -147,6 +147,9 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
 
   let nextId = 1;
   let closed = false;
+  // Mutex: serialize all calls through the stdin/stdout pipe.
+  // Without this, concurrent calls could read each other's responses.
+  let pending: Promise<unknown> = Promise.resolve();
 
   async function call<T>(
     method: string,
@@ -159,37 +162,57 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
       };
     }
 
-    const requestId = nextId++;
-    const request = JSON.stringify({
-      jsonrpc: "2.0",
-      method,
-      params,
-      id: requestId,
+    // Chain onto the pending promise so only one request is in-flight at a time
+    const result = pending.then(async (): Promise<Result<T, KoiError>> => {
+      const requestId = nextId++;
+      const request = JSON.stringify({
+        jsonrpc: "2.0",
+        method,
+        params,
+        id: requestId,
+      });
+
+      try {
+        // Write request to stdin
+        proc.stdin.write(`${request}\n`);
+        await proc.stdin.flush();
+
+        // Read response from stdout (persistent reader)
+        const line = await lineReader.nextLine();
+        const response = JSON.parse(line) as JsonRpcResponse<T>;
+
+        // Verify response matches our request
+        if (response.id !== requestId) {
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL",
+              message: `Response id mismatch: expected ${String(requestId)}, got ${String(response.id)}`,
+              retryable: false,
+            },
+          };
+        }
+
+        if (response.error !== undefined) {
+          return { ok: false, error: mapNexusError(response.error, method) };
+        }
+
+        return { ok: true, value: response.result as T };
+      } catch (e: unknown) {
+        if (closed) {
+          return {
+            ok: false,
+            error: { code: "INTERNAL", message: "Transport closed", retryable: false },
+          };
+        }
+        return { ok: false, error: mapNexusError(e, method) };
+      }
     });
 
-    try {
-      // Write request to stdin
-      proc.stdin.write(`${request}\n`);
-      await proc.stdin.flush();
+    // Update the chain — swallow errors so the chain never rejects
+    pending = result.catch(() => {});
 
-      // Read response from stdout (persistent reader)
-      const line = await lineReader.nextLine();
-      const response = JSON.parse(line) as JsonRpcResponse<T>;
-
-      if (response.error !== undefined) {
-        return { ok: false, error: mapNexusError(response.error, method) };
-      }
-
-      return { ok: true, value: response.result as T };
-    } catch (e: unknown) {
-      if (closed) {
-        return {
-          ok: false,
-          error: { code: "INTERNAL", message: "Transport closed", retryable: false },
-        };
-      }
-      return { ok: false, error: mapNexusError(e, method) };
-    }
+    return result;
   }
 
   function close(): void {
