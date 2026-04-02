@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/mcp API surface . type declarations are stable 1`] = `
-"import { Result, KoiError, JsonObject } from '@koi/core';
+"import { Result, KoiError, JsonObject, Resolver, ToolDescriptor, Tool, ComponentProvider } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -10,22 +10,19 @@ import { z } from 'zod';
  * Pluggable auth for MCP transports. The transport calls token() before
  * each request to get the current bearer token.
  *
- * This is intentionally sync-only. Async token refresh (OAuth 2.1, token
- * rotation) and 401/403 retry are not yet implemented — they will be added
- * in a future PR with a separate AsyncMcpAuthProvider interface. Keeping
- * the contract narrow prevents callers from depending on unimplemented behavior.
+ * Returns \`string | Promise<string> | undefined\` so implementations can be
+ * sync (static bearer token) or async (OAuth 2.1 token refresh) without
+ * interface changes. Callers must always \`await\` the result.
  */
 /**
- * Synchronous authentication provider for MCP transports.
+ * Authentication provider for MCP transports.
  *
  * - \`token()\`: returns the current auth token (bearer, API key, etc.)
  *   Return \`undefined\` to skip authentication for this request.
- *
- * For async token refresh or OAuth 2.1 flows, a future AsyncMcpAuthProvider
- * will extend this interface.
+ *   May return a Promise for async token retrieval (OAuth 2.1, rotation).
  */
 interface McpAuthProvider {
-    readonly token: () => string | undefined;
+    readonly token: () => string | Promise<string> | undefined;
 }
 /**
  * Creates a simple auth provider that returns a static bearer token.
@@ -199,8 +196,8 @@ interface CreateTransportOptions {
     readonly config: McpServerConfig;
     readonly authProvider?: McpAuthProvider | undefined;
 }
-declare function createTransport(options: CreateTransportOptions): KoiMcpTransport;
-type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport;
+declare function createTransport(options: CreateTransportOptions): Promise<KoiMcpTransport>;
+type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport | Promise<KoiMcpTransport>;
 
 /**
  * McpConnection — per-server connection lifecycle manager.
@@ -266,6 +263,62 @@ interface ConnectionDeps {
     readonly random: () => number;
 }
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
+
+/**
+ * MCP resolver — Resolver adapter for MCP tool discovery.
+ *
+ * Aggregates tool descriptors across all connected MCP servers and resolves
+ * individual tools by their namespaced ID (\`{serverName}__{toolName}\`).
+ *
+ * Features:
+ * - Lazy connection: servers connect on first discover(), not at construction
+ * - Per-server cache with dirty flags: only re-fetches from changed servers
+ * - Debounced onChange notifications from MCP server tool list changes
+ * - Structured partial failure reporting via \`failures\` property
+ */
+
+interface McpServerFailure {
+    readonly serverName: string;
+    readonly error: KoiError;
+}
+interface McpResolverOptions {
+    /** Per-server timeout for connect + listTools during discover(). Default: 30s. */
+    readonly discoverTimeoutMs?: number | undefined;
+}
+interface McpResolver extends Resolver<ToolDescriptor, Tool> {
+    /** Servers that failed during the most recent discover(). */
+    readonly failures: readonly McpServerFailure[];
+    /** Unsubscribe from all connection notifications and clear state. */
+    readonly dispose: () => void;
+}
+/**
+ * Creates a Resolver that discovers and loads MCP tools across connections.
+ *
+ * Connections are lazily connected on the first discover() call. Tool lists
+ * are cached per-server and only re-fetched when that server's tools change
+ * (per \`notifications/tools/list_changed\`).
+ *
+ * Call \`dispose()\` when the resolver is no longer needed.
+ */
+declare function createMcpResolver(connections: readonly McpConnection[], options?: McpResolverOptions): McpResolver;
+
+/**
+ * McpComponentProvider — attaches MCP tools as components to agents.
+ *
+ * Delegates to McpResolver for tool discovery and loading. Surfaces
+ * failed servers as SkippedComponent entries in AttachResult.
+ */
+
+interface McpComponentProviderOptions {
+    readonly resolver: McpResolver;
+}
+/**
+ * Creates a ComponentProvider that attaches MCP tools to agents.
+ *
+ * Tools are discovered lazily on first attach() via the resolver.
+ * Failed servers appear in AttachResult.skipped.
+ */
+declare function createMcpComponentProvider(options: McpComponentProviderOptions): ComponentProvider;
 
 /**
  * Environment variable expansion with \${VAR} and \${VAR:-default} syntax.
@@ -339,6 +392,72 @@ declare function loadMcpJsonFile(filePath: string): Promise<Result<{
  */
 declare function loadMcpJsonString(json: string): Result<NormalizeResult, KoiError>;
 
-export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpServerConfig, type McpToolInfo, type McpTransportKind, type NormalizeResult, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, connectionTimeoutError, createBearerAuthProvider, createMcpConnection, createTransport, createTransportStateMachine, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mcpJsonSchema, normalizeMcpServers, notConnectedError, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson };
+/**
+ * Schema normalization — ensures MCP tool schemas are valid JSON Schema.
+ *
+ * MCP tool schemas in the wild are messy: bare objects without \`type: "object"\`,
+ * missing \`properties\` keys, non-object root types. This module normalizes all
+ * inbound schemas before they reach ToolDescriptor.inputSchema.
+ */
+
+/**
+ * Normalizes a raw MCP tool input schema to a valid JSON Schema object.
+ *
+ * Guarantees:
+ * - Result always has \`type: "object"\`
+ * - Result always has \`properties\` (at minimum \`{}\`)
+ * - \`anyOf\`/\`oneOf\` at root are preserved as-is (valid JSON Schema)
+ * - Non-object input is wrapped in a sensible default
+ */
+declare function normalizeToolSchema(raw: unknown): JsonObject;
+
+/**
+ * Tool adapter — wraps MCP tools as Koi Tool components.
+ *
+ * Tools are namespaced as \`{serverName}__{toolName}\` (double underscore) to avoid
+ * collisions across servers. The structured \`server\` field on ToolDescriptor
+ * provides provenance without parsing name conventions.
+ *
+ * Origin is "operator" since MCP servers are operator-configured.
+ */
+
+/**
+ * Validates that a server name does not contain the namespace separator.
+ * Throws if the name is ambiguous.
+ */
+declare function validateServerName(serverName: string): void;
+/**
+ * Creates a namespaced tool name: \`{serverName}__{toolName}\`.
+ */
+declare function namespacedToolName(serverName: string, toolName: string): string;
+/**
+ * Parses a namespaced tool name back into server + tool.
+ * Returns undefined if the name doesn't contain the separator.
+ */
+declare function parseNamespacedToolName(name: string): {
+    readonly serverName: string;
+    readonly toolName: string;
+} | undefined;
+/**
+ * Converts an MCP tool into a Koi ToolDescriptor with a namespaced name.
+ * Normalizes the input schema to valid JSON Schema.
+ */
+declare function mapMcpToolInfoToDescriptor(toolInfo: McpToolInfo, serverName: string): ToolDescriptor;
+/**
+ * Converts an MCP tool into a full Koi Tool with execute delegate.
+ *
+ * The tool delegates execution to the connection's \`callTool()\`,
+ * which handles reconnection and error mapping.
+ *
+ * **Cancellation limitation:** The MCP SDK does not support aborting
+ * in-flight \`callTool()\` requests. If the engine's abort signal fires
+ * mid-call, the remote operation continues to completion. We check
+ * the signal before the call to fail fast, but once started, the call
+ * must complete naturally. Callers should not assume a timed-out MCP
+ * tool call did not execute — treat it as potentially committed.
+ */
+declare function mapMcpToolToKoi(toolInfo: McpToolInfo, connection: McpConnection, serverName: string): Tool;
+
+export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createTransport, createTransportStateMachine, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
 "
 `;
