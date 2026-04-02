@@ -172,7 +172,13 @@ async function executeCommandHook(
     const durationMs = performance.now() - start;
 
     if (signal.aborted) {
-      return { ok: false, hookName: hook.name, error: "aborted", durationMs };
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: "aborted",
+        durationMs,
+        failClosed: hook.failClosed,
+      };
     }
 
     if (exitCode !== 0) {
@@ -181,6 +187,7 @@ async function executeCommandHook(
         hookName: hook.name,
         error: `exit code ${exitCode}: ${stderrText.slice(0, 500)}`,
         durationMs,
+        failClosed: hook.failClosed,
       };
     }
 
@@ -189,7 +196,13 @@ async function executeCommandHook(
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, hookName: hook.name, error: message, durationMs };
+    return {
+      ok: false,
+      hookName: hook.name,
+      error: message,
+      durationMs,
+      failClosed: hook.failClosed,
+    };
   }
 }
 
@@ -206,7 +219,13 @@ async function executeHttpHook(
     const urlError = validateHookUrl(hook.url);
     if (urlError !== undefined) {
       const durationMs = performance.now() - start;
-      return { ok: false, hookName: hook.name, error: `URL rejected: ${urlError}`, durationMs };
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `URL rejected: ${urlError}`,
+        durationMs,
+        failClosed: hook.failClosed,
+      };
     }
 
     const expandedHeaders =
@@ -218,6 +237,7 @@ async function executeHttpHook(
         hookName: hook.name,
         error: `unresolved env vars in headers: ${expandedHeaders.missing.join(", ")}`,
         durationMs,
+        failClosed: hook.failClosed,
       };
     }
     const headers: Record<string, string> = {
@@ -235,6 +255,7 @@ async function executeHttpHook(
           hookName: hook.name,
           error: `unresolved env vars in secret: ${resolvedSecret.missing.join(", ")}`,
           durationMs,
+          failClosed: hook.failClosed,
         };
       }
       const body = JSON.stringify(event);
@@ -268,6 +289,7 @@ async function executeHttpHook(
         hookName: hook.name,
         error: `HTTP ${response.status}: ${response.statusText}`,
         durationMs,
+        failClosed: hook.failClosed,
       };
     }
 
@@ -277,7 +299,13 @@ async function executeHttpHook(
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, hookName: hook.name, error: message, durationMs };
+    return {
+      ok: false,
+      hookName: hook.name,
+      error: message,
+      durationMs,
+      failClosed: hook.failClosed,
+    };
   }
 }
 
@@ -356,6 +384,7 @@ export async function executeHooks(
               hookName: entry.hook.name,
               error: s.reason instanceof Error ? s.reason.message : String(s.reason),
               durationMs: 0,
+              failClosed: entry.hook.failClosed,
             };
     }
     parallelBatch = [];

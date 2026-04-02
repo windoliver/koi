@@ -11,7 +11,7 @@
  * on every execute call to prevent cross-session/cross-agent payload injection.
  */
 
-import type { HookConfig, HookEvent, HookExecutionResult } from "@koi/core";
+import type { HookConfig, HookEnvPolicy, HookEvent, HookExecutionResult } from "@koi/core";
 import { executeHooks } from "./executor.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,7 @@ interface SessionState {
   readonly controller: AbortController;
   /** Trusted agent identity — bound at registration, enforced on execute. */
   readonly agentId: string;
+  readonly envPolicy: HookEnvPolicy | undefined;
   cleaned: boolean;
 }
 
@@ -38,7 +39,12 @@ interface SessionState {
  */
 export interface HookRegistry {
   /** Register hooks for a session with its trusted agent identity. Replaces any existing registration. */
-  readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[]) => void;
+  readonly register: (
+    sessionId: string,
+    agentId: string,
+    hooks: readonly HookConfig[],
+    envPolicy?: HookEnvPolicy | undefined,
+  ) => void;
   /** Execute matching hooks for a session event. Returns empty array if session not registered. */
   readonly execute: (
     sessionId: string,
@@ -63,7 +69,12 @@ export function createHookRegistry(): HookRegistry {
   const sessions = new Map<string, SessionState>();
 
   return {
-    register(sessionId: string, agentId: string, hooks: readonly HookConfig[]): void {
+    register(
+      sessionId: string,
+      agentId: string,
+      hooks: readonly HookConfig[],
+      envPolicy?: HookEnvPolicy | undefined,
+    ): void {
       // Cleanup any previous registration for this session
       const existing = sessions.get(sessionId);
       if (existing !== undefined && !existing.cleaned) {
@@ -72,7 +83,7 @@ export function createHookRegistry(): HookRegistry {
       }
 
       const controller = new AbortController();
-      sessions.set(sessionId, { hooks, controller, agentId, cleaned: false });
+      sessions.set(sessionId, { hooks, controller, agentId, envPolicy, cleaned: false });
     },
 
     async execute(sessionId: string, event: HookEvent): Promise<readonly HookExecutionResult[]> {
@@ -87,7 +98,7 @@ export function createHookRegistry(): HookRegistry {
         event.sessionId === sessionId && event.agentId === state.agentId
           ? event
           : { ...event, sessionId, agentId: state.agentId };
-      return executeHooks(state.hooks, safeEvent, state.controller.signal);
+      return executeHooks(state.hooks, safeEvent, state.controller.signal, state.envPolicy);
     },
 
     cleanup(sessionId: string): void {
