@@ -27,9 +27,9 @@ Without this package, every agent would reimplement tool filtering, approval flo
 │  @koi/middleware-permissions  (L2)                          │
 │                                                            │
 │  config.ts          ← config interface + validation        │
-│  engine.ts          ← pattern backend + approval handler   │
-│  permissions.ts     ← middleware factory (core logic)      │
-│  hash.ts            ← FNV-1a for cache keys               │
+│  classifier.ts     ← pattern backend + approval handler   │
+│  denial-tracker.ts ← per-session denial accumulator       │
+│  middleware.ts     ← middleware factory (core logic)      │
 │  index.ts           ← public API surface                   │
 │                                                            │
 ├────────────────────────────────────────────────────────────┤
@@ -38,10 +38,10 @@ Without this package, every agent would reimplement tool filtering, approval flo
 │  @koi/core   (L0)   KoiMiddleware, ModelRequest,           │
 │                      ToolRequest, TurnContext,              │
 │                      PermissionBackend, AuditEntry,         │
-│                      AuditSink                              │
+│                      AuditSink, ApprovalHandler             │
 │  @koi/errors (L0u)  KoiRuntimeError, createCircuitBreaker, │
 │                      swallowError                           │
-│  @koi/hash   (L0u)  (vendored — fnv1a lives in hash.ts)    │
+│  @koi/hash   (L0u)  fnv1a for cache keys                   │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -425,9 +425,9 @@ Creates the middleware instance.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `config.backend` | `PermissionBackend` | **required** | Pluggable authorization backend |
-| `config.approvalHandler` | `ApprovalHandler` | — | HITL approval for `ask` decisions |
 | `config.approvalTimeoutMs` | `number` | `30000` | Timeout before auto-deny on ask |
-| `config.cache` | `boolean \| PermissionCacheConfig` | `false` | Enable decision + approval caching |
+| `config.cache` | `boolean \| PermissionCacheConfig` | `false` | Enable decision caching |
+| `config.approvalCache` | `boolean \| ApprovalCacheConfig` | `false` | Enable approval caching |
 | `config.clock` | `() => number` | `Date.now` | Inject clock for testing |
 | `config.auditSink` | `AuditSink` | — | Structured decision logging |
 | `config.circuitBreaker` | `CircuitBreakerConfig` | — | Resilience for remote backends |
@@ -453,7 +453,17 @@ Built-in pattern-matching backend (synchronous, in-process).
 
 Always approves. For testing and development only.
 
-**Returns:** `ApprovalHandler`
+**Returns:** `ApprovalHandler` (L0 type — returns `ApprovalDecision`)
+
+#### `createDenialTracker(maxEntries?)`
+
+Creates a per-session denial accumulator for observability and diagnostics.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `maxEntries` | `number` | `1024` | Max denial records before oldest evicted |
+
+**Returns:** `DenialTracker`
 
 #### `validatePermissionsConfig(input)`
 
@@ -485,7 +495,10 @@ Default decision cache settings: `{ maxEntries: 1024, allowTtlMs: 300_000, denyT
 | `PermissionCacheConfig` | `{ maxEntries, allowTtlMs, denyTtlMs, ttlMs }` |
 | `PatternBackendConfig` | Config for `createPatternPermissionBackend()` |
 | `PermissionRules` | `{ allow, deny, ask }` pattern arrays |
-| `ApprovalHandler` | `{ requestApproval(toolId, input, reason) => Promise<boolean> }` |
+| `ApprovalHandler` | L0 type: `(request: ApprovalRequest) => Promise<ApprovalDecision>` |
+| `DenialRecord` | `{ toolId, reason, timestamp, principal, turnIndex }` |
+| `DenialTracker` | `{ record, getAll, getByTool, count, clear }` |
+| `ApprovalCacheConfig` | `{ ttlMs?, maxEntries? }` |
 | `PermissionBackend` | L0 interface: `check()` + optional `checkBatch()` + `dispose()` |
 | `PermissionDecision` | `{ effect: "allow" } \| { effect: "deny", reason } \| { effect: "ask", reason }` |
 | `PermissionQuery` | `{ principal, action, resource, context? }` |
