@@ -33,6 +33,11 @@
       - "packages/**/token-estimator/**"
       - "packages/**/validation/**"
 
+"layer:L3":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "packages/**/cli/**"
+
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
 # The negation patterns prevent L0/L1/L0u/L3 package changes from also triggering L2.
 "layer:L2":
@@ -40,6 +45,7 @@
     - any-glob-to-any-file:
       - "packages/**"
       - "!packages/**/channel-base/**"
+      - "!packages/**/cli/**"
       - "!packages/**/config/**"
       - "!packages/**/context-manager/**"
       - "!packages/**/core/**"

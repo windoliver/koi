@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, HookDecision, KoiMiddleware, CommandHookConfig, HttpHookConfig } from '@koi/core';
+"import { HookEnvPolicy, HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, HookDecision, KoiMiddleware, CommandHookConfig, HttpHookConfig } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -10,29 +10,70 @@ import { z } from 'zod';
  * Expands \`\${VAR_NAME}\` patterns in strings using \`process.env\`.
  * Rejects unresolved variables to fail closed on misconfiguration —
  * hooks should not silently run with empty auth headers or signing keys.
+ *
+ * Supports a double-whitelist model: per-hook \`allowedEnvVars\` declares
+ * which vars a hook needs, and a system-wide \`HookEnvPolicy\` restricts
+ * which vars any hook may access. A var must pass both to be expanded.
  */
+
 /**
- * Expand \`\${VAR}\` references in a string using process.env.
- * Returns the expanded string, or an error listing unresolved variable names.
+ * Match an env var name against a simple glob pattern.
+ * Supports \`*\` (zero or more chars) and \`?\` (exactly one char).
  */
-declare function expandEnvVars(value: string): {
+declare function matchEnvGlob(pattern: string, name: string): boolean;
+/**
+ * Build the effective set of allowed env var names from per-hook and
+ * policy-level allowlists.
+ *
+ * - Both undefined → undefined (no restriction, backward compat)
+ * - Hook-only → set of those exact names
+ * - Policy-only → empty set (hook must declare allowedEnvVars when policy is active)
+ * - Both → hook vars filtered to those matching at least one policy pattern
+ */
+declare function buildEnvAllowSet(hookAllowedVars: readonly string[] | undefined, policy: HookEnvPolicy | undefined): ReadonlySet<string> | undefined;
+/** Successful expansion result. */
+interface EnvExpandOk {
     readonly ok: true;
     readonly value: string;
-} | {
+}
+/** Failed expansion result — lists missing and denied var names. */
+interface EnvExpandError {
     readonly ok: false;
     readonly missing: readonly string[];
-};
+    readonly denied: readonly string[];
+}
+/** Result of env-var expansion. */
+type EnvExpandResult = EnvExpandOk | EnvExpandError;
 /**
- * Expand env vars in all values of a string record.
- * Returns the expanded record, or an error listing unresolved variable names.
+ * Expand \`\${VAR}\` references in a string using process.env.
+ * Returns the expanded string, or an error listing unresolved and denied variable names.
+ *
+ * @param value - String containing \`\${VAR}\` patterns
+ * @param allowedVars - Optional set of allowed var names. When defined, vars not
+ *   in the set are denied even if present in process.env. Undefined = no restriction.
  */
-declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>): {
+declare function expandEnvVars(value: string, allowedVars?: ReadonlySet<string> | undefined): EnvExpandResult;
+/** Successful record expansion result. */
+interface EnvRecordExpandOk {
     readonly ok: true;
     readonly value: Record<string, string>;
-} | {
+}
+/** Failed record expansion result. */
+interface EnvRecordExpandError {
     readonly ok: false;
     readonly missing: readonly string[];
-};
+    readonly denied: readonly string[];
+}
+/** Result of record env-var expansion. */
+type EnvRecordExpandResult = EnvRecordExpandOk | EnvRecordExpandError;
+/**
+ * Expand env vars in all values of a string record.
+ * Returns the expanded record, or an error listing unresolved and denied variable names.
+ *
+ * @param record - Record with string values that may contain \`\${VAR}\` patterns
+ * @param allowedVars - Optional set of allowed var names. Undefined = no restriction.
+ */
+declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>, allowedVars?: ReadonlySet<string> | undefined): EnvRecordExpandResult;
 
 /**
  * Hook executor — dispatches matching hooks with parallel/serial execution.
@@ -51,9 +92,10 @@ declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>)
  * @param hooks - All hooks to consider (pre-filtered to active only)
  * @param event - The event that triggered execution
  * @param sessionSignal - Optional session-level abort signal for cancellation
+ * @param envPolicy - Optional system-wide env-var policy for allowlisting
  * @returns Results for all matching hooks, in declaration order
  */
-declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined): Promise<readonly HookExecutionResult[]>;
+declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined): Promise<readonly HookExecutionResult[]>;
 
 /**
  * Hook filter matching — determines whether a hook should fire for a given event.
@@ -109,13 +151,16 @@ declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult,
  *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
  *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
- *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
+ *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (bounded-await for transform)
  *   wrapModelCall   → "compact.before" (blocking — throws on block) + "compact.after" (fire-and-forget, drained)
  *   wrapModelStream → "compact.before" (blocking — yields error chunk on block) + "compact.after" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
- * Post-call hooks are fire-and-forget during the turn but drained with a bounded
- * wait before session cleanup to prevent last-turn hooks from being aborted.
+ * Post-tool hooks are awaited with a bounded deadline for output mutation via
+ * transform decisions. If the deadline expires, the original response is returned
+ * to avoid blocking tool completion after the side effect has been committed.
+ * Other post-call hooks are fire-and-forget during the turn but drained with a
+ * bounded wait before session cleanup to prevent last-turn hooks from being aborted.
  *
  * Phase: "resolve" (priority 400). Hooks are business logic, not permissions.
  */
@@ -124,16 +169,39 @@ declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult,
 interface CreateHookMiddlewareOptions {
     /** Validated hook configs to dispatch. Typically from \`loadHooks()\`. */
     readonly hooks: readonly HookConfig[];
+    /** System-wide env-var policy for allowlisting. */
+    readonly envPolicy?: HookEnvPolicy | undefined;
+    /**
+     * Maximum time (ms) to wait for post-tool hooks before suppressing output.
+     * Defaults to \`POST_TOOL_HOOK_DEADLINE_MS\` (5000ms).
+     */
+    readonly postToolHookDeadlineMs?: number | undefined;
 }
 /**
- * Aggregate hook decisions with most-restrictive-wins precedence:
+ * Aggregate **pre-call** hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
  *
  * - First \`block\` wins immediately (short-circuits).
  * - Multiple \`modify\` patches are merged (later patches override earlier keys).
+ * - \`transform\` decisions are ignored — they are post-call only.
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
  */
 declare function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision;
+/**
+ * Aggregate post-execution hook decisions.
+ *
+ * Unlike pre-call aggregation, \`block\` decisions from hooks are ignored
+ * because the operation has already completed — you cannot un-execute a
+ * tool call.
+ *
+ * However, hook execution *failures* (ok: false) signal that post-processing
+ * (e.g., redaction) could not run. These return \`block\` so the caller can
+ * taint the response with a warning — but the caller must NOT suppress the
+ * response or return an error, as that would cause retry/duplicate risk.
+ *
+ * Only \`transform\`, \`continue\`, and failure-\`block\` are meaningful after execution.
+ */
+declare function aggregatePostDecisions(results: readonly HookExecutionResult[]): HookDecision;
 /**
  * Creates a KoiMiddleware that dispatches hook definitions to command/http
  * executors during the engine lifecycle.
@@ -164,7 +232,7 @@ declare function createHookMiddleware(options: CreateHookMiddlewareOptions): Koi
  */
 interface HookRegistry {
     /** Register hooks for a session with its trusted agent identity. Replaces any existing registration. */
-    readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[]) => void;
+    readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[], envPolicy?: HookEnvPolicy | undefined) => void;
     /** Execute matching hooks for a session event. Returns empty array if session not registered. */
     readonly execute: (sessionId: string, event: HookEvent) => Promise<readonly HookExecutionResult[]>;
     /** Cleanup a session — abort in-flight hooks and remove registration. Idempotent. */
@@ -191,6 +259,6 @@ declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { type CreateHookMiddlewareOptions, type HookRegistry, type LoadHooksResult, aggregateDecisions, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
+export { type CreateHookMiddlewareOptions, type EnvExpandResult, type EnvRecordExpandResult, type HookRegistry, type LoadHooksResult, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter };
 "
 `;
