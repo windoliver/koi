@@ -14,7 +14,9 @@
 
 When writing scripts, commands, or configs — always use the **Choice** column. Never introduce anything from the **Wrong alternative** column.
 
-## TypeScript (strict, no exceptions)
+## TypeScript 6 (strict, no exceptions)
+
+**Current version: TypeScript 6.0.x** — all TS 6 defaults are set explicitly in `tsconfig.base.json`.
 
 All flags are on. Do not weaken them. When writing new code:
 
@@ -22,7 +24,28 @@ All flags are on. Do not weaken them. When writing new code:
 - `verbatimModuleSyntax` — always use `import type` for type-only imports
 - `isolatedDeclarations` — always write explicit return types on exported functions
 - `erasableSyntaxOnly` — no constructs with runtime behavior (see banned list)
+- `noUncheckedSideEffectImports` — side-effect imports (`import "./polyfill"`) must resolve
 - **ESM-only** with `.js` extensions in all import paths (e.g., `import { foo } from "./bar.js"`)
+- **ES2025 lib** — `Promise.try`, Set methods, iterator helpers, `RegExp.escape` types available
+
+### TS 6 migration status
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `ignoreDeprecations: "6.0"` | Temporary | tsup DTS builds use `baseUrl` internally. Remove once tsup fixes. **Must remove before TS 7.** |
+| `esModuleInterop` | Removed | TS 6 forces `true`; setting `false` is a deprecation error |
+| `lib: ES2025` | Done | Upgraded from ES2023 |
+| `noUncheckedSideEffectImports` | Done | Explicitly set (new TS 6 default) |
+| All other TS 6 defaults | Explicit | `strict`, `target`, `module`, `moduleResolution`, `types`, `rootDir` all set — immune to default changes |
+
+### TS 7 preparation
+
+TypeScript 7 is a native Go port. All TS 6 deprecations become **hard removals**:
+- `ignoreDeprecations: "6.0"` will stop working — resolve all deprecations before upgrading
+- `baseUrl` will be removed — tsup must fix its DTS generation first
+- `--module amd/umd/system/none` removed — already not used
+- `--moduleResolution node10/classic` removed — already using `NodeNext`
+- Import assertions (`assert`) removed — use import attributes (`with`) syntax
 
 ### Banned TypeScript constructs
 
@@ -36,6 +59,9 @@ All flags are on. Do not weaken them. When writing new code:
 | `@ts-ignore` | `@ts-expect-error` (self-cleaning: fails when error is fixed) |
 | Constructor parameter properties | Explicit `readonly` field declarations |
 | `class` (default) | Plain functions + types. Use `class` only when state encapsulation is genuinely needed |
+| `import ... assert {}` | `import ... with {}` (import attributes — TS 6 removed assertion syntax) |
+| `esModuleInterop: false` | Removed — TS 6 forces `true` |
+| `allowSyntheticDefaultImports: false` | Removed — TS 6 forces `true` |
 
 ## Bun-specific
 
