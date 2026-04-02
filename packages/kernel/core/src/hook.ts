@@ -118,21 +118,6 @@ export interface CommandHookConfig {
   readonly timeoutMs?: number | undefined;
   /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
   readonly serial?: boolean | undefined;
-  /**
-   * Post-execution failure behavior. Default: true (fail-closed).
-   *
-   * This flag only affects post-tool hook failures. Pre-hook failures are
-   * always fail-open (treated as "no opinion") to avoid availability risk.
-   *
-   * When true: if this hook fails during post-tool execution, the tool's
-   * raw output is suppressed (replaced with a redaction notice). Use for
-   * security-critical hooks like output redaction/scrubbing.
-   *
-   * When false: if this hook fails post-execution, the tool's output is
-   * preserved with taint metadata. Use for observational/telemetry hooks
-   * where suppressing committed output would cause retry risk.
-   */
-  readonly failClosed?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,21 +150,6 @@ export interface HttpHookConfig {
   readonly timeoutMs?: number | undefined;
   /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
   readonly serial?: boolean | undefined;
-  /**
-   * Post-execution failure behavior. Default: true (fail-closed).
-   *
-   * This flag only affects post-tool hook failures. Pre-hook failures are
-   * always fail-open (treated as "no opinion") to avoid availability risk.
-   *
-   * When true: if this hook fails during post-tool execution, the tool's
-   * raw output is suppressed (replaced with a redaction notice). Use for
-   * security-critical hooks like output redaction/scrubbing.
-   *
-   * When false: if this hook fails post-execution, the tool's output is
-   * preserved with taint metadata. Use for observational/telemetry hooks
-   * where suppressing committed output would cause retry risk.
-   */
-  readonly failClosed?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +193,6 @@ export type HookExecutionResult =
       readonly hookName: string;
       readonly error: string;
       readonly durationMs: number;
-      /** Whether this hook's failure should suppress output. Default: true. */
-      readonly failClosed?: boolean | undefined;
     };
 
 // ---------------------------------------------------------------------------

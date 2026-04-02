@@ -595,7 +595,6 @@ export type {
   CommandHookConfig,
   HookConfig,
   HookDecision,
-  HookEnvPolicy,
   HookEvent,
   HookEventKind,
   HookEventName,
