@@ -22,9 +22,12 @@ export interface ReportMiddlewareConfig {
   readonly onReport?: ReportCallback | undefined;
   /** Push notification after each turn. */
   readonly onProgress?: ProgressCallback | undefined;
+  /** Max completed reports to retain in memory. Default: 100. Oldest evicted first. */
+  readonly maxReports?: number | undefined;
 }
 
 export const DEFAULT_MAX_ACTIONS = 500;
+export const DEFAULT_MAX_REPORTS = 100;
 
 export function validateReportConfig(input: unknown): Result<ReportMiddlewareConfig, KoiError> {
   if (input === null || input === undefined || typeof input !== "object") {

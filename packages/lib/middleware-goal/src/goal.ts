@@ -10,8 +10,10 @@ import type {
   CapabilityFragment,
   InboundMessage,
   KoiMiddleware,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionId,
   TurnContext,
 } from "@koi/core";
@@ -224,6 +226,69 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       });
 
       return response;
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const state = sessions.get(ctx.session.sessionId);
+      if (!state) {
+        yield* next(request);
+        return;
+      }
+
+      // Increment turn count
+      const turnCount = state.turnCount + 1;
+
+      // Determine whether to inject goals this turn
+      const turnsSinceReminder = turnCount - state.lastReminderTurn;
+      const shouldInject = turnsSinceReminder >= state.currentInterval || turnCount === 1;
+
+      let enrichedRequest: ModelRequest = request;
+      if (shouldInject) {
+        const goalText = renderGoalBlock(state.items, header);
+        const goalMsg = buildGoalMessage(goalText);
+        enrichedRequest = { ...request, messages: [goalMsg, ...request.messages] };
+      }
+
+      // Buffer streamed text for completion detection
+      let bufferedText = "";
+      try {
+        for await (const chunk of next(enrichedRequest)) {
+          if (chunk.kind === "text_delta") {
+            bufferedText += chunk.delta;
+          }
+          yield chunk;
+        }
+      } finally {
+        // Detect completions from buffered text
+        const updatedItems = detectCompletions(bufferedText, state.items);
+
+        if (config.onComplete) {
+          for (let i = 0; i < updatedItems.length; i++) {
+            const prev = state.items[i];
+            const curr = updatedItems[i];
+            if (prev && curr && !prev.completed && curr.completed) {
+              config.onComplete(curr.text);
+            }
+          }
+        }
+
+        // Update interval based on drift
+        const drifting = shouldInject ? isDrifting(ctx.messages, allKeywords) : false;
+        const nextInterval = shouldInject
+          ? computeNextInterval(state.currentInterval, drifting, baseInterval, maxInterval)
+          : state.currentInterval;
+
+        sessions.set(ctx.session.sessionId, {
+          items: updatedItems,
+          turnCount,
+          currentInterval: nextInterval,
+          lastReminderTurn: shouldInject ? turnCount : state.lastReminderTurn,
+        });
+      }
     },
 
     async wrapToolCall(_ctx, request, next) {

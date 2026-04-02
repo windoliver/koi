@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type {
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   SessionId,
   ToolHandler,
@@ -229,5 +231,79 @@ describe("createReportMiddleware", () => {
 
     const ctx = makeTurnCtx(session);
     expect(mw.describeCapabilities(ctx)).toBeUndefined();
+  });
+
+  it("records streamed model calls with token usage", async () => {
+    const handle = createReportMiddleware();
+    const mw = handle.middleware;
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    const streamHandler: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "Hello" } as ModelChunk;
+      yield { kind: "usage", inputTokens: 80, outputTokens: 40 } as ModelChunk;
+      yield {
+        kind: "done",
+        response: makeModelResponse({ model: "streamed-model" }),
+      } as ModelChunk;
+    };
+
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      for await (const _chunk of stream) {
+        // consume
+      }
+    }
+
+    const progress = handle.getProgress(session.sessionId);
+    expect(progress.totalActions).toBe(1);
+    expect(progress.inputTokens).toBe(80);
+    expect(progress.outputTokens).toBe(40);
+  });
+
+  it("records streamed model failures as critical issues", async () => {
+    const handle = createReportMiddleware();
+    const mw = handle.middleware;
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    const streamHandler: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "partial" } as ModelChunk;
+      throw new Error("stream interrupted");
+    };
+
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      try {
+        for await (const _chunk of stream) {
+          // consume
+        }
+      } catch {
+        // expected
+      }
+    }
+
+    const progress = handle.getProgress(session.sessionId);
+    expect(progress.totalActions).toBe(1);
+    expect(progress.issueCount).toBe(1);
+  });
+
+  it("evicts oldest reports when exceeding maxReports", async () => {
+    const handle = createReportMiddleware({ maxReports: 2 });
+    const mw = handle.middleware;
+
+    // Create 3 sessions
+    for (const id of ["s1", "s2", "s3"]) {
+      const session = makeSessionCtx(sessionId(id));
+      await mw.onSessionStart?.(session);
+      await mw.onSessionEnd?.(session);
+    }
+
+    // s1 should be evicted, s2 and s3 retained
+    expect(handle.getReport(sessionId("s1"))).toBeUndefined();
+    expect(handle.getReport(sessionId("s2"))).toBeDefined();
+    expect(handle.getReport(sessionId("s3"))).toBeDefined();
   });
 });

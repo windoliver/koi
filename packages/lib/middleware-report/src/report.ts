@@ -7,6 +7,9 @@ import type {
   CapabilityFragment,
   IssueEntry,
   KoiMiddleware,
+  ModelChunk,
+  ModelRequest,
+  ModelStreamHandler,
   RunReport,
   SessionId,
   TurnContext,
@@ -18,6 +21,7 @@ import type { Accumulator } from "./accumulator.js";
 import { createAccumulator } from "./accumulator.js";
 import {
   DEFAULT_MAX_ACTIONS,
+  DEFAULT_MAX_REPORTS,
   type ReportMiddlewareConfig,
   validateReportConfig,
 } from "./config.js";
@@ -84,6 +88,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
   }
 
   const maxActions = config?.maxActions ?? DEFAULT_MAX_ACTIONS;
+  const maxReports = config?.maxReports ?? DEFAULT_MAX_REPORTS;
   const formatter = config?.formatter ?? mapReportToMarkdown;
   const sessions = new Map<SessionId, ReportSessionState>();
   const reports = new Map<SessionId, RunReport>();
@@ -165,6 +170,75 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
         }
 
         throw e;
+      }
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const state = sessions.get(ctx.session.sessionId);
+      const start = Date.now();
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let modelName = request.model ?? "unknown";
+      let failed = false;
+      let errorMessage: string | undefined;
+
+      try {
+        for await (const chunk of next(request)) {
+          if (chunk.kind === "usage") {
+            inputTokens += chunk.inputTokens;
+            outputTokens += chunk.outputTokens;
+          } else if (chunk.kind === "done") {
+            modelName = chunk.response.model;
+            if (chunk.response.usage) {
+              // Prefer final usage if no incremental usage chunks were seen
+              if (inputTokens === 0 && outputTokens === 0) {
+                inputTokens = chunk.response.usage.inputTokens;
+                outputTokens = chunk.response.usage.outputTokens;
+              }
+            }
+          } else if (chunk.kind === "error") {
+            failed = true;
+            errorMessage = chunk.message;
+            if (chunk.usage) {
+              inputTokens += chunk.usage.inputTokens;
+              outputTokens += chunk.usage.outputTokens;
+            }
+          }
+          yield chunk;
+        }
+      } catch (e: unknown) {
+        failed = true;
+        errorMessage = e instanceof Error ? e.message : String(e);
+        throw e;
+      } finally {
+        if (state) {
+          state.accumulator.addTokens(inputTokens, outputTokens);
+          const action: ActionEntry = {
+            kind: "model_call",
+            name: modelName,
+            turnIndex: ctx.turnIndex,
+            durationMs: Date.now() - start,
+            success: !failed,
+            errorMessage,
+            tokenUsage:
+              inputTokens > 0 || outputTokens > 0 ? { inputTokens, outputTokens } : undefined,
+          };
+          state.accumulator.recordAction(action);
+
+          if (failed && errorMessage) {
+            const issue: IssueEntry = {
+              severity: "critical",
+              message: `Model stream failed: ${errorMessage}`,
+              turnIndex: ctx.turnIndex,
+              resolved: false,
+            };
+            state.accumulator.recordIssue(issue);
+          }
+        }
       }
     },
 
@@ -273,6 +347,14 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
       };
 
       reports.set(ctx.sessionId, report);
+
+      // Evict oldest reports if exceeding retention limit
+      if (reports.size > maxReports) {
+        const oldest = reports.keys().next().value;
+        if (oldest !== undefined) {
+          reports.delete(oldest);
+        }
+      }
 
       if (config?.onReport) {
         const formatted = formatter(report);

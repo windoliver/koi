@@ -1,9 +1,11 @@
 import { describe, expect, it, mock } from "bun:test";
 import type {
   InboundMessage,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   SessionId,
   TurnContext,
@@ -294,5 +296,56 @@ describe("createGoalMiddleware", () => {
     const toolHandler = mock(async () => ({ output: "ok" }));
     await mw.wrapToolCall?.(ctx, { toolId: "test", input: {} }, toolHandler);
     expect(toolHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects goals on streamed model call", async () => {
+    const mw = createGoalMiddleware({ objectives: ["Build feature A"] });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    let capturedRequest: ModelRequest | undefined;
+    const streamHandler: ModelStreamHandler = async function* (req) {
+      capturedRequest = req;
+      yield { kind: "text_delta", delta: "Working on it." } as ModelChunk;
+      yield { kind: "done", response: makeModelResponse("Working on it.") } as ModelChunk;
+    };
+
+    const chunks: ModelChunk[] = [];
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+    }
+    expect(capturedRequest?.messages.length).toBe(1);
+    expect(capturedRequest?.messages[0]?.senderId).toBe("system:goal");
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it("detects completions from streamed text", async () => {
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write integration tests"],
+      onComplete: (obj) => completed.push(obj),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    const streamHandler: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "I have completed the " } as ModelChunk;
+      yield { kind: "text_delta", delta: "integration tests." } as ModelChunk;
+      yield { kind: "done", response: makeModelResponse("done") } as ModelChunk;
+    };
+
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      for await (const _chunk of stream) {
+        // consume
+      }
+    }
+    expect(completed).toEqual(["Write integration tests"]);
   });
 });
