@@ -164,6 +164,13 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/tools-builtin": {
+      "name": "@koi/tools-builtin",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/tools-core": {
       "name": "@koi/tools-core",
       "version": "0.0.0",
@@ -214,6 +221,14 @@
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
+      },
+    },
+    "packages/security/middleware-permissions": {
+      "name": "@koi/middleware-permissions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/security/permissions": {
@@ -409,6 +424,8 @@
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
+    "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
+
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
@@ -420,6 +437,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tools-builtin": ["@koi/tools-builtin@workspace:packages/lib/tools-builtin"],
 
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
