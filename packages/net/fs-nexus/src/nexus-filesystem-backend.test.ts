@@ -38,6 +38,10 @@ function createMockTransport(): NexusTransport & {
         const path = params.path as string;
         const content = params.content as string;
         store.set(path, content);
+        // Confirm CAS enforcement when expectedContentHash is provided
+        if (params.expectedContentHash !== undefined) {
+          return { casEnforced: true } as T;
+        }
         return null as T;
       }
 

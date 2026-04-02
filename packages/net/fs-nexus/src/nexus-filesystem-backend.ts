@@ -272,13 +272,40 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
-      const writeResult = await rpcMutate<null>(transport, "write", {
-        path: fullPathResult.value,
-        content: modified,
-        expectedContentHash,
-        overwrite: true, // edit always targets existing files
-      });
+      // Require the write response to confirm CAS enforcement. This is the
+      // second defense layer: the capabilities probe gates entry, but the
+      // write-response check catches load-balanced or rolling-deploy scenarios
+      // where the write lands on a different (non-CAS) node than the probe.
+      // Reporting failure here is safe — if the server enforced CAS, the write
+      // was atomic and correct. If it didn't, the caller must treat the edit
+      // as uncertain and re-read.
+      const writeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
+        transport,
+        "write",
+        {
+          path: fullPathResult.value,
+          content: modified,
+          expectedContentHash,
+          overwrite: true, // edit always targets existing files
+        },
+      );
       if (!writeResult.ok) return writeResult;
+
+      const casConfirmed =
+        writeResult.value !== null &&
+        typeof writeResult.value === "object" &&
+        writeResult.value.casEnforced === true;
+      if (!casConfirmed) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Edit write for '${path}' was not confirmed as CAS-enforced — the file may have been modified without conflict protection (possible load-balanced routing to non-CAS node)`,
+            retryable: false,
+            context: { path, expectedContentHash },
+          },
+        };
+      }
     }
 
     return { ok: true, value: { path, hunksApplied } };
