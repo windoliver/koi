@@ -502,6 +502,61 @@ describe("payload redaction", () => {
     // With redaction disabled, raw value should be present
     expect(description).toContain("supersecret123");
   });
+
+  it("redacts custom sensitiveFields in raw payload mode", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      forwardRawPayload: true,
+      redaction: { sensitiveFields: ["tenantSecret"] },
+    };
+    const event: HookEvent = {
+      ...baseEvent,
+      data: { tenantSecret: "my-tenant-key", name: "acme" },
+    };
+
+    await executor.execute(hook, event, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Custom field should be redacted
+    expect(description).not.toContain("my-tenant-key");
+    expect(description).toContain("[REDACTED]");
+    // Non-sensitive field should be preserved
+    expect(description).toContain("acme");
+  });
+
+  it("falls back to structure for oversized raw payloads", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
+    const event: HookEvent = {
+      ...baseEvent,
+      data: { content: "x".repeat(40_000), name: "test" },
+    };
+
+    await executor.execute(hook, event, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Should not contain the 40KB string
+    expect(description).not.toContain("x".repeat(40_000));
+    // Should contain structure placeholders from fallback
+    expect(description).toContain("<string:");
+  });
 });
 
 // ---------------------------------------------------------------------------

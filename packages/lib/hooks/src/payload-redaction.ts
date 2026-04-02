@@ -8,7 +8,7 @@
 
 import type { HookRedactionConfig, JsonObject } from "@koi/core";
 import type { CensorStrategy, Redactor } from "@koi/redaction";
-import { createRedactor } from "@koi/redaction";
+import { createRedactor, DEFAULT_SENSITIVE_FIELDS } from "@koi/redaction";
 
 // ---------------------------------------------------------------------------
 // Structure extraction — default mode (keys + types, no values)
@@ -68,14 +68,42 @@ export function extractStructure(data: JsonObject | undefined): JsonObject | und
 // Secret redaction — forwardRawPayload mode
 // ---------------------------------------------------------------------------
 
-/** Cached redactors keyed by censor strategy to avoid recompilation. */
-const redactorCache = new Map<CensorStrategy, Redactor>();
+/**
+ * Maximum serialized size (bytes) for raw payloads forwarded to hook prompts.
+ * Payloads exceeding this are replaced with a structural summary to prevent
+ * context overflow and latency spikes in the hook agent.
+ */
+const MAX_RAW_PAYLOAD_SIZE = 32_768;
 
-function getRedactor(strategy: CensorStrategy): Redactor {
-  const cached = redactorCache.get(strategy);
+/**
+ * Cached redactors keyed by cache key to avoid recompilation.
+ * Key includes censor strategy + sorted sensitiveFields to ensure
+ * different hook configs get distinct redactor instances.
+ */
+const redactorCache = new Map<string, Redactor>();
+
+function buildRedactorCacheKey(
+  strategy: CensorStrategy,
+  sensitiveFields: readonly string[] | undefined,
+): string {
+  if (sensitiveFields === undefined || sensitiveFields.length === 0) return strategy;
+  return `${strategy}:${[...sensitiveFields].sort().join(",")}`;
+}
+
+function getRedactor(
+  strategy: CensorStrategy,
+  sensitiveFields: readonly string[] | undefined,
+): Redactor {
+  const key = buildRedactorCacheKey(strategy, sensitiveFields);
+  const cached = redactorCache.get(key);
   if (cached !== undefined) return cached;
-  const redactor = createRedactor({ censor: strategy });
-  redactorCache.set(strategy, redactor);
+  const redactor = createRedactor({
+    censor: strategy,
+    ...(sensitiveFields !== undefined && sensitiveFields.length > 0
+      ? { fieldNames: [...DEFAULT_SENSITIVE_FIELDS, ...sensitiveFields] }
+      : {}),
+  });
+  redactorCache.set(key, redactor);
   return redactor;
 }
 
@@ -84,6 +112,8 @@ function getRedactor(strategy: CensorStrategy): Redactor {
  * Returns a copy with detected secrets masked according to the censor strategy.
  *
  * When `config.enabled` is explicitly false, returns the data unchanged.
+ * When the redacted payload exceeds MAX_RAW_PAYLOAD_SIZE, falls back to
+ * a structural summary to prevent context overflow in the hook agent.
  */
 export function redactEventData(
   data: JsonObject | undefined,
@@ -95,8 +125,14 @@ export function redactEventData(
   if (config?.enabled === false) return data;
 
   const strategy = config?.censor ?? "redact";
-  const redactor = getRedactor(strategy);
+  const redactor = getRedactor(strategy, config?.sensitiveFields);
   const result = redactor.redactObject(data);
+
+  // Size guard: fall back to structural summary if payload is too large
+  const serialized = JSON.stringify(result.value);
+  if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
+    return extractStructure(data);
+  }
 
   return result.value;
 }

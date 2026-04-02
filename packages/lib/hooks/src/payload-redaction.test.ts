@@ -143,4 +143,39 @@ describe("redactEventData", () => {
     const result = redactEventData(data, {});
     expect((result as Record<string, string>).password).toBe("[REDACTED]");
   });
+
+  it("redacts custom sensitiveFields", () => {
+    const data: JsonObject = { tenantSecret: "my-tenant-key", name: "acme" };
+    const result = redactEventData(data, { sensitiveFields: ["tenantSecret"] });
+    expect((result as Record<string, string>).tenantSecret).toBe("[REDACTED]");
+    expect((result as Record<string, string>).name).toBe("acme");
+  });
+
+  it("redacts both custom and default sensitiveFields together", () => {
+    const data: JsonObject = {
+      password: "default-field",
+      customKey: "custom-field",
+      safe: "ok",
+    };
+    const result = redactEventData(data, { sensitiveFields: ["customKey"] });
+    expect((result as Record<string, string>).password).toBe("[REDACTED]");
+    expect((result as Record<string, string>).customKey).toBe("[REDACTED]");
+    expect((result as Record<string, string>).safe).toBe("ok");
+  });
+
+  it("falls back to structural summary for oversized payloads", () => {
+    // Build a payload > 32KB of non-secret content
+    const largeValue = "x".repeat(40_000);
+    const data: JsonObject = { content: largeValue, name: "test" };
+    const result = redactEventData(data, undefined);
+    // Should fall back to structure extraction, not contain the raw value
+    expect(JSON.stringify(result)).not.toContain(largeValue);
+    expect(JSON.stringify(result)).toContain("<string:");
+  });
+
+  it("preserves raw payload when under size limit", () => {
+    const data: JsonObject = { message: "Hello world", count: 42 };
+    const result = redactEventData(data, undefined);
+    expect(result).toEqual(data);
+  });
 });
