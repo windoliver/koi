@@ -87,7 +87,9 @@ function buildRedactorCacheKey(
   sensitiveFields: readonly string[] | undefined,
 ): string {
   if (sensitiveFields === undefined || sensitiveFields.length === 0) return strategy;
-  return `${strategy}:${[...sensitiveFields].sort().join(",")}`;
+  // Use JSON.stringify for collision-safe encoding — prevents keys like
+  // ["a,b","c"] and ["a","b,c"] from producing the same cache key.
+  return JSON.stringify([strategy, [...sensitiveFields].sort()]);
 }
 
 function getRedactor(
@@ -123,8 +125,14 @@ export function redactEventData(
 
   // Size guard applies regardless of redaction setting — prevents
   // context overflow even when redaction is explicitly disabled.
-  const serialized = JSON.stringify(data);
-  if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
+  // Catches circular references and BigInt (which throw on JSON.stringify)
+  // and falls back to structural summary instead of crashing the hook path.
+  try {
+    const serialized = JSON.stringify(data);
+    if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
+      return extractStructure(data);
+    }
+  } catch {
     return extractStructure(data);
   }
 

@@ -187,4 +187,40 @@ describe("redactEventData", () => {
     expect(JSON.stringify(result)).not.toContain(largeValue);
     expect(JSON.stringify(result)).toContain("<string:");
   });
+
+  it("falls back to structure on circular references instead of throwing", () => {
+    const data: Record<string, unknown> = { name: "test" };
+    data.self = data; // circular reference
+    const result = redactEventData(data as JsonObject, undefined);
+    // Should not throw — should fall back to structural summary
+    expect(result).toBeDefined();
+    expect(JSON.stringify(result)).toContain("<string:");
+  });
+
+  it("falls back to structure on BigInt values instead of throwing", () => {
+    const data = { value: BigInt(42), name: "test" } as unknown as JsonObject;
+    const result = redactEventData(data, undefined);
+    // Should not throw — should fall back to structural summary
+    expect(result).toBeDefined();
+  });
+
+  it("uses distinct redactors for sensitiveFields with commas vs separate entries", () => {
+    // ["x,y", "z"] vs ["x", "y,z"] would collide with comma-join but not JSON encoding.
+    // Verify each config redacts only ITS listed fields, not the other's.
+    const data: JsonObject = { "x,y": "val1", z: "val2", x: "val3", "y,z": "val4" };
+    const result1 = redactEventData(data, { sensitiveFields: ["x,y", "z"] });
+    const result2 = redactEventData(data, { sensitiveFields: ["x", "y,z"] });
+    // Config 1: "x,y" and "z" are sensitive
+    expect((result1 as Record<string, string>)["x,y"]).toBe("[REDACTED]");
+    expect((result1 as Record<string, string>).z).toBe("[REDACTED]");
+    // Config 1: "x" and "y,z" are NOT in config 1's list
+    expect((result1 as Record<string, string>).x).toBe("val3");
+    expect((result1 as Record<string, string>)["y,z"]).toBe("val4");
+    // Config 2: "x" and "y,z" are sensitive
+    expect((result2 as Record<string, string>).x).toBe("[REDACTED]");
+    expect((result2 as Record<string, string>)["y,z"]).toBe("[REDACTED]");
+    // Config 2: "x,y" and "z" are NOT in config 2's list
+    expect((result2 as Record<string, string>)["x,y"]).toBe("val1");
+    expect((result2 as Record<string, string>).z).toBe("val2");
+  });
 });
