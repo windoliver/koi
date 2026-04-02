@@ -602,6 +602,7 @@ export type {
   HookEventName,
   HookExecutionResult,
   HookFilter,
+  HookRedactionConfig,
   HookType,
   HttpHookConfig,
 } from "./hook.js";

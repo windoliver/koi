@@ -108,6 +108,15 @@ export const httpHookSchema: z.ZodType<HttpHookConfig> = createHttpHookSchema();
 // Agent hook schema
 // ---------------------------------------------------------------------------
 
+const hookRedactionConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  censor: z.enum(["redact", "mask", "remove"]).optional(),
+  sensitiveFields: z
+    .array(z.string().min(1))
+    .min(1, "sensitiveFields must not be empty — omit the field instead")
+    .optional(),
+});
+
 function createAgentHookSchema(): z.ZodType<AgentHookConfig> {
   return z.object({
     kind: z.literal("agent"),
@@ -122,6 +131,8 @@ function createAgentHookSchema(): z.ZodType<AgentHookConfig> {
       .array(z.string().min(1))
       .min(1, "toolDenylist must not be empty — omit the field instead")
       .optional(),
+    forwardRawPayload: z.boolean().optional(),
+    redaction: hookRedactionConfigSchema.optional(),
   });
 }
 

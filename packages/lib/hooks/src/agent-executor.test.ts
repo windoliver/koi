@@ -403,6 +403,108 @@ describe("spawn request", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Payload redaction (Issue #1323)
+// ---------------------------------------------------------------------------
+
+describe("payload redaction", () => {
+  it("forwards structure-only payload by default (no raw values)", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Should NOT contain the actual command value
+    expect(description).not.toContain("rm -rf /");
+    // Should contain structure placeholders
+    expect(description).toContain("<string:");
+    // Should contain structure-only note
+    expect(description).toContain("structure only");
+  });
+
+  it("forwards redacted payload when forwardRawPayload is true", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Safe non-secret data should be present
+    expect(description).toContain("rm -rf /");
+    // Should contain redaction note
+    expect(description).toContain("secrets have been redacted");
+  });
+
+  it("redacts secrets in raw payload mode", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
+    const event: HookEvent = {
+      ...baseEvent,
+      data: { password: "supersecret123", username: "alice" },
+    };
+
+    await executor.execute(hook, event, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Password field should be redacted
+    expect(description).not.toContain("supersecret123");
+    expect(description).toContain("[REDACTED]");
+    // Non-secret field should be preserved
+    expect(description).toContain("alice");
+  });
+
+  it("forwards unredacted payload when forwardRawPayload=true and redaction.enabled=false", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      forwardRawPayload: true,
+      redaction: { enabled: false },
+    };
+    const event: HookEvent = {
+      ...baseEvent,
+      data: { password: "supersecret123" },
+    };
+
+    await executor.execute(hook, event, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // With redaction disabled, raw value should be present
+    expect(description).toContain("supersecret123");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Abort signal handling
 // ---------------------------------------------------------------------------
 
