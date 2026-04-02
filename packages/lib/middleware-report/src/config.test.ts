@@ -42,4 +42,24 @@ describe("validateReportConfig", () => {
     const result = validateReportConfig({ maxActions: "ten" });
     expect(result.ok).toBe(false);
   });
+
+  it("accepts config with maxReports", () => {
+    const result = validateReportConfig({ maxReports: 50 });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects maxReports <= 0", () => {
+    const result = validateReportConfig({ maxReports: 0 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects negative maxReports", () => {
+    const result = validateReportConfig({ maxReports: -1 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects non-number maxReports", () => {
+    const result = validateReportConfig({ maxReports: "ten" });
+    expect(result.ok).toBe(false);
+  });
 });

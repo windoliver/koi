@@ -219,6 +219,7 @@ describe("createGoalMiddleware", () => {
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
     let capturedRequest: ModelRequest | undefined;
     const handler: ModelHandler = async (req) => {
       capturedRequest = req;
@@ -241,6 +242,7 @@ describe("createGoalMiddleware", () => {
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
     const handler: ModelHandler = async () =>
       makeModelResponse("I have completed the integration tests successfully.");
 
@@ -259,6 +261,7 @@ describe("createGoalMiddleware", () => {
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
     const handler: ModelHandler = async () =>
       makeModelResponse("I have completed the integration tests.");
 
@@ -298,12 +301,73 @@ describe("createGoalMiddleware", () => {
     expect(toolHandler).toHaveBeenCalledTimes(1);
   });
 
+  it("updates interval after turn via onAfterTurn", async () => {
+    const mw = createGoalMiddleware({
+      objectives: ["Build auth module"],
+      baseInterval: 2,
+      maxInterval: 8,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: injects (first turn always injects)
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("Working on auth module")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    let injected = false;
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async (req) => {
+      injected = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
+      return makeModelResponse("ok");
+    });
+    expect(injected).toBe(true);
+    await mw.onAfterTurn?.(ctx0);
+
+    // Turn 1: should NOT inject (interval=4 after doubling from 2, only 1 turn since reminder)
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("Still on auth")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    injected = false;
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async (req) => {
+      injected = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
+      return makeModelResponse("ok");
+    });
+    expect(injected).toBe(false);
+  });
+
+  it("does not skip goals on multiple model calls within same turn", async () => {
+    const mw = createGoalMiddleware({ objectives: ["Test"] });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+
+    // Both model calls in the same turn should see shouldInject=true
+    let injected1 = false;
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
+      injected1 = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
+      return makeModelResponse("ok");
+    });
+    let injected2 = false;
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
+      injected2 = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
+      return makeModelResponse("ok");
+    });
+    expect(injected1).toBe(true);
+    expect(injected2).toBe(true);
+  });
+
   it("injects goals on streamed model call", async () => {
     const mw = createGoalMiddleware({ objectives: ["Build feature A"] });
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
     let capturedRequest: ModelRequest | undefined;
     const streamHandler: ModelStreamHandler = async function* (req) {
       capturedRequest = req;
@@ -334,6 +398,7 @@ describe("createGoalMiddleware", () => {
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
     const streamHandler: ModelStreamHandler = async function* () {
       yield { kind: "text_delta", delta: "I have completed the " } as ModelChunk;
       yield { kind: "text_delta", delta: "integration tests." } as ModelChunk;
@@ -347,5 +412,35 @@ describe("createGoalMiddleware", () => {
       }
     }
     expect(completed).toEqual(["Write integration tests"]);
+  });
+
+  it("does not detect completions from aborted streams", async () => {
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write integration tests"],
+      onComplete: (obj) => completed.push(obj),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    const streamHandler: ModelStreamHandler = async function* () {
+      yield { kind: "text_delta", delta: "I have completed the integration" } as ModelChunk;
+      throw new Error("stream aborted");
+    };
+
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      try {
+        for await (const _chunk of stream) {
+          // consume
+        }
+      } catch {
+        // expected
+      }
+    }
+    expect(completed).toEqual([]);
   });
 });

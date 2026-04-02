@@ -54,5 +54,16 @@ export function validateReportConfig(input: unknown): Result<ReportMiddlewareCon
     };
   }
 
+  if (c.maxReports !== undefined && (typeof c.maxReports !== "number" || c.maxReports < 1)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "ReportMiddlewareConfig.maxReports must be a positive number",
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+
   return { ok: true, value: input as ReportMiddlewareConfig };
 }

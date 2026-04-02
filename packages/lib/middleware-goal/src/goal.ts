@@ -38,9 +38,10 @@ interface GoalItem {
 
 interface GoalSessionState {
   readonly items: readonly GoalItem[];
-  readonly turnCount: number;
   readonly currentInterval: number;
   readonly lastReminderTurn: number;
+  /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn. */
+  shouldInject: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,23 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
 
+  /** Detect completions in text and update session state + fire callbacks. */
+  function updateCompletions(sid: SessionId, text: string, state: GoalSessionState): void {
+    const updatedItems = detectCompletions(text, state.items);
+
+    if (config.onComplete) {
+      for (let i = 0; i < updatedItems.length; i++) {
+        const prev = state.items[i];
+        const curr = updatedItems[i];
+        if (prev && curr && !prev.completed && curr.completed) {
+          config.onComplete(curr.text);
+        }
+      }
+    }
+
+    sessions.set(sid, { ...state, items: updatedItems });
+  }
+
   return {
     name: "goal",
     priority: 340,
@@ -172,58 +190,56 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       }));
       sessions.set(ctx.sessionId, {
         items,
-        turnCount: 0,
         currentInterval: baseInterval,
-        lastReminderTurn: 0,
+        lastReminderTurn: -1,
+        shouldInject: true,
       });
+    },
+
+    async onBeforeTurn(ctx) {
+      const state = sessions.get(ctx.session.sessionId);
+      if (!state) return;
+
+      const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
+      state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
+    },
+
+    async onAfterTurn(ctx) {
+      const state = sessions.get(ctx.session.sessionId);
+      if (!state) return;
+
+      if (state.shouldInject) {
+        const drifting = isDrifting(ctx.messages, allKeywords);
+        const nextInterval = computeNextInterval(
+          state.currentInterval,
+          drifting,
+          baseInterval,
+          maxInterval,
+        );
+        sessions.set(ctx.session.sessionId, {
+          ...state,
+          currentInterval: nextInterval,
+          lastReminderTurn: ctx.turnIndex,
+          shouldInject: false,
+        });
+      }
     },
 
     async wrapModelCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return next(request);
 
-      // Increment turn count
-      const turnCount = state.turnCount + 1;
-
-      // Determine whether to inject goals this turn
-      const turnsSinceReminder = turnCount - state.lastReminderTurn;
-      const shouldInject = turnsSinceReminder >= state.currentInterval || turnCount === 1;
-
-      let enrichedRequest: ModelRequest = request;
-      if (shouldInject) {
-        const goalText = renderGoalBlock(state.items, header);
-        const goalMsg = buildGoalMessage(goalText);
-        enrichedRequest = { ...request, messages: [goalMsg, ...request.messages] };
-      }
+      const enrichedRequest = state.shouldInject
+        ? {
+            ...request,
+            messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],
+          }
+        : request;
 
       const response: ModelResponse = await next(enrichedRequest);
 
       // Detect completions in response
-      const updatedItems = detectCompletions(response.content, state.items);
-
-      // Notify on newly completed items
-      if (config.onComplete) {
-        for (let i = 0; i < updatedItems.length; i++) {
-          const prev = state.items[i];
-          const curr = updatedItems[i];
-          if (prev && curr && !prev.completed && curr.completed) {
-            config.onComplete(curr.text);
-          }
-        }
-      }
-
-      // Update interval based on drift
-      const drifting = shouldInject ? isDrifting(ctx.messages, allKeywords) : false;
-      const nextInterval = shouldInject
-        ? computeNextInterval(state.currentInterval, drifting, baseInterval, maxInterval)
-        : state.currentInterval;
-
-      sessions.set(ctx.session.sessionId, {
-        items: updatedItems,
-        turnCount,
-        currentInterval: nextInterval,
-        lastReminderTurn: shouldInject ? turnCount : state.lastReminderTurn,
-      });
+      updateCompletions(ctx.session.sessionId, response.content, state);
 
       return response;
     },
@@ -239,22 +255,16 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         return;
       }
 
-      // Increment turn count
-      const turnCount = state.turnCount + 1;
+      const enrichedRequest = state.shouldInject
+        ? {
+            ...request,
+            messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],
+          }
+        : request;
 
-      // Determine whether to inject goals this turn
-      const turnsSinceReminder = turnCount - state.lastReminderTurn;
-      const shouldInject = turnsSinceReminder >= state.currentInterval || turnCount === 1;
-
-      let enrichedRequest: ModelRequest = request;
-      if (shouldInject) {
-        const goalText = renderGoalBlock(state.items, header);
-        const goalMsg = buildGoalMessage(goalText);
-        enrichedRequest = { ...request, messages: [goalMsg, ...request.messages] };
-      }
-
-      // Buffer streamed text for completion detection
+      // Buffer streamed text for completion detection — only on success
       let bufferedText = "";
+      let succeeded = false;
       try {
         for await (const chunk of next(enrichedRequest)) {
           if (chunk.kind === "text_delta") {
@@ -262,32 +272,12 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
           }
           yield chunk;
         }
+        succeeded = true;
       } finally {
-        // Detect completions from buffered text
-        const updatedItems = detectCompletions(bufferedText, state.items);
-
-        if (config.onComplete) {
-          for (let i = 0; i < updatedItems.length; i++) {
-            const prev = state.items[i];
-            const curr = updatedItems[i];
-            if (prev && curr && !prev.completed && curr.completed) {
-              config.onComplete(curr.text);
-            }
-          }
+        // Only detect completions if stream completed successfully
+        if (succeeded) {
+          updateCompletions(ctx.session.sessionId, bufferedText, state);
         }
-
-        // Update interval based on drift
-        const drifting = shouldInject ? isDrifting(ctx.messages, allKeywords) : false;
-        const nextInterval = shouldInject
-          ? computeNextInterval(state.currentInterval, drifting, baseInterval, maxInterval)
-          : state.currentInterval;
-
-        sessions.set(ctx.session.sessionId, {
-          items: updatedItems,
-          turnCount,
-          currentInterval: nextInterval,
-          lastReminderTurn: shouldInject ? turnCount : state.lastReminderTurn,
-        });
       }
     },
 
