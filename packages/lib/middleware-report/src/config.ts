@@ -43,23 +43,29 @@ export function validateReportConfig(input: unknown): Result<ReportMiddlewareCon
 
   const c = input as Record<string, unknown>;
 
-  if (c.maxActions !== undefined && (typeof c.maxActions !== "number" || c.maxActions < 1)) {
+  if (
+    c.maxActions !== undefined &&
+    (typeof c.maxActions !== "number" || !Number.isInteger(c.maxActions) || c.maxActions < 1)
+  ) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "ReportMiddlewareConfig.maxActions must be a positive number",
+        message: "ReportMiddlewareConfig.maxActions must be a positive integer",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };
   }
 
-  if (c.maxReports !== undefined && (typeof c.maxReports !== "number" || c.maxReports < 1)) {
+  if (
+    c.maxReports !== undefined &&
+    (typeof c.maxReports !== "number" || !Number.isInteger(c.maxReports) || c.maxReports < 1)
+  ) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "ReportMiddlewareConfig.maxReports must be a positive number",
+        message: "ReportMiddlewareConfig.maxReports must be a positive integer",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

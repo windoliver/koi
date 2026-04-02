@@ -62,4 +62,14 @@ describe("validateReportConfig", () => {
     const result = validateReportConfig({ maxReports: "ten" });
     expect(result.ok).toBe(false);
   });
+
+  it("rejects fractional maxActions", () => {
+    const result = validateReportConfig({ maxActions: 1.5 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects fractional maxReports", () => {
+    const result = validateReportConfig({ maxReports: 2.7 });
+    expect(result.ok).toBe(false);
+  });
 });

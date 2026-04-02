@@ -127,6 +127,20 @@ describe("detectCompletions", () => {
     const result = detectCompletions("[x] integration tests done", items);
     expect(result[0]?.completed).toBe(true);
   });
+
+  it("does not false-positive on single generic keyword match", () => {
+    const items = [{ text: "Write integration tests", completed: false }];
+    // Only "write" matches — not enough (need 2 of 3 keywords)
+    const result = detectCompletions("completed the writeup for docs", items);
+    expect(result[0]?.completed).toBe(false);
+  });
+
+  it("requires majority keyword match for multi-word objectives", () => {
+    const items = [{ text: "Implement authentication endpoint", completed: false }];
+    // "implement" + "authentication" + "endpoint" = 3 keywords, need 2
+    const result = detectCompletions("done with implement and authentication work", items);
+    expect(result[0]?.completed).toBe(true);
+  });
 });
 
 describe("isDrifting", () => {
@@ -403,6 +417,35 @@ describe("createGoalMiddleware", () => {
       yield { kind: "text_delta", delta: "I have completed the " } as ModelChunk;
       yield { kind: "text_delta", delta: "integration tests." } as ModelChunk;
       yield { kind: "done", response: makeModelResponse("done") } as ModelChunk;
+    };
+
+    const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);
+    if (stream) {
+      for await (const _chunk of stream) {
+        // consume
+      }
+    }
+    expect(completed).toEqual(["Write integration tests"]);
+  });
+
+  it("detects completions from done chunk when no text_delta emitted", async () => {
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write integration tests"],
+      onComplete: (obj) => completed.push(obj),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    // Adapter emits no text_delta, only done with full response content
+    const streamHandler: ModelStreamHandler = async function* () {
+      yield {
+        kind: "done",
+        response: makeModelResponse("I have completed the integration tests successfully."),
+      } as ModelChunk;
     };
 
     const stream = mw.wrapModelStream?.(ctx, makeModelRequest(), streamHandler);

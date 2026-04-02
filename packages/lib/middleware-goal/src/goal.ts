@@ -76,7 +76,14 @@ export function renderGoalBlock(items: readonly GoalItem[], header: string): str
 
 const COMPLETION_SIGNALS = /\b(?:completed|done|finished|accomplished)\b|\[x\]|✓|✅/i;
 
-/** Detect which objectives were completed based on response text. */
+/**
+ * Detect which objectives were completed based on response text.
+ *
+ * Requires a completion signal AND a majority of the objective's keywords
+ * (>= 50%, minimum 2 if the objective has 2+ keywords) to match. This
+ * prevents false positives from single generic words like "write" or
+ * "integration" appearing in unrelated completion text.
+ */
 export function detectCompletions(
   responseText: string,
   items: readonly GoalItem[],
@@ -89,8 +96,12 @@ export function detectCompletions(
   return items.map((item) => {
     if (item.completed) return item;
     const keywords = extractKeywords([item.text]);
-    const matched = [...keywords].some((kw) => lower.includes(kw));
-    if (matched) {
+    if (keywords.size === 0) return item;
+
+    const matchCount = [...keywords].filter((kw) => lower.includes(kw)).length;
+    // Require majority match: at least half the keywords, minimum 2 if available
+    const threshold = keywords.size === 1 ? 1 : Math.max(2, Math.ceil(keywords.size / 2));
+    if (matchCount >= threshold) {
       return { ...item, completed: true };
     }
     return item;
@@ -269,6 +280,9 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         for await (const chunk of next(enrichedRequest)) {
           if (chunk.kind === "text_delta") {
             bufferedText += chunk.delta;
+          } else if (chunk.kind === "done" && bufferedText.length === 0) {
+            // Fallback: some adapters only emit done.response.content with no text_delta
+            bufferedText = chunk.response.content;
           }
           yield chunk;
         }
