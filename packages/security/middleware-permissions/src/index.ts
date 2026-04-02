@@ -37,7 +37,7 @@ export {
 } from "./config.js";
 
 // Denial tracking
-export type { DenialRecord, DenialTracker } from "./denial-tracker.js";
+export type { DenialRecord, DenialSource, DenialTracker } from "./denial-tracker.js";
 export { createDenialTracker } from "./denial-tracker.js";
 
 // Middleware factory

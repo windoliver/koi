@@ -165,10 +165,26 @@ function createApprovalCache(
 
 const VALID_EFFECTS = new Set(["allow", "deny", "ask"]);
 
-const FAIL_CLOSED_DENY: PermissionDecision = {
+/** Symbol to tag fail-closed denials so escalation can exclude them. */
+const IS_FAIL_CLOSED: unique symbol = Symbol.for("@koi/middleware-permissions/fail-closed");
+
+const FAIL_CLOSED_DENY: PermissionDecision = Object.freeze({
   effect: "deny",
   reason: "Malformed backend decision — failing closed",
-};
+  [IS_FAIL_CLOSED]: true,
+} as PermissionDecision);
+
+function isFailClosed(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_FAIL_CLOSED] === true;
+}
+
+function failClosedDeny(reason: string): PermissionDecision {
+  return Object.freeze({
+    effect: "deny",
+    reason,
+    [IS_FAIL_CLOSED]: true,
+  } as PermissionDecision);
+}
 
 /**
  * Validate a backend decision at the trust boundary. Malformed or
@@ -479,10 +495,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     query: PermissionQuery,
     sessionId: string,
   ): Promise<PermissionDecision> {
-    // Denial escalation: skip backend if this tool has been denied enough times
+    // Denial escalation: skip backend if this tool has enough policy denials
     if (escalationEnabled) {
       const tracker = getTracker(sessionId);
-      if (tracker.getByTool(query.resource).length >= escalationThreshold) {
+      const policyDenials = tracker.getByTool(query.resource).filter((r) => r.source === "policy");
+      if (policyDenials.length >= escalationThreshold) {
         return {
           effect: "deny",
           reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
@@ -492,7 +509,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
     // Circuit breaker check
     if (cb !== undefined && !cb.isAllowed()) {
-      return { effect: "deny", reason: "Permission backend circuit open — failing closed" };
+      return failClosedDeny("Permission backend circuit open — failing closed");
     }
 
     // Cache check (per-session, skip if key not serializable)
@@ -521,10 +538,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       return decision;
     } catch (e: unknown) {
       if (cb !== undefined) cb.recordFailure();
-      return {
-        effect: "deny",
-        reason: `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
-      };
+      return failClosedDeny(
+        `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
@@ -545,7 +561,10 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const tracker = getTracker(sessionId);
       for (let i = 0; i < queries.length; i++) {
         const query = queries[i]!;
-        if (tracker.getByTool(query.resource).length >= escalationThreshold) {
+        const policyDenials = tracker
+          .getByTool(query.resource)
+          .filter((r) => r.source === "policy");
+        if (policyDenials.length >= escalationThreshold) {
           results[i] = {
             effect: "deny",
             reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
@@ -579,10 +598,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
     // Circuit breaker
     if (cb !== undefined && !cb.isAllowed()) {
-      const deny: PermissionDecision = {
-        effect: "deny",
-        reason: "Permission backend circuit open — failing closed",
-      };
+      const deny = failClosedDeny("Permission backend circuit open — failing closed");
       for (const i of uncachedIndices) {
         results[i] = deny;
       }
@@ -641,10 +657,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
     } catch (e: unknown) {
       if (cb !== undefined) cb.recordFailure();
-      const deny: PermissionDecision = {
-        effect: "deny",
-        reason: `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
-      };
+      const deny = failClosedDeny(
+        `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       for (const i of uncachedIndices) {
         results[i] = deny;
       }
@@ -676,6 +691,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: isFailClosed(decision) ? "backend-error" : "policy",
         });
         return false;
       }
@@ -754,6 +770,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: isFailClosed(decision) ? "backend-error" : "policy",
         });
 
         throw new KoiRuntimeError({
@@ -902,6 +919,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: "approval",
         });
 
         throw new KoiRuntimeError({

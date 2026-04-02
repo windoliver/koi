@@ -979,7 +979,7 @@ describe("createPermissionsMiddleware", () => {
       expect(checkFn).toHaveBeenCalledTimes(2);
 
       // Now wrapModelCall with bash + multiply
-      const result = await mw.wrapModelCall?.(
+      const _result = await mw.wrapModelCall?.(
         ctx,
         makeModelRequest(["bash", "multiply"]),
         noopModelHandler,
@@ -1035,6 +1035,91 @@ describe("createPermissionsMiddleware", () => {
         /* expected */
       }
       expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("backend errors do not count toward escalation threshold", async () => {
+      let callCount = 0;
+      const backend: PermissionBackend = {
+        check: () => {
+          callCount++;
+          throw new Error("backend down");
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+      const ctx = makeTurnContext();
+
+      // 3 backend errors — all fail-closed but should NOT trigger escalation
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // All 3 calls hit the backend (none escalated)
+      expect(callCount).toBe(3);
+
+      // 4th call still hits backend (not escalated despite 3 denials)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(callCount).toBe(4);
+    });
+
+    test("approval rejections do not count toward escalation threshold", async () => {
+      let backendCalls = 0;
+      const backend: PermissionBackend = {
+        check: () => {
+          backendCalls++;
+          return { effect: "ask" as const, reason: "needs approval" };
+        },
+      };
+      const approvalFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+          kind: "deny",
+          reason: "user said no",
+        }),
+      );
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // 3 approval rejections
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ requestApproval: approvalFn }),
+            makeToolRequest("deploy"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+
+      // All 3 calls hit backend (approval denials don't trigger escalation)
+      expect(backendCalls).toBe(3);
+
+      // 4th call — user should still be prompted (not auto-denied)
+      const approveFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "allow" }),
+      );
+      await mw.wrapToolCall?.(
+        makeTurnContext({ requestApproval: approveFn }),
+        makeToolRequest("deploy"),
+        noopToolHandler,
+      );
+
+      // Backend called, approval prompted, tool executed
+      expect(backendCalls).toBe(4);
+      expect(approveFn).toHaveBeenCalledTimes(1);
     });
   });
 
