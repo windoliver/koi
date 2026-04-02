@@ -313,20 +313,29 @@ export interface MemoryValidationError {
 /**
  * Validates a MemoryRecordInput, returning an array of validation errors.
  * An empty array means the input is valid.
+ *
+ * Name and description are validated after sanitization (control char
+ * stripping) to match the serializer's acceptance criteria.
  */
 export function validateMemoryRecordInput(
   input: Readonly<Record<string, unknown>>,
 ): readonly MemoryValidationError[] {
   const errors: MemoryValidationError[] = [];
 
-  if (typeof input.name !== "string" || input.name.trim().length === 0) {
-    errors.push({ field: "name", message: "name is required and must be a non-empty string" });
+  if (typeof input.name !== "string" || sanitizeFrontmatterValue(input.name).length === 0) {
+    errors.push({
+      field: "name",
+      message: "name is required and must be non-empty after sanitization",
+    });
   }
 
-  if (typeof input.description !== "string" || input.description.trim().length === 0) {
+  if (
+    typeof input.description !== "string" ||
+    sanitizeFrontmatterValue(input.description).length === 0
+  ) {
     errors.push({
       field: "description",
-      message: "description is required and must be a non-empty string",
+      message: "description is required and must be non-empty after sanitization",
     });
   }
 
@@ -356,35 +365,25 @@ export function validateMemoryRecordInput(
 // ---------------------------------------------------------------------------
 
 /**
- * Decodes all percent-encoded sequences in a path for validation.
- * This ensures encoded traversal like `%2e%2e` is caught.
- */
-function decodePathForValidation(path: string): string {
-  return path.replace(/%([0-9a-fA-F]{2})/g, (_, hex: string) =>
-    String.fromCharCode(Number.parseInt(hex, 16)),
-  );
-}
-
-/**
  * Validates that a file path is safe for use in MEMORY.md index entries.
  *
- * The path is fully percent-decoded before validation to catch encoded
- * traversal attacks like `%2e%2e/secret.md`.
+ * Paths must not contain percent-encoded characters — the validated path
+ * must be the exact path consumers will use, with no encoding ambiguity.
  *
  * Requirements:
+ * - Must not contain any percent-encoded sequences
  * - Must be a relative path (no leading `/` or drive letters like `C:`)
- * - Must not contain `..` path traversal segments (including percent-encoded)
+ * - Must not contain `..` path traversal segments
  * - Must end with `.md` extension
  * - Must not be empty
  *
  * Returns undefined if valid, or an error message string if invalid.
  */
 export function validateMemoryFilePath(filePath: string): string | undefined {
-  // Decode percent-encoded sequences first to catch encoded traversal
-  const decoded = decodePathForValidation(filePath);
-  // Reject any remaining percent-encoded sequences after decode (double-encoding)
-  if (/%[0-9a-fA-F]{2}/.test(decoded)) return "file path must not contain double-encoded sequences";
-  const normalized = decoded.replace(/\\/g, "/").trim();
+  // Reject any percent-encoded sequences — paths must be literal, no encoding ambiguity
+  if (/%[0-9a-fA-F]{2}/.test(filePath))
+    return "file path must not contain percent-encoded characters";
+  const normalized = filePath.replace(/\\/g, "/").trim();
   if (normalized.length === 0) return "file path must not be empty";
   if (normalized.startsWith("/")) return "file path must be relative, not absolute";
   if (/^[a-zA-Z]:/.test(normalized)) return "file path must not contain drive letters";
@@ -497,9 +496,11 @@ export function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefine
   const filePath = unescapeFilePath(rawFilePath);
   if (validateMemoryFilePath(filePath) !== undefined) return undefined;
 
-  return {
-    title: unescapeTitle(rawTitle),
-    filePath,
-    hook,
-  };
+  // Sanitize parsed values — on-disk files may contain control chars
+  // that should not leak into always-loaded conversation context
+  const title = sanitizeIndexValue(unescapeTitle(rawTitle));
+  const sanitizedHook = sanitizeIndexValue(hook);
+  if (title.length === 0 || sanitizedHook.length === 0) return undefined;
+
+  return { title, filePath, hook: sanitizedHook };
 }

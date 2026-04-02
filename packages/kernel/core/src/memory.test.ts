@@ -483,15 +483,14 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
     expect(parsed?.hook).toBe("first part — second part");
   });
 
-  test("roundtrips file path already containing %28 and %29", () => {
+  test("rejects file path already containing percent-encoded sequences", () => {
     const entry: MemoryIndexEntry = {
       title: "Encoded Path",
       filePath: "foo%28bar%29.md",
       hook: "path with percent-encoded parens",
     };
-    const formatted = formatMemoryIndexEntry(entry);
-    const parsed = parseMemoryIndexEntry(defined(formatted));
-    expect(parsed).toEqual(entry);
+    // Paths with percent-encoded chars are rejected — no encoding ambiguity
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
   });
 
   test("newlines in hook are stripped to prevent line injection", () => {
@@ -897,5 +896,67 @@ describe("parseMemoryIndexEntry (path validation)", () => {
   test("rejects parsed line with percent-encoded traversal", () => {
     const line = "- [Evil](%2e%2e/secret.md) — steal data";
     expect(parseMemoryIndexEntry(line)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: control chars in parsed index entries
+// ---------------------------------------------------------------------------
+
+describe("parseMemoryIndexEntry (control char sanitization)", () => {
+  test("strips control characters from parsed title", () => {
+    // Manually crafted line with ESC sequence in title
+    const esc = String.fromCharCode(0x1b);
+    const line = `- [Te${esc}[31mst](test.md) \u2014 a hook`;
+    const parsed = parseMemoryIndexEntry(line);
+    if (parsed) {
+      expect(hasFrontmatterUnsafeChars(parsed.title)).toBe(false);
+    }
+  });
+
+  test("strips control characters from parsed hook", () => {
+    const esc = String.fromCharCode(0x1b);
+    const line = `- [Test](test.md) \u2014 hook${esc}[0m with escape`;
+    const parsed = parseMemoryIndexEntry(line);
+    if (parsed) {
+      expect(hasFrontmatterUnsafeChars(parsed.hook)).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: validator/serializer alignment
+// ---------------------------------------------------------------------------
+
+describe("validateMemoryRecordInput (post-sanitization alignment)", () => {
+  test("rejects name made of only control characters", () => {
+    const errors = validateMemoryRecordInput({
+      name: "\x00\x01\x02",
+      description: "valid",
+      type: "user",
+      content: "content",
+    });
+    expect(errors.some((e) => e.field === "name")).toBe(true);
+  });
+
+  test("rejects description made of only control characters", () => {
+    const errors = validateMemoryRecordInput({
+      name: "valid",
+      description: "\x07\x08",
+      type: "user",
+      content: "content",
+    });
+    expect(errors.some((e) => e.field === "description")).toBe(true);
+  });
+
+  test("accepts name with mixed valid and control chars", () => {
+    const errors = validateMemoryRecordInput({
+      name: "valid\x00name",
+      description: "desc",
+      type: "user",
+      content: "content",
+    });
+    // After sanitization "valid\x00name" → "validname" which is non-empty
+    expect(errors.some((e) => e.field === "name")).toBe(false);
   });
 });
