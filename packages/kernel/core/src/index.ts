@@ -677,6 +677,7 @@ export type {
 export {
   ALL_MEMORY_TYPES,
   formatMemoryIndexEntry,
+  hasFrontmatterUnsafeChars,
   isMemoryType,
   MEMORY_INDEX_MAX_LINES,
   memoryRecordId,

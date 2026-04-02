@@ -3,6 +3,7 @@ import type { MemoryFrontmatter, MemoryIndexEntry } from "./memory.js";
 import {
   ALL_MEMORY_TYPES,
   formatMemoryIndexEntry,
+  hasFrontmatterUnsafeChars,
   isMemoryType,
   MEMORY_INDEX_MAX_LINES,
   memoryRecordId,
@@ -86,7 +87,7 @@ describe("parseMemoryFrontmatter", () => {
     expect(result?.frontmatter.name).toBe("user role");
     expect(result?.frontmatter.description).toBe("user is a data scientist");
     expect(result?.frontmatter.type).toBe("user");
-    expect(result?.content).toBe("\nThe user is a data scientist focused on ML.");
+    expect(result?.content).toBe("The user is a data scientist focused on ML.");
   });
 
   test("parses frontmatter with multiline content", () => {
@@ -303,5 +304,171 @@ describe("parseMemoryIndexEntry", () => {
 describe("MEMORY_INDEX_MAX_LINES", () => {
   test("is 200", () => {
     expect(MEMORY_INDEX_MAX_LINES).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasFrontmatterUnsafeChars
+// ---------------------------------------------------------------------------
+
+describe("hasFrontmatterUnsafeChars", () => {
+  test("returns false for safe strings", () => {
+    expect(hasFrontmatterUnsafeChars("hello world")).toBe(false);
+    expect(hasFrontmatterUnsafeChars("colons: are fine")).toBe(false);
+  });
+
+  test("returns true for strings with newlines", () => {
+    expect(hasFrontmatterUnsafeChars("line1\nline2")).toBe(true);
+    expect(hasFrontmatterUnsafeChars("line1\r\nline2")).toBe(true);
+    expect(hasFrontmatterUnsafeChars("line1\rline2")).toBe(true);
+  });
+
+  test("returns true for strings with control characters", () => {
+    expect(hasFrontmatterUnsafeChars("null\x00char")).toBe(true);
+    expect(hasFrontmatterUnsafeChars("bell\x07char")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: frontmatter roundtrip with hostile input
+// ---------------------------------------------------------------------------
+
+describe("serializeMemoryFrontmatter (adversarial)", () => {
+  test("sanitizes newlines in name field", () => {
+    const fm: MemoryFrontmatter = {
+      name: "injected\ntype: project\nevil: true",
+      description: "safe description",
+      type: "user",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    // The injected lines should be collapsed into the name, not create new fields
+    expect(parsed?.frontmatter.type).toBe("user");
+    expect(parsed?.frontmatter.name).toContain("injected");
+    expect(parsed?.frontmatter.name).not.toContain("\n");
+  });
+
+  test("sanitizes newlines in description field", () => {
+    const fm: MemoryFrontmatter = {
+      name: "test",
+      description: "line1\ntype: project\ninjected: yes",
+      type: "feedback",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.frontmatter.type).toBe("feedback");
+    expect(parsed?.frontmatter.description).not.toContain("\n");
+  });
+
+  test("roundtrips field values with colons", () => {
+    const fm: MemoryFrontmatter = {
+      name: "key: value: nested",
+      description: "has: colons: everywhere",
+      type: "reference",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "content");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.frontmatter.name).toBe("key: value: nested");
+    expect(parsed?.frontmatter.description).toBe("has: colons: everywhere");
+  });
+
+  test("strips control characters from fields", () => {
+    const fm: MemoryFrontmatter = {
+      name: "test\x00name\x07here",
+      description: "desc\x01ription",
+      type: "user",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.frontmatter.name).toBe("testnamehere");
+    expect(parsed?.frontmatter.description).toBe("description");
+  });
+
+  test("handles --- delimiter in field values without breaking parse", () => {
+    const fm: MemoryFrontmatter = {
+      name: "name with --- dashes",
+      description: "description",
+      type: "project",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.frontmatter.name).toBe("name with --- dashes");
+  });
+
+  test("handles CRLF newlines in fields", () => {
+    const fm: MemoryFrontmatter = {
+      name: "windows\r\nstyle",
+      description: "also\r\nhere",
+      type: "user",
+    };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(serialized);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.frontmatter.name).toBe("windows style");
+    expect(parsed?.frontmatter.description).toBe("also here");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: index entry roundtrip with Markdown metacharacters
+// ---------------------------------------------------------------------------
+
+describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
+  test("roundtrips title with brackets", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Config [v2]",
+      filePath: "config_v2.md",
+      hook: "v2 config reference",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toEqual(entry);
+  });
+
+  test("roundtrips file path with parentheses", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Test Entry",
+      filePath: "path (copy).md",
+      hook: "a hook",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toEqual(entry);
+  });
+
+  test("roundtrips title with multiple brackets", () => {
+    const entry: MemoryIndexEntry = {
+      title: "[important] [urgent]",
+      filePath: "important.md",
+      hook: "tagged memory",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toEqual(entry);
+  });
+
+  test("roundtrips hook containing em dash", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Test",
+      filePath: "test.md",
+      hook: "first part — second part",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    // The hook captures everything after the first " — ", including embedded em dashes
+    expect(parsed).toBeDefined();
+    expect(parsed?.title).toBe("Test");
+    expect(parsed?.hook).toBe("first part — second part");
   });
 });

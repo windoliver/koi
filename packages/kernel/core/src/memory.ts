@@ -124,6 +124,42 @@ export interface MemoryIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Frontmatter field sanitization
+// ---------------------------------------------------------------------------
+
+/** Control character pattern (C0/C1 except tab) — global for .replace(). */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — we need to match and strip control chars
+const CONTROL_CHAR_REPLACE_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+
+/** Control character pattern (C0/C1 except tab) — non-global for .test(). */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — we need to detect control chars
+const CONTROL_CHAR_TEST_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
+
+/**
+ * Sanitizes a frontmatter field value for safe YAML-like serialization.
+ *
+ * - Replaces newlines (LF, CR, CRLF) with spaces to prevent line injection
+ * - Strips control characters (except tab, which is harmless)
+ * - Collapses resulting whitespace runs
+ * - Trims leading/trailing whitespace
+ */
+function sanitizeFrontmatterValue(value: string): string {
+  return value
+    .replace(/\r\n|\r|\n/g, " ")
+    .replace(CONTROL_CHAR_REPLACE_RE, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Returns true if the value contains characters unsafe for frontmatter fields:
+ * newlines or control characters.
+ */
+export function hasFrontmatterUnsafeChars(value: string): boolean {
+  return /[\r\n]/.test(value) || CONTROL_CHAR_TEST_RE.test(value);
+}
+
+// ---------------------------------------------------------------------------
 // Frontmatter parsing and serialization
 // ---------------------------------------------------------------------------
 
@@ -148,17 +184,24 @@ export function parseMemoryFrontmatter(
   const trimmed = raw.trimStart();
   if (!trimmed.startsWith("---")) return undefined;
 
-  const endIndex = trimmed.indexOf("---", 3);
-  if (endIndex === -1) return undefined;
+  // Find closing delimiter on its own line (not a substring like "----")
+  const afterOpener = trimmed.indexOf("\n", 3);
+  if (afterOpener === -1) return undefined;
 
-  const yamlBlock = trimmed.slice(3, endIndex).trim();
-  const content = trimmed.slice(endIndex + 3).replace(/^\n/, "");
+  const rest = trimmed.slice(afterOpener + 1);
+  const closeMatch = rest.match(/^---\s*$/m);
+  if (!closeMatch || closeMatch.index === undefined) return undefined;
+
+  const yamlBlock = rest.slice(0, closeMatch.index).trim();
+  const content = rest.slice(closeMatch.index + closeMatch[0].length).replace(/^\n/, "");
 
   const fields = new Map<string, string>();
   for (const line of yamlBlock.split("\n")) {
     const colonIndex = line.indexOf(":");
     if (colonIndex === -1) continue;
     const key = line.slice(0, colonIndex).trim();
+    // Only accept known keys to prevent injected fields from being consumed
+    if (key !== "name" && key !== "description" && key !== "type") continue;
     const value = line.slice(colonIndex + 1).trim();
     fields.set(key, value);
   }
@@ -178,15 +221,21 @@ export function parseMemoryFrontmatter(
 
 /**
  * Serializes a MemoryFrontmatter + content into a Markdown file string.
+ *
+ * Field values are sanitized: newlines are replaced with spaces and control
+ * characters are stripped to prevent frontmatter injection.
  */
 export function serializeMemoryFrontmatter(
   frontmatter: MemoryFrontmatter,
   content: string,
 ): string {
+  const name = sanitizeFrontmatterValue(frontmatter.name);
+  const description = sanitizeFrontmatterValue(frontmatter.description);
+
   return [
     "---",
-    `name: ${frontmatter.name}`,
-    `description: ${frontmatter.description}`,
+    `name: ${name}`,
+    `description: ${description}`,
     `type: ${frontmatter.type}`,
     "---",
     "",
@@ -245,25 +294,60 @@ export function validateMemoryRecordInput(
 // Index entry formatting
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Index entry escaping
+// ---------------------------------------------------------------------------
+
+/** Escapes Markdown link metacharacters in a title (brackets). */
+function escapeTitle(value: string): string {
+  return value.replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
+
+/** Unescapes Markdown link metacharacters in a title. */
+function unescapeTitle(value: string): string {
+  return value.replace(/\\\[/g, "[").replace(/\\\]/g, "]");
+}
+
+/** Escapes parentheses in a file path for Markdown link syntax. */
+function escapeFilePath(value: string): string {
+  return value.replace(/\(/g, "%28").replace(/\)/g, "%29");
+}
+
+/** Unescapes percent-encoded parentheses in a file path. */
+function unescapeFilePath(value: string): string {
+  return value.replace(/%28/g, "(").replace(/%29/g, ")");
+}
+
 /**
  * Formats a MemoryIndexEntry as a single Markdown line for MEMORY.md.
  *
  * Output: `- [Title](file.md) — one-line hook`
+ *
+ * Title brackets and path parentheses are escaped to ensure roundtrip
+ * fidelity with `parseMemoryIndexEntry`.
  */
 export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string {
-  return `- [${entry.title}](${entry.filePath}) — ${entry.hook}`;
+  const title = escapeTitle(entry.title);
+  const filePath = escapeFilePath(entry.filePath);
+  return `- [${title}](${filePath}) — ${entry.hook}`;
 }
 
 /**
  * Parses a single MEMORY.md index line into a MemoryIndexEntry.
  *
  * Expected format: `- [Title](file.md) — one-line hook`
+ * Handles escaped brackets in titles and percent-encoded parentheses in paths.
  * Returns undefined if the line doesn't match the expected format.
  */
 export function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined {
-  const match = line.match(/^- \[([^\]]+)\]\(([^)]+)\) — (.+)$/);
+  // Match with support for escaped brackets in title: \[ and \] are valid title chars
+  const match = line.match(/^- \[((?:[^\]\\]|\\.)+)\]\(((?:[^)\\]|%28|%29)+)\) — (.+)$/);
   if (!match) return undefined;
-  const [, title, filePath, hook] = match;
-  if (!title || !filePath || !hook) return undefined;
-  return { title, filePath, hook };
+  const [, rawTitle, rawFilePath, hook] = match;
+  if (!rawTitle || !rawFilePath || !hook) return undefined;
+  return {
+    title: unescapeTitle(rawTitle),
+    filePath: unescapeFilePath(rawFilePath),
+    hook,
+  };
 }
