@@ -149,6 +149,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -253,6 +254,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/net/fs-nexus": {
+      "name": "@koi/fs-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/net/mcp": {
       "name": "@koi/mcp",
       "version": "0.0.0",
@@ -280,6 +289,20 @@
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/security/redaction": {
+      "name": "@koi/redaction",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/ui/tui": {
+      "name": "@koi/tui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
   },
@@ -459,6 +482,8 @@
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
+    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/net/fs-nexus"],
+
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
@@ -475,6 +500,8 @@
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
+    "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
+
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
@@ -490,6 +517,8 @@
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
+
+    "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 

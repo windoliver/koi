@@ -19,8 +19,9 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
+export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookRedactionConfig, HookType, HttpHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
+export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, MemoryFrontmatter, MemoryIndex, MemoryIndexEntry, MemoryRecord, MemoryRecordId, MemoryRecordInput, MemoryRecordPatch, MemoryType, MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } from './memory.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
 export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
@@ -2793,7 +2794,7 @@ exports[`@koi/core API surface ./hook has stable type surface 1`] = `
 /** Supported hook transport types. */
 type HookType = "command" | "http" | "agent";
 /** Canonical list of hook lifecycle events. Single source of truth. */
-declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "subagent.started", "subagent.stopped", "config.changed"];
+declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "compact.blocked", "subagent.started", "subagent.stopped", "config.changed"];
 /** Typed hook lifecycle event discriminator (known events). */
 type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
 /**
@@ -2916,6 +2917,21 @@ interface HttpHookConfig {
     readonly failClosed?: boolean | undefined;
 }
 /**
+ * Redaction options for event data forwarded to agent hook prompts.
+ *
+ * Only meaningful when \`forwardRawPayload\` is true on an \`AgentHookConfig\`.
+ * When raw payload forwarding is enabled, detected secrets are redacted
+ * by default unless \`enabled\` is explicitly set to false.
+ */
+interface HookRedactionConfig {
+    /** Whether to apply secret redaction to forwarded data. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** Censor strategy for detected secrets. Default: "redact". */
+    readonly censor?: "redact" | "mask" | "remove" | undefined;
+    /** Additional field names to treat as sensitive (exact match, case-insensitive). */
+    readonly sensitiveFields?: readonly string[] | undefined;
+}
+/**
  * A hook that spawns a sub-agent (LLM loop) to verify conditions.
  *
  * The sub-agent runs in non-interactive mode with a restricted tool set
@@ -2946,6 +2962,23 @@ interface AgentHookConfig {
     readonly maxSessionTokens?: number | undefined;
     /** Tools to exclude from the sub-agent (in addition to default denylist). */
     readonly toolDenylist?: readonly string[] | undefined;
+    /**
+     * Controls how event.data is forwarded to the hook agent prompt.
+     *
+     * - \`true\` (default): forward the full payload with secret redaction applied.
+     *   Preserves values so content-based policies (commands, SQL, paths) work.
+     * - \`false\`: forward structural summary only (keys + type placeholders, no values).
+     *   Maximum privacy but hooks cannot inspect actual content.
+     *
+     * Default: true.
+     */
+    readonly forwardRawPayload?: boolean | undefined;
+    /**
+     * Redaction configuration for event data forwarded to the hook agent.
+     * Applied when \`forwardRawPayload\` is true (the default).
+     * Default: \`{ enabled: true, censor: "redact" }\`.
+     */
+    readonly redaction?: HookRedactionConfig | undefined;
     /** Filter conditions — when absent, fires on all events. */
     readonly filter?: HookFilter | undefined;
     /** Whether this hook is active. Default: true. */
@@ -3034,7 +3067,7 @@ declare const DEFAULT_AGENT_MAX_TOKENS: 4096;
  */
 declare const DEFAULT_AGENT_SESSION_TOKEN_BUDGET: 500000;
 
-export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
+export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookRedactionConfig, type HookType, type HttpHookConfig };
 "
 `;
 
@@ -4079,5 +4112,184 @@ interface ReplacementStore {
 }
 
 export { type ReplacementRef, type ReplacementStore, replacementRef };
+"
+`;
+
+exports[`@koi/core API surface ./memory has stable type surface 1`] = `
+"/**
+ * Memory record model — fact schema, categories, and frontmatter for
+ * persistent agent memory.
+ *
+ * Models the CC-style file-per-memory system where each memory is a
+ * Markdown file with key-value frontmatter (name, description, type)
+ * and a body containing the memory content.
+ *
+ * NOTE: The frontmatter format is a bespoke \`key: value\` line format,
+ * NOT standard YAML. It does not support YAML features like comments (#),
+ * quoting, multi-line scalars, or anchors. Values are treated as raw
+ * strings after the first colon.
+ *
+ * Exception: branded type constructor (memoryRecordId) is permitted in L0
+ * as a zero-logic identity cast for type safety.
+ * Exception: pure functions (isMemoryType, parseMemoryFrontmatter,
+ * serializeMemoryFrontmatter, validateMemoryRecord) are side-effect-free
+ * data operations on L0 types.
+ * Exception: ALL_MEMORY_TYPES and MEMORY_INDEX_MAX_LINES are pure readonly
+ * data constants derived from L0 type definitions.
+ */
+declare const __memoryRecordBrand: unique symbol;
+/** Branded string type for memory record identifiers. */
+type MemoryRecordId = string & {
+    readonly [__memoryRecordBrand]: "MemoryRecordId";
+};
+/** Create a branded MemoryRecordId from a plain string. */
+declare function memoryRecordId(raw: string): MemoryRecordId;
+/**
+ * Memory category type.
+ *
+ * - \`user\` — role, preferences, expertise, knowledge (always private)
+ * - \`feedback\` — corrections AND validated approaches from the user
+ * - \`project\` — ongoing work context, deadlines, decisions
+ * - \`reference\` — pointers to external systems and resources
+ */
+type MemoryType = "user" | "feedback" | "project" | "reference";
+/** All valid memory types as a readonly tuple. */
+declare const ALL_MEMORY_TYPES: readonly MemoryType[];
+/** Type guard — returns true if the value is a valid MemoryType. */
+declare function isMemoryType(value: unknown): value is MemoryType;
+/** Frontmatter fields for a memory file (bespoke key: value format, not YAML). */
+interface MemoryFrontmatter {
+    readonly name: string;
+    readonly description: string;
+    readonly type: MemoryType;
+}
+/** A complete memory record with frontmatter + content. */
+interface MemoryRecord {
+    readonly id: MemoryRecordId;
+    readonly name: string;
+    readonly description: string;
+    readonly type: MemoryType;
+    readonly content: string;
+    readonly filePath: string;
+    readonly createdAt: number;
+    readonly updatedAt: number;
+}
+/** Input shape for creating a new memory record. */
+interface MemoryRecordInput {
+    readonly name: string;
+    readonly description: string;
+    readonly type: MemoryType;
+    readonly content: string;
+}
+/** Sparse update shape for modifying a memory record. */
+interface MemoryRecordPatch {
+    readonly name?: string | undefined;
+    readonly description?: string | undefined;
+    readonly type?: MemoryType | undefined;
+    readonly content?: string | undefined;
+}
+/** Maximum number of lines in MEMORY.md before truncation. */
+declare const MEMORY_INDEX_MAX_LINES = 200;
+/** A single entry in the MEMORY.md index. */
+interface MemoryIndexEntry {
+    readonly title: string;
+    readonly filePath: string;
+    readonly hook: string;
+}
+/** The MEMORY.md index — always loaded into conversation context. */
+interface MemoryIndex {
+    readonly entries: readonly MemoryIndexEntry[];
+}
+/**
+ * Returns true if the value contains characters unsafe for frontmatter fields:
+ * newlines or control characters.
+ */
+declare function hasFrontmatterUnsafeChars(value: string): boolean;
+/**
+ * Parses frontmatter from a memory Markdown file.
+ *
+ * Expects format:
+ * \`\`\`markdown
+ * ---
+ * name: {{name}}
+ * description: {{description}}
+ * type: {{type}}
+ * ---
+ * {{content}}
+ * \`\`\`
+ *
+ * Returns undefined if the frontmatter is missing or malformed.
+ * Rejects empty/whitespace-only bodies (truncated writes).
+ * Preserves leading blank lines in content during roundtrips.
+ */
+declare function parseMemoryFrontmatter(raw: string): {
+    readonly frontmatter: MemoryFrontmatter;
+    readonly content: string;
+} | undefined;
+/**
+ * Serializes a MemoryFrontmatter + content into a Markdown file string.
+ *
+ * All field values are validated and sanitized: newlines are replaced with
+ * spaces and control characters are stripped to prevent frontmatter injection.
+ * The \`type\` field is validated at runtime (not just via TypeScript types)
+ * to reject injected values from untyped JavaScript callers.
+ *
+ * Returns undefined if \`type\` is not a valid MemoryType at runtime,
+ * or if content is empty/whitespace-only (aligned with parser invariant).
+ */
+declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string | undefined;
+/** Validation error for memory records. */
+interface MemoryValidationError {
+    readonly field: string;
+    readonly message: string;
+}
+/**
+ * Validates a MemoryRecordInput, returning an array of validation errors.
+ * An empty array means the input is valid.
+ *
+ * Name and description are validated after sanitization (control char
+ * stripping) to match the serializer's acceptance criteria.
+ */
+declare function validateMemoryRecordInput(input: Readonly<Record<string, unknown>>): readonly MemoryValidationError[];
+/**
+ * Validates that a file path is safe for use in MEMORY.md index entries.
+ *
+ * Paths must not contain percent-encoded characters — the validated path
+ * must be the exact path consumers will use, with no encoding ambiguity.
+ *
+ * Requirements:
+ * - Must not contain any percent-encoded sequences
+ * - Must be a relative path (no leading \`/\` or drive letters like \`C:\`)
+ * - Must not contain \`..\` path traversal segments
+ * - Must end with \`.md\` extension
+ * - Must not be empty
+ *
+ * Returns undefined if valid, or an error message string if invalid.
+ */
+declare function validateMemoryFilePath(filePath: string): string | undefined;
+/**
+ * Formats a MemoryIndexEntry as a single Markdown line for MEMORY.md.
+ *
+ * Output: \`- [Title](file.md) — one-line hook\`
+ *
+ * All fields are sanitized (newlines/control chars stripped) to guarantee
+ * exactly one output line. Title brackets and path parentheses/percents
+ * are escaped for roundtrip fidelity with \`parseMemoryIndexEntry\`.
+ *
+ * File paths are validated: must be relative, no \`..\` traversal, \`.md\` extension.
+ * Returns undefined if any field is empty after sanitization or the path is invalid.
+ */
+declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined;
+/**
+ * Parses a single MEMORY.md index line into a MemoryIndexEntry.
+ *
+ * Expected format: \`- [Title](file.md) — one-line hook\`
+ * Handles escaped brackets in titles and percent-encoded chars in paths.
+ * Validates that the parsed file path is safe (relative, no traversal, .md).
+ * Returns undefined if the line doesn't match or the path is invalid.
+ */
+declare function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined;
+
+export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type MemoryIndex, type MemoryIndexEntry, type MemoryRecord, type MemoryRecordId, type MemoryRecordInput, type MemoryRecordPatch, type MemoryType, type MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput };
 "
 `;

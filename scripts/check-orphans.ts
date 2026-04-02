@@ -172,6 +172,8 @@ async function main(): Promise<void> {
     // Only check L2 packages (skip L0, L0u, L1, L3, L4)
     if (isExemptLayer(pkg.name)) continue;
     if (L0U_PACKAGES.has(pkg.name)) continue;
+    // Optional packages are wired at assembly time, not statically in runtime
+    if (pkg.optional) continue;
 
     if (!runtimeDeps.has(pkg.name)) {
       unwired.push(pkg.name);

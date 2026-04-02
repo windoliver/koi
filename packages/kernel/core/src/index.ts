@@ -602,6 +602,7 @@ export type {
   HookEventName,
   HookExecutionResult,
   HookFilter,
+  HookRedactionConfig,
   HookType,
   HttpHookConfig,
 } from "./hook.js";
@@ -660,6 +661,32 @@ export type {
   MessageKind,
 } from "./mailbox.js";
 export { messageId } from "./mailbox.js";
+// memory — LLM-visible persistent memory record model
+export type {
+  MemoryFrontmatter,
+  MemoryIndex,
+  MemoryIndexEntry,
+  MemoryRecord,
+  MemoryRecordId,
+  MemoryRecordInput,
+  MemoryRecordPatch,
+  MemoryType,
+  MemoryValidationError,
+} from "./memory.js";
+// memory — runtime values (branded constructor, guards, parser, serializer, validation)
+export {
+  ALL_MEMORY_TYPES,
+  formatMemoryIndexEntry,
+  hasFrontmatterUnsafeChars,
+  isMemoryType,
+  MEMORY_INDEX_MAX_LINES,
+  memoryRecordId,
+  parseMemoryFrontmatter,
+  parseMemoryIndexEntry,
+  serializeMemoryFrontmatter,
+  validateMemoryFilePath,
+  validateMemoryRecordInput,
+} from "./memory.js";
 // message
 export type {
   ButtonBlock,
