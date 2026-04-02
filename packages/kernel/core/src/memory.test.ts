@@ -471,4 +471,82 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
     expect(parsed?.title).toBe("Test");
     expect(parsed?.hook).toBe("first part — second part");
   });
+
+  test("roundtrips file path already containing %28 and %29", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Encoded Path",
+      filePath: "foo%28bar%29.md",
+      hook: "path with percent-encoded parens",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toEqual(entry);
+  });
+
+  test("newlines in hook are stripped to prevent line injection", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Safe",
+      filePath: "safe.md",
+      hook: "first\n- [Injected](evil.md) — boom",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    // Must be exactly one line
+    expect(formatted.split("\n")).toHaveLength(1);
+    // Must roundtrip (with sanitized hook)
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toBeDefined();
+    expect(parsed?.hook).not.toContain("\n");
+    expect(parsed?.title).toBe("Safe");
+  });
+
+  test("newlines in title are stripped to prevent line injection", () => {
+    const entry: MemoryIndexEntry = {
+      title: "line1\nline2",
+      filePath: "test.md",
+      hook: "a hook",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    expect(formatted.split("\n")).toHaveLength(1);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toBeDefined();
+    expect(parsed?.title).toBe("line1 line2");
+  });
+
+  test("newlines in filePath are stripped to prevent line injection", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Test",
+      filePath: "path\nevil.md",
+      hook: "a hook",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    expect(formatted.split("\n")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: frontmatter delimiter strictness
+// ---------------------------------------------------------------------------
+
+describe("parseMemoryFrontmatter (adversarial delimiters)", () => {
+  test("rejects ---- as opener (too many dashes)", () => {
+    const raw = "----\nname: test\ndescription: test\ntype: user\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects ---x as opener (trailing chars)", () => {
+    const raw = "---x\nname: test\ndescription: test\ntype: user\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects --- followed by non-newline text", () => {
+    const raw = "--- yaml\nname: test\ndescription: test\ntype: user\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("accepts exact --- followed by newline", () => {
+    const raw = "---\nname: valid\ndescription: valid desc\ntype: user\n---\ncontent";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result).toBeDefined();
+    expect(result?.frontmatter.name).toBe("valid");
+  });
 });

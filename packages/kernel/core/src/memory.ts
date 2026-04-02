@@ -182,9 +182,10 @@ export function parseMemoryFrontmatter(
   raw: string,
 ): { readonly frontmatter: MemoryFrontmatter; readonly content: string } | undefined {
   const trimmed = raw.trimStart();
-  if (!trimmed.startsWith("---")) return undefined;
 
-  // Find closing delimiter on its own line (not a substring like "----")
+  // Require opener to be exactly "---" followed by newline (reject "----", "---x", etc.)
+  if (!trimmed.startsWith("---\n") && !trimmed.startsWith("---\r\n")) return undefined;
+
   const afterOpener = trimmed.indexOf("\n", 3);
   if (afterOpener === -1) return undefined;
 
@@ -298,6 +299,17 @@ export function validateMemoryRecordInput(
 // Index entry escaping
 // ---------------------------------------------------------------------------
 
+/**
+ * Sanitizes an index entry field: strips newlines and control characters
+ * to guarantee each entry serializes to exactly one line.
+ */
+function sanitizeIndexValue(value: string): string {
+  return value
+    .replace(/\r\n|\r|\n/g, " ")
+    .replace(CONTROL_CHAR_REPLACE_RE, "")
+    .trim();
+}
+
 /** Escapes Markdown link metacharacters in a title (brackets). */
 function escapeTitle(value: string): string {
   return value.replace(/\[/g, "\\[").replace(/\]/g, "\\]");
@@ -308,14 +320,24 @@ function unescapeTitle(value: string): string {
   return value.replace(/\\\[/g, "[").replace(/\\\]/g, "]");
 }
 
-/** Escapes parentheses in a file path for Markdown link syntax. */
+/**
+ * Escapes a file path for safe use in Markdown link destinations.
+ *
+ * Encoding is reversible: literal `%` is escaped to `%25` first,
+ * then `(` and `)` are encoded to `%28` and `%29`. This ensures
+ * paths already containing `%28` or `%29` roundtrip correctly.
+ */
 function escapeFilePath(value: string): string {
-  return value.replace(/\(/g, "%28").replace(/\)/g, "%29");
+  return value.replace(/%/g, "%25").replace(/\(/g, "%28").replace(/\)/g, "%29");
 }
 
-/** Unescapes percent-encoded parentheses in a file path. */
+/**
+ * Unescapes a percent-encoded file path from a Markdown link destination.
+ *
+ * Decodes in reverse order: `%28`/`%29` → `(`/`)`, then `%25` → `%`.
+ */
 function unescapeFilePath(value: string): string {
-  return value.replace(/%28/g, "(").replace(/%29/g, ")");
+  return value.replace(/%28/g, "(").replace(/%29/g, ")").replace(/%25/g, "%");
 }
 
 /**
@@ -323,25 +345,27 @@ function unescapeFilePath(value: string): string {
  *
  * Output: `- [Title](file.md) — one-line hook`
  *
- * Title brackets and path parentheses are escaped to ensure roundtrip
- * fidelity with `parseMemoryIndexEntry`.
+ * All fields are sanitized (newlines/control chars stripped) to guarantee
+ * exactly one output line. Title brackets and path parentheses/percents
+ * are escaped for roundtrip fidelity with `parseMemoryIndexEntry`.
  */
 export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string {
-  const title = escapeTitle(entry.title);
-  const filePath = escapeFilePath(entry.filePath);
-  return `- [${title}](${filePath}) — ${entry.hook}`;
+  const title = escapeTitle(sanitizeIndexValue(entry.title));
+  const filePath = escapeFilePath(sanitizeIndexValue(entry.filePath));
+  const hook = sanitizeIndexValue(entry.hook);
+  return `- [${title}](${filePath}) — ${hook}`;
 }
 
 /**
  * Parses a single MEMORY.md index line into a MemoryIndexEntry.
  *
  * Expected format: `- [Title](file.md) — one-line hook`
- * Handles escaped brackets in titles and percent-encoded parentheses in paths.
+ * Handles escaped brackets in titles and percent-encoded chars in paths.
  * Returns undefined if the line doesn't match the expected format.
  */
 export function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined {
-  // Match with support for escaped brackets in title: \[ and \] are valid title chars
-  const match = line.match(/^- \[((?:[^\]\\]|\\.)+)\]\(((?:[^)\\]|%28|%29)+)\) — (.+)$/);
+  // Match with support for escaped brackets in title and percent-encoded chars in path
+  const match = line.match(/^- \[((?:[^\]\\]|\\.)+)\]\(((?:[^)\\]|%[0-9a-fA-F]{2})+)\) — (.+)$/);
   if (!match) return undefined;
   const [, rawTitle, rawFilePath, hook] = match;
   if (!rawTitle || !rawFilePath || !hook) return undefined;
