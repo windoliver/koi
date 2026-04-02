@@ -984,3 +984,156 @@ describe("Golden: @koi/hooks agent hooks", () => {
     expect(custom.has("WebFetch")).toBe(true); // user addition
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/mcp (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/mcp", () => {
+  test("resolver discovers tools from MCP connection and returns ToolDescriptors", async () => {
+    const { createMcpResolver, createMcpConnection, resolveServerConfig } = await import(
+      "@koi/mcp"
+    );
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+    const { ListToolsRequestSchema } = await import("@modelcontextprotocol/sdk/types.js");
+
+    // In-process MCP server with one tool
+    const server = new Server({ name: "test", version: "1.0.0" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: "ping",
+          description: "Ping test",
+          inputSchema: { type: "object" as const },
+        },
+      ],
+    }));
+
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "test-srv", command: "echo" }),
+      undefined,
+      {
+        createClient: () => new Client({ name: "test", version: "1.0.0" }) as never,
+        createTransport: () => ({
+          start: async () => {},
+          close: async () => {
+            await clientSide.close();
+          },
+          sdkTransport: clientSide,
+          get sessionId() {
+            return undefined;
+          },
+          onEvent: () => () => {},
+        }),
+      },
+    );
+
+    const resolver = createMcpResolver([conn]);
+    const descriptors = await resolver.discover();
+
+    expect(descriptors.length).toBe(1);
+    expect(descriptors[0]?.name).toBe("test-srv__ping");
+    expect(descriptors[0]?.server).toBe("test-srv");
+    expect(descriptors[0]?.origin).toBe("operator");
+
+    resolver.dispose();
+    await conn.close();
+    await server.close();
+  });
+
+  test("ComponentProvider attaches MCP tools as ECS components", async () => {
+    const {
+      createMcpComponentProvider,
+      createMcpResolver,
+      createMcpConnection,
+      resolveServerConfig,
+    } = await import("@koi/mcp");
+    const { isAttachResult, agentId } = await import("@koi/core");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+    const { ListToolsRequestSchema, CallToolRequestSchema } = await import(
+      "@modelcontextprotocol/sdk/types.js"
+    );
+
+    const server = new Server({ name: "test", version: "1.0.0" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: "greet",
+          description: "Greet someone",
+          inputSchema: {
+            type: "object" as const,
+            properties: { name: { type: "string" } },
+          },
+        },
+      ],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (req) => ({
+      content: [{ type: "text" as const, text: `Hello ${String(req.params.arguments?.name)}!` }],
+    }));
+
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "greet-srv", command: "echo" }),
+      undefined,
+      {
+        createClient: () => new Client({ name: "test", version: "1.0.0" }) as never,
+        createTransport: () => ({
+          start: async () => {},
+          close: async () => {
+            await clientSide.close();
+          },
+          sdkTransport: clientSide,
+          get sessionId() {
+            return undefined;
+          },
+          onEvent: () => () => {},
+        }),
+      },
+    );
+
+    const resolver = createMcpResolver([conn]);
+    const provider = createMcpComponentProvider({ resolver });
+
+    const agent = {
+      pid: { id: agentId("t"), name: "t", type: "worker" as const, depth: 0 },
+      manifest: {
+        name: "t",
+        version: "0.0.0",
+        model: { name: "m" },
+        tools: [],
+        channels: [],
+        middleware: [],
+      },
+      state: "running" as const,
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const result = await provider.attach(agent);
+    expect(isAttachResult(result)).toBe(true);
+    if (isAttachResult(result)) {
+      expect(result.components.size).toBe(1);
+      const tool = [...result.components.values()][0] as {
+        execute: (args: Record<string, unknown>) => Promise<unknown>;
+      };
+      const execResult = await tool.execute({ name: "World" });
+      expect(execResult).toEqual([{ type: "text", text: "Hello World!" }]);
+    }
+
+    resolver.dispose();
+    await conn.close();
+    await server.close();
+  });
+});

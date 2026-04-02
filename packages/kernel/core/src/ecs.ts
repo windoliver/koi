@@ -285,6 +285,8 @@ export interface ToolDescriptor {
   readonly tags?: readonly string[];
   /** How this tool entered the system. Absent for legacy callers (treated as "primordial"). */
   readonly origin?: ToolOrigin;
+  /** Server that provides this tool (e.g. MCP server name). Used for provenance without parsing name conventions. */
+  readonly server?: string | undefined;
 }
 
 /**
