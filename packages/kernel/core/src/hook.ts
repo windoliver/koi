@@ -157,6 +157,8 @@ export interface HttpHookConfig {
   readonly headers?: Readonly<Record<string, string>> | undefined;
   /** HMAC-SHA256 signing secret. Supports env-var substitution. */
   readonly secret?: string | undefined;
+  /** Env vars this hook is allowed to reference via ${VAR} expansion. */
+  readonly allowedEnvVars?: readonly string[] | undefined;
   /** Filter conditions — when absent, fires on all events. */
   readonly filter?: HookFilter | undefined;
   /** Whether this hook is active. Default: true. */
@@ -190,6 +192,22 @@ export interface HttpHookConfig {
 export type HookConfig = CommandHookConfig | HttpHookConfig;
 
 // ---------------------------------------------------------------------------
+// Env-var policy — system-wide allowlist for hook env-var expansion
+// ---------------------------------------------------------------------------
+
+/**
+ * System-wide policy controlling which env vars hooks may access
+ * via `${VAR}` expansion in headers and secrets.
+ *
+ * Patterns support simple glob wildcards (`*` and `?`).
+ * A var must match at least one pattern to be expandable.
+ * When combined with per-hook `allowedEnvVars`, a var must pass both.
+ */
+export interface HookEnvPolicy {
+  readonly allowedPatterns: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Hook decision — structured response from hook executors
 // ---------------------------------------------------------------------------
 
@@ -200,11 +218,20 @@ export type HookConfig = CommandHookConfig | HttpHookConfig;
  * - `continue` — no opinion, proceed normally (default when no response)
  * - `block` — stop this operation with a reason visible to the model
  * - `modify` — patch the operation's input before proceeding
+ * - `transform` — patch the operation's output after execution (PostToolUse only).
+ *   `outputPatch` is shallow-merged into the tool response output (or replaces
+ *   it when the output is not a plain object). Optional `metadata` is merged
+ *   into the response metadata for additional context injection.
  */
 export type HookDecision =
   | { readonly kind: "continue" }
   | { readonly kind: "block"; readonly reason: string }
-  | { readonly kind: "modify"; readonly patch: JsonObject };
+  | { readonly kind: "modify"; readonly patch: JsonObject }
+  | {
+      readonly kind: "transform";
+      readonly outputPatch: JsonObject;
+      readonly metadata?: JsonObject;
+    };
 
 // ---------------------------------------------------------------------------
 // Hook execution result
