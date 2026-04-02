@@ -15,6 +15,7 @@
     { "path": "../../lib/query-engine" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/tools-core" },
+    { "path": "../../lib/tools-web" },
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../net/mcp" },
     { "path": "../../security/middleware-permissions" },
