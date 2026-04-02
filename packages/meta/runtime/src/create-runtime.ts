@@ -527,11 +527,24 @@ function composeMiddlewareIntoAdapter(
       const sorted = sortMiddlewareByPhase(wrappedMiddleware);
       const chains: RecomposedChains = recomposeChains(sorted, terminals, instrumentation);
       const streamChain = chains.streamChain;
-      // let: mutable turn counter for instrumentation
+      // let: mutable turn counter — each call gets its own index eagerly
       let turnCounter = 0;
 
+      /** Allocate a turn index for a new model/tool call. Must be called
+       *  before the call starts so each invocation has its own index. */
+      function allocateTurnIndex(): number {
+        const index = turnCounter;
+        turnCounter++;
+        return index;
+      }
+
+      /** Create a context with the given turnIndex. */
+      function ctxForTurn(turnIndex: number): TurnContext {
+        return { ...ctx, turnIndex };
+      }
+
       /** Collect DebugSpans + I/O captures and record as trajectory steps. */
-      function recordSpans(traceCallId: string): void {
+      function recordSpans(traceCallId: string, turnIndex: number): void {
         if (buffer === undefined) return;
 
         // Extract I/O captures for THIS specific call (scoped by traceCallId)
@@ -545,7 +558,6 @@ function composeMiddlewareIntoAdapter(
         }
 
         if (instrumentation !== undefined) {
-          const turnIndex = turnCounter++;
           instrumentation.onTurnEnd(turnIndex);
           const trace = instrumentation.getTrace(turnIndex);
           if (trace !== undefined) {
@@ -605,6 +617,7 @@ function composeMiddlewareIntoAdapter(
       // Model call wrapper: traceCallId + signal + chain-level I/O + timing + spans
       const tracedModelCall = async (request: ModelRequest): Promise<ModelResponse> => {
         const traceCallId = crypto.randomUUID();
+        const turnIndex = allocateTurnIndex();
         const enriched: ModelRequest = {
           ...request,
           metadata: { ...request.metadata, traceCallId },
@@ -612,7 +625,7 @@ function composeMiddlewareIntoAdapter(
         };
         const start = performance.now();
         try {
-          const response = await chains.modelChain(ctx, enriched);
+          const response = await chains.modelChain(ctxForTurn(turnIndex), enriched);
           buffer?.push(
             createModelStep(
               buffer.size(),
@@ -623,7 +636,7 @@ function composeMiddlewareIntoAdapter(
               response.content,
             ),
           );
-          recordSpans(traceCallId);
+          recordSpans(traceCallId, turnIndex);
           return response;
         } catch (error: unknown) {
           buffer?.push(
@@ -635,7 +648,7 @@ function composeMiddlewareIntoAdapter(
               performance.now() - start,
             ),
           );
-          recordSpans(traceCallId);
+          recordSpans(traceCallId, turnIndex);
           throw error;
         }
       };
@@ -643,6 +656,7 @@ function composeMiddlewareIntoAdapter(
       // Tool call wrapper: traceCallId + signal + chain-level I/O + timing + spans
       const tracedToolCall = async (request: ToolRequest): Promise<ToolResponse> => {
         const traceCallId = crypto.randomUUID();
+        const turnIndex = allocateTurnIndex();
         const enriched: ToolRequest = {
           ...request,
           metadata: { ...request.metadata, traceCallId },
@@ -650,7 +664,7 @@ function composeMiddlewareIntoAdapter(
         };
         const start = performance.now();
         try {
-          const response = await chains.toolChain(ctx, enriched);
+          const response = await chains.toolChain(ctxForTurn(turnIndex), enriched);
           const preview =
             typeof response.output === "string"
               ? response.output.slice(0, 200)
@@ -664,7 +678,7 @@ function composeMiddlewareIntoAdapter(
               preview,
             ),
           );
-          recordSpans(traceCallId);
+          recordSpans(traceCallId, turnIndex);
           return response;
         } catch (error: unknown) {
           buffer?.push(
@@ -676,7 +690,7 @@ function composeMiddlewareIntoAdapter(
               performance.now() - start,
             ),
           );
-          recordSpans(traceCallId);
+          recordSpans(traceCallId, turnIndex);
           throw error;
         }
       };
@@ -687,8 +701,10 @@ function composeMiddlewareIntoAdapter(
         readonly traceCallId: string;
         readonly request: ModelRequest;
         readonly start: number;
+        readonly turnIndex: number;
         // let: mutable — updated as chunks flow
         content: string | undefined;
+        completed: boolean;
         failed: boolean;
         errorMessage: string | undefined;
       }
@@ -698,6 +714,7 @@ function composeMiddlewareIntoAdapter(
         streamChain !== undefined
           ? (request: ModelRequest): AsyncIterable<ModelChunk> => {
               const traceCallId = crypto.randomUUID();
+              const turnIndex = allocateTurnIndex();
               const enriched: ModelRequest = {
                 ...request,
                 metadata: { ...request.metadata, traceCallId },
@@ -708,16 +725,19 @@ function composeMiddlewareIntoAdapter(
                 request: enriched,
                 start: performance.now(),
                 content: undefined,
+                completed: false,
                 failed: false,
                 errorMessage: undefined,
+                turnIndex,
               };
               pendingStreamCalls.set(traceCallId, record);
 
-              const inner = streamChain(ctx, enriched);
+              const inner = streamChain(ctxForTurn(turnIndex), enriched);
               return trackModelStreamContent(
                 inner,
                 (content) => {
                   record.content = content;
+                  record.completed = true;
                   record.failed = false;
                 },
                 (error) => {
@@ -761,6 +781,17 @@ function composeMiddlewareIntoAdapter(
                     performance.now() - sc.start,
                   ),
                 );
+              } else if (!sc.completed) {
+                // Stream was abandoned — adapter stopped consuming before terminal chunk
+                buffer.push(
+                  createModelErrorStep(
+                    buffer.size(),
+                    sc.traceCallId,
+                    sc.request,
+                    "Stream abandoned before terminal chunk",
+                    performance.now() - sc.start,
+                  ),
+                );
               } else {
                 buffer.push(
                   createModelStep(
@@ -773,7 +804,7 @@ function composeMiddlewareIntoAdapter(
                   ),
                 );
               }
-              recordSpans(sc.traceCallId);
+              recordSpans(sc.traceCallId, sc.turnIndex);
             }
             pendingStreamCalls.clear();
           }

@@ -130,7 +130,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
         kind: "command",
         name: "on-tool-exec",
         cmd: ["echo", "hook-fired"],
-        filter: { events: ["tool.executed"] },
+        filter: { events: ["tool.succeeded"] },
       },
     ]);
     expect(hookResult.ok).toBe(true);

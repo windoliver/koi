@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.014Z",
+      "timestamp": "2026-04-02T08:19:44.125Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.014Z",
+      "timestamp": "2026-04-02T08:19:44.125Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,40 +56,41 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.726Z",
+      "timestamp": "2026-04-02T08:19:44.699Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending steps)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-      "duration_ms": 710.31025,
-      "outcome": "success",
+      "duration_ms": 572.8742500000001,
+      "outcome": "failure",
       "extra": {
         "type": "middleware_span",
         "middlewareName": "permissions",
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "error": "stream abandoned"
       }
     },
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.731Z",
+      "timestamp": "2026-04-02T08:19:44.704Z",
       "model_name": "hook:on-tool-exec",
-      "message": "tool.executed:add_numbers → on-tool-exec",
-      "duration_ms": 8.689499999999953,
+      "message": "tool.succeeded:add_numbers → on-tool-exec",
+      "duration_ms": 7.380874999999833,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
-        "triggerEvent": "tool.executed:add_numbers",
+        "triggerEvent": "tool.succeeded:add_numbers",
         "hookName": "on-tool-exec"
       }
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.735Z",
+      "timestamp": "2026-04-02T08:19:44.709Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "message": "add_numbers({\"a\":7,\"b\":5})",
       "observation": {
         "results": [
           {
@@ -97,7 +98,7 @@
           }
         ]
       },
-      "duration_ms": 14.530915999999706,
+      "duration_ms": 14.599167000000307,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -111,9 +112,9 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:26.735Z",
+      "timestamp": "2026-04-02T08:19:44.710Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "message": "add_numbers({\"a\":7,\"b\":5})",
       "observation": {
         "results": [
           {
@@ -121,7 +122,7 @@
           }
         ]
       },
-      "duration_ms": 16.219582999999602,
+      "duration_ms": 16.504207999999835,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -135,7 +136,7 @@
     {
       "step_id": 6,
       "source": "agent",
-      "timestamp": "2026-04-02T07:52:26.017Z",
+      "timestamp": "2026-04-02T08:19:44.128Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
       "observation": {
@@ -149,7 +150,7 @@
         "prompt_tokens": 390,
         "completion_tokens": 7
       },
-      "duration_ms": 709,
+      "duration_ms": 571,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -179,14 +180,14 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-02T07:52:26.720Z",
+      "timestamp": "2026-04-02T08:19:44.695Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_7",
           "function_name": "add_numbers",
           "arguments": {
-            "b": 5,
-            "a": 7
+            "a": 7,
+            "b": 5
           }
         }
       ],
@@ -198,30 +199,31 @@
           }
         ]
       },
-      "duration_ms": 15,
+      "duration_ms": 14,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-02T07:52:27.191Z",
+      "timestamp": "2026-04-02T08:19:45.171Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending steps)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
-      "duration_ms": 454.0107499999999,
-      "outcome": "success",
+      "duration_ms": 459.07058300000017,
+      "outcome": "failure",
       "extra": {
         "type": "middleware_span",
         "middlewareName": "permissions",
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "error": "stream abandoned"
       }
     },
     {
       "step_id": 9,
       "source": "agent",
-      "timestamp": "2026-04-02T07:52:26.737Z",
+      "timestamp": "2026-04-02T08:19:44.712Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":12}",
       "observation": {
@@ -235,7 +237,7 @@
         "prompt_tokens": 396,
         "completion_tokens": 3
       },
-      "duration_ms": 454,
+      "duration_ms": 459,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,

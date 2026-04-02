@@ -279,7 +279,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
         kind: "command",
         name: "on-tool-exec",
         cmd: ["echo", "hook"],
-        filter: { events: ["tool.executed"] },
+        filter: { events: ["tool.succeeded"] },
       },
     ]);
     const hookMw = createHookDispatchMiddleware({

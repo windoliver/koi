@@ -2,13 +2,20 @@
  * Hook dispatch middleware — fires user-defined hooks on model/tool events
  * and records hook execution as system steps in the ATIF trajectory.
  *
- * Wraps model and tool calls to dispatch matching hooks via @koi/hooks
- * executeHooks(). Each hook execution is recorded as a RichTrajectoryStep
- * with source: "system" for visibility in the trajectory.
+ * Uses canonical event names from @koi/core (HOOK_EVENT_KINDS):
+ * - tool.before: pre-execution, supports block/modify decisions
+ * - tool.succeeded: post-execution on success (observe only)
+ * - tool.failed: post-execution on failure (observe only)
+ *
+ * Hook decisions are enforced:
+ * - block: throws an error to prevent the operation
+ * - modify: patches the request input before proceeding
+ * - continue: no-op, proceed normally
  */
 
 import type {
   HookConfig,
+  HookDecision,
   HookEvent,
   HookExecutionResult,
   JsonObject,
@@ -39,6 +46,10 @@ export interface HookDispatchConfig {
 /**
  * Creates a middleware that dispatches hooks on model/tool call events
  * and records each execution as an ATIF trajectory step.
+ *
+ * Hook decisions are enforced for pre-execution hooks (tool.before):
+ * - block: throws to prevent the operation
+ * - modify: patches request.input before proceeding
  */
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
   const { hooks, store, docId, signal } = config;
@@ -50,10 +61,10 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     if (store === undefined || docId === undefined || results.length === 0) return;
 
     const steps: RichTrajectoryStep[] = results.map((result, index) => ({
-      stepIndex: index, // Corrected by store's global counter
+      stepIndex: index,
       timestamp: Date.now(),
       source: "system" as const,
-      kind: "model_call" as const, // Maps to message field in ATIF (not tool_calls)
+      kind: "model_call" as const,
       identifier: `hook:${result.hookName}`,
       outcome: result.ok ? ("success" as const) : ("failure" as const),
       durationMs: result.durationMs,
@@ -71,10 +82,37 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     });
   }
 
+  /**
+   * Aggregate hook decisions. First block wins, modify patches are merged
+   * in order (last writer wins per key).
+   */
+  function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision {
+    // let: mutable — accumulates modify patches
+    let mergedPatch: Record<string, unknown> | undefined;
+
+    for (const result of results) {
+      if (!result.ok) continue;
+      const { decision } = result;
+      if (decision.kind === "block") return decision;
+      if (decision.kind === "modify") {
+        if (mergedPatch === undefined) {
+          mergedPatch = { ...decision.patch };
+        } else {
+          Object.assign(mergedPatch, decision.patch);
+        }
+      }
+    }
+
+    if (mergedPatch !== undefined) {
+      return { kind: "modify", patch: mergedPatch as JsonObject };
+    }
+    return { kind: "continue" };
+  }
+
   return {
     name: "hook-dispatch",
     phase: "observe",
-    priority: 950, // After event-trace (100), near the end of observe phase
+    priority: 950,
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -83,15 +121,14 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     ): Promise<ModelResponse> {
       const response = await next(request);
 
-      // Fire hooks for model call completion
+      // Post-execution: turn.ended (observe only, no decisions enforced)
       const event: HookEvent = {
-        event: "model.completed",
+        event: "turn.ended",
         agentId: ctx.session.agentId,
         sessionId: ctx.session.sessionId as string,
       };
-      // Prefer live turn signal (carries timeout/cancel) over static config signal
       const results = await executeHooks(hooks, event, ctx.signal ?? signal);
-      await recordHookResults(results, "model.completed");
+      await recordHookResults(results, "turn.ended");
 
       return response;
     },
@@ -101,29 +138,49 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      // Fire pre-execution hooks
+      // Pre-execution: tool.before — supports block/modify decisions
       const preEvent: HookEvent = {
-        event: "tool.executing",
+        event: "tool.before",
         agentId: ctx.session.agentId,
         sessionId: ctx.session.sessionId as string,
         toolName: request.toolId,
       };
       const preResults = await executeHooks(hooks, preEvent, ctx.signal ?? signal);
-      await recordHookResults(preResults, `tool.executing:${request.toolId}`);
+      await recordHookResults(preResults, `tool.before:${request.toolId}`);
 
-      const response = await next(request);
+      // Enforce pre-execution decisions
+      const decision = aggregateDecisions(preResults);
+      if (decision.kind === "block") {
+        throw new Error(`Hook blocked tool ${request.toolId}: ${decision.reason}`);
+      }
 
-      // Fire post-execution hooks
-      const postEvent: HookEvent = {
-        event: "tool.executed",
-        agentId: ctx.session.agentId,
-        sessionId: ctx.session.sessionId as string,
-        toolName: request.toolId,
-      };
-      const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
-      await recordHookResults(postResults, `tool.executed:${request.toolId}`);
+      // Apply modify patches to tool input
+      const effectiveRequest =
+        decision.kind === "modify"
+          ? { ...request, input: { ...request.input, ...decision.patch } }
+          : request;
 
-      return response;
+      // let: mutable — tracks whether tool succeeded
+      let response: ToolResponse | undefined;
+      let toolError: unknown;
+      try {
+        response = await next(effectiveRequest);
+        return response;
+      } catch (e: unknown) {
+        toolError = e;
+        throw e;
+      } finally {
+        // Post-execution: tool.succeeded or tool.failed (observe only)
+        const postEventName = toolError === undefined ? "tool.succeeded" : "tool.failed";
+        const postEvent: HookEvent = {
+          event: postEventName,
+          agentId: ctx.session.agentId,
+          sessionId: ctx.session.sessionId as string,
+          toolName: request.toolId,
+        };
+        const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
+        await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
+      }
     },
 
     describeCapabilities: () => ({
