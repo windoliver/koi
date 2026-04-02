@@ -189,11 +189,9 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     if (!options?.dryRun) {
       // Optimistic concurrency via content-hash CAS: compute a SHA-256 hash
       // of the content we read, and pass it as expectedContentHash in the write
-      // call. Nexus servers that support CAS will reject the write atomically
-      // if the file changed since our read. Servers that don't support CAS
-      // will ignore the extra parameter — the write still succeeds but without
-      // conflict detection. This is the only correct approach; client-side
-      // verify-then-write has an inherent TOCTOU race.
+      // call. The server MUST enforce CAS atomically and confirm it by returning
+      // { casEnforced: true }. If the server does not confirm CAS, we fail
+      // closed — edit() refuses to report success without conflict protection.
       const encoder = new TextEncoder();
       const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(currentContent));
       const hashArray = new Uint8Array(hashBuffer);
@@ -201,12 +199,35 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
-      const writeResult = await rpcMutate<null>(transport, "write", {
-        path: fullPathResult.value,
-        content: modified,
-        expectedContentHash,
-      });
+      const writeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
+        transport,
+        "write",
+        {
+          path: fullPathResult.value,
+          content: modified,
+          expectedContentHash,
+        },
+      );
       if (!writeResult.ok) return writeResult;
+
+      // Fail closed: if the server did not confirm CAS enforcement, the write
+      // may have silently clobbered concurrent changes. Reject rather than
+      // report a potentially unsafe success.
+      const casConfirmed =
+        writeResult.value !== null &&
+        typeof writeResult.value === "object" &&
+        writeResult.value.casEnforced === true;
+      if (!casConfirmed) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Nexus server did not confirm CAS enforcement for edit of '${path}' — write succeeded but conflict detection was not guaranteed`,
+            retryable: false,
+            context: { path, expectedContentHash },
+          },
+        };
+      }
     }
 
     return { ok: true, value: { path, hunksApplied } };
@@ -244,10 +265,14 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       const isRecursive = options?.recursive === true;
       for (const file of raw.files as readonly string[]) {
         const normalized = file.replace(/^\/+/, "");
+        // Validate: only process entries that belong under the requested prefix.
+        // Drop out-of-scope entries to prevent leaking unrelated paths from a
+        // misbehaving server or version skew.
+        if (prefixWithSlash.length > 0 && !normalized.startsWith(prefixWithSlash)) {
+          continue;
+        }
         const relative =
-          prefixWithSlash.length > 0 && normalized.startsWith(prefixWithSlash)
-            ? normalized.slice(prefixWithSlash.length)
-            : normalized;
+          prefixWithSlash.length > 0 ? normalized.slice(prefixWithSlash.length) : normalized;
         if (relative.length === 0) continue;
         const slashIdx = relative.indexOf("/");
         if (slashIdx === -1) {

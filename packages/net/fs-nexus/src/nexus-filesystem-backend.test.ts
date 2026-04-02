@@ -38,6 +38,10 @@ function createMockTransport(): NexusTransport & {
         const path = params.path as string;
         const content = params.content as string;
         store.set(path, content);
+        // When CAS hash is provided, confirm enforcement (mock supports CAS)
+        if (params.expectedContentHash !== undefined) {
+          return { casEnforced: true } as T;
+        }
         return null as T;
       }
 
@@ -563,6 +567,24 @@ describe("validateNexusFileSystemConfig", () => {
     }
   });
 
+  test("basePath '/' (root) fails validation", () => {
+    const transport = createMockTransport();
+    const result = validateNexusFileSystemConfig({ transport, basePath: "/" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("basePath '///' (all slashes) fails validation", () => {
+    const transport = createMockTransport();
+    const result = validateNexusFileSystemConfig({ transport, basePath: "///" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
   test("factory throws on invalid config", () => {
     // @ts-expect-error — testing runtime validation
     expect(() => createNexusFileSystem({ transport: null })).toThrow();
@@ -762,6 +784,34 @@ describe("edit CAS", () => {
       expect(result.error.code).toBe("CONFLICT");
     }
   });
+
+  test("edit fails closed when server ignores CAS (no casEnforced)", async () => {
+    const { backend, transport } = createTestBackend();
+    await backend.write("/no-cas.txt", "content");
+
+    // Simulate server that ignores expectedContentHash and returns null
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "write" && params.expectedContentHash !== undefined) {
+        // Server writes but doesn't confirm CAS
+        const path = params.path as string;
+        transport.store.set(path, params.content as string);
+        return null as T;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const result = await backend.edit("/no-cas.txt", [{ oldText: "content", newText: "new" }]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("CAS enforcement");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -854,6 +904,29 @@ describe("list flat response handling", () => {
       for (const entry of result.value.entries) {
         expect(entry.kind).toBe("file");
       }
+    }
+  });
+
+  test("out-of-scope entries from flat list are filtered out", async () => {
+    const transport = createFlatListTransport([
+      "/fs/a.txt",
+      "/fs/b.txt",
+      "/other-tenant/secret.txt", // out of scope — wrong prefix
+      "/random/path.log", // out of scope
+    ]);
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const paths = result.value.entries.map((e) => e.path);
+      expect(paths).toContain("/a.txt");
+      expect(paths).toContain("/b.txt");
+      // Out-of-scope entries must not appear
+      expect(paths).not.toContain("/other-tenant/secret.txt");
+      expect(paths).not.toContain("/random/path.log");
+      expect(paths).not.toContain("/secret.txt");
+      expect(paths).not.toContain("/path.log");
+      expect(result.value.entries.length).toBe(2);
     }
   });
 });

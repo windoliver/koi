@@ -34,12 +34,16 @@ export function validateNexusFileSystemConfig(
   }
 
   if (config.basePath !== undefined) {
-    if (config.basePath === "") {
+    // Normalize before validation: strip leading slashes the same way the
+    // factory does, so we catch paths like "/" that collapse to empty.
+    const normalized = config.basePath.replace(/^\/+/, "");
+    if (normalized === "" || config.basePath === "") {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: "NexusFileSystemConfig.basePath must not be empty (omit for default)",
+          message:
+            "NexusFileSystemConfig.basePath must not be empty or root-only (omit for default)",
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         },
       };
