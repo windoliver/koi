@@ -44,6 +44,7 @@ import {
   DEFAULT_APPROVAL_CACHE_TTL_MS,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   DEFAULT_CACHE_CONFIG,
+  DEFAULT_DENIAL_ESCALATION_THRESHOLD,
 } from "./config.js";
 import { createDenialTracker, type DenialTracker } from "./denial-tracker.js";
 
@@ -373,6 +374,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     return t;
   }
 
+  // Denial escalation config
+  const escalationEnabled =
+    config.denialEscalation !== undefined && config.denialEscalation !== false;
+  const escalationThreshold = escalationEnabled
+    ? typeof config.denialEscalation === "object"
+      ? (config.denialEscalation.threshold ?? DEFAULT_DENIAL_ESCALATION_THRESHOLD)
+      : DEFAULT_DENIAL_ESCALATION_THRESHOLD
+    : Infinity;
+
   // Forged-tool default-deny bypass removed (v2): forged tools must be
   // explicitly allowed via backend rules. Name-based bypasses are unsafe
   // because tool identity can change between model filtering and execution.
@@ -469,6 +479,17 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     query: PermissionQuery,
     sessionId: string,
   ): Promise<PermissionDecision> {
+    // Denial escalation: skip backend if this tool has been denied enough times
+    if (escalationEnabled) {
+      const tracker = getTracker(sessionId);
+      if (tracker.getByTool(query.resource).length >= escalationThreshold) {
+        return {
+          effect: "deny",
+          reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
+        };
+      }
+    }
+
     // Circuit breaker check
     if (cb !== undefined && !cb.isAllowed()) {
       return { effect: "deny", reason: "Permission backend circuit open — failing closed" };
@@ -515,12 +536,27 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
     const decisionCache = getDecisionCache(sessionId);
 
-    // Partition into cached and uncached
+    // Partition into cached, escalated, and uncached
     const results: (PermissionDecision | undefined)[] = new Array(queries.length).fill(undefined);
     const uncachedIndices: number[] = [];
 
+    // Denial escalation: resolve escalated tools before cache/backend
+    if (escalationEnabled) {
+      const tracker = getTracker(sessionId);
+      for (let i = 0; i < queries.length; i++) {
+        const query = queries[i]!;
+        if (tracker.getByTool(query.resource).length >= escalationThreshold) {
+          results[i] = {
+            effect: "deny",
+            reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
+          };
+        }
+      }
+    }
+
     if (decisionCache !== undefined) {
       for (let i = 0; i < queries.length; i++) {
+        if (results[i] !== undefined) continue; // already escalated
         const query = queries[i]!;
         const key = decisionCacheKey(query);
         const cached = key !== undefined ? decisionCache.get(key) : undefined;
@@ -532,6 +568,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
     } else {
       for (let i = 0; i < queries.length; i++) {
+        if (results[i] !== undefined) continue; // already escalated
         uncachedIndices.push(i);
       }
     }

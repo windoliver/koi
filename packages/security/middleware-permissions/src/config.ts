@@ -27,6 +27,11 @@ export interface ApprovalCacheConfig {
   readonly maxEntries?: number;
 }
 
+export interface DenialEscalationConfig {
+  /** Auto-deny after this many denials per tool per session. Default: 3. */
+  readonly threshold?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -43,6 +48,8 @@ export const DEFAULT_APPROVAL_CACHE_TTL_MS: number = 300_000;
 export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number = 256;
 
 export const DEFAULT_APPROVAL_TIMEOUT_MS: number = 30_000;
+
+export const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number = 3;
 
 // ---------------------------------------------------------------------------
 // Middleware config
@@ -65,6 +72,8 @@ export interface PermissionsMiddlewareConfig {
   readonly auditSink?: AuditSink;
   /** Circuit breaker config for remote backends. */
   readonly circuitBreaker?: CircuitBreakerConfig;
+  /** Auto-deny after repeated denials per tool per session. Default: disabled. */
+  readonly denialEscalation?: boolean | DenialEscalationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +153,17 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     }
     if (ac.ttlMs !== undefined && !isNonNegativeNumber(ac.ttlMs)) {
       return fail("config.approvalCache.ttlMs must be a non-negative number");
+    }
+  }
+
+  // denialEscalation — boolean or DenialEscalationConfig
+  if (config.denialEscalation !== undefined && typeof config.denialEscalation !== "boolean") {
+    if (typeof config.denialEscalation !== "object" || config.denialEscalation === null) {
+      return fail("config.denialEscalation must be a boolean or DenialEscalationConfig object");
+    }
+    const de = config.denialEscalation as Record<string, unknown>;
+    if (de.threshold !== undefined && !isPositiveNumber(de.threshold)) {
+      return fail("config.denialEscalation.threshold must be a positive number");
     }
   }
 

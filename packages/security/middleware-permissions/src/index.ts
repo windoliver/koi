@@ -23,6 +23,7 @@ export {
 // Config
 export type {
   ApprovalCacheConfig,
+  DenialEscalationConfig,
   PermissionCacheConfig,
   PermissionsMiddlewareConfig,
 } from "./config.js";
@@ -31,6 +32,7 @@ export {
   DEFAULT_APPROVAL_CACHE_TTL_MS,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   DEFAULT_CACHE_CONFIG,
+  DEFAULT_DENIAL_ESCALATION_THRESHOLD,
   validatePermissionsConfig,
 } from "./config.js";
 

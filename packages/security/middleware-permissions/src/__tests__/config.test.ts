@@ -174,6 +174,65 @@ describe("validatePermissionsConfig", () => {
     expect(result.ok).toBe(false);
   });
 
+  // Denial escalation config
+  test("accepts denialEscalation: true", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: true,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts denialEscalation: false", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: false,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts valid denialEscalation config object", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: { threshold: 5 },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts denialEscalation with no threshold (uses default)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: {},
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects denialEscalation.threshold <= 0", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: { threshold: 0 },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("threshold");
+  });
+
+  test("rejects negative denialEscalation.threshold", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: { threshold: -1 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects non-object denialEscalation", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      denialEscalation: "yes",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("denialEscalation");
+  });
+
   test("all validation errors are non-retryable", () => {
     const result = validatePermissionsConfig(null);
     expect(result.ok).toBe(false);
