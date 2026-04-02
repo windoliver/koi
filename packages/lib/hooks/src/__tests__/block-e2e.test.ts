@@ -132,6 +132,7 @@ describe("E2E: command hook blocks model call", () => {
     expect(result.stopReason).toBe("hook_blocked");
     expect(result.model).toBe("test-model");
     assertDefined(result.metadata);
+    expect((result.metadata as Record<string, unknown>).blockedByHook).toBe(true);
     expect((result.metadata as Record<string, unknown>).reason).toBe("budget exceeded");
     expect((result.metadata as Record<string, unknown>).hookName).toBe("cmd-blocker");
 
@@ -171,6 +172,7 @@ describe("E2E: HTTP hook blocks model call", () => {
     expect(nextFn).not.toHaveBeenCalled();
     expect(result.content).toBe("");
     expect(result.stopReason).toBe("hook_blocked");
+    expect((result.metadata as Record<string, unknown>).blockedByHook).toBe(true);
     expect((result.metadata as Record<string, unknown>).reason).toBe("http hook says no");
     expect((result.metadata as Record<string, unknown>).hookName).toBe("http-blocker");
 

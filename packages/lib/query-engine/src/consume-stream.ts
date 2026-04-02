@@ -188,7 +188,8 @@ export async function* consumeModelStream(
           danglingOnDone.length > 0 ? "error" : isNonSuccess ? "error" : "completed";
 
         // Build metadata: merge response metadata (hook block info, etc.)
-        // with dangling tool call warnings.
+        // with dangling tool call warnings. Use distinct keys so dangling-tool-call
+        // diagnostics never overwrite upstream error details from the response.
         const responseMeta = chunk.response.metadata;
         const hasDangling = danglingOnDone.length > 0;
         const hasResponseMeta = responseMeta !== undefined && Object.keys(responseMeta).length > 0;
@@ -201,7 +202,7 @@ export async function* consumeModelStream(
                   : {}),
                 ...(hasDangling
                   ? {
-                      error: "done received with in-flight tool calls",
+                      danglingToolCallsError: "done received with in-flight tool calls",
                       danglingToolCalls: danglingOnDone,
                     }
                   : {}),

@@ -372,6 +372,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
           model: request.model ?? "unknown",
           stopReason: "hook_blocked",
           metadata: {
+            blockedByHook: true,
             reason: preResult.reason,
             hookName: preResult.hookName,
           },

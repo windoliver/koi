@@ -322,9 +322,9 @@ describe("consumeModelStream", () => {
     expect(done.output.stopReason).toBe("error");
     const meta = done.output.metadata as {
       readonly danglingToolCalls: readonly { readonly callId: string }[];
-      readonly error: string;
+      readonly danglingToolCallsError: string;
     };
-    expect(meta.error).toContain("in-flight tool calls");
+    expect(meta.danglingToolCallsError).toContain("in-flight tool calls");
     expect(meta.danglingToolCalls).toHaveLength(1);
     expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
   });
@@ -366,7 +366,7 @@ describe("consumeModelStream", () => {
           content: "",
           model: "test-model",
           stopReason: "hook_blocked",
-          metadata: { reason: "budget exceeded", hookName: "quota-guard" },
+          metadata: { blockedByHook: true, reason: "budget exceeded", hookName: "quota-guard" },
         },
       },
     ];
@@ -379,6 +379,7 @@ describe("consumeModelStream", () => {
     expect(done.output.content).toEqual([]);
     const meta = done.output.metadata as Record<string, unknown>;
     expect(meta.modelStopReason).toBe("hook_blocked");
+    expect(meta.blockedByHook).toBe(true);
     expect(meta.reason).toBe("budget exceeded");
     expect(meta.hookName).toBe("quota-guard");
   });

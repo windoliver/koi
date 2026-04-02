@@ -613,6 +613,7 @@ describe("wrapModelCall", () => {
     expect(result.stopReason).toBe("hook_blocked");
     expect(result.model).toBe("test-model");
     expect(result.metadata).toEqual({
+      blockedByHook: true,
       reason: "context too large",
       hookName: "guard",
     });
