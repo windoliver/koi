@@ -19,7 +19,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
+export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookRedactionConfig, HookType, HttpHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -2916,6 +2916,21 @@ interface HttpHookConfig {
     readonly failClosed?: boolean | undefined;
 }
 /**
+ * Redaction options for event data forwarded to agent hook prompts.
+ *
+ * Only meaningful when \`forwardRawPayload\` is true on an \`AgentHookConfig\`.
+ * When raw payload forwarding is enabled, detected secrets are redacted
+ * by default unless \`enabled\` is explicitly set to false.
+ */
+interface HookRedactionConfig {
+    /** Whether to apply secret redaction to forwarded data. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** Censor strategy for detected secrets. Default: "redact". */
+    readonly censor?: "redact" | "mask" | "remove" | undefined;
+    /** Additional field names to treat as sensitive (exact match, case-insensitive). */
+    readonly sensitiveFields?: readonly string[] | undefined;
+}
+/**
  * A hook that spawns a sub-agent (LLM loop) to verify conditions.
  *
  * The sub-agent runs in non-interactive mode with a restricted tool set
@@ -2946,6 +2961,23 @@ interface AgentHookConfig {
     readonly maxSessionTokens?: number | undefined;
     /** Tools to exclude from the sub-agent (in addition to default denylist). */
     readonly toolDenylist?: readonly string[] | undefined;
+    /**
+     * Controls how event.data is forwarded to the hook agent prompt.
+     *
+     * - \`true\` (default): forward the full payload with secret redaction applied.
+     *   Preserves values so content-based policies (commands, SQL, paths) work.
+     * - \`false\`: forward structural summary only (keys + type placeholders, no values).
+     *   Maximum privacy but hooks cannot inspect actual content.
+     *
+     * Default: true.
+     */
+    readonly forwardRawPayload?: boolean | undefined;
+    /**
+     * Redaction configuration for event data forwarded to the hook agent.
+     * Applied when \`forwardRawPayload\` is true (the default).
+     * Default: \`{ enabled: true, censor: "redact" }\`.
+     */
+    readonly redaction?: HookRedactionConfig | undefined;
     /** Filter conditions — when absent, fires on all events. */
     readonly filter?: HookFilter | undefined;
     /** Whether this hook is active. Default: true. */
@@ -3034,7 +3066,7 @@ declare const DEFAULT_AGENT_MAX_TOKENS: 4096;
  */
 declare const DEFAULT_AGENT_SESSION_TOKEN_BUDGET: 500000;
 
-export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
+export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookRedactionConfig, type HookType, type HttpHookConfig };
 "
 `;
 
