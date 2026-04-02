@@ -52,6 +52,27 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
   const transport = config.transport;
   const retries = DEFAULT_RETRIES;
 
+  // Lazy-cached CAS capability check via a dedicated non-mutating RPC.
+  // Resolved once on first edit(), then reused for the backend lifetime.
+  let casCapability: Promise<boolean> | undefined;
+
+  function checkCasSupport(): Promise<boolean> {
+    if (casCapability === undefined) {
+      casCapability = rpcRead<{ readonly cas?: boolean } | null>(
+        transport,
+        "capabilities",
+        {},
+        retries,
+      ).then((result) => {
+        if (!result.ok) return false;
+        return (
+          result.value !== null && typeof result.value === "object" && result.value.cas === true
+        );
+      });
+    }
+    return casCapability;
+  }
+
   async function read(
     path: string,
     options?: FileReadOptions,
@@ -186,34 +207,10 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     // Write back (unless dry run)
     if (!options?.dryRun) {
-      // Optimistic concurrency via content-hash CAS.
-      const encoder = new TextEncoder();
-      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(currentContent));
-      const hashArray = new Uint8Array(hashBuffer);
-      const expectedContentHash = Array.from(hashArray)
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-
-      // Probe CAS support BEFORE the mutating write. Send a dry-run write
-      // with the hash to verify the server understands CAS. If the probe
-      // does not confirm casEnforced, we reject before any mutation occurs.
-      const probeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
-        transport,
-        "write",
-        {
-          path: fullPathResult.value,
-          content: modified,
-          expectedContentHash,
-          dryRun: true,
-        },
-      );
-      if (!probeResult.ok) return probeResult;
-
-      const casSupported =
-        probeResult.value !== null &&
-        typeof probeResult.value === "object" &&
-        probeResult.value.casEnforced === true;
-      if (!casSupported) {
+      // Negotiate CAS support via the non-mutating "capabilities" RPC.
+      // This is resolved once and cached — no mutation, no ambiguity.
+      const hasCas = await checkCasSupport();
+      if (!hasCas) {
         return {
           ok: false,
           error: {
@@ -225,36 +222,22 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         };
       }
 
-      // Server confirmed CAS support on probe — perform the actual write and
-      // verify CAS enforcement on the real response too. This guards against
-      // server version skew where the probe path supports CAS but the actual
-      // write path does not.
-      const writeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
-        transport,
-        "write",
-        {
-          path: fullPathResult.value,
-          content: modified,
-          expectedContentHash,
-        },
-      );
-      if (!writeResult.ok) return writeResult;
+      // Server confirmed CAS capability — compute content hash and send
+      // a conditional write. The server contract guarantees it will reject
+      // the write atomically if the hash does not match.
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(currentContent));
+      const hashArray = new Uint8Array(hashBuffer);
+      const expectedContentHash = Array.from(hashArray)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
 
-      const writeCasConfirmed =
-        writeResult.value !== null &&
-        typeof writeResult.value === "object" &&
-        writeResult.value.casEnforced === true;
-      if (!writeCasConfirmed) {
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `Nexus server did not confirm CAS on the actual write for '${path}' — file may have been modified without conflict protection`,
-            retryable: false,
-            context: { path, expectedContentHash },
-          },
-        };
-      }
+      const writeResult = await rpcMutate<null>(transport, "write", {
+        path: fullPathResult.value,
+        content: modified,
+        expectedContentHash,
+      });
+      if (!writeResult.ok) return writeResult;
     }
 
     return { ok: true, value: { path, hunksApplied } };

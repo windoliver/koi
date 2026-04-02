@@ -37,19 +37,13 @@ function createMockTransport(): NexusTransport & {
       case "write": {
         const path = params.path as string;
         const content = params.content as string;
-        // CAS dry-run probe: confirm support without mutating
-        if (params.dryRun === true) {
-          if (params.expectedContentHash !== undefined) {
-            return { casEnforced: true } as T;
-          }
-          return null as T;
-        }
         store.set(path, content);
-        // When CAS hash is provided, confirm enforcement (mock supports CAS)
-        if (params.expectedContentHash !== undefined) {
-          return { casEnforced: true } as T;
-        }
         return null as T;
+      }
+
+      case "capabilities": {
+        // Mock server supports CAS
+        return { cas: true } as T;
       }
 
       case "list": {
@@ -767,12 +761,11 @@ describe("mutation safety", () => {
 // Edit CAS (content-hash compare-and-swap)
 // ---------------------------------------------------------------------------
 
-describe("edit CAS", () => {
-  test("edit sends expectedContentHash in write params", async () => {
+describe("edit CAS via capabilities negotiation", () => {
+  test("edit sends expectedContentHash when server supports CAS", async () => {
     const { backend, transport } = createTestBackend();
     await backend.write("/cas.txt", "original");
 
-    // Intercept the write call to capture params
     let capturedWriteParams: Record<string, unknown> | undefined;
     const originalCall = transport.call.bind(transport);
     const interceptedCall = async <T>(
@@ -789,38 +782,36 @@ describe("edit CAS", () => {
     const result = await backend.edit("/cas.txt", [{ oldText: "original", newText: "modified" }]);
     expect(result.ok).toBe(true);
 
-    // Verify the write included a SHA-256 content hash
     expect(capturedWriteParams).toBeDefined();
     expect(typeof capturedWriteParams?.expectedContentHash).toBe("string");
-    expect((capturedWriteParams?.expectedContentHash as string).length).toBe(64); // SHA-256 hex
+    expect((capturedWriteParams?.expectedContentHash as string).length).toBe(64);
   });
 
-  test("edit dry run does not send write with hash", async () => {
+  test("edit dry run skips capabilities check and write", async () => {
     const { backend, transport } = createTestBackend();
     await backend.write("/cas-dry.txt", "content");
 
-    let writeCallCount = 0;
+    let writeWithHashCount = 0;
     const originalCall = transport.call.bind(transport);
     const interceptedCall = async <T>(
       method: string,
       params: Record<string, unknown>,
     ): Promise<T> => {
       if (method === "write" && params.expectedContentHash !== undefined) {
-        writeCallCount += 1;
+        writeWithHashCount += 1;
       }
       return originalCall<T>(method, params);
     };
     (transport as { call: typeof interceptedCall }).call = interceptedCall;
 
     await backend.edit("/cas-dry.txt", [{ oldText: "content", newText: "new" }], { dryRun: true });
-    expect(writeCallCount).toBe(0);
+    expect(writeWithHashCount).toBe(0);
   });
 
   test("CAS write rejected by server returns CONFLICT", async () => {
     const { backend, transport } = createTestBackend();
     await backend.write("/cas-reject.txt", "original");
 
-    // Simulate server rejecting the CAS write with a 409 conflict
     const originalCall = transport.call.bind(transport);
     const interceptedCall = async <T>(
       method: string,
@@ -842,23 +833,23 @@ describe("edit CAS", () => {
     }
   });
 
-  test("edit fails closed when server ignores CAS (no casEnforced)", async () => {
-    const { backend, transport } = createTestBackend();
-    await backend.write("/no-cas.txt", "content");
-
-    // Simulate server that ignores expectedContentHash and returns null
+  test("edit blocked when server does not support CAS", async () => {
+    // Create a transport where capabilities returns { cas: false }
+    const transport = createMockTransport();
     const originalCall = transport.call.bind(transport);
     const interceptedCall = async <T>(
       method: string,
       params: Record<string, unknown>,
     ): Promise<T> => {
-      if (method === "write" && params.expectedContentHash !== undefined) {
-        // Server ignores CAS — returns null without casEnforced
-        return null as T;
+      if (method === "capabilities") {
+        return { cas: false } as T;
       }
       return originalCall<T>(method, params);
     };
     (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const backend = createNexusFileSystem({ transport });
+    await backend.write("/no-cas.txt", "content");
 
     const result = await backend.edit("/no-cas.txt", [{ oldText: "content", newText: "new" }]);
     expect(result.ok).toBe(false);
@@ -867,12 +858,37 @@ describe("edit CAS", () => {
       expect(result.error.message).toContain("CAS");
     }
 
-    // File must NOT have been mutated — probe blocked before the write
+    // File must NOT have been mutated — blocked before write
     const readResult = await backend.read("/no-cas.txt");
     expect(readResult.ok).toBe(true);
     if (readResult.ok) {
       expect(readResult.value.content).toBe("content");
     }
+  });
+
+  test("capabilities check is cached across multiple edits", async () => {
+    const { backend, transport } = createTestBackend();
+    await backend.write("/cached.txt", "aaa bbb");
+
+    let capabilitiesCallCount = 0;
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "capabilities") {
+        capabilitiesCallCount += 1;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    await backend.edit("/cached.txt", [{ oldText: "aaa", newText: "AAA" }]);
+    await backend.write("/cached2.txt", "xxx yyy");
+    await backend.edit("/cached2.txt", [{ oldText: "xxx", newText: "XXX" }]);
+
+    // capabilities should only be called once, then cached
+    expect(capabilitiesCallCount).toBe(1);
   });
 });
 
