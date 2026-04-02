@@ -110,8 +110,8 @@ declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult,
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
  *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
  *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
- *   wrapModelCall   → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
- *   wrapModelStream → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelCall   → "compact.before" (blocking — throws on block) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelStream → "compact.before" (blocking — yields error chunk on block) + "compact.after" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
  * Post-call hooks are fire-and-forget during the turn but drained with a bounded

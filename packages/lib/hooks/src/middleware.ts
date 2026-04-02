@@ -7,8 +7,8 @@
  *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
  *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
  *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
- *   wrapModelCall   → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
- *   wrapModelStream → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelCall   → "compact.before" (blocking — throws on block) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelStream → "compact.before" (blocking — yields error chunk on block) + "compact.after" (fire-and-forget, drained)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
  * Post-call hooks are fire-and-forget during the turn but drained with a bounded
@@ -332,11 +332,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResult = await dispatchModelPre(sessionId, ctx, request);
 
       if (preResult.blocked) {
-        return {
-          content: `[Hook blocked model call: ${preResult.reason}]`,
-          model: request.model ?? "unknown",
-          metadata: { blockedByHook: true },
-        };
+        throw new Error(`Model call blocked by hook: ${preResult.reason}`);
       }
 
       const response = await next(preResult.request);
@@ -362,6 +358,8 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         yield {
           kind: "error",
           message: `Hook blocked model stream: ${preResult.reason}`,
+          code: "PERMISSION",
+          retryable: false,
         };
         return;
       }
