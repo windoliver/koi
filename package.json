@@ -28,6 +28,7 @@
     "check:complexity": "bun scripts/check-complexity.ts",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "check:orphans": "bun scripts/check-orphans.ts",
+    "check:golden-queries": "bun scripts/check-golden-queries.ts",
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",
     "changeset": "bunx changeset",

@@ -1,0 +1,39 @@
+{
+  "name": "simple-text",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775110048442,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "4"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 13,
+      "outputTokens": 2
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "4\n",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "stop",
+        "responseId": "gen-1775110048-GlorzKOJJdlxvbBjkXo3",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "4\n"
+          }
+        ],
+        "usage": {
+          "inputTokens": 13,
+          "outputTokens": 2
+        }
+      }
+    }
+  ]
+}

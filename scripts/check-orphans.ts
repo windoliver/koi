@@ -22,7 +22,7 @@
  * Usage: bun scripts/check-orphans.ts
  */
 
-import { L0_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
+import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 
@@ -149,6 +149,53 @@ async function main(): Promise<void> {
   console.log(
     `\n✅ All ${checkedCount} L0u/L2 packages have at least one consumer (or are marked optional).`,
   );
+
+  // ── Runtime wiring check ──────────────────────────────────────────────────
+  // Every L2 package (non-L0u) must be a dependency of @koi/runtime so it can
+  // be tested through the runtime's golden queries and E2E tests.
+
+  const runtimePkgPath = `${ROOT}packages/meta/runtime/package.json`;
+  const runtimeFile = Bun.file(runtimePkgPath);
+  if (!(await runtimeFile.exists())) {
+    console.log("\n⏭️  @koi/runtime not found — skipping runtime wiring check.");
+    return;
+  }
+
+  const runtimePkg = (await runtimeFile.json()) as {
+    readonly dependencies?: Record<string, string>;
+  };
+  const runtimeDeps = new Set(getKoiDeps(runtimePkg.dependencies));
+
+  const unwired: string[] = [];
+  for (const pkg of packages) {
+    if (!pkg.name.startsWith("@koi/")) continue;
+    // Only check L2 packages (skip L0, L0u, L1, L3, L4)
+    if (isExemptLayer(pkg.name)) continue;
+    if (L0U_PACKAGES.has(pkg.name)) continue;
+
+    if (!runtimeDeps.has(pkg.name)) {
+      unwired.push(pkg.name);
+    }
+  }
+
+  if (unwired.length > 0) {
+    console.error(`\n${unwired.length} L2 package(s) not wired into @koi/runtime:\n`);
+    for (const name of unwired.sort()) {
+      console.error(`  ✗ ${name}`);
+    }
+    console.error(
+      "\n  Fix: add as a dependency of packages/meta/runtime/package.json." +
+        "\n  Every L2 package must be testable through the runtime's golden queries.\n",
+    );
+    process.exit(1);
+  }
+
+  const l2Count = packages.filter(
+    (p) => p.name.startsWith("@koi/") && !isExemptLayer(p.name) && !L0U_PACKAGES.has(p.name),
+  ).length;
+  if (l2Count > 0) {
+    console.log(`✅ All ${l2Count} L2 packages are wired into @koi/runtime.`);
+  }
 }
 
 await main();

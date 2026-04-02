@@ -1,0 +1,236 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "tool-use",
+  "agent": {
+    "name": "golden-tool-use",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:29.782Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:29.782Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:30.373Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.executed:add_numbers → on-tool-exec",
+      "duration_ms": 6.4137909999999465,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.executed:add_numbers",
+        "hookName": "on-tool-exec"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:30.377Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 11.900750000000244,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "timestamp": "2026-04-02T06:07:29.782Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 73,
+        "completion_tokens": 7
+      },
+      "duration_ms": 587,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "tool",
+      "timestamp": "2026-04-02T06:07:30.364Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_5",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 5,
+            "a": 7
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_5",
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 13,
+      "outcome": "success"
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:30.943Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.executed:add_numbers → on-tool-exec",
+      "duration_ms": 6.33691699999963,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.executed:add_numbers",
+        "hookName": "on-tool-exec"
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-02T06:07:30.953Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 16.485541999999896,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "agent",
+      "timestamp": "2026-04-02T06:07:30.379Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Tool add_numbers: {\"result\":12}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 82,
+        "completion_tokens": 7
+      },
+      "duration_ms": 559,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 4,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "systemPrompt": "Respond with the result. No tools.",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "tool",
+      "timestamp": "2026-04-02T06:07:30.936Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_9",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 5,
+            "a": 7
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_9",
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 17,
+      "outcome": "success"
+    }
+  ]
+}

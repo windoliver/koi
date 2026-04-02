@@ -397,7 +397,7 @@ When considering adding a dependency:
 When designing new features (hooks, permissions, plugins, skills, etc.), cross-reference
 with the decompiled Claude Code source for best-practice patterns and battle-tested design:
 
-- **Source**: https://github.com/sanbuphy/claude-code-source-code
+- **Source**: https://github.com/windoliver/claude-code-source-code
 - **Key areas**: `src/utils/hooks/` (hook system), `src/schemas/` (Zod schemas), `src/utils/permissions/` (permission model), `src/utils/skills/` (skill runtime)
 - **Use for**: architectural patterns, event taxonomies, security constraints (SSRF guards, env-var allowlisting, policy tiers), hook lifecycle design
 - **Do not**: copy code verbatim — adapt patterns to Koi's layered architecture (L0/L1/L2)
