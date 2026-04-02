@@ -35,7 +35,13 @@ import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
-import { createTransportStateMachine } from "@koi/mcp";
+import {
+  createMcpComponentProvider,
+  createMcpConnection,
+  createMcpResolver,
+  createTransportStateMachine,
+  resolveServerConfig,
+} from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
@@ -44,6 +50,10 @@ import { consumeModelStream } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Cassette } from "../src/cassette/types.js";
 import { createHookDispatchMiddleware } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
@@ -380,6 +390,81 @@ const webProvider = createWebProvider({
   policy: { sandbox: false, capabilities: { network: { allow: true } } },
 });
 
+// ---------------------------------------------------------------------------
+// MCP test server (in-process, real MCP protocol)
+// ---------------------------------------------------------------------------
+
+function createTestMcpServer(): McpSdkServer {
+  const server = new McpSdkServer(
+    { name: "golden-mcp", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "weather",
+        description: "Get current weather for a city",
+        inputSchema: {
+          type: "object" as const,
+          properties: { city: { type: "string", description: "City name" } },
+          required: ["city"],
+        },
+      },
+    ],
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const city = String(args.city ?? "unknown");
+    return {
+      content: [{ type: "text" as const, text: `Weather in ${city}: 22°C, partly cloudy` }],
+    };
+  });
+
+  return server;
+}
+
+async function createMcpProvider(): Promise<{
+  readonly provider: ComponentProvider;
+  readonly cleanup: () => Promise<void>;
+}> {
+  const server = createTestMcpServer();
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverSide);
+
+  const conn = createMcpConnection(
+    resolveServerConfig({ kind: "stdio", name: "golden-mcp", command: "echo" }),
+    undefined,
+    {
+      createClient: () => new McpSdkClient({ name: "golden-client", version: "1.0.0" }) as never,
+      createTransport: () => ({
+        start: async () => {},
+        close: async () => {
+          await clientSide.close();
+        },
+        sdkTransport: clientSide,
+        get sessionId() {
+          return undefined;
+        },
+        onEvent: () => () => {},
+      }),
+    },
+  );
+
+  const resolver = createMcpResolver([conn]);
+  const provider = createMcpComponentProvider({ resolver });
+
+  return {
+    provider,
+    cleanup: async () => {
+      resolver.dispose();
+      await conn.close();
+      await server.close();
+    },
+  };
+}
+
 const BYPASS_RULES: readonly SourcedRule[] = [
   { pattern: "*", action: "*", effect: "allow", source: "policy" },
 ];
@@ -515,6 +600,25 @@ const queries: readonly QueryConfig[] = [
     ],
     providers: [webProvider],
   },
+
+  // 6. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  {
+    name: "mcp-tool-use",
+    prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-mcp-tool",
+        cmd: ["echo", "mcp-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [], // MCP provider set dynamically below
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================
@@ -546,14 +650,71 @@ await recordCassette("tool-use", () =>
   }),
 );
 
+// Inject MCP provider for the mcp-tool-use query (needs async setup)
+const mcpSetup = await createMcpProvider();
+const mcpQuery = queries.find((q) => q.name === "mcp-tool-use");
+if (mcpQuery !== undefined) {
+  // Mutate providers for the MCP query (recording-time only)
+  (mcpQuery as { providers: ComponentProvider[] }).providers = [mcpSetup.provider];
+}
+
+// Also record a cassette for MCP tool-use (model sees the MCP tool)
+const mcpToolDescriptors = await mcpSetup.provider.attach({
+  pid: { id: "record" as never, name: "record", type: "worker", depth: 0 },
+  manifest: {
+    name: "record",
+    version: "0.0.0",
+    model: { name: MODEL },
+    tools: [],
+    channels: [],
+    middleware: [],
+  },
+  state: "running",
+  component: () => undefined,
+  has: () => false,
+  hasAll: () => false,
+  query: () => new Map(),
+  components: () => new Map(),
+} as never);
+const mcpTools =
+  "components" in mcpToolDescriptors
+    ? [...mcpToolDescriptors.components.values()].map(
+        (t) =>
+          (t as { descriptor: { name: string; description: string; inputSchema: JsonObject } })
+            .descriptor,
+      )
+    : [];
+
+await recordCassette("mcp-tool-use", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+          },
+        ],
+      },
+    ],
+    tools: mcpTools,
+  }),
+);
+
 // Full-stack ATIF trajectories
 for (const q of queries) {
   await recordTrajectory(q);
 }
 
-console.log(`\nDone. ${2 + queries.length} fixture files ready:`);
+// Cleanup MCP server
+await mcpSetup.cleanup();
+
+console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
+console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

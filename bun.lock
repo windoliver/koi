@@ -220,6 +220,9 @@
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
       },
+      "devDependencies": {
+        "@modelcontextprotocol/sdk": "1.12.1",
+      },
     },
     "packages/mm/model-openai-compat": {
       "name": "@koi/model-openai-compat",
