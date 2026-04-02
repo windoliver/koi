@@ -224,10 +224,10 @@ export function parseMemoryFrontmatter(
 
   const rest = trimmed.slice(afterOpener + 1);
 
-  // Match closing delimiter: exactly "---" at start of line, followed by newline.
-  // Only allows horizontal whitespace (spaces/tabs) after dashes, not \n,
+  // Match closing delimiter: exactly "---" at start of line, followed by
+  // newline (LF or CRLF). Only horizontal whitespace allowed after dashes
   // to avoid consuming blank lines that belong to content.
-  const closeMatch = rest.match(/^---[ \t]*\n/m);
+  const closeMatch = rest.match(/^---[ \t]*\r?\n/m);
   if (!closeMatch || closeMatch.index === undefined) {
     // Handle "---" at the very end of the string (no trailing newline) — empty body
     const eofMatch = rest.match(/^---[ \t]*$/m);
@@ -238,11 +238,12 @@ export function parseMemoryFrontmatter(
 
   const yamlBlock = rest.slice(0, closeMatch.index).trim();
 
-  // The serializer emits "---\n\n<content>" — the close regex consumed "---\n",
-  // so afterClose starts with "\n<content>". Strip exactly that one separator
-  // newline to preserve any leading blank lines in the actual content.
+  // The serializer emits "---\n\n<content>" — the close regex consumed
+  // "---\n" (or "---\r\n"), so afterClose starts with "\r?\n<content>".
+  // Strip exactly that one separator line ending to preserve any leading
+  // blank lines in the actual content.
   const afterClose = rest.slice(closeMatch.index + closeMatch[0].length);
-  const content = afterClose.replace(/^\n/, "");
+  const content = afterClose.replace(/^\r?\n/, "");
 
   const frontmatter = parseFrontmatterFields(yamlBlock);
   if (!frontmatter) return undefined;
@@ -262,7 +263,8 @@ export function parseMemoryFrontmatter(
  * The `type` field is validated at runtime (not just via TypeScript types)
  * to reject injected values from untyped JavaScript callers.
  *
- * Returns undefined if `type` is not a valid MemoryType at runtime.
+ * Returns undefined if `type` is not a valid MemoryType at runtime,
+ * or if content is empty/whitespace-only (aligned with parser invariant).
  */
 export function serializeMemoryFrontmatter(
   frontmatter: MemoryFrontmatter,
@@ -270,6 +272,10 @@ export function serializeMemoryFrontmatter(
 ): string | undefined {
   // Runtime validation — TypeScript types are not enforced in JS callers
   if (!isMemoryType(frontmatter.type)) return undefined;
+
+  // Reject empty/whitespace-only content — aligned with parser invariant
+  // to prevent writing records that can never be read back
+  if (content.trim().length === 0) return undefined;
 
   const name = sanitizeFrontmatterValue(frontmatter.name);
   const description = sanitizeFrontmatterValue(frontmatter.description);

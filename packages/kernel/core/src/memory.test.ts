@@ -730,6 +730,49 @@ describe("serializeMemoryFrontmatter (type validation)", () => {
     const fm: MemoryFrontmatter = { name: "t", description: "d", type: "feedback" };
     expect(serializeMemoryFrontmatter(fm, "content")).toBeDefined();
   });
+
+  test("rejects empty content", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    expect(serializeMemoryFrontmatter(fm, "")).toBeUndefined();
+  });
+
+  test("rejects whitespace-only content", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    expect(serializeMemoryFrontmatter(fm, "   \n  \n")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: CRLF file parsing
+// ---------------------------------------------------------------------------
+
+describe("parseMemoryFrontmatter (CRLF)", () => {
+  test("parses fully CRLF-encoded memory file", () => {
+    const raw =
+      "---\r\nname: test\r\ndescription: desc\r\ntype: user\r\n---\r\n\r\nCRLF content here.";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result).toBeDefined();
+    expect(result?.frontmatter.name).toBe("test");
+    expect(result?.frontmatter.description).toBe("desc");
+    expect(result?.frontmatter.type).toBe("user");
+    expect(result?.content).toBe("CRLF content here.");
+  });
+
+  test("parses mixed LF/CRLF file", () => {
+    const raw = "---\r\nname: mixed\ndescription: line endings\r\ntype: project\n---\r\n\ncontent";
+    const result = parseMemoryFrontmatter(raw);
+    expect(result).toBeDefined();
+    expect(result?.frontmatter.name).toBe("mixed");
+    expect(result?.frontmatter.type).toBe("project");
+    expect(result?.content).toBe("content");
+  });
+
+  test("roundtrips LF-serialized content through CRLF-aware parser", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    const serialized = serializeMemoryFrontmatter(fm, "body");
+    const parsed = parseMemoryFrontmatter(defined(serialized));
+    expect(parsed?.content).toBe("body");
+  });
 });
 
 // ---------------------------------------------------------------------------
