@@ -187,6 +187,13 @@ function failClosedDeny(reason: string): PermissionDecision {
   } as PermissionDecision);
 }
 
+/** Symbol to tag escalation-generated denials so they don't self-sustain. */
+const IS_ESCALATED: unique symbol = Symbol.for("@koi/middleware-permissions/escalated");
+
+function isEscalated(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_ESCALATED] === true;
+}
+
 /**
  * Validate a backend decision at the trust boundary. Malformed or
  * unexpected shapes are converted to deny (fail-closed) rather than
@@ -519,7 +526,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         return {
           effect: "deny",
           reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
-        };
+          [IS_ESCALATED]: true,
+        } as PermissionDecision;
       }
     }
 
@@ -715,7 +723,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: isFailClosed(decision) ? "backend-error" : "policy",
+          source: isFailClosed(decision)
+            ? "backend-error"
+            : isEscalated(decision)
+              ? "escalation"
+              : "policy",
           queryKey: decisionCacheKey(queries[i]!),
         });
         return false;
@@ -795,7 +807,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: isFailClosed(decision) ? "backend-error" : "policy",
+          source: isFailClosed(decision)
+            ? "backend-error"
+            : isEscalated(decision)
+              ? "escalation"
+              : "policy",
           queryKey: decisionCacheKey(query),
         });
 

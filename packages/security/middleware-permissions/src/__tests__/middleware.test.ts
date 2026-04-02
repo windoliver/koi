@@ -1166,6 +1166,59 @@ describe("createPermissionsMiddleware", () => {
       expect(checkFn).toHaveBeenCalledTimes(3); // backend called again
     });
 
+    test("retries during escalation do not extend the window", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 policy denials at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Retry at t=3000 — still within window, escalated (no backend call)
+      now = 3000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Retry at t=5000 — still within window of original denials
+      now = 5000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // t=7000 — original denials (t=1000) have aged out despite retries at t=3000,5000
+      // Escalation retries must NOT have refreshed the window
+      now = 7000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3); // backend consulted again
+    });
+
     test("different contexts escalate independently", async () => {
       const checkFn = mock((q: PermissionQuery) => {
         // Deny bash in context A, allow in context B
