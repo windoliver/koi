@@ -114,6 +114,8 @@ export interface Task {
   readonly dependencies: readonly TaskItemId[];
   readonly status: TaskStatus;
   readonly assignedTo?: AgentId | undefined;
+  /** Board-managed retry count. Incremented by the board on retryable failure. */
+  readonly retries: number;
   readonly error?: KoiError | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;

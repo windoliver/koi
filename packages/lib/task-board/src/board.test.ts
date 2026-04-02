@@ -307,6 +307,67 @@ describe("createTaskBoard", () => {
       expect(r5.value.get(taskItemId("a"))?.status).toBe("failed");
     });
 
+    test("rejects failing a pending task", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const err: KoiError = { code: "EXTERNAL", message: "fail", retryable: true };
+      const r2 = r1.value.fail(taskItemId("a"), err);
+      expect(r2.ok).toBe(false);
+      if (r2.ok) return;
+      expect(r2.error.code).toBe("VALIDATION");
+      expect(r2.error.message).toContain("expected 'in_progress'");
+    });
+
+    test("rejects failing a completed task", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.complete(taskItemId("a"), result("a"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const err: KoiError = { code: "EXTERNAL", message: "fail", retryable: true };
+      const r4 = r3.value.fail(taskItemId("a"), err);
+      expect(r4.ok).toBe(false);
+      if (r4.ok) return;
+      expect(r4.error.code).toBe("VALIDATION");
+    });
+
+    test("metadata cannot override retry count", () => {
+      const board = createTaskBoard({ maxRetries: 1 });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const err: KoiError = { code: "EXTERNAL", message: "fail", retryable: true };
+      // First retry succeeds (retries: 0 → 1)
+      const r3 = r2.value.fail(taskItemId("a"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.get(taskItemId("a"))?.retries).toBe(1);
+      // Try to cheat by resetting retries via metadata update
+      const r4 = r3.value.update(taskItemId("a"), { metadata: { retries: 0 } });
+      expect(r4.ok).toBe(true);
+      if (!r4.ok) return;
+      // Task.retries should still be 1 (metadata doesn't affect board-managed field)
+      expect(r4.value.get(taskItemId("a"))?.retries).toBe(1);
+      // Re-assign and fail again — should be terminal (retries=1 >= maxRetries=1)
+      const r5 = r4.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r5.ok).toBe(true);
+      if (!r5.ok) return;
+      const r6 = r5.value.fail(taskItemId("a"), err);
+      expect(r6.ok).toBe(true);
+      if (!r6.ok) return;
+      expect(r6.value.get(taskItemId("a"))?.status).toBe("failed");
+    });
+
     test("maxRetries=3 allows exactly 3 retries", () => {
       const board = createTaskBoard({ maxRetries: 3 });
       const err: KoiError = { code: "EXTERNAL", message: "fail", retryable: true };

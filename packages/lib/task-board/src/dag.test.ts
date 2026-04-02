@@ -10,6 +10,7 @@ function task(id: string, deps: readonly string[] = []): Task {
     description: `Task ${id}`,
     dependencies: deps.map(taskItemId),
     status: "pending",
+    retries: 0,
     createdAt: 0,
     updatedAt: 0,
   };

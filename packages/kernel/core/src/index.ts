@@ -954,6 +954,10 @@ export type {
 } from "./supervision.js";
 export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // task-board — types
+// NOTE: `TaskStatus` is the task-board lifecycle type (pending | in_progress | completed |
+// failed | killed). The scheduler's status type was renamed to `ScheduledTaskStatus` above.
+// Consumers who previously imported `TaskStatus` for scheduler use should switch to
+// `ScheduledTaskStatus`. This is an intentional v2 domain correction.
 // task-board — backward compat aliases (deprecated)
 export type {
   Task,

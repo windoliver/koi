@@ -79,6 +79,7 @@ function inputToTask(input: TaskInput, now: number): Task {
     id: input.id,
     subject: input.subject ?? input.description,
     description: input.description,
+    retries: 0,
     dependencies: input.dependencies ?? [],
     status: "pending",
     metadata: input.metadata,
@@ -353,30 +354,32 @@ function createBoardFromState(
       if (task === undefined) {
         return fail(notFoundError(taskId));
       }
+      // Only in_progress tasks can fail — prevents reopening terminal tasks
+      if (task.status !== "in_progress") {
+        return fail(
+          validationError(
+            `Cannot fail task ${taskId}: status is '${task.status}', expected 'in_progress'`,
+          ),
+        );
+      }
 
-      // Retry logic: check if we can retry before transitioning
-      const retries = (task.metadata?.retries as number | undefined) ?? 0;
-      const taskMaxRetries = (task.metadata?.maxRetries as number | undefined) ?? maxRetries;
-      const canRetry = error.retryable === true && retries < taskMaxRetries;
+      // Retry logic: board-managed retries field, maxRetries from config only
+      const canRetry = error.retryable === true && task.retries < maxRetries;
 
       if (canRetry) {
         // Retry: back to pending with incremented retry count
         const updated: Task = {
           ...task,
           status: "pending",
+          retries: task.retries + 1,
           assignedTo: undefined,
           error,
           updatedAt: now(),
-          metadata: {
-            ...task.metadata,
-            retries: retries + 1,
-            maxRetries: taskMaxRetries,
-          },
         };
         const newItems = new Map(items);
         newItems.set(taskId, updated);
         const newBoard = createBoardFromState(newItems, results, unreachableIds, config);
-        emit(config, { kind: "task:retried", taskId, retries: retries + 1 });
+        emit(config, { kind: "task:retried", taskId, retries: task.retries + 1 });
         return ok(newBoard);
       }
 
@@ -557,6 +560,7 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
       const task: Task = {
         ...item,
         subject: item.subject ?? "",
+        retries: item.retries ?? 0,
         createdAt: item.createdAt ?? 0,
         updatedAt: item.updatedAt ?? 0,
       };
