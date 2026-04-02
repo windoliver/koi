@@ -1,13 +1,10 @@
 /**
  * Hook contract — L0 types for session-scoped side-effect triggers.
  *
- * Hooks fire in response to session lifecycle events. Two transport types
- * are supported in Phase 1: `command` (local process via Bun.spawn) and
- * `http` (network request). The `prompt` type is deferred.
- *
- * Phase 1 scope: type definitions (this file), loader, schema validation,
- * and session-scoped registry (@koi/hooks). Engine-level integration
- * (automatic dispatch during session lifecycle) is separate work.
+ * Hooks fire in response to session lifecycle events. Three transport types:
+ * - `command` — local process via Bun.spawn
+ * - `http` — network request (HTTPS, loopback HTTP in dev)
+ * - `agent` — sub-agent LLM loop for verification/policy enforcement
  */
 
 import type { JsonObject } from "./common.js";
@@ -17,7 +14,7 @@ import type { JsonObject } from "./common.js";
 // ---------------------------------------------------------------------------
 
 /** Supported hook transport types. */
-export type HookType = "command" | "http";
+export type HookType = "command" | "http" | "agent";
 
 // ---------------------------------------------------------------------------
 // Hook event kind — typed lifecycle event discriminator
@@ -185,11 +182,69 @@ export interface HttpHookConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Agent hook config
+// ---------------------------------------------------------------------------
+
+/**
+ * A hook that spawns a sub-agent (LLM loop) to verify conditions.
+ *
+ * The sub-agent runs in non-interactive mode with a restricted tool set
+ * and must return a structured verdict via the HookVerdict synthetic tool.
+ * Agent hooks default to fail-closed: if the sub-agent times out or errors,
+ * the operation is blocked.
+ *
+ * Agent hooks produce `continue` or `block` decisions only — `modify` is
+ * not supported because LLMs cannot reliably produce JSON patches.
+ */
+export interface AgentHookConfig {
+  readonly kind: "agent";
+  /** Human-readable hook name (unique within a manifest). */
+  readonly name: string;
+  /** Instructions for the verification sub-agent. */
+  readonly prompt: string;
+  /** Override model for the sub-agent (default: cheap/fast model). */
+  readonly model?: string | undefined;
+  /** Override system prompt (default: verification-focused prompt). */
+  readonly systemPrompt?: string | undefined;
+  /** Timeout in milliseconds. Default: 60_000. */
+  readonly timeoutMs?: number | undefined;
+  /** Maximum assistant turns for the sub-agent loop. Default: 10. */
+  readonly maxTurns?: number | undefined;
+  /** Max tokens per model call for the sub-agent. Default: 4_096. */
+  readonly maxTokens?: number | undefined;
+  /** Cumulative token budget across all invocations in a session. Default: 50_000. */
+  readonly maxSessionTokens?: number | undefined;
+  /** Tools to exclude from the sub-agent (in addition to default denylist). */
+  readonly toolDenylist?: readonly string[] | undefined;
+  /** Filter conditions — when absent, fires on all events. */
+  readonly filter?: HookFilter | undefined;
+  /** Whether this hook is active. Default: true. */
+  readonly enabled?: boolean | undefined;
+  /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+  readonly serial?: boolean | undefined;
+  /**
+   * Post-execution failure behavior. Default: true (fail-closed).
+   *
+   * This flag only affects post-tool hook failures. Pre-hook failures are
+   * always fail-open (treated as "no opinion") to avoid availability risk.
+   *
+   * When true: if this hook fails during post-tool execution, the tool's
+   * raw output is suppressed (replaced with a redaction notice). Use for
+   * security-critical hooks like output redaction/scrubbing.
+   *
+   * When false: if this hook fails post-execution, the tool's output is
+   * preserved with taint metadata. Use for observational/telemetry hooks
+   * where suppressing committed output would cause retry risk.
+   */
+  readonly failClosed?: boolean | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Union type
 // ---------------------------------------------------------------------------
 
 /** Discriminated union of all hook config types. */
-export type HookConfig = CommandHookConfig | HttpHookConfig;
+export type HookConfig = CommandHookConfig | HttpHookConfig | AgentHookConfig;
 
 // ---------------------------------------------------------------------------
 // Env-var policy — system-wide allowlist for hook env-var expansion
@@ -258,5 +313,20 @@ export type HookExecutionResult =
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default hook timeout in milliseconds. */
+/** Default hook timeout in milliseconds (command + http). */
 export const DEFAULT_HOOK_TIMEOUT_MS = 30_000 as const;
+
+/** Default agent hook timeout in milliseconds. */
+export const DEFAULT_AGENT_HOOK_TIMEOUT_MS = 60_000 as const;
+
+/** Default maximum assistant turns for agent hooks. */
+export const DEFAULT_AGENT_MAX_TURNS = 10 as const;
+
+/** Default max tokens per model call for agent hooks. */
+export const DEFAULT_AGENT_MAX_TOKENS = 4_096 as const;
+
+/**
+ * Default cumulative token budget per session for agent hooks.
+ * Sized for ~12 worst-case invocations at default settings (10 turns * 4096 tokens).
+ */
+export const DEFAULT_AGENT_SESSION_TOKEN_BUDGET = 500_000 as const;

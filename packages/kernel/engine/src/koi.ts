@@ -174,6 +174,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable flag for concurrent run() guard
   let running = false;
 
+  // Session ID created at factory scope so runtime.sessionId can reference it.
+  // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
+  const factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
     const sessionStartedAt = Date.now();
@@ -230,13 +234,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: pending engine events emitted by terminal wrappers (e.g., discovery:miss)
     const pendingEngineEvents: EngineEvent[] = [];
 
-    // Structured IDs encode trust boundary: agent ownership is parseable from the ID itself.
-    // Format: "agent:{agentId}:{uuid}" for session, plain UUID for run.
-    const sid: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
     const rid: RunId = runId(crypto.randomUUID());
     const sessionCtx: SessionContext = {
       agentId: pid.id,
-      sessionId: sid,
+      sessionId: factorySessionId,
       runId: rid,
       ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
       ...(options.userId !== undefined ? { userId: options.userId } : {}),
@@ -914,6 +915,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 7. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
+    sessionId: factorySessionId as string,
     conflicts,
 
     run(input: EngineInput): AsyncIterable<EngineEvent> {

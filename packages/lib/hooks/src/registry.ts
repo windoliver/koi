@@ -13,6 +13,7 @@
 
 import type { HookConfig, HookEnvPolicy, HookEvent, HookExecutionResult } from "@koi/core";
 import { executeHooks } from "./executor.js";
+import type { HookExecutor } from "./hook-executor.js";
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -56,17 +57,31 @@ export interface HookRegistry {
   readonly has: (sessionId: string) => boolean;
   /** Returns the number of active sessions. */
   readonly size: () => number;
+  /** Mark a session as belonging to a hook agent — hooks will be suppressed for it. */
+  readonly markHookAgent: (sessionId: string) => void;
+  /** Remove hook-agent marking. Called when the hook agent session ends. */
+  readonly unmarkHookAgent: (sessionId: string) => void;
+  /** Returns true if the session is marked as a hook agent. */
+  readonly isHookAgent: (sessionId: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
+/** Options for creating a hook registry. */
+export interface CreateHookRegistryOptions {
+  /** Optional executor for agent-type hooks, threaded through to executeHooks. */
+  readonly agentExecutor?: HookExecutor | undefined;
+}
+
 /**
  * Creates a new HookRegistry instance.
  */
-export function createHookRegistry(): HookRegistry {
+export function createHookRegistry(options?: CreateHookRegistryOptions): HookRegistry {
   const sessions = new Map<string, SessionState>();
+  /** Sessions belonging to hook agents — hooks are suppressed for these. */
+  const hookAgentSessions = new Set<string>();
 
   return {
     register(
@@ -91,6 +106,10 @@ export function createHookRegistry(): HookRegistry {
       if (state === undefined || state.cleaned) {
         return [];
       }
+      // Suppress all hooks for hook-agent sessions (recursion prevention)
+      if (hookAgentSessions.has(sessionId)) {
+        return [];
+      }
       // Enforce session + agent isolation: overwrite identity fields with
       // trusted values from registration to prevent cross-session/cross-agent
       // payload injection from caller bugs.
@@ -98,7 +117,13 @@ export function createHookRegistry(): HookRegistry {
         event.sessionId === sessionId && event.agentId === state.agentId
           ? event
           : { ...event, sessionId, agentId: state.agentId };
-      return executeHooks(state.hooks, safeEvent, state.controller.signal, state.envPolicy);
+      return executeHooks(
+        state.hooks,
+        safeEvent,
+        state.controller.signal,
+        state.envPolicy,
+        options?.agentExecutor,
+      );
     },
 
     cleanup(sessionId: string): void {
@@ -126,6 +151,18 @@ export function createHookRegistry(): HookRegistry {
         }
       }
       return count;
+    },
+
+    markHookAgent(sessionId: string): void {
+      hookAgentSessions.add(sessionId);
+    },
+
+    unmarkHookAgent(sessionId: string): void {
+      hookAgentSessions.delete(sessionId);
+    },
+
+    isHookAgent(sessionId: string): boolean {
+      return hookAgentSessions.has(sessionId);
     },
   };
 }

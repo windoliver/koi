@@ -55,18 +55,53 @@ vocabulary.
 
 ## Hook Types
 
-### Phase 1 (this package)
-
 | Type | Trigger | Transport |
 |------|---------|-----------|
 | `command` | Shell command via `Bun.spawn` | Local process |
 | `http` | HTTP POST/PUT to a URL | Network |
+| `agent` | Sub-agent LLM loop via `SpawnFn` | In-process spawn |
 
-### Deferred
+### Agent Hook Type
 
-| Type | Notes |
-|------|-------|
-| `prompt` | Requires model-call dependency surface; not included in Phase 1 |
+Agent hooks spawn a verification sub-agent that can reason about context,
+use tools, and return a structured verdict. They are the most powerful hook
+type — use them for semantic checks that can't be expressed as static rules.
+
+**Use cases:**
+- Pre-commit security review (check diff for vulnerabilities)
+- Output validation (verify model output meets policy)
+- Semantic enforcement (check generated code follows conventions)
+- Review gates (automated code review before tool execution)
+
+**Design constraints:**
+- Sub-agent runs **non-interactively** (`nonInteractive: true` on `SpawnRequest`) — it cannot prompt the user
+- Must return structured output via the **HookVerdict** synthetic tool: `{ ok: boolean, reason?: string }`
+- **Read-only by default** — `Bash`, `Write`, `Edit`, `NotebookEdit` denied alongside `spawn`/`agent`/`Agent`. Hook agents verify, not mutate. Opt in to write tools via `toolDenylist` override in hook config
+- Registry-level suppression prevents hooks from firing inside hook agents (belt-and-suspenders recursion prevention)
+- Token budget enforced per-session via `maxSessionTokens` (default: 500,000 — allows ~12 worst-case invocations)
+- **Fail-closed by default** — if the agent times out, crashes, or doesn't produce a verdict, the operation is blocked
+
+**Config example:**
+```typescript
+{
+  kind: "agent",
+  name: "security-reviewer",
+  prompt: "Review this tool call for security issues. Block if the command could delete files or exfiltrate data.",
+  model: "haiku",                    // cheap/fast model (default)
+  systemPrompt: "You are a security auditor.", // optional override
+  timeoutMs: 30000,                  // 30s (default: 60s)
+  maxTurns: 5,                       // max assistant turns (default: 10)
+  maxTokens: 2048,                   // per model call (default: 4096)
+  maxSessionTokens: 25000,           // cumulative per session (default: 50000)
+  toolDenylist: ["Write"],           // additional tools to deny
+  filter: { events: ["tool.before"], tools: ["Bash", "Edit"] },
+  failMode: "closed",               // "closed" (default) or "open"
+}
+```
+
+**Decision mapping:** Agent hooks produce `continue` or `block` only — `modify` is not supported (LLMs cannot reliably produce JSON patches).
+
+**Cost guidance:** Agent hooks consume LLM tokens on every matching event. Use `filter.tools` to restrict invocations to high-risk tools. The `maxSessionTokens` budget prevents runaway costs. Default to a cheap/fast model.
 
 ## Config Schema
 
@@ -173,8 +208,13 @@ Hooks return structured decisions via stdout (command) or response body (HTTP):
 ```
 
 When no decision is returned (empty output, non-JSON), the hook defaults
-to `continue`. Failed hooks (non-zero exit, HTTP 5xx) are treated as no
-opinion (fail-open).
+to `continue`. Failed hooks (non-zero exit, HTTP 5xx) are treated per
+their `failMode` — `"open"` (default for command/http) continues,
+`"closed"` (default for agent) blocks.
+
+Agent hooks return decisions via the `HookVerdict` synthetic tool (`{ ok: true }` →
+`continue`, `{ ok: false, reason }` → `block`). They do not produce `modify`
+decisions.
 
 ### Decision Aggregation
 
@@ -201,9 +241,26 @@ import { loadHooks, createHookMiddleware } from "@koi/hooks";
 const result = loadHooks(manifestHooks);
 if (!result.ok) throw new Error(result.error.message);
 
-const middleware = createHookMiddleware({ hooks: result.value });
+const middleware = createHookMiddleware({
+  hooks: result.value,
+  spawnFn, // Required when any hook has kind: "agent" — provided by L1 engine
+});
 // Wire into engine: createKoi({ middleware: [permissions, middleware, ...] })
 ```
+
+> **Note:** `createHookMiddleware()` throws at creation time if any agent hooks
+> are present but `spawnFn` is not provided. This is a fail-fast design — the
+> error surfaces during setup, not during event dispatch.
+
+### Fail Mode
+
+All hook types support `failMode?: "open" | "closed"`:
+- **`"open"`** (default for command/http) — failed hooks are treated as no opinion (continue)
+- **`"closed"`** (default for agent) — failed hooks produce a `block` decision
+
+Agent hooks default to closed because the whole point of spawning an LLM for
+verification is that the check matters. Override with `failMode: "open"` for
+advisory agent hooks.
 
 ## Module Structure
 
@@ -211,8 +268,12 @@ const middleware = createHookMiddleware({ hooks: result.value });
 |------|---------------|
 | `schema.ts` | Zod schemas for hook config validation |
 | `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]` |
-| `registry.ts` | `HookRegistry` — session-scoped registration/cleanup |
+| `registry.ts` | `HookRegistry` — session-scoped registration/cleanup + hook-agent suppression |
 | `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout + decision parsing |
+| `agent-executor.ts` | `AgentHookExecutor` — sub-agent spawn, token accounting, verdict handling |
+| `agent-verdict.ts` | `HookVerdict` tool schema, verdict parsing, decision mapping |
+| `hook-executor.ts` | `HookExecutor` interface — extensible executor dispatch contract |
+| `hook-validation.ts` | Shared validation — URL policy, timeout resolution, fail mode defaults |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
 | `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
 | `middleware.ts` | `createHookMiddleware()` — KoiMiddleware bridging hooks to engine lifecycle |

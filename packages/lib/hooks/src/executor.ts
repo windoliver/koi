@@ -15,9 +15,10 @@ import type {
   HttpHookConfig,
   JsonObject,
 } from "@koi/core";
-import { DEFAULT_HOOK_TIMEOUT_MS as TIMEOUT_DEFAULT } from "@koi/core";
 import { buildEnvAllowSet, expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 import { matchesHookFilter } from "./filter.js";
+import type { HookExecutor } from "./hook-executor.js";
+import { resolveTimeout, validateHookUrl } from "./hook-validation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,32 +26,6 @@ import { matchesHookFilter } from "./filter.js";
 
 /** Grace period (ms) between SIGTERM and SIGKILL for stubborn child processes. */
 const SIGKILL_GRACE_MS = 2_000;
-
-/**
- * Runtime URL policy enforcement — rejects URLs that violate the HTTPS/loopback
- * boundary. This is intentionally duplicated from the Zod schema to enforce the
- * policy even when callers construct HookConfig programmatically without going
- * through loadHooks().
- */
-function validateHookUrl(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "https:") return undefined;
-    if (parsed.protocol === "http:") {
-      const isDev =
-        process.env.NODE_ENV === "development" ||
-        process.env.NODE_ENV === "test" ||
-        process.env.KOI_DEV === "1";
-      if (!isDev) return "HTTP URLs require NODE_ENV=development or KOI_DEV=1";
-      const host = parsed.hostname;
-      if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return undefined;
-      return "HTTP URLs are only allowed for localhost/127.0.0.1/[::1]";
-    }
-    return `unsupported protocol: ${parsed.protocol}`;
-  } catch {
-    return "invalid URL";
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Hook decision parsing
@@ -337,8 +312,9 @@ function executeSingleHook(
   event: HookEvent,
   sessionSignal: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
+  agentExecutor?: HookExecutor | undefined,
 ): Promise<HookExecutionResult> {
-  const timeoutMs = hook.timeoutMs ?? TIMEOUT_DEFAULT;
+  const timeoutMs = resolveTimeout(hook);
   const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
   if (sessionSignal !== undefined) {
     signals.push(sessionSignal);
@@ -350,6 +326,17 @@ function executeSingleHook(
       return executeCommandHook(hook, event, composedSignal);
     case "http":
       return executeHttpHook(hook, event, composedSignal, envPolicy);
+    case "agent": {
+      if (agentExecutor === undefined) {
+        return Promise.resolve({
+          ok: false as const,
+          hookName: hook.name,
+          error: "Agent hooks require spawnFn — provide it via CreateHookMiddlewareOptions",
+          durationMs: 0,
+        });
+      }
+      return agentExecutor.execute(hook, event, composedSignal);
+    }
     default: {
       const _exhaustive: never = hook;
       throw new Error(`Unknown hook kind: ${(_exhaustive as HookConfig).kind}`);
@@ -372,6 +359,7 @@ function executeSingleHook(
  * @param event - The event that triggered execution
  * @param sessionSignal - Optional session-level abort signal for cancellation
  * @param envPolicy - Optional system-wide env-var policy for allowlisting
+ * @param agentExecutor - Optional executor for agent-type hooks (injected via middleware)
  * @returns Results for all matching hooks, in declaration order
  */
 export async function executeHooks(
@@ -379,6 +367,7 @@ export async function executeHooks(
   event: HookEvent,
   sessionSignal?: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
+  agentExecutor?: HookExecutor | undefined,
 ): Promise<readonly HookExecutionResult[]> {
   const matching = hooks.filter((h) => matchesHookFilter(h.filter, event));
   if (matching.length === 0) {
@@ -392,7 +381,9 @@ export async function executeHooks(
   const flushParallel = async (): Promise<void> => {
     if (parallelBatch.length === 0) return;
     const settled = await Promise.allSettled(
-      parallelBatch.map((entry) => executeSingleHook(entry.hook, event, sessionSignal, envPolicy)),
+      parallelBatch.map((entry) =>
+        executeSingleHook(entry.hook, event, sessionSignal, envPolicy, agentExecutor),
+      ),
     );
     for (let i = 0; i < settled.length; i++) {
       const s = settled[i];
@@ -419,7 +410,7 @@ export async function executeHooks(
     if (hook.serial === true) {
       // Flush any pending parallel batch before running serial hook
       await flushParallel();
-      results[i] = await executeSingleHook(hook, event, sessionSignal, envPolicy);
+      results[i] = await executeSingleHook(hook, event, sessionSignal, envPolicy, agentExecutor);
     } else {
       parallelBatch.push({ hook, index: i });
     }

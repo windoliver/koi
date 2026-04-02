@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { commandHookSchema, hookConfigSchema, hookFilterSchema, httpHookSchema } from "./schema.js";
+import {
+  agentHookSchema,
+  commandHookSchema,
+  hookConfigSchema,
+  hookFilterSchema,
+  httpHookSchema,
+} from "./schema.js";
 
 describe("hookFilterSchema", () => {
   it("accepts empty filter", () => {
@@ -254,6 +260,154 @@ describe("hookConfigSchema (discriminated union)", () => {
     const result = hookConfigSchema.safeParse({
       kind: "websocket",
       name: "test",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts agent hook", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "agent",
+      name: "verify-security",
+      prompt: "Check the diff for security issues",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("agent");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent hook schema
+// ---------------------------------------------------------------------------
+
+describe("agentHookSchema", () => {
+  const validAgent = {
+    kind: "agent",
+    name: "security-reviewer",
+    prompt: "Review this change for security issues",
+  } as const;
+
+  it("accepts minimal valid agent hook", () => {
+    const result = agentHookSchema.safeParse(validAgent);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts agent hook with all optional fields", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      model: "haiku",
+      systemPrompt: "You are a security auditor.",
+      timeoutMs: 30000,
+      maxTurns: 5,
+      maxTokens: 2048,
+      maxSessionTokens: 25000,
+      toolDenylist: ["Bash", "Write"],
+      filter: { events: ["tool.before"], tools: ["Edit"] },
+      enabled: true,
+      serial: true,
+      failClosed: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty prompt", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, prompt: "" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty name", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, name: "" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative maxTurns", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, maxTurns: -1 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects zero maxTurns", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, maxTurns: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects fractional maxTurns", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, maxTurns: 1.5 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative maxTokens", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, maxTokens: -1 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative maxSessionTokens", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, maxSessionTokens: -1 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty toolDenylist array", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, toolDenylist: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects toolDenylist with empty strings", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, toolDenylist: [""] });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects wrong kind", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, kind: "command" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing prompt", () => {
+    const result = agentHookSchema.safeParse({ kind: "agent", name: "test" });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// failClosed on all hook types
+// ---------------------------------------------------------------------------
+
+describe("failClosed across hook types", () => {
+  it("accepts failClosed on command hooks", () => {
+    const result = commandHookSchema.safeParse({
+      kind: "command",
+      name: "test",
+      cmd: ["echo"],
+      failClosed: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts failClosed on http hooks", () => {
+    const result = httpHookSchema.safeParse({
+      kind: "http",
+      name: "test",
+      url: "https://example.com",
+      failClosed: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts failClosed on agent hooks", () => {
+    const result = agentHookSchema.safeParse({
+      kind: "agent",
+      name: "test",
+      prompt: "verify",
+      failClosed: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid failClosed value (non-boolean)", () => {
+    const result = commandHookSchema.safeParse({
+      kind: "command",
+      name: "test",
+      cmd: ["echo"],
+      failClosed: "maybe",
     });
     expect(result.success).toBe(false);
   });

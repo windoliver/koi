@@ -1,8 +1,158 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookEnvPolicy, HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, HookDecision, KoiMiddleware, CommandHookConfig, HttpHookConfig } from '@koi/core';
+"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, AgentHookConfig, CommandHookConfig, HttpHookConfig } from '@koi/core';
 import { z } from 'zod';
+
+/**
+ * Hook executor interface — extensible dispatch for hook transports.
+ *
+ * Each hook transport type (command, http, agent) implements this interface.
+ * The executor registry dispatches to the correct implementation based on
+ * \`canHandle()\`. New hook types are added by registering a new executor,
+ * not by modifying the dispatch switch.
+ */
+
+/**
+ * A hook executor handles one or more hook transport types.
+ *
+ * Implementations must:
+ * - Return well-formed \`HookExecutionResult\` for all outcomes (success, error, timeout)
+ * - Respect the abort signal for cooperative cancellation
+ * - Measure \`durationMs\` accurately
+ * - Never throw — all errors must be caught and returned as \`ok: false\`
+ */
+interface HookExecutor {
+    /** Human-readable executor name (for diagnostics). */
+    readonly name: string;
+    /** Returns true if this executor can handle the given hook config. */
+    canHandle(hook: HookConfig): boolean;
+    /** Execute a hook and return the result. Must not throw. */
+    execute(hook: HookConfig, event: HookEvent, signal: AbortSignal): Promise<HookExecutionResult>;
+    /** Clean up per-session state (e.g., token budgets). Called on session end. */
+    cleanupSession?(sessionId: string): void;
+}
+
+/**
+ * Agent hook executor — spawns a verification sub-agent via SpawnFn.
+ *
+ * Implements the HookExecutor interface for \`kind: "agent"\` hooks.
+ * The sub-agent receives instructions, runs with a restricted tool set,
+ * and must return a structured verdict via HookVerdict.
+ *
+ * Key behaviors:
+ * - Budget-aware timeout: min(hook.timeoutMs, remaining session budget)
+ * - Per-session token accounting with configurable budget
+ * - Fail-closed (default) blocks on error, fail-open continues
+ * - Eager cleanup in finally block
+ */
+
+/** Options for creating an agent hook executor. */
+interface CreateAgentExecutorOptions {
+    /** Spawn function to create sub-agents. Provided by L1 engine. */
+    readonly spawnFn: SpawnFn;
+}
+/**
+ * Creates a HookExecutor for agent-type hooks.
+ *
+ * The executor manages per-session token accounting and delegates
+ * sub-agent creation to the provided SpawnFn.
+ */
+declare function createAgentExecutor(options: CreateAgentExecutorOptions): AgentHookExecutor;
+/**
+ * Agent hook executor.
+ *
+ * Uses class for state encapsulation (per-session token accounting).
+ */
+declare class AgentHookExecutor implements HookExecutor {
+    readonly name = "agent";
+    /** Per-session cumulative token usage from agent hook invocations. */
+    private readonly sessionTokens;
+    private readonly spawnFn;
+    constructor(spawnFn: SpawnFn);
+    canHandle(hook: HookConfig): boolean;
+    execute(hook: HookConfig, event: HookEvent, signal: AbortSignal): Promise<HookExecutionResult>;
+    /**
+     * Record tokens used by an invocation. Called after spawn completes.
+     * Uses estimated tokens: (maxTokens per call) * 1 invocation.
+     */
+    private recordTokens;
+    /** Get cumulative tokens used in a session. */
+    getSessionTokens(sessionId: string): number;
+    /** Clean up session token tracking. Call on session end. */
+    cleanupSession(sessionId: string): void;
+    private executeAgent;
+    /**
+     * Handle a failure according to the hook's failClosed flag.
+     *
+     * - true (default) → block with error reason
+     * - false → continue (swallow the error)
+     *
+     * This is handled inside the executor rather than in aggregateDecisions()
+     * to keep the aggregation logic unchanged.
+     */
+    private handleFailure;
+}
+/**
+ * Merge default + user-specified tool denylists.
+ *
+ * Exported for testing. The merged set is used by the middleware
+ * when configuring the sub-agent's tool access.
+ */
+declare function mergeToolDenylist(userDenylist: readonly string[] | undefined): ReadonlySet<string>;
+
+/**
+ * HookVerdict synthetic tool — structured output contract for agent hooks.
+ *
+ * Agent hooks must call this tool exactly once to deliver their verdict.
+ * The stop guard (in agent-executor.ts) prevents the sub-agent from
+ * completing without calling it.
+ */
+
+/** Name of the synthetic tool injected into agent hooks. */
+declare const HOOK_VERDICT_TOOL_NAME: "HookVerdict";
+/**
+ * JSON Schema for the HookVerdict tool input.
+ * Kept as a plain object so it can be serialized into SpawnRequest.
+ */
+declare const HOOK_VERDICT_INPUT_SCHEMA: {
+    readonly type: "object";
+    readonly properties: {
+        readonly ok: {
+            readonly type: "boolean";
+            readonly description: "Whether the verification condition was met";
+        };
+        readonly reason: {
+            readonly type: "string";
+            readonly description: "Explanation of your verdict";
+        };
+    };
+    readonly required: readonly ["ok"];
+    readonly additionalProperties: false;
+};
+/** Default system prompt for verification agents. */
+declare const DEFAULT_AGENT_SYSTEM_PROMPT: string;
+/** Parsed verdict from a HookVerdict tool call. */
+interface HookVerdictResult {
+    readonly ok: boolean;
+    readonly reason: string | undefined;
+}
+/**
+ * Parse raw SpawnResult output into a HookVerdictResult.
+ *
+ * Expects JSON: \`{ "ok": boolean, "reason"?: string }\`.
+ * Returns undefined if the output cannot be parsed as a valid verdict.
+ */
+declare function parseVerdictOutput(output: string): HookVerdictResult | undefined;
+/**
+ * Convert a HookVerdictResult into a HookDecision.
+ *
+ * - \`ok: true\` → \`{ kind: "continue" }\`
+ * - \`ok: false\` → \`{ kind: "block", reason }\`
+ *
+ * Agent hooks only produce continue/block — never modify.
+ */
+declare function verdictToDecision(verdict: HookVerdictResult): HookDecision;
 
 /**
  * Environment variable substitution for hook config values.
@@ -93,9 +243,10 @@ declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>,
  * @param event - The event that triggered execution
  * @param sessionSignal - Optional session-level abort signal for cancellation
  * @param envPolicy - Optional system-wide env-var policy for allowlisting
+ * @param agentExecutor - Optional executor for agent-type hooks (injected via middleware)
  * @returns Results for all matching hooks, in declaration order
  */
-declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined): Promise<readonly HookExecutionResult[]>;
+declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined): Promise<readonly HookExecutionResult[]>;
 
 /**
  * Hook filter matching — determines whether a hook should fire for a given event.
@@ -112,6 +263,31 @@ declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, se
  * @param event - The event to test against.
  */
 declare function matchesHookFilter(filter: HookFilter | undefined, event: HookEvent): boolean;
+
+/**
+ * Shared hook validation — URL policy, timeout resolution, fail mode defaults.
+ *
+ * Single source of truth for validation logic used by both Zod schemas
+ * (parse-time) and executors (runtime). Prevents the two from drifting.
+ */
+
+/**
+ * Validate a hook URL against the HTTPS/loopback boundary.
+ *
+ * Returns \`undefined\` on success, or a human-readable error string on failure.
+ * Used by both the Zod schema (parse-time) and the HTTP executor (runtime).
+ */
+declare function validateHookUrl(url: string): string | undefined;
+/** Resolve the effective timeout for a hook config. */
+declare function resolveTimeout(hook: HookConfig): number;
+/**
+ * Resolve the effective failClosed flag for a hook config.
+ *
+ * Defaults: all hook types → true (fail-closed). When true, hook failures
+ * during post-tool execution suppress the tool's raw output. When false,
+ * output is preserved with taint metadata.
+ */
+declare function resolveFailMode(hook: HookConfig): boolean;
 
 /**
  * Hook loader — validates raw config and returns typed HookConfig arrays.
@@ -169,6 +345,11 @@ declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult,
 interface CreateHookMiddlewareOptions {
     /** Validated hook configs to dispatch. Typically from \`loadHooks()\`. */
     readonly hooks: readonly HookConfig[];
+    /**
+     * Spawn function for agent-type hooks. Required when any hook has \`kind: "agent"\`.
+     * Provided by the L1 engine at middleware wiring time.
+     */
+    readonly spawnFn?: SpawnFn | undefined;
     /** System-wide env-var policy for allowlisting. */
     readonly envPolicy?: HookEnvPolicy | undefined;
     /**
@@ -241,11 +422,22 @@ interface HookRegistry {
     readonly has: (sessionId: string) => boolean;
     /** Returns the number of active sessions. */
     readonly size: () => number;
+    /** Mark a session as belonging to a hook agent — hooks will be suppressed for it. */
+    readonly markHookAgent: (sessionId: string) => void;
+    /** Remove hook-agent marking. Called when the hook agent session ends. */
+    readonly unmarkHookAgent: (sessionId: string) => void;
+    /** Returns true if the session is marked as a hook agent. */
+    readonly isHookAgent: (sessionId: string) => boolean;
+}
+/** Options for creating a hook registry. */
+interface CreateHookRegistryOptions {
+    /** Optional executor for agent-type hooks, threaded through to executeHooks. */
+    readonly agentExecutor?: HookExecutor | undefined;
 }
 /**
  * Creates a new HookRegistry instance.
  */
-declare function createHookRegistry(): HookRegistry;
+declare function createHookRegistry(options?: CreateHookRegistryOptions): HookRegistry;
 
 /**
  * Zod schemas for hook config validation.
@@ -257,8 +449,9 @@ declare function createHookRegistry(): HookRegistry;
 declare const hookFilterSchema: z.ZodType<HookFilter>;
 declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
+declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { type CreateHookMiddlewareOptions, type EnvExpandResult, type EnvRecordExpandResult, type HookRegistry, type LoadHooksResult, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter };
+export { AgentHookExecutor, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
 "
 `;

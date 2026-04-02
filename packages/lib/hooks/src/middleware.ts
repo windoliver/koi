@@ -35,11 +35,14 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   SessionContext,
+  SpawnFn,
   ToolHandler,
   ToolRequest,
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { createAgentExecutor } from "./agent-executor.js";
+import type { HookExecutor } from "./hook-executor.js";
 import { createHookRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,11 @@ import { createHookRegistry } from "./registry.js";
 export interface CreateHookMiddlewareOptions {
   /** Validated hook configs to dispatch. Typically from `loadHooks()`. */
   readonly hooks: readonly HookConfig[];
+  /**
+   * Spawn function for agent-type hooks. Required when any hook has `kind: "agent"`.
+   * Provided by the L1 engine at middleware wiring time.
+   */
+  readonly spawnFn?: SpawnFn | undefined;
   /** System-wide env-var policy for allowlisting. */
   readonly envPolicy?: HookEnvPolicy | undefined;
   /**
@@ -210,8 +218,24 @@ const POST_TOOL_HOOK_DEADLINE_MS = 5_000;
  * @returns A KoiMiddleware at resolve phase, priority 400.
  */
 export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware {
-  const { hooks, envPolicy, postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS } = options;
-  const registry = createHookRegistry();
+  const {
+    hooks,
+    spawnFn,
+    envPolicy,
+    postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS,
+  } = options;
+
+  // Fail-fast: agent hooks require spawnFn (Decision 12A)
+  const hasAgentHooks = hooks.some((h) => h.kind === "agent");
+  if (hasAgentHooks && spawnFn === undefined) {
+    throw new Error(
+      "Agent hooks require spawnFn — provide it via CreateHookMiddlewareOptions.spawnFn",
+    );
+  }
+
+  const agentExecutor: HookExecutor | undefined =
+    spawnFn !== undefined ? createAgentExecutor({ spawnFn }) : undefined;
+  const registry = createHookRegistry({ agentExecutor });
 
   /**
    * Per-session set of pending post-hook promises. Drained in onSessionEnd
@@ -343,6 +367,8 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       // from being aborted by the session controller
       await drainPendingPostHooks(sessionId);
       registry.cleanup(sessionId);
+      // Reset agent executor per-session state (token budgets)
+      agentExecutor?.cleanupSession?.(sessionId);
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {

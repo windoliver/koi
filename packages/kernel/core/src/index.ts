@@ -592,6 +592,7 @@ export type {
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
 // hook — session-scoped side-effect triggers
 export type {
+  AgentHookConfig,
   CommandHookConfig,
   HookConfig,
   HookDecision,
@@ -604,7 +605,14 @@ export type {
   HookType,
   HttpHookConfig,
 } from "./hook.js";
-export { DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS } from "./hook.js";
+export {
+  DEFAULT_AGENT_HOOK_TIMEOUT_MS,
+  DEFAULT_AGENT_MAX_TOKENS,
+  DEFAULT_AGENT_MAX_TURNS,
+  DEFAULT_AGENT_SESSION_TOKEN_BUDGET,
+  DEFAULT_HOOK_TIMEOUT_MS,
+  HOOK_EVENT_KINDS,
+} from "./hook.js";
 // inbox — message steering queue for autonomous agents
 export type { InboxComponent, InboxItem, InboxMode, InboxPolicy } from "./inbox.js";
 export { DEFAULT_INBOX_POLICY } from "./inbox.js";

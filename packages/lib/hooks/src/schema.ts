@@ -5,7 +5,13 @@
  * hook type boundary (command + http). Unknown hook kinds fail clearly.
  */
 
-import type { CommandHookConfig, HookConfig, HookFilter, HttpHookConfig } from "@koi/core";
+import type {
+  AgentHookConfig,
+  CommandHookConfig,
+  HookConfig,
+  HookFilter,
+  HttpHookConfig,
+} from "@koi/core";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +105,29 @@ function createHttpHookSchema(): z.ZodType<HttpHookConfig> {
 export const httpHookSchema: z.ZodType<HttpHookConfig> = createHttpHookSchema();
 
 // ---------------------------------------------------------------------------
+// Agent hook schema
+// ---------------------------------------------------------------------------
+
+function createAgentHookSchema(): z.ZodType<AgentHookConfig> {
+  return z.object({
+    kind: z.literal("agent"),
+    ...hookBaseFields,
+    prompt: z.string().min(1, "Agent hook prompt must not be empty"),
+    model: z.string().optional(),
+    systemPrompt: z.string().optional(),
+    maxTurns: z.number().int().positive("maxTurns must be positive").optional(),
+    maxTokens: z.number().int().positive("maxTokens must be positive").optional(),
+    maxSessionTokens: z.number().int().positive("maxSessionTokens must be positive").optional(),
+    toolDenylist: z
+      .array(z.string().min(1))
+      .min(1, "toolDenylist must not be empty — omit the field instead")
+      .optional(),
+  });
+}
+
+export const agentHookSchema: z.ZodType<AgentHookConfig> = createAgentHookSchema();
+
+// ---------------------------------------------------------------------------
 // Discriminated union schema
 // ---------------------------------------------------------------------------
 
@@ -106,7 +135,7 @@ function createHookConfigSchema(): z.ZodType<HookConfig> {
   // Use z.union since z.discriminatedUnion has ZodType<> annotation issues
   // with exactOptionalPropertyTypes. Runtime discrimination still works via
   // each variant's `kind: z.literal(...)` check.
-  return z.union([commandHookSchema, httpHookSchema]);
+  return z.union([commandHookSchema, httpHookSchema, agentHookSchema]);
 }
 
 export const hookConfigSchema: z.ZodType<HookConfig> = createHookConfigSchema();
