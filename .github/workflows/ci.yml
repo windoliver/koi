@@ -36,6 +36,9 @@ jobs:
       - name: Check orphaned L2 packages
         run: bun run check:orphans
 
+      - name: Check golden query coverage for L2 packages
+        run: bun run check:golden-queries
+
       - name: Check unused code (knip)
         run: bun run check:unused
 

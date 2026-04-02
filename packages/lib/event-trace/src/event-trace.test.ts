@@ -283,6 +283,49 @@ describe("wrapModelStream", () => {
     expect(step?.durationMs).toBe(300);
   });
 
+  test("accumulates text_delta when done chunk has empty content", async () => {
+    let time = 1000;
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => time,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Real streaming: done chunk has empty content, text arrives via deltas
+    const response = makeModelResponse("");
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "The answer " },
+      { kind: "text_delta", delta: "is 12." },
+      { kind: "done", response },
+    ];
+
+    async function* mockStream(): AsyncIterable<ModelChunk> {
+      for (const chunk of chunks) {
+        time += 100;
+        yield chunk;
+      }
+    }
+
+    const collected: ModelChunk[] = [];
+    const stream = middleware.wrapModelStream?.(makeTurnCtx(0), makeModelRequest(), () =>
+      mockStream(),
+    );
+    for await (const chunk of stream ?? []) {
+      collected.push(chunk);
+    }
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const step = store.steps[0]?.[0];
+    expect(step?.kind).toBe("model_call");
+    expect(step?.response?.text).toBe("The answer is 12.");
+  });
+
   test("error path: records failure when stream throws mid-iteration", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({
@@ -356,7 +399,7 @@ describe("wrapModelStream", () => {
 // ---------------------------------------------------------------------------
 
 describe("turn-based flush", () => {
-  test("steps are not persisted until onAfterTurn", async () => {
+  test("steps are persisted immediately on capture (not deferred to onAfterTurn)", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({
       store,
@@ -371,12 +414,7 @@ describe("turn-based flush", () => {
       makeModelResponse(),
     );
 
-    // Before onAfterTurn, store should be empty
-    expect(store.steps).toHaveLength(0);
-
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-
-    // After onAfterTurn, store should have the step
+    // Immediately persisted — no need to wait for onAfterTurn
     expect(store.steps).toHaveLength(1);
   });
 
@@ -450,6 +488,9 @@ describe("step index monotonicity", () => {
     );
     await middleware.onAfterTurn?.(makeTurnCtx(1));
 
+    // onSessionEnd awaits all in-flight writes
+    await middleware.onSessionEnd?.(makeSessionCtx());
+
     const allSteps = await realStore.getDocument("doc-1");
     expect(allSteps).toHaveLength(3);
     expect(allSteps[0]?.stepIndex).toBe(0);
@@ -488,17 +529,17 @@ describe("concurrent tool calls", () => {
     });
 
     await Promise.all([toolA, toolB]);
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
 
-    const steps = store.steps[0] ?? [];
-    expect(steps).toHaveLength(2);
+    // With immediate recording, each tool writes its own append()
+    const allSteps = store.steps.flat();
+    expect(allSteps).toHaveLength(2);
 
     // Both should have unique indices
-    const indices = steps.map((s) => s.stepIndex);
+    const indices = allSteps.map((s) => s.stepIndex);
     expect(new Set(indices).size).toBe(2);
 
     // Both results should be recorded
-    const identifiers = steps.map((s) => s.identifier);
+    const identifiers = allSteps.map((s) => s.identifier);
     expect(identifiers).toContain("tool_a");
     expect(identifiers).toContain("tool_b");
   });
@@ -697,7 +738,8 @@ describe("describeCapabilities", () => {
 
     const caps = middleware.describeCapabilities(makeTurnCtx(0));
     expect(caps?.label).toBe("tracing");
-    expect(caps?.description).toContain("1");
+    // With immediate recording, retryQueue is 0 after successful write
+    expect(caps?.description).toContain("0");
   });
 });
 
@@ -1128,7 +1170,7 @@ describe("safe tool output serialization", () => {
 
     // Create circular reference
     const circular: Record<string, unknown> = { a: 1 };
-    circular["self"] = circular;
+    circular.self = circular;
 
     // This must NOT throw — observer contract
     const response = await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest(), async () =>
@@ -1169,14 +1211,14 @@ describe("safe tool output serialization", () => {
 // ---------------------------------------------------------------------------
 
 describe("flush retry on transient failure", () => {
-  test("retains pending steps after first failure, retries on next flush", async () => {
+  test("retains step after first failure, retries on next recordStep", async () => {
     // let: mutable counter tracking append calls
     let appendCallCount = 0;
     const failOnceStore: TrajectoryDocumentStore = {
       async append(): Promise<void> {
         appendCallCount += 1;
         if (appendCallCount === 1) throw new Error("transient failure");
-        // Second call succeeds
+        // Subsequent calls succeed
       },
       async getDocument(): Promise<readonly RichTrajectoryStep[]> {
         return [];
@@ -1199,28 +1241,22 @@ describe("flush retry on transient failure", () => {
     });
 
     await middleware.onSessionStart?.(makeSessionCtx());
-    await middleware.onBeforeTurn?.(makeTurnCtx(0));
 
+    // First model call — immediate write fails, step queued for retry
     await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
+    expect(appendCallCount).toBe(1); // One failed attempt
 
-    // First flush fails — steps retained
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-    expect(appendCallCount).toBe(1);
-
-    // Next turn triggers retry flush
-    await middleware.onBeforeTurn?.(makeTurnCtx(1));
-    await middleware.wrapModelCall?.(makeTurnCtx(1), makeModelRequest(), async () =>
+    // Second model call — drains retry queue (succeeds), then writes fresh step (succeeds)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(1));
-
-    // Second flush succeeds — should have both turns' steps
-    expect(appendCallCount).toBe(2);
+    // append #2: retry queue drain, append #3: fresh step
+    expect(appendCallCount).toBe(3);
   });
 
-  test("drops after two consecutive failures with onTraceLoss callback", async () => {
+  test("drops stale retries but preserves fresh step's retry budget", async () => {
     const alwaysFailStore: TrajectoryDocumentStore = {
       async append(): Promise<void> {
         throw new Error("persistent failure");
@@ -1239,33 +1275,35 @@ describe("flush retry on transient failure", () => {
       },
     };
 
-    // let: tracks trace loss callback
-    let lostSteps = 0;
+    // let: tracks total trace loss
+    let totalLost = 0;
     const { middleware } = createEventTraceMiddleware({
       store: alwaysFailStore,
       docId: "doc-1",
       agentName: "test",
       onTraceLoss: (count) => {
-        lostSteps = count;
+        totalLost += count;
       },
     });
 
     await middleware.onSessionStart?.(makeSessionCtx());
 
-    // Turn 0: first failure — retained
-    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+    // Call 1: write fails → step queued for retry, no loss yet
     await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-    expect(lostSteps).toBe(0);
+    expect(totalLost).toBe(0);
 
-    // Turn 1: second failure — dropped with callback
-    await middleware.onBeforeTurn?.(makeTurnCtx(1));
-    await middleware.wrapModelCall?.(makeTurnCtx(1), makeModelRequest(), async () =>
+    // Call 2: retry queue drain fails (stale step1 dropped), fresh step2 fails (queued)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(1));
-    expect(lostSteps).toBe(2); // 1 from turn 0 + 1 from turn 1
+    expect(totalLost).toBe(1); // Only stale step dropped
+
+    // Call 3: retry queue drain fails (step2 dropped), fresh step3 fails (queued)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+    expect(totalLost).toBe(2); // One more stale step dropped
   });
 });

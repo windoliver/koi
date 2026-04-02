@@ -37,6 +37,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**/cli/**"
+      - "packages/**/runtime/**"
 
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
 # The negation patterns prevent L0/L1/L0u/L3 package changes from also triggering L2.
@@ -57,6 +58,7 @@
       - "!packages/**/file-resolution/**"
       - "!packages/**/git-utils/**"
       - "!packages/**/hash/**"
+      - "!packages/**/runtime/**"
       - "!packages/**/session-repair/**"
       - "!packages/**/shutdown/**"
       - "!packages/**/token-estimator/**"

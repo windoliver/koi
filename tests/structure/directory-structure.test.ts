@@ -20,7 +20,7 @@ const PACKAGES_DIR = resolve(ROOT, "packages");
 // Expected subsystem directories (from issue #709)
 // ---------------------------------------------------------------------------
 
-const EXPECTED_SUBSYSTEMS = ["kernel", "lib", "mm", "security"] as const;
+const EXPECTED_SUBSYSTEMS = ["kernel", "lib", "meta", "mm", "net", "security"] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,7 +54,7 @@ function listAllPackages(): readonly { readonly subsystem: string; readonly name
 // ---------------------------------------------------------------------------
 
 describe("monorepo directory structure", () => {
-  test("all 4 subsystem directories exist", () => {
+  test("all 6 subsystem directories exist", () => {
     const subsystems = listSubsystems().filter((s) =>
       (EXPECTED_SUBSYSTEMS as readonly string[]).includes(s),
     );
@@ -80,7 +80,7 @@ describe("monorepo directory structure", () => {
 
   test("package count is 16", () => {
     const packages = listAllPackages();
-    expect(packages.length).toBe(16);
+    expect(packages.length).toBe(29);
   });
 
   test("every tsconfig.json reference resolves to an existing directory", () => {

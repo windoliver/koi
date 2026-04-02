@@ -397,7 +397,7 @@ When considering adding a dependency:
 When designing new features (hooks, permissions, plugins, skills, etc.), cross-reference
 with the decompiled Claude Code source for best-practice patterns and battle-tested design:
 
-- **Source**: https://github.com/sanbuphy/claude-code-source-code
+- **Source**: https://github.com/windoliver/claude-code-source-code
 - **Key areas**: `src/utils/hooks/` (hook system), `src/schemas/` (Zod schemas), `src/utils/permissions/` (permission model), `src/utils/skills/` (skill runtime)
 - **Use for**: architectural patterns, event taxonomies, security constraints (SSRF guards, env-var allowlisting, policy tiers), hook lifecycle design
 - **Do not**: copy code verbatim — adapt patterns to Koi's layered architecture (L0/L1/L2)
@@ -448,33 +448,52 @@ bun run check:duplicates  # no copy-paste blocks
 - ALWAYS research the v1 archive before building a new v2 package — check `archive/v1/packages/` for the equivalent v1 implementation. Study its patterns, types, tests, and edge cases. Port what works, simplify what was over-engineered, and document what you learned in the PR description
 - ALWAYS check `archive/v1/packages/meta/` (cli, koi, forge, starter) — these L3/L4 meta-packages show how v1 wired everything together: feature composition, middleware stacking, command dispatch, E2E test patterns, and real-world integration edge cases. They are the best reference for how packages interact at the integration boundary
 
-### Harness Integration Rule (every new package)
+### Golden Query & Trajectory Rule (every new L2 package)
 
-> **Applies once `@koi/harness` (#1188) lands.** Until then, new packages wire into the harness issue's stub list and add their planned assertions to the tracking issue.
+Every new L2 package PR **must** be wired into `@koi/runtime` with golden query coverage. No exceptions.
 
-Every new v2 package PR **must** update `@koi/harness` (#1188). No exceptions.
+**The flow:**
 
-| Step | What | Why |
+| Step | What | How |
 |------|------|-----|
-| 1. Wire | Add package to harness assembly (replace its stub with real impl) | Harness is the integration surface |
-| 2. Debug | Add package to `HarnessDebugInfo` output (name, enabled, config) | Debug view shows what's wired |
-| 3. Golden queries | Add structural assertions to E2E golden query sets | New package must not break existing queries; add assertions for new behavior |
-| 4. VCR cassette | Re-record cassettes if model/tool behavior changed | CI replay tests must pass |
-| 5. Optional? | Document in harness config whether package is required or optional | `createHarness()` must boot with or without optional packages |
+| 1. Wire | Add package as `@koi/runtime` dependency | `packages/meta/runtime/package.json` + `tsconfig.json` |
+| 2. Query config | Add a golden query to the recording script | `packages/meta/runtime/scripts/record-cassettes.ts` — add a `QueryConfig` entry |
+| 3. Record | Run real LLM + real tools to produce ATIF trajectory | `OPENROUTER_API_KEY=... bun run packages/meta/runtime/scripts/record-cassettes.ts` |
+| 4. Validate | Add trajectory assertions to golden-replay tests | `packages/meta/runtime/src/__tests__/golden-replay.test.ts` |
+| 5. Standalone | Add 2 per-L2 golden queries (no LLM needed) | Same file — `describe("Golden: @koi/<name>", ...)` |
 
-**Test the harness after wiring:**
+**CI enforces (all must pass):**
 ```bash
-# Unit: harness boots with new package wired
-bun run test --filter=@koi/harness
-
-# E2E (gated): full loop with real LLM
-E2E_TESTS=1 bun run test --filter=@koi/harness
-
-# Interactive: test via CLI debug view
-bun run packages/meta/harness/bin/test-cli.ts
+bun run check:orphans          # L2 must be dep of @koi/runtime
+bun run check:golden-queries   # L2 must have golden query assertions
+bun run test --filter=@koi/runtime  # Full-loop replay: cassette → createKoi → live ATIF
 ```
 
-**Debug view must show** for each package: name, enabled/stubbed status, configuration summary. Use `/debug` slash command or startup banner.
+**Recording produces:**
+- `fixtures/<name>.cassette.json` — VCR replay (ModelChunk[] from real LLM)
+- `fixtures/<name>.trajectory.json` — Full ATIF v1.6 document with all L2 observable output
+
+**CI replay test runs the full agent loop without LLM or network:**
+1. Load cassette chunks (mock LLM response)
+2. Build mock adapter with cassette as `modelStream` terminal
+3. Wire ALL L2 middleware (event-trace, hooks, permissions, etc.) via `createKoi`
+4. Run agent loop → tool execution → second model call
+5. Validate live ATIF trajectory: MCP steps, MW spans, hook steps, model steps, tool steps
+
+**Current golden queries (5):**
+| Query | What it covers |
+|-------|---------------|
+| simple-text | Text response, no tools, MW:permissions, MCP lifecycle |
+| tool-use | add_numbers via buildTool, hooks fire, MW spans, model→tool→model |
+| glob-use | Glob builtin tool called, returns file paths |
+| permission-deny | Permissions default mode denies tool, model explains unavailable |
+| web-fetch | web_fetch real HTTP call, SSRF protection, Example Domain |
+
+**Re-record when:**
+- New L2 package adds tools or middleware
+- Tool behavior changes (args, output format)
+- Hook event names change
+- Model adapter response format changes
 
 ## Tmux (parallel agent safety)
 

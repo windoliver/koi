@@ -3,12 +3,12 @@
  *
  * Phase: observe (pure observation, errors silently swallowed)
  * Priority: 100 (first among observers)
- * Flush: turn-based (onAfterTurn + onSessionEnd)
+ * Flush: immediate (each step written to store as it completes)
  *
  * Safety invariants:
  *   - Observer never throws into the request path (all trace capture in try-catch)
  *   - Step IDs assigned atomically by store during append() under per-doc lock
- *   - Transient flush failures retain pending steps for one retry on next flush
+ *   - Failed writes are retried once on next capture, then dropped with onTraceLoss
  *
  * Content capture (aligned with OTel GenAI, LangSmith, ATIF best practices):
  *   - Model requests: last user message + system prompt + model params + tool definitions
@@ -85,14 +85,12 @@ export interface EventTraceHandle {
 // ---------------------------------------------------------------------------
 
 interface SessionState {
-  /** Steps accumulated within the current turn, flushed on onAfterTurn. */
-  readonly pendingSteps: RichTrajectoryStep[];
-  /** Relative step counter within this session's pending batch. */
+  /** Step counter within this session. */
   nextLocalIndex: number;
   /** Timestamp when the current turn started. */
   turnStartTime: number;
-  /** True if the previous flush failed — pending steps are a retry batch. */
-  lastFlushFailed: boolean;
+  /** Steps that failed to write — retried on next recordStep call. */
+  readonly retryQueue: RichTrajectoryStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -107,9 +105,44 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   const onTraceLoss = config.onTraceLoss;
 
   const sessions = new Map<string, SessionState>();
+  /** In-flight write promises — awaited on session end to ensure all data lands. */
+  const pendingWrites = new Set<Promise<void>>();
 
   function getState(sessionId: string): SessionState | undefined {
     return sessions.get(sessionId);
+  }
+
+  /**
+   * Record a step to the store without blocking the request path.
+   * Fire-and-forget: the store write runs concurrently so observer I/O
+   * cannot add latency to model/tool completions. Each step gets its
+   * own retry budget.
+   */
+  function recordStep(state: SessionState, step: RichTrajectoryStep): void {
+    // Fire-and-forget — runs concurrently, never blocks the caller
+    const p = writeStep(state, step);
+    pendingWrites.add(p);
+    void p.finally(() => pendingWrites.delete(p));
+  }
+
+  async function writeStep(state: SessionState, step: RichTrajectoryStep): Promise<void> {
+    // Drain retry queue independently — stale failures don't consume fresh step's budget
+    if (state.retryQueue.length > 0) {
+      const stale = [...state.retryQueue];
+      state.retryQueue.length = 0;
+      try {
+        await store.append(docId, stale);
+      } catch {
+        onTraceLoss?.(stale.length, new Error("retry queue flush failed"));
+      }
+    }
+
+    // Write the fresh step with its own retry allowance
+    try {
+      await store.append(docId, [step]);
+    } catch {
+      state.retryQueue.push(step);
+    }
   }
 
   /** Extract the last user message, skipping assistant and system messages. */
@@ -146,14 +179,14 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     const meta: Record<string, unknown> = {
       totalMessages: request.messages.length,
     };
-    if (request.model !== undefined) meta["requestModel"] = request.model;
-    if (request.temperature !== undefined) meta["temperature"] = request.temperature;
-    if (request.maxTokens !== undefined) meta["maxTokens"] = request.maxTokens;
+    if (request.model !== undefined) meta.requestModel = request.model;
+    if (request.temperature !== undefined) meta.temperature = request.temperature;
+    if (request.maxTokens !== undefined) meta.maxTokens = request.maxTokens;
     const systemPrompt = extractSystemPrompt(request);
-    if (systemPrompt !== undefined) meta["systemPrompt"] = systemPrompt;
+    if (systemPrompt !== undefined) meta.systemPrompt = systemPrompt;
     if (request.tools !== undefined && request.tools.length > 0) {
-      meta["toolCount"] = request.tools.length;
-      meta["tools"] = request.tools.map((t) => ({ name: t.name, description: t.description }));
+      meta.toolCount = request.tools.length;
+      meta.tools = request.tools.map((t) => ({ name: t.name, description: t.description }));
     }
     return meta as JsonObject;
   }
@@ -177,7 +210,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       const text = typeof output === "string" ? output : JSON.stringify(output);
       return truncateContent(text, maxOutputBytes);
     } catch {
-      // Circular objects, BigInt, or other unserializable values
       return truncateContent(`[unserializable: ${typeof output}]`, maxOutputBytes);
     }
   }
@@ -237,34 +269,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     };
   }
 
-  /**
-   * Flush pending steps to the store. On transient failure, retains steps for
-   * one more attempt. If the retry also fails, drops with onTraceLoss callback.
-   */
-  async function flushSteps(state: SessionState): Promise<void> {
-    if (state.pendingSteps.length === 0) return;
-
-    const stepsToFlush = [...state.pendingSteps];
-    try {
-      await store.append(docId, stepsToFlush);
-      state.pendingSteps.length = 0;
-      state.nextLocalIndex = 0;
-      state.lastFlushFailed = false;
-    } catch (e: unknown) {
-      if (state.lastFlushFailed) {
-        // Second consecutive failure — drop to prevent unbounded growth
-        const droppedCount = state.pendingSteps.length;
-        state.pendingSteps.length = 0;
-        state.nextLocalIndex = 0;
-        state.lastFlushFailed = false;
-        onTraceLoss?.(droppedCount, e);
-      } else {
-        // First failure — retain for retry on next flush
-        state.lastFlushFailed = true;
-      }
-    }
-  }
-
   const middleware: KoiMiddleware = {
     name: "event-trace",
     priority: 100,
@@ -275,28 +279,31 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       if (state === undefined) return undefined;
       return {
         label: "tracing",
-        description: `Recording trajectory (${String(state.pendingSteps.length)} pending steps)`,
+        description: `Recording trajectory (${String(state.retryQueue.length)} pending retries)`,
       };
     },
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       sessions.set(ctx.sessionId as string, {
-        pendingSteps: [],
         nextLocalIndex: 0,
         turnStartTime: 0,
-        lastFlushFailed: false,
+        retryQueue: [],
       });
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // Wait for all in-flight writes to complete before session cleanup
+      if (pendingWrites.size > 0) {
+        await Promise.allSettled([...pendingWrites]);
+      }
       const state = sessions.get(ctx.sessionId as string);
-      if (state !== undefined) {
-        await flushSteps(state);
-        // If flush failed on shutdown, there's no next turn to retry —
-        // surface the loss explicitly instead of silently discarding.
-        if (state.pendingSteps.length > 0) {
-          onTraceLoss?.(state.pendingSteps.length, new Error("session ended with pending steps"));
-          state.pendingSteps.length = 0;
+      if (state !== undefined && state.retryQueue.length > 0) {
+        // Last chance to flush retries
+        try {
+          await store.append(docId, [...state.retryQueue]);
+          state.retryQueue.length = 0;
+        } catch {
+          onTraceLoss?.(state.retryQueue.length, new Error("session ended with pending retries"));
         }
       }
       sessions.delete(ctx.sessionId as string);
@@ -306,12 +313,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       const state = getState(ctx.session.sessionId as string);
       if (state === undefined) return;
       state.turnStartTime = clock();
-    },
-
-    async onAfterTurn(ctx: TurnContext): Promise<void> {
-      const state = getState(ctx.session.sessionId as string);
-      if (state === undefined) return;
-      await flushSteps(state);
     },
 
     async wrapModelCall(
@@ -332,13 +333,11 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         caughtError = e;
         throw e;
       } finally {
-        // Entire trace capture wrapped in try-catch — observer must never throw
         try {
-          state.pendingSteps.push(
-            buildModelStep(state, startTime, request, response, caughtError, undefined),
-          );
+          const step = buildModelStep(state, startTime, request, response, caughtError, undefined);
+          recordStep(state, step);
         } catch {
-          // Trace capture failed (should not happen, but safety net)
+          // Trace capture failed
         }
       }
     },
@@ -355,16 +354,41 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       }
 
       const startTime = clock();
-      let finalResponse: ModelResponse | undefined;
+      // let: mutable — set true once the step is recorded
+      let recorded = false;
       let caughtError: unknown;
       const thinkingParts: string[] = [];
+      const textParts: string[] = [];
 
       try {
         for await (const chunk of next(request)) {
-          if (chunk.kind === "done") {
-            finalResponse = chunk.response;
-          } else if (chunk.kind === "thinking_delta") {
+          if (chunk.kind === "thinking_delta") {
             thinkingParts.push(chunk.delta);
+          } else if (chunk.kind === "text_delta") {
+            textParts.push(chunk.delta);
+          } else if (chunk.kind === "done") {
+            // Record immediately when done chunk arrives — during iteration,
+            // before onAfterTurn. Generator finally blocks execute after the
+            // engine's flush, so deferring loses the step on single-turn queries.
+            try {
+              let response: ModelResponse = chunk.response;
+              if (response.content === "" && textParts.length > 0) {
+                response = { ...response, content: textParts.join("") };
+              }
+              const reasoning = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
+              const step = buildModelStep(
+                state,
+                startTime,
+                request,
+                response,
+                undefined,
+                reasoning,
+              );
+              recordStep(state, step);
+              recorded = true;
+            } catch {
+              // Trace capture failed
+            }
           }
           yield chunk;
         }
@@ -372,13 +396,22 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         caughtError = e;
         throw e;
       } finally {
-        try {
-          const reasoning = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
-          state.pendingSteps.push(
-            buildModelStep(state, startTime, request, finalResponse, caughtError, reasoning),
-          );
-        } catch {
-          // Trace capture failed — safety net
+        // Error/abort path: record if we never saw a done chunk
+        if (!recorded) {
+          try {
+            const reasoning = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
+            const step = buildModelStep(
+              state,
+              startTime,
+              request,
+              undefined,
+              caughtError,
+              reasoning,
+            );
+            recordStep(state, step);
+          } catch {
+            // Trace capture failed
+          }
         }
       }
     },
@@ -401,8 +434,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         caughtError = e;
         throw e;
       } finally {
-        // Entire trace capture wrapped in try-catch — observer must never throw.
-        // Handles circular objects, BigInt, or any other serialization failure.
         try {
           const durationMs = clock() - startTime;
           const stepIndex = state.nextLocalIndex;
@@ -422,9 +453,9 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
             }),
           };
-          state.pendingSteps.push(step);
+          recordStep(state, step);
         } catch {
-          // Trace capture failed — safety net
+          // Trace capture failed
         }
       }
     },

@@ -1,0 +1,266 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "tool-use",
+  "agent": {
+    "name": "golden-tool-use",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      },
+      {
+        "name": "Glob",
+        "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+      },
+      {
+        "name": "Grep",
+        "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+      },
+      {
+        "name": "ToolSearch",
+        "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:37.796Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:37.796Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-02T10:06:37.797Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 391,
+        "completion_tokens": 7
+      },
+      "duration_ms": 656,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          },
+          {
+            "name": "Glob",
+            "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+          },
+          {
+            "name": "Grep",
+            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:38.455Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
+      "duration_ms": 658.3635419999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:38.457Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded:add_numbers → on-tool-exec",
+      "duration_ms": 2.9362089999999625,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "on-tool-exec"
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:38.460Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 5.930249999999887,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "tool",
+      "timestamp": "2026-04-02T10:06:38.454Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_6",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 5,
+            "a": 7
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_6",
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 6,
+      "outcome": "success"
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:38.460Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":12}"
+          }
+        ]
+      },
+      "duration_ms": 6.742209000000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "agent",
+      "timestamp": "2026-04-02T10:06:38.460Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"result\":12}",
+      "observation": {
+        "results": [
+          {
+            "content": "12"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 414,
+        "completion_tokens": 2
+      },
+      "duration_ms": 461,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 4,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          },
+          {
+            "name": "Glob",
+            "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+          },
+          {
+            "name": "Grep",
+            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-02T10:06:38.921Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
+      "duration_ms": 461.42962499999976,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    }
+  ]
+}
