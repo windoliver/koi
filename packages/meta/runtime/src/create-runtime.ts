@@ -11,6 +11,7 @@ import type {
   ModelRequest,
   ModelResponse,
   RichTrajectoryStep,
+  ToolDescriptor,
   ToolRequest,
   ToolResponse,
   TrajectoryDocumentStore,
@@ -84,6 +85,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     config.requestApproval,
     config.userId,
     config.channelId,
+    config.toolDescriptors,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -464,6 +466,7 @@ function composeMiddlewareIntoAdapter(
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
+  toolDescriptors?: readonly ToolDescriptor[],
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -748,15 +751,16 @@ function composeMiddlewareIntoAdapter(
             }
           : undefined;
 
+      const advertisedTools = toolDescriptors ?? [];
       const callHandlers: ComposedCallHandlers =
         tracedModelStream !== undefined
           ? {
               modelCall: tracedModelCall,
               modelStream: tracedModelStream,
               toolCall: tracedToolCall,
-              tools: [],
+              tools: advertisedTools,
             }
-          : { modelCall: tracedModelCall, toolCall: tracedToolCall, tools: [] };
+          : { modelCall: tracedModelCall, toolCall: tracedToolCall, tools: advertisedTools };
 
       // Start per-stream event-trace session before the stream runs
       if (perStreamEventTrace?.onSessionStart) {

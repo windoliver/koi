@@ -20,9 +20,11 @@ import type {
   HookExecutionResult,
   JsonObject,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   RichTrajectoryStep,
   ToolHandler,
   ToolRequest,
@@ -131,6 +133,23 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       await recordHookResults(results, "turn.ended");
 
       return response;
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      yield* next(request);
+
+      // Post-execution: turn.ended (observe only, same as wrapModelCall)
+      const event: HookEvent = {
+        event: "turn.ended",
+        agentId: ctx.session.agentId,
+        sessionId: ctx.session.sessionId as string,
+      };
+      const results = await executeHooks(hooks, event, ctx.signal ?? signal);
+      await recordHookResults(results, "turn.ended");
     },
 
     async wrapToolCall(

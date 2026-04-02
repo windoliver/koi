@@ -257,7 +257,7 @@ function extractModelRequestText(request: ModelRequest): string {
   return full.length <= 500 ? full : `${full.slice(0, 500)}…`;
 }
 
-/** Passthrough wrapper that records stream outcome (success/failure/interrupted). */
+/** Passthrough wrapper that records stream outcome (success/failure/early-return). */
 async function* wrapStreamForTrace(
   inner: AsyncIterable<ModelChunk>,
   onComplete: (outcome: "success" | "failure", errorMessage?: string) => void,
@@ -275,9 +275,11 @@ async function* wrapStreamForTrace(
     onComplete("failure", isAbort ? "interrupted" : message);
     throw error;
   } finally {
-    // Generator abandoned (return() called without exhaustion or throw)
+    // Consumer-driven generator closure (return() called without exhaustion).
+    // This is normal control flow — the caller consumed enough events and stopped.
+    // Record as success, not failure, to avoid poisoning telemetry.
     if (!recorded) {
-      onComplete("failure", "stream abandoned");
+      onComplete("success");
     }
   }
 }

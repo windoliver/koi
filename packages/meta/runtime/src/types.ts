@@ -4,6 +4,7 @@ import type {
   ChannelCapabilities,
   EngineAdapter,
   KoiMiddleware,
+  ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
 
@@ -57,6 +58,13 @@ export interface RuntimeConfig {
 
   /** Channel identifier for channel-aware middleware. */
   readonly channelId?: string | undefined;
+
+  /**
+   * Tool descriptors advertised to cooperating adapters via callHandlers.tools.
+   * Adapters use these to populate ModelRequest.tools so the model knows which
+   * tools are available. When omitted, callHandlers.tools is empty.
+   */
+  readonly toolDescriptors?: readonly ToolDescriptor[] | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
