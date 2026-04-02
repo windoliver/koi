@@ -109,73 +109,105 @@ function getRedactor(
   return redactor;
 }
 
+// ---------------------------------------------------------------------------
+// Payload processing status — tracks what actually happened to the payload
+// ---------------------------------------------------------------------------
+
+/** Describes the actual processing applied to a payload. */
+export type PayloadStatus =
+  | "redacted"
+  | "unredacted"
+  | "structure_only"
+  | "truncated_redacted"
+  | "truncated_unredacted";
+
+/** Result of payload processing — includes both data and status for accurate prompt notes. */
+export interface RedactedPayload {
+  readonly data: JsonObject | undefined;
+  readonly status: PayloadStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Safely compute the serialized size of data, returning -1 on failure
- * (circular refs, BigInt, etc.).
+ * Safely serialize data, returning undefined on failure (circular refs, BigInt).
  */
-function safeSerializedSize(data: JsonObject): number {
+function safeStringify(data: JsonObject): string | undefined {
   try {
-    return JSON.stringify(data).length;
+    return JSON.stringify(data);
   } catch {
-    return -1;
+    return undefined;
   }
 }
 
 /**
- * Truncate a serialized JSON string to fit within the size limit,
- * preserving as much inspectable content as possible.
+ * Truncate a serialized string and wrap in metadata envelope.
  */
-function truncatePayload(data: JsonObject): JsonObject {
-  const serialized = JSON.stringify(data);
-  const truncated = serialized.slice(0, MAX_RAW_PAYLOAD_SIZE);
+function truncateSerialized(serialized: string): JsonObject {
   return {
     _truncated: true,
     _originalSize: serialized.length,
     _maxSize: MAX_RAW_PAYLOAD_SIZE,
     _notice: "Payload exceeded size limit and was truncated. Inspect available content carefully.",
-    _content: truncated,
+    _content: serialized.slice(0, MAX_RAW_PAYLOAD_SIZE),
   } as unknown as JsonObject;
 }
 
 /**
  * Apply secret redaction to event data using `@koi/redaction`.
- * Returns a copy with detected secrets masked according to the censor strategy.
  *
- * When `config.enabled` is explicitly false, returns the data unchanged
- * (but oversized payloads are still truncated with an explicit notice).
+ * Returns the processed data AND a status describing what was actually done,
+ * so the caller can render an accurate prompt note.
  *
- * When the payload cannot be serialized (circular refs, BigInt), or exceeds
- * MAX_RAW_PAYLOAD_SIZE, the payload is truncated with metadata rather than
- * silently degraded to structure-only — preserving inspectable content for
- * content-based hook policies.
+ * Processing order:
+ * 1. Redact secrets (unless config.enabled === false)
+ * 2. Serialize the result
+ * 3. Truncate if oversized (truncation always operates on already-redacted data)
+ *
+ * Non-serializable data (circular refs, BigInt) falls back to structure-only.
  */
 export function redactEventData(
   data: JsonObject | undefined,
   config: HookRedactionConfig | undefined,
-): JsonObject | undefined {
-  if (data === undefined) return undefined;
+): RedactedPayload {
+  if (data === undefined) return { data: undefined, status: "redacted" };
 
-  // Size guard applies regardless of redaction setting.
-  // Non-serializable data (circular, BigInt) gets truncated with notice.
-  const size = safeSerializedSize(data);
-  if (size === -1) {
-    // Cannot serialize — truncate the structural summary as fallback
-    return {
-      _truncated: true,
-      _notice: "Payload could not be serialized (circular reference or unsupported type).",
-      _structure: extractStructure(data),
-    } as unknown as JsonObject;
-  }
-  if (size > MAX_RAW_PAYLOAD_SIZE) {
-    return truncatePayload(data);
+  // Step 1: Redact secrets (unless explicitly disabled)
+  const redactionEnabled = config?.enabled !== false;
+
+  // Non-serializable check on raw data — if we can't even stringify the input,
+  // fall back to structure-only (safe, never contains raw values)
+  const rawSerialized = safeStringify(data);
+  if (rawSerialized === undefined) {
+    return { data: extractStructure(data), status: "structure_only" };
   }
 
-  // Opt-out: explicit disable bypasses secret redaction (size already checked)
-  if (config?.enabled === false) return data;
+  if (!redactionEnabled) {
+    // No redaction — but still enforce size limit
+    if (rawSerialized.length > MAX_RAW_PAYLOAD_SIZE) {
+      return { data: truncateSerialized(rawSerialized), status: "truncated_unredacted" };
+    }
+    return { data, status: "unredacted" };
+  }
 
+  // Apply redaction
   const strategy = config?.censor ?? "redact";
   const redactor = getRedactor(strategy, config?.sensitiveFields);
   const result = redactor.redactObject(data);
 
-  return result.value;
+  // Step 2: Serialize the REDACTED result
+  const redactedSerialized = safeStringify(result.value);
+  if (redactedSerialized === undefined) {
+    // Redacted result can't be serialized — fall back to structure
+    return { data: extractStructure(data), status: "structure_only" };
+  }
+
+  // Step 3: Truncate if oversized (operating on already-redacted data)
+  if (redactedSerialized.length > MAX_RAW_PAYLOAD_SIZE) {
+    return { data: truncateSerialized(redactedSerialized), status: "truncated_redacted" };
+  }
+
+  return { data: result.value, status: "redacted" };
 }
