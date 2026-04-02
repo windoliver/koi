@@ -199,16 +199,23 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         toolError = e;
         throw e;
       } finally {
-        // Post-execution: tool.succeeded or tool.failed (observe only)
-        const postEventName = toolError === undefined ? "tool.succeeded" : "tool.failed";
-        const postEvent: HookEvent = {
-          event: postEventName,
-          agentId: ctx.session.agentId,
-          sessionId: ctx.session.sessionId as string,
-          toolName: request.toolId,
-        };
-        const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
-        await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
+        // Post-execution: tool.succeeded or tool.failed (observe only).
+        // Wrapped in try/catch — observer failures must never override the
+        // tool's actual result. The action already happened; masking a
+        // successful response as failure invites duplicate retries.
+        try {
+          const postEventName = toolError === undefined ? "tool.succeeded" : "tool.failed";
+          const postEvent: HookEvent = {
+            event: postEventName,
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId as string,
+            toolName: request.toolId,
+          };
+          const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
+          await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
+        } catch {
+          // Observer hook failure — swallow to preserve the original tool outcome
+        }
       }
     },
 

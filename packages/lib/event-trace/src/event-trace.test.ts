@@ -1208,14 +1208,14 @@ describe("safe tool output serialization", () => {
 // ---------------------------------------------------------------------------
 
 describe("flush retry on transient failure", () => {
-  test("retains pending steps after first failure, retries on next flush", async () => {
+  test("retains step after first failure, retries on next recordStep", async () => {
     // let: mutable counter tracking append calls
     let appendCallCount = 0;
     const failOnceStore: TrajectoryDocumentStore = {
       async append(): Promise<void> {
         appendCallCount += 1;
         if (appendCallCount === 1) throw new Error("transient failure");
-        // Second call succeeds
+        // Subsequent calls succeed
       },
       async getDocument(): Promise<readonly RichTrajectoryStep[]> {
         return [];
@@ -1238,28 +1238,22 @@ describe("flush retry on transient failure", () => {
     });
 
     await middleware.onSessionStart?.(makeSessionCtx());
-    await middleware.onBeforeTurn?.(makeTurnCtx(0));
 
+    // First model call — immediate write fails, step queued for retry
     await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
+    expect(appendCallCount).toBe(1); // One failed attempt
 
-    // First flush fails — steps retained
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-    expect(appendCallCount).toBe(1);
-
-    // Next turn triggers retry flush
-    await middleware.onBeforeTurn?.(makeTurnCtx(1));
-    await middleware.wrapModelCall?.(makeTurnCtx(1), makeModelRequest(), async () =>
+    // Second model call — drains retry queue (succeeds), then writes fresh step (succeeds)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(1));
-
-    // Second flush succeeds — should have both turns' steps
-    expect(appendCallCount).toBe(2);
+    // append #2: retry queue drain, append #3: fresh step
+    expect(appendCallCount).toBe(3);
   });
 
-  test("drops after two consecutive failures with onTraceLoss callback", async () => {
+  test("drops stale retries but preserves fresh step's retry budget", async () => {
     const alwaysFailStore: TrajectoryDocumentStore = {
       async append(): Promise<void> {
         throw new Error("persistent failure");
@@ -1278,33 +1272,35 @@ describe("flush retry on transient failure", () => {
       },
     };
 
-    // let: tracks trace loss callback
-    let lostSteps = 0;
+    // let: tracks total trace loss
+    let totalLost = 0;
     const { middleware } = createEventTraceMiddleware({
       store: alwaysFailStore,
       docId: "doc-1",
       agentName: "test",
       onTraceLoss: (count) => {
-        lostSteps = count;
+        totalLost += count;
       },
     });
 
     await middleware.onSessionStart?.(makeSessionCtx());
 
-    // Turn 0: first failure — retained
-    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+    // Call 1: write fails → step queued for retry, no loss yet
     await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-    expect(lostSteps).toBe(0);
+    expect(totalLost).toBe(0);
 
-    // Turn 1: second failure — dropped with callback
-    await middleware.onBeforeTurn?.(makeTurnCtx(1));
-    await middleware.wrapModelCall?.(makeTurnCtx(1), makeModelRequest(), async () =>
+    // Call 2: retry queue drain fails (stale step1 dropped), fresh step2 fails (queued)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
       makeModelResponse(),
     );
-    await middleware.onAfterTurn?.(makeTurnCtx(1));
-    expect(lostSteps).toBe(2); // 1 from turn 0 + 1 from turn 1
+    expect(totalLost).toBe(1); // Only stale step dropped
+
+    // Call 3: retry queue drain fails (step2 dropped), fresh step3 fails (queued)
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+    expect(totalLost).toBe(2); // One more stale step dropped
   });
 });

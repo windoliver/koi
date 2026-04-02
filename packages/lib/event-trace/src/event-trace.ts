@@ -111,24 +111,28 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   }
 
   /**
-   * Record a step immediately to the store. On failure, queues for one retry.
+   * Record a step immediately to the store. Each step gets its own retry budget.
    * Observer code — must never throw into the request path.
    */
   async function recordStep(state: SessionState, step: RichTrajectoryStep): Promise<void> {
-    // Drain retry queue first (failed writes from previous calls)
-    const toWrite = [...state.retryQueue, step];
-    state.retryQueue.length = 0;
-
-    try {
-      await store.append(docId, toWrite);
-    } catch {
-      if (toWrite.length <= 1) {
-        // First failure — queue for retry
-        state.retryQueue.push(...toWrite);
-      } else {
-        // Retry batch failed — drop to prevent unbounded growth
-        onTraceLoss?.(toWrite.length, new Error("trace write failed after retry"));
+    // Drain retry queue independently — stale failures don't consume fresh step's budget
+    if (state.retryQueue.length > 0) {
+      const stale = [...state.retryQueue];
+      state.retryQueue.length = 0;
+      try {
+        await store.append(docId, stale);
+      } catch {
+        // Stale retries failed again — drop them
+        onTraceLoss?.(stale.length, new Error("retry queue flush failed"));
       }
+    }
+
+    // Write the fresh step with its own retry allowance
+    try {
+      await store.append(docId, [step]);
+    } catch {
+      // First failure for this step — queue for one retry
+      state.retryQueue.push(step);
     }
   }
 
