@@ -764,12 +764,18 @@ function composeMiddlewareIntoAdapter(
             }
           : { modelCall: tracedModelCall, toolCall: tracedToolCall, tools: advertisedTools };
 
-      // Run lifecycle hooks on ALL middleware (not just event-trace)
-      void runSessionHooks(sorted, "onSessionStart", ctx.session).catch(noop);
+      // Await session start so middleware state is initialized before the first call.
+      // Wrapped in an async generator so the synchronous stream() method can return
+      // immediately while initialization happens on the first next() call.
+      const sessionStartPromise = runSessionHooks(sorted, "onSessionStart", ctx.session);
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
+      const initializedStream = (async function* (): AsyncIterable<EngineEvent> {
+        await sessionStartPromise;
+        yield* innerStream;
+      })();
       return wrapStreamWithFlush(
-        innerStream,
+        initializedStream,
         buffer,
         () => {
           // Push ALL pending stream call steps before flush (supports multi-call adapters)
