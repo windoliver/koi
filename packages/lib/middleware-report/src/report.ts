@@ -69,7 +69,7 @@ function makeProgressSnapshot(state: ReportSessionState): ProgressSnapshot {
     inputTokens: snap.inputTokens,
     outputTokens: snap.outputTokens,
     totalTokens: snap.inputTokens + snap.outputTokens,
-    issueCount: snap.issues.length,
+    issueCount: snap.totalIssues,
     elapsedMs: Date.now() - state.startedAt,
     truncated: snap.truncated,
   };
@@ -318,7 +318,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
         durationMs,
         snap.inputTokens,
         snap.outputTokens,
-        snap.issues.length,
+        snap.totalIssues,
       );
 
       const report: RunReport = {

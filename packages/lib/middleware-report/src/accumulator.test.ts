@@ -89,4 +89,30 @@ describe("createAccumulator", () => {
     expect(snap.truncated).toBe(false);
     expect(snap.totalActions).toBe(3);
   });
+
+  it("bounds issues with ring buffer", () => {
+    const acc = createAccumulator(3);
+    for (let i = 0; i < 5; i++) {
+      acc.recordIssue({
+        severity: "warning",
+        message: `issue-${String(i)}`,
+        turnIndex: i,
+        resolved: false,
+      });
+    }
+    const snap = acc.snapshot();
+    expect(snap.issues).toHaveLength(3);
+    expect(snap.totalIssues).toBe(5);
+    // Should retain the 3 most recent
+    expect(snap.issues.map((i) => i.message)).toEqual(["issue-2", "issue-3", "issue-4"]);
+  });
+
+  it("caps artifacts at maximum", () => {
+    const acc = createAccumulator(10);
+    for (let i = 0; i < 150; i++) {
+      acc.recordArtifact({ id: `a${String(i)}`, kind: "file", uri: `file://${String(i)}` });
+    }
+    const snap = acc.snapshot();
+    expect(snap.artifacts).toHaveLength(100);
+  });
 });

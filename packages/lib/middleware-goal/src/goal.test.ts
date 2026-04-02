@@ -216,6 +216,21 @@ describe("validateGoalConfig", () => {
     const result = validateGoalConfig({ objectives: ["x"], baseInterval: 0 });
     expect(result.ok).toBe(false);
   });
+
+  it("rejects invalid maxInterval", () => {
+    const result = validateGoalConfig({ objectives: ["x"], maxInterval: -1 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects maxInterval < baseInterval", () => {
+    const result = validateGoalConfig({ objectives: ["x"], baseInterval: 10, maxInterval: 5 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts maxInterval >= baseInterval", () => {
+    const result = validateGoalConfig({ objectives: ["x"], baseInterval: 5, maxInterval: 10 });
+    expect(result.ok).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -282,6 +297,35 @@ describe("createGoalMiddleware", () => {
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
     expect(completed).toEqual(["Write integration tests"]);
+  });
+
+  it("does not revert completions on later model call without signal", async () => {
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write integration tests"],
+      onComplete: (obj) => completed.push(obj),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+
+    // First call: marks objective as completed
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("I have completed the integration tests."),
+    );
+    expect(completed).toEqual(["Write integration tests"]);
+
+    // Second call: no completion signal — should NOT revert
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("Now working on something else entirely."),
+    );
+    // onComplete should not fire again, and status stays completed
+    expect(completed).toEqual(["Write integration tests"]);
+    const cap = mw.describeCapabilities(ctx);
+    expect(cap?.description).toBe("1/1 objectives completed");
   });
 
   it("describes capabilities with completion count", async () => {

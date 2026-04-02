@@ -82,5 +82,19 @@ export function validateGoalConfig(input: unknown): Result<GoalMiddlewareConfig,
     };
   }
 
+  // Validate relationship: maxInterval must be >= baseInterval
+  const effectiveBase = typeof c.baseInterval === "number" ? c.baseInterval : DEFAULT_BASE_INTERVAL;
+  const effectiveMax = typeof c.maxInterval === "number" ? c.maxInterval : DEFAULT_MAX_INTERVAL;
+  if (effectiveMax < effectiveBase) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `GoalMiddlewareConfig.maxInterval (${String(effectiveMax)}) must be >= baseInterval (${String(effectiveBase)})`,
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+
   return { ok: true, value: input as GoalMiddlewareConfig };
 }

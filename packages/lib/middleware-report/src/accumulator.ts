@@ -1,9 +1,11 @@
 /**
- * Ring-buffer accumulator for bounded action/issue recording.
+ * Ring-buffer accumulator for bounded action/issue/artifact recording.
  * O(1) insertion, O(n) snapshot (read path, infrequent).
  */
 
 import type { ActionEntry, ArtifactRef, IssueEntry } from "@koi/core";
+
+const MAX_ARTIFACTS = 100;
 
 export interface AccumulatorSnapshot {
   readonly actions: readonly ActionEntry[];
@@ -12,6 +14,7 @@ export interface AccumulatorSnapshot {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalActions: number;
+  readonly totalIssues: number;
   readonly truncated: boolean;
 }
 
@@ -23,37 +26,73 @@ export interface Accumulator {
   readonly snapshot: () => AccumulatorSnapshot;
 }
 
+/** Linearize a ring buffer into chronological order. */
+function linearize<T>(
+  buffer: readonly (T | undefined)[],
+  head: number,
+  count: number,
+  capacity: number,
+): T[] {
+  const result: T[] = [];
+  if (count === capacity) {
+    for (let i = 0; i < capacity; i++) {
+      const entry = buffer[(head + i) % capacity];
+      if (entry !== undefined) result.push(entry);
+    }
+  } else {
+    for (let i = 0; i < count; i++) {
+      const entry = buffer[i];
+      if (entry !== undefined) result.push(entry);
+    }
+  }
+  return result;
+}
+
 export function createAccumulator(maxActions: number): Accumulator {
-  const buffer: (ActionEntry | undefined)[] = new Array<ActionEntry | undefined>(maxActions).fill(
+  const actionBuf: (ActionEntry | undefined)[] = new Array<ActionEntry | undefined>(
+    maxActions,
+  ).fill(undefined);
+  let actionHead = 0;
+  let actionCount = 0;
+  let totalActions = 0;
+
+  const issueBuf: (IssueEntry | undefined)[] = new Array<IssueEntry | undefined>(maxActions).fill(
     undefined,
   );
-  let head = 0;
-  let count = 0;
-  let totalActions = 0;
+  let issueHead = 0;
+  let issueCount = 0;
+  let totalIssues = 0;
+
+  const artifacts: ArtifactRef[] = [];
   let truncated = false;
   let inputTokens = 0;
   let outputTokens = 0;
-  const artifacts: ArtifactRef[] = [];
-  const issues: IssueEntry[] = [];
 
   return {
     recordAction(entry: ActionEntry): void {
-      buffer[head] = entry;
-      head = (head + 1) % maxActions;
+      actionBuf[actionHead] = entry;
+      actionHead = (actionHead + 1) % maxActions;
       totalActions++;
-      if (count < maxActions) {
-        count++;
+      if (actionCount < maxActions) {
+        actionCount++;
       } else {
         truncated = true;
       }
     },
 
     recordArtifact(ref: ArtifactRef): void {
-      artifacts.push(ref);
+      if (artifacts.length < MAX_ARTIFACTS) {
+        artifacts.push(ref);
+      }
     },
 
     recordIssue(entry: IssueEntry): void {
-      issues.push(entry);
+      issueBuf[issueHead] = entry;
+      issueHead = (issueHead + 1) % maxActions;
+      totalIssues++;
+      if (issueCount < maxActions) {
+        issueCount++;
+      }
     },
 
     addTokens(input: number, output: number): void {
@@ -62,34 +101,14 @@ export function createAccumulator(maxActions: number): Accumulator {
     },
 
     snapshot(): AccumulatorSnapshot {
-      // Linearize ring buffer in chronological order
-      const actions: ActionEntry[] = [];
-      if (count === maxActions) {
-        // Buffer is full — read from head (oldest) to end, then 0 to head
-        for (let i = 0; i < maxActions; i++) {
-          const idx = (head + i) % maxActions;
-          const entry = buffer[idx];
-          if (entry !== undefined) {
-            actions.push(entry);
-          }
-        }
-      } else {
-        // Buffer not full — entries are 0..count-1
-        for (let i = 0; i < count; i++) {
-          const entry = buffer[i];
-          if (entry !== undefined) {
-            actions.push(entry);
-          }
-        }
-      }
-
       return {
-        actions,
+        actions: linearize(actionBuf, actionHead, actionCount, maxActions),
         artifacts: [...artifacts],
-        issues: [...issues],
+        issues: linearize(issueBuf, issueHead, issueCount, maxActions),
         inputTokens,
         outputTokens,
         totalActions,
+        totalIssues,
         truncated,
       };
     },

@@ -163,21 +163,37 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
 
-  /** Detect completions in text and update session state + fire callbacks. */
-  function updateCompletions(sid: SessionId, text: string, state: GoalSessionState): void {
-    const updatedItems = detectCompletions(text, state.items);
+  /**
+   * Detect completions in text and update session state + fire callbacks.
+   * Monotonic: completed objectives never revert to pending, even if a
+   * later model call in the same turn lacks the completion signal.
+   */
+  function updateCompletions(sid: SessionId, text: string): void {
+    // Always read the latest state from the map to avoid stale snapshots
+    const current = sessions.get(sid);
+    if (!current) return;
+
+    const detected = detectCompletions(text, current.items);
+
+    // Merge monotonically: true stays true
+    const merged = current.items.map((item, i) => {
+      const det = detected[i];
+      if (item.completed) return item;
+      if (det && det.completed) return det;
+      return item;
+    });
 
     if (config.onComplete) {
-      for (let i = 0; i < updatedItems.length; i++) {
-        const prev = state.items[i];
-        const curr = updatedItems[i];
+      for (let i = 0; i < merged.length; i++) {
+        const prev = current.items[i];
+        const curr = merged[i];
         if (prev && curr && !prev.completed && curr.completed) {
           config.onComplete(curr.text);
         }
       }
     }
 
-    sessions.set(sid, { ...state, items: updatedItems });
+    sessions.set(sid, { ...current, items: merged });
   }
 
   return {
@@ -250,7 +266,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const response: ModelResponse = await next(enrichedRequest);
 
       // Detect completions in response
-      updateCompletions(ctx.session.sessionId, response.content, state);
+      updateCompletions(ctx.session.sessionId, response.content);
 
       return response;
     },
@@ -290,7 +306,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       } finally {
         // Only detect completions if stream completed successfully
         if (succeeded) {
-          updateCompletions(ctx.session.sessionId, bufferedText, state);
+          updateCompletions(ctx.session.sessionId, bufferedText);
         }
       }
     },
