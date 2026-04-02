@@ -107,4 +107,25 @@ describe("wrapWithOverflowRecovery", () => {
       ),
     ).rejects.toThrow("context_length_exceeded");
   });
+
+  it("preserves original overflow error as cause when recover() throws", async () => {
+    try {
+      await wrapWithOverflowRecovery(
+        async () => {
+          throw overflowError();
+        },
+        async () => {
+          throw new Error("summarizer unavailable");
+        },
+        2,
+      );
+      expect.unreachable("should have thrown");
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(Error);
+      const error = err as Error;
+      expect(error.message).toBe("Recovery failed after context overflow");
+      expect(error.cause).toBeInstanceOf(Error);
+      expect((error.cause as Error).message).toBe("context_length_exceeded");
+    }
+  });
 });

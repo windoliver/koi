@@ -49,6 +49,7 @@ export default defineConfig({
     "src/zone.ts",
     "src/cost-tracker.ts",
     "src/user-model.ts",
+    "src/replacement.ts",
   ],
   format: ["esm"],
   dts: {

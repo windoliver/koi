@@ -57,7 +57,11 @@ export async function wrapWithOverflowRecovery<T>(
         throw error;
       }
       retriesLeft--;
-      await recover();
+      try {
+        await recover();
+      } catch (_recoverError: unknown) {
+        throw new Error("Recovery failed after context overflow", { cause: error });
+      }
     }
   }
 }
