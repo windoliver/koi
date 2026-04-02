@@ -1,6 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
+    "ignoreDeprecations": "6.0",
     "strict": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -23,7 +24,6 @@
     "skipLibCheck": true,
     "composite": true,
     "resolvePackageJsonExports": true,
-    "resolvePackageJsonImports": true,
-    "esModuleInterop": false
+    "resolvePackageJsonImports": true
   }
 }
