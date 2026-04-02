@@ -67,6 +67,17 @@ async def dispatch(fs, method, params):
     if method == "edit":
         edits = params.get("edits", [])
         preview = params.get("preview", False)
+        if_match = params.get("if_match")
+
+        # Capture etag before read for OCC guard on write
+        pre_stat = await fs.stat(path)
+        pre_etag = pre_stat.get("etag") if pre_stat else None
+
+        # Honor caller-supplied if_match (from composite fallback)
+        if if_match is not None and pre_etag is not None and pre_etag != if_match:
+            raise ConflictError(
+                f"Conflict: file was modified before edit (expected etag {if_match}, got {pre_etag})"
+            )
 
         data = await fs.read(path)
         content = data.decode("utf-8") if isinstance(data, bytes) else str(data)
@@ -85,6 +96,13 @@ async def dispatch(fs, method, params):
             applied += 1
 
         if not preview:
+            # OCC guard: verify file hasn't changed since our read
+            post_stat = await fs.stat(path)
+            post_etag = post_stat.get("etag") if post_stat else None
+            if pre_etag is not None and post_etag is not None and post_etag != pre_etag:
+                raise ConflictError(
+                    f"Conflict: file was modified during edit (etag changed from {pre_etag} to {post_etag})"
+                )
             await fs.write(path, content.encode("utf-8"))
 
         return {"edits_applied": applied}

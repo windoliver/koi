@@ -240,10 +240,18 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     // Compute search base path
     const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
 
+    // Normalize glob into mounted namespace: user-relative "/subdir/*"
+    // becomes "/fs/subdir/*" so the transport matches full Nexus paths.
+    let filePattern: string | undefined;
+    if (options?.glob !== undefined) {
+      const userGlob = options.glob.startsWith("/") ? options.glob : `/${options.glob}`;
+      filePattern = `${searchBase}${userGlob}`;
+    }
+
     const result = await transport.call<NexusGrepResponse>("grep", {
       pattern,
       path: searchBase,
-      ...(options?.glob !== undefined ? { file_pattern: options.glob } : {}),
+      ...(filePattern !== undefined ? { file_pattern: filePattern } : {}),
       ...(options?.caseSensitive === false ? { ignore_case: true } : {}),
       ...(options?.maxResults !== undefined ? { max_results: options.maxResults } : {}),
     });
