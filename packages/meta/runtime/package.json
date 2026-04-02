@@ -26,6 +26,9 @@
     "@koi/tools-core": "workspace:*",
     "@koi/tools-web": "workspace:*"
   },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.12.1"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
