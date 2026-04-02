@@ -22,6 +22,7 @@ export default defineConfig({
     "src/lifecycle.ts",
     "src/message.ts",
     "src/middleware.ts",
+    "src/model-adapter.ts",
     "src/model-provider.ts",
     "src/resolver.ts",
     "src/rich-trajectory.ts",

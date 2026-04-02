@@ -11,7 +11,7 @@ import type {
   TurnContext,
   TurnId,
 } from "@koi/core";
-import { createInMemoryTrajectoryStore } from "./atif-store.js";
+import { createInMemoryAtifDocumentStore } from "./atif-store.js";
 import { createEventTraceMiddleware } from "./event-trace-middleware.js";
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ function advanceClock(ms: number): void {
 describe("createEventTraceMiddleware", () => {
   test("wrapModelCall records request, response, duration, metrics", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -113,7 +113,7 @@ describe("createEventTraceMiddleware", () => {
 
   test("wrapToolCall records tool name, args, result, duration", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -143,7 +143,7 @@ describe("createEventTraceMiddleware", () => {
 
   test("wrapModelStream records streaming call", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -177,7 +177,7 @@ describe("createEventTraceMiddleware", () => {
 
   test("error in model call records failure outcome", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -201,7 +201,7 @@ describe("createEventTraceMiddleware", () => {
 
   test("error in tool call records failure outcome", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -223,7 +223,7 @@ describe("createEventTraceMiddleware", () => {
 
   test("per-turn segmentation: steps accumulate across turns", async () => {
     clockTime = 1000;
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store, clock: testClock });
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
@@ -263,13 +263,13 @@ describe("createEventTraceMiddleware", () => {
   });
 
   test("getStepCount returns 0 for unknown session", () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store });
     expect(handle.getStepCount("unknown")).toBe(0);
   });
 
   test("describeCapabilities returns tracing label", () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const handle = createEventTraceMiddleware({ store });
     const caps = handle.middleware.describeCapabilities({} as TurnContext);
     expect(caps?.label).toBe("tracing");

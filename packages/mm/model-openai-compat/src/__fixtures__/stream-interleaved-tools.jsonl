@@ -1,0 +1,16 @@
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"search","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"f.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":12}}
+
+data: [DONE]
+

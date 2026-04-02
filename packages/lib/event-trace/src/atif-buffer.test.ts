@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { RichTrajectoryStep } from "@koi/core";
 import { createWriteBehindBuffer } from "./atif-buffer.js";
-import { createInMemoryTrajectoryStore } from "./atif-store.js";
+import { createInMemoryAtifDocumentStore } from "./atif-store.js";
 
 function makeStep(index: number): RichTrajectoryStep {
   return {
@@ -24,7 +24,7 @@ describe("createWriteBehindBuffer", () => {
   });
 
   test("append queues without blocking", () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const buffer = createWriteBehindBuffer(store, { batchSize: 10, flushIntervalMs: 600_000 });
     dispose = buffer.dispose;
 
@@ -34,7 +34,7 @@ describe("createWriteBehindBuffer", () => {
   });
 
   test("auto-flush at batch size", async () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const buffer = createWriteBehindBuffer(store, { batchSize: 3, flushIntervalMs: 600_000 });
     dispose = buffer.dispose;
 
@@ -51,7 +51,7 @@ describe("createWriteBehindBuffer", () => {
   });
 
   test("explicit flush writes all pending", async () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const buffer = createWriteBehindBuffer(store, { batchSize: 100, flushIntervalMs: 600_000 });
     dispose = buffer.dispose;
 
@@ -66,7 +66,7 @@ describe("createWriteBehindBuffer", () => {
   });
 
   test("flush single doc", async () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const buffer = createWriteBehindBuffer(store, { batchSize: 100, flushIntervalMs: 600_000 });
     dispose = buffer.dispose;
 
@@ -80,7 +80,7 @@ describe("createWriteBehindBuffer", () => {
 
   test("error callback receives flush errors", async () => {
     const errors: Array<{ error: unknown; docId: string }> = [];
-    const failingStore = createInMemoryTrajectoryStore();
+    const failingStore = createInMemoryAtifDocumentStore({ agentName: "test" });
     // Override append to throw
     (failingStore as { append: typeof failingStore.append }).append = async () => {
       throw new Error("write failed");
@@ -101,7 +101,7 @@ describe("createWriteBehindBuffer", () => {
   });
 
   test("pending returns 0 for unknown doc", () => {
-    const store = createInMemoryTrajectoryStore();
+    const store = createInMemoryAtifDocumentStore({ agentName: "test" });
     const buffer = createWriteBehindBuffer(store, { flushIntervalMs: 600_000 });
     dispose = buffer.dispose;
 

@@ -1,13 +1,15 @@
 import type { RichStepMetrics, RichTrajectoryStep } from "@koi/core";
+import { parseStep } from "./atif-mappers.js";
 import type {
   AtifDocument,
   AtifFinalMetrics,
   AtifObservation,
   AtifObservationResult,
-  AtifStep,
+  AtifStepFlat,
   AtifStepMetrics,
   AtifToolCall,
 } from "./atif-types.js";
+import { ATIF_SCHEMA_VERSION } from "./atif-types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -38,7 +40,7 @@ function omitUndefined<T>(obj: Record<string, unknown>): T {
 // Rich → ATIF
 // ---------------------------------------------------------------------------
 
-export function mapRichStepToAtif(step: RichTrajectoryStep): AtifStep {
+export function mapRichStepToAtif(step: RichTrajectoryStep): AtifStepFlat {
   const toolCalls: readonly AtifToolCall[] | undefined =
     step.kind === "tool_call"
       ? [
@@ -62,7 +64,7 @@ export function mapRichStepToAtif(step: RichTrajectoryStep): AtifStep {
         }
       : undefined;
 
-  return omitUndefined<AtifStep>({
+  return omitUndefined<AtifStepFlat>({
     step_id: step.stepIndex,
     source: step.source,
     timestamp: new Date(step.timestamp).toISOString(),
@@ -92,14 +94,14 @@ export function mapRichToAtifDocument(
   options: AtifDocumentOptions,
 ): AtifDocument {
   return {
-    schema_version: "ATIF-v1.6",
+    schema_version: ATIF_SCHEMA_VERSION,
     session_id: options.sessionId,
     agent: omitUndefined<AtifDocument["agent"]>({
       name: options.agentName,
       version: options.agentVersion,
       model_name: options.modelName,
     }),
-    steps: steps.map(mapRichStepToAtif),
+    steps: steps.map((s) => parseStep(mapRichStepToAtif(s))),
     final_metrics: computeFinalMetrics(steps),
   };
 }
@@ -132,7 +134,7 @@ export function computeFinalMetrics(steps: readonly RichTrajectoryStep[]): AtifF
 // ATIF → Rich
 // ---------------------------------------------------------------------------
 
-export function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
+export function mapAtifStepToRich(step: AtifStepFlat): RichTrajectoryStep {
   const kind = step.tool_calls && step.tool_calls.length > 0 ? "tool_call" : "model_call";
   const identifier =
     kind === "tool_call"
@@ -167,5 +169,6 @@ function mapAtifMetricsToRich(m: AtifStepMetrics): RichStepMetrics {
 }
 
 export function mapAtifDocumentToRich(doc: AtifDocument): readonly RichTrajectoryStep[] {
-  return doc.steps.map(mapAtifStepToRich);
+  // AtifStep (discriminated union) is structurally compatible with AtifStepFlat
+  return doc.steps.map((step) => mapAtifStepToRich(step));
 }
