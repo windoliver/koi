@@ -164,6 +164,37 @@ export function hasFrontmatterUnsafeChars(value: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Parses frontmatter fields with strict validation.
+ * Returns undefined if any field is missing, duplicated, unknown, or malformed.
+ */
+function parseFrontmatterFields(yamlBlock: string): MemoryFrontmatter | undefined {
+  const fields = new Map<string, string>();
+  for (const line of yamlBlock.split("\n")) {
+    const trimmedLine = line.trim();
+    if (trimmedLine.length === 0) continue;
+
+    const colonIndex = trimmedLine.indexOf(":");
+    if (colonIndex === -1) return undefined;
+
+    const key = trimmedLine.slice(0, colonIndex).trim();
+    if (key !== "name" && key !== "description" && key !== "type") return undefined;
+    if (fields.has(key)) return undefined;
+
+    const value = trimmedLine.slice(colonIndex + 1).trim();
+    fields.set(key, value);
+  }
+
+  const name = fields.get("name");
+  const description = fields.get("description");
+  const type = fields.get("type");
+
+  if (!name || !description || !type) return undefined;
+  if (!isMemoryType(type)) return undefined;
+
+  return { name, description, type };
+}
+
+/**
  * Parses YAML frontmatter from a memory Markdown file.
  *
  * Expects format:
@@ -177,6 +208,8 @@ export function hasFrontmatterUnsafeChars(value: string): boolean {
  * ```
  *
  * Returns undefined if the frontmatter is missing or malformed.
+ * Rejects empty/whitespace-only bodies (truncated writes).
+ * Preserves leading blank lines in content during roundtrips.
  */
 export function parseMemoryFrontmatter(
   raw: string,
@@ -190,59 +223,54 @@ export function parseMemoryFrontmatter(
   if (afterOpener === -1) return undefined;
 
   const rest = trimmed.slice(afterOpener + 1);
-  const closeMatch = rest.match(/^---\s*$/m);
-  if (!closeMatch || closeMatch.index === undefined) return undefined;
 
-  const yamlBlock = rest.slice(0, closeMatch.index).trim();
-  const content = rest.slice(closeMatch.index + closeMatch[0].length).replace(/^\n/, "");
-
-  // Parse fields with strict validation:
-  // - Only known keys (name, description, type) are accepted
-  // - Duplicate keys are rejected (fail closed)
-  // - Non-empty lines that aren't valid key: value pairs are rejected
-  const fields = new Map<string, string>();
-  for (const line of yamlBlock.split("\n")) {
-    const trimmedLine = line.trim();
-    if (trimmedLine.length === 0) continue;
-
-    const colonIndex = trimmedLine.indexOf(":");
-    if (colonIndex === -1) return undefined; // Non-empty line without key: value → malformed
-
-    const key = trimmedLine.slice(0, colonIndex).trim();
-    if (key !== "name" && key !== "description" && key !== "type") return undefined; // Unknown key → malformed
-    if (fields.has(key)) return undefined; // Duplicate key → malformed
-
-    const value = trimmedLine.slice(colonIndex + 1).trim();
-    fields.set(key, value);
+  // Match closing delimiter: exactly "---" at start of line, followed by newline.
+  // Only allows horizontal whitespace (spaces/tabs) after dashes, not \n,
+  // to avoid consuming blank lines that belong to content.
+  const closeMatch = rest.match(/^---[ \t]*\n/m);
+  if (!closeMatch || closeMatch.index === undefined) {
+    // Handle "---" at the very end of the string (no trailing newline) — empty body
+    const eofMatch = rest.match(/^---[ \t]*$/m);
+    if (!eofMatch || eofMatch.index === undefined) return undefined;
+    // No content after closing delimiter → rejected by empty body check
+    return undefined;
   }
 
-  const name = fields.get("name");
-  const description = fields.get("description");
-  const type = fields.get("type");
+  const yamlBlock = rest.slice(0, closeMatch.index).trim();
 
-  if (!name || !description || !type) return undefined;
-  if (!isMemoryType(type)) return undefined;
+  // The serializer emits "---\n\n<content>" — the close regex consumed "---\n",
+  // so afterClose starts with "\n<content>". Strip exactly that one separator
+  // newline to preserve any leading blank lines in the actual content.
+  const afterClose = rest.slice(closeMatch.index + closeMatch[0].length);
+  const content = afterClose.replace(/^\n/, "");
+
+  const frontmatter = parseFrontmatterFields(yamlBlock);
+  if (!frontmatter) return undefined;
 
   // Reject empty/whitespace-only bodies — a truncated write should not
   // deserialize as a valid record
   if (content.trim().length === 0) return undefined;
 
-  return {
-    frontmatter: { name, description, type },
-    content,
-  };
+  return { frontmatter, content };
 }
 
 /**
  * Serializes a MemoryFrontmatter + content into a Markdown file string.
  *
- * Field values are sanitized: newlines are replaced with spaces and control
- * characters are stripped to prevent frontmatter injection.
+ * All field values are validated and sanitized: newlines are replaced with
+ * spaces and control characters are stripped to prevent frontmatter injection.
+ * The `type` field is validated at runtime (not just via TypeScript types)
+ * to reject injected values from untyped JavaScript callers.
+ *
+ * Returns undefined if `type` is not a valid MemoryType at runtime.
  */
 export function serializeMemoryFrontmatter(
   frontmatter: MemoryFrontmatter,
   content: string,
-): string {
+): string | undefined {
+  // Runtime validation — TypeScript types are not enforced in JS callers
+  if (!isMemoryType(frontmatter.type)) return undefined;
+
   const name = sanitizeFrontmatterValue(frontmatter.name);
   const description = sanitizeFrontmatterValue(frontmatter.description);
 

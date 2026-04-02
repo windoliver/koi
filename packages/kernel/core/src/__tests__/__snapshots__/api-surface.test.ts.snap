@@ -4214,6 +4214,8 @@ declare function hasFrontmatterUnsafeChars(value: string): boolean;
  * \`\`\`
  *
  * Returns undefined if the frontmatter is missing or malformed.
+ * Rejects empty/whitespace-only bodies (truncated writes).
+ * Preserves leading blank lines in content during roundtrips.
  */
 declare function parseMemoryFrontmatter(raw: string): {
     readonly frontmatter: MemoryFrontmatter;
@@ -4222,10 +4224,14 @@ declare function parseMemoryFrontmatter(raw: string): {
 /**
  * Serializes a MemoryFrontmatter + content into a Markdown file string.
  *
- * Field values are sanitized: newlines are replaced with spaces and control
- * characters are stripped to prevent frontmatter injection.
+ * All field values are validated and sanitized: newlines are replaced with
+ * spaces and control characters are stripped to prevent frontmatter injection.
+ * The \`type\` field is validated at runtime (not just via TypeScript types)
+ * to reject injected values from untyped JavaScript callers.
+ *
+ * Returns undefined if \`type\` is not a valid MemoryType at runtime.
  */
-declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string;
+declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string | undefined;
 /** Validation error for memory records. */
 interface MemoryValidationError {
     readonly field: string;

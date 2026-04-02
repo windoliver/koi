@@ -187,7 +187,7 @@ describe("serializeMemoryFrontmatter", () => {
     };
     const content = "Rule: always use typed errors.\n\n**Why:** untyped errors lose context.";
     const serialized = serializeMemoryFrontmatter(fm, content);
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter).toEqual(fm);
@@ -352,7 +352,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "user",
     };
     const serialized = serializeMemoryFrontmatter(fm, "body");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     // The injected lines should be collapsed into the name, not create new fields
@@ -368,7 +368,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "feedback",
     };
     const serialized = serializeMemoryFrontmatter(fm, "body");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter.type).toBe("feedback");
@@ -382,7 +382,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "reference",
     };
     const serialized = serializeMemoryFrontmatter(fm, "content");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter.name).toBe("key: value: nested");
@@ -396,7 +396,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "user",
     };
     const serialized = serializeMemoryFrontmatter(fm, "body");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter.name).toBe("testnamehere");
@@ -410,7 +410,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "project",
     };
     const serialized = serializeMemoryFrontmatter(fm, "body");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter.name).toBe("name with --- dashes");
@@ -423,7 +423,7 @@ describe("serializeMemoryFrontmatter (adversarial)", () => {
       type: "user",
     };
     const serialized = serializeMemoryFrontmatter(fm, "body");
-    const parsed = parseMemoryFrontmatter(serialized);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
 
     expect(parsed).toBeDefined();
     expect(parsed?.frontmatter.name).toBe("windows style");
@@ -674,10 +674,61 @@ describe("parseMemoryFrontmatter (empty body)", () => {
   });
 
   test("accepts non-empty body", () => {
-    const raw = "---\nname: test\ndescription: desc\ntype: user\n---\nactual content";
+    const raw = "---\nname: test\ndescription: desc\ntype: user\n---\n\nactual content";
     const result = parseMemoryFrontmatter(raw);
     expect(result).toBeDefined();
     expect(result?.content).toBe("actual content");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: content roundtrip with leading blank lines
+// ---------------------------------------------------------------------------
+
+describe("serializeMemoryFrontmatter / parseMemoryFrontmatter (content roundtrip)", () => {
+  test("preserves content with leading blank line", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    const content = "\nleading blank line";
+    const serialized = serializeMemoryFrontmatter(fm, content);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
+    expect(parsed?.content).toBe(content);
+  });
+
+  test("preserves content with multiple leading blank lines", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    const content = "\n\n\nthree leading blanks";
+    const serialized = serializeMemoryFrontmatter(fm, content);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
+    expect(parsed?.content).toBe(content);
+  });
+
+  test("preserves content without leading blank lines", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
+    const content = "no leading blank";
+    const serialized = serializeMemoryFrontmatter(fm, content);
+    const parsed = parseMemoryFrontmatter(defined(serialized));
+    expect(parsed?.content).toBe(content);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: type injection in serializer
+// ---------------------------------------------------------------------------
+
+describe("serializeMemoryFrontmatter (type validation)", () => {
+  test("rejects invalid type at runtime", () => {
+    const fm = { name: "t", description: "d", type: "invalid" as "user" };
+    expect(serializeMemoryFrontmatter(fm, "content")).toBeUndefined();
+  });
+
+  test("rejects newline-injected type at runtime", () => {
+    const fm = { name: "t", description: "d", type: "user\nevil: yes" as "user" };
+    expect(serializeMemoryFrontmatter(fm, "content")).toBeUndefined();
+  });
+
+  test("accepts valid type", () => {
+    const fm: MemoryFrontmatter = { name: "t", description: "d", type: "feedback" };
+    expect(serializeMemoryFrontmatter(fm, "content")).toBeDefined();
   });
 });
 
