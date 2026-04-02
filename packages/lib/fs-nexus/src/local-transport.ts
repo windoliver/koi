@@ -56,9 +56,10 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * Resolve bridge.py path — works from both src/ (dev) and dist/ (built).
- * The bridge lives at the package root's src/bridge.py.
+ * In dev: import.meta.url is src/local-transport.ts → sibling bridge.py
+ * In built: import.meta.url is dist/index.js → sibling bridge.py (copied by tsup onSuccess)
  */
-const BRIDGE_PATH = new URL("../src/bridge.py", import.meta.url).pathname;
+const BRIDGE_PATH = new URL("./bridge.py", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Line reader — persistent reader over a ReadableStream

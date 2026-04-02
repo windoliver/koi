@@ -118,7 +118,13 @@ async def dispatch(fs, method, params):
             applied += 1
 
         if not preview:
-            # OCC guard: verify file hasn't changed since our read
+            # OCC guard: verify file hasn't changed since our read.
+            # Note: SlimNexusFS.write() doesn't support if_match, so
+            # there is a small TOCTOU window between stat and write.
+            # This is best-effort — true atomic CAS requires if_match
+            # support on the facade (tracked for nexus-fs enhancement).
+            # For the HTTP transport, Nexus server handles if_match
+            # atomically, so this gap only affects the local bridge.
             post_stat = await fs.stat(path)
             post_etag = post_stat.get("etag") if post_stat else None
             if post_etag is None:

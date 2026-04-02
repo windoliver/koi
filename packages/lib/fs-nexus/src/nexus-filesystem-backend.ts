@@ -93,6 +93,84 @@ export interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Client-side search fallback (when Nexus grep RPC is unavailable)
+// ---------------------------------------------------------------------------
+
+/** List files → read each → regex match. Used when grep RPC returns METHOD_NOT_FOUND. */
+async function clientSideSearch(
+  transport: NexusTransport,
+  basePath: string,
+  searchBase: string,
+  pattern: string,
+  options?: FileSearchOptions,
+): Promise<Result<FileSearchResult, KoiError>> {
+  const maxResults = options?.maxResults ?? 100;
+  const flags = options?.caseSensitive === false ? "gi" : "g";
+  const regex = new RegExp(pattern, flags);
+
+  // List all files recursively
+  const listResult = await transport.call<NexusListResponse>("list", {
+    path: searchBase,
+    recursive: true,
+    details: true,
+  });
+  if (!listResult.ok) return listResult;
+
+  const matches: FileSearchMatch[] = [];
+  for (const entry of listResult.value.files) {
+    if (matches.length >= maxResults) break;
+    if (entry.is_directory) continue;
+
+    // Apply file_pattern filter if specified
+    if (options?.glob !== undefined) {
+      const userGlob = options.glob.startsWith("/") ? options.glob : `/${options.glob}`;
+      const fullGlob = `${searchBase}${userGlob}`;
+      if (!simpleGlobMatch(entry.path, fullGlob)) continue;
+    }
+
+    const readResult = await transport.call<NexusReadResponse | string>("read", {
+      path: entry.path,
+      return_metadata: false,
+    });
+    if (!readResult.ok) continue; // Skip unreadable files
+
+    const content =
+      typeof readResult.value === "string" ? readResult.value : readResult.value.content;
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line !== undefined && regex.test(line)) {
+        regex.lastIndex = 0;
+        matches.push({
+          path: stripBasePath(basePath, entry.path),
+          line: i + 1,
+          text: line,
+        });
+        if (matches.length >= maxResults) break;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      matches,
+      truncated: matches.length >= maxResults,
+    },
+  };
+}
+
+/** Simple glob matching (supports * and **). */
+function simpleGlobMatch(filePath: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "<<GLOBSTAR>>")
+    .replace(/\*/g, "[^/]*")
+    .replace(/<<GLOBSTAR>>/g, ".*");
+  return new RegExp(`${escaped}$`).test(filePath);
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -257,8 +335,14 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     });
 
     if (!result.ok) {
-      // Make search unavailability explicit — don't mask it as empty results.
-      // Callers must handle EXTERNAL errors, not silently assume "no matches".
+      // If grep RPC is unavailable, fall back to client-side search:
+      // list files → read each → regex match. Real results, not empty.
+      if (
+        result.error.context !== undefined &&
+        result.error.context.rpcCode === METHOD_NOT_FOUND_CODE
+      ) {
+        return clientSideSearch(transport, basePath, searchBase, pattern, options);
+      }
       return result;
     }
 
