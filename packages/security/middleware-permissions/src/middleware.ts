@@ -44,6 +44,8 @@ import {
   DEFAULT_APPROVAL_CACHE_TTL_MS,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   DEFAULT_CACHE_CONFIG,
+  DEFAULT_DENIAL_ESCALATION_THRESHOLD,
+  DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
 } from "./config.js";
 import { createDenialTracker, type DenialTracker } from "./denial-tracker.js";
 
@@ -164,10 +166,55 @@ function createApprovalCache(
 
 const VALID_EFFECTS = new Set(["allow", "deny", "ask"]);
 
-const FAIL_CLOSED_DENY: PermissionDecision = {
+/** Symbol to tag fail-closed denials so escalation can exclude them. */
+const IS_FAIL_CLOSED: unique symbol = Symbol.for("@koi/middleware-permissions/fail-closed");
+
+const FAIL_CLOSED_DENY: PermissionDecision = Object.freeze({
   effect: "deny",
   reason: "Malformed backend decision — failing closed",
-};
+  [IS_FAIL_CLOSED]: true,
+} as PermissionDecision);
+
+function isFailClosed(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_FAIL_CLOSED] === true;
+}
+
+function failClosedDeny(reason: string): PermissionDecision {
+  return Object.freeze({
+    effect: "deny",
+    reason,
+    [IS_FAIL_CLOSED]: true,
+  } as PermissionDecision);
+}
+
+/** Symbol to tag escalation-generated denials so they don't self-sustain. */
+const IS_ESCALATED: unique symbol = Symbol.for("@koi/middleware-permissions/escalated");
+
+function isEscalated(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_ESCALATED] === true;
+}
+
+/** Symbol to tag cached deny replays so they don't inflate escalation counts. */
+const IS_CACHED: unique symbol = Symbol.for("@koi/middleware-permissions/cached");
+
+function isCached(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_CACHED] === true;
+}
+
+function tagCached(decision: PermissionDecision): PermissionDecision {
+  if (decision.effect !== "deny") return decision;
+  return { ...decision, [IS_CACHED]: true } as PermissionDecision;
+}
+
+/** Determine denial source for tracker recording. Only "policy" counts toward escalation. */
+function denialSource(
+  decision: PermissionDecision,
+): "policy" | "backend-error" | "escalation" | "approval" {
+  if (isFailClosed(decision)) return "backend-error";
+  if (isEscalated(decision)) return "escalation";
+  if (isCached(decision)) return "escalation"; // cached replays must not inflate escalation
+  return "policy";
+}
 
 /**
  * Validate a backend decision at the trust boundary. Malformed or
@@ -373,6 +420,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     return t;
   }
 
+  // Denial escalation config
+  const escalationEnabled =
+    config.denialEscalation !== undefined && config.denialEscalation !== false;
+  const escalationThreshold = escalationEnabled
+    ? typeof config.denialEscalation === "object"
+      ? (config.denialEscalation.threshold ?? DEFAULT_DENIAL_ESCALATION_THRESHOLD)
+      : DEFAULT_DENIAL_ESCALATION_THRESHOLD
+    : Infinity;
+  const escalationWindowMs = escalationEnabled
+    ? typeof config.denialEscalation === "object"
+      ? (config.denialEscalation.windowMs ?? DEFAULT_DENIAL_ESCALATION_WINDOW_MS)
+      : DEFAULT_DENIAL_ESCALATION_WINDOW_MS
+    : 0;
+
   // Forged-tool default-deny bypass removed (v2): forged tools must be
   // explicitly allowed via backend rules. Name-based bypasses are unsafe
   // because tool identity can change between model filtering and execution.
@@ -469,9 +530,36 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     query: PermissionQuery,
     sessionId: string,
   ): Promise<PermissionDecision> {
+    // Denial escalation: skip backend if this tool+context has enough recent policy denials.
+    // If the query context is not serializable (cacheKey undefined), skip escalation
+    // entirely — we cannot scope it safely and must not match across contexts.
+    if (escalationEnabled) {
+      const cacheKey = decisionCacheKey(query);
+      if (cacheKey !== undefined) {
+        const tracker = getTracker(sessionId);
+        const now = clock();
+        const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
+        const recentPolicyDenials = tracker
+          .getByTool(query.resource)
+          .filter(
+            (r) =>
+              r.source === "policy" &&
+              r.timestamp >= cutoff &&
+              (r.queryKey === undefined || r.queryKey === cacheKey),
+          );
+        if (recentPolicyDenials.length >= escalationThreshold) {
+          return {
+            effect: "deny",
+            reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
+            [IS_ESCALATED]: true,
+          } as PermissionDecision;
+        }
+      }
+    }
+
     // Circuit breaker check
     if (cb !== undefined && !cb.isAllowed()) {
-      return { effect: "deny", reason: "Permission backend circuit open — failing closed" };
+      return failClosedDeny("Permission backend circuit open — failing closed");
     }
 
     // Cache check (per-session, skip if key not serializable)
@@ -479,7 +567,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const cacheKey = decisionCacheKey(query);
     if (decisionCache !== undefined && cacheKey !== undefined) {
       const cached = decisionCache.get(cacheKey);
-      if (cached !== undefined) return cached;
+      if (cached !== undefined) return tagCached(cached);
     }
 
     try {
@@ -500,10 +588,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       return decision;
     } catch (e: unknown) {
       if (cb !== undefined) cb.recordFailure();
-      return {
-        effect: "deny",
-        reason: `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
-      };
+      return failClosedDeny(
+        `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
@@ -515,23 +602,53 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
     const decisionCache = getDecisionCache(sessionId);
 
-    // Partition into cached and uncached
+    // Partition into cached, escalated, and uncached
     const results: (PermissionDecision | undefined)[] = new Array(queries.length).fill(undefined);
     const uncachedIndices: number[] = [];
 
+    // Denial escalation: resolve escalated tools before cache/backend.
+    // Skip escalation for queries with non-serializable context (undefined cacheKey).
+    if (escalationEnabled) {
+      const tracker = getTracker(sessionId);
+      const now = clock();
+      const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
+      for (let i = 0; i < queries.length; i++) {
+        const query = queries[i]!;
+        const cacheKey = decisionCacheKey(query);
+        if (cacheKey === undefined) continue;
+        const recentPolicyDenials = tracker
+          .getByTool(query.resource)
+          .filter(
+            (r) =>
+              r.source === "policy" &&
+              r.timestamp >= cutoff &&
+              (r.queryKey === undefined || r.queryKey === cacheKey),
+          );
+        if (recentPolicyDenials.length >= escalationThreshold) {
+          results[i] = {
+            effect: "deny",
+            reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
+            [IS_ESCALATED]: true,
+          } as PermissionDecision;
+        }
+      }
+    }
+
     if (decisionCache !== undefined) {
       for (let i = 0; i < queries.length; i++) {
+        if (results[i] !== undefined) continue; // already escalated
         const query = queries[i]!;
         const key = decisionCacheKey(query);
         const cached = key !== undefined ? decisionCache.get(key) : undefined;
         if (cached !== undefined) {
-          results[i] = cached;
+          results[i] = tagCached(cached);
         } else {
           uncachedIndices.push(i);
         }
       }
     } else {
       for (let i = 0; i < queries.length; i++) {
+        if (results[i] !== undefined) continue; // already escalated
         uncachedIndices.push(i);
       }
     }
@@ -542,10 +659,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
     // Circuit breaker
     if (cb !== undefined && !cb.isAllowed()) {
-      const deny: PermissionDecision = {
-        effect: "deny",
-        reason: "Permission backend circuit open — failing closed",
-      };
+      const deny = failClosedDeny("Permission backend circuit open — failing closed");
       for (const i of uncachedIndices) {
         results[i] = deny;
       }
@@ -604,10 +718,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
     } catch (e: unknown) {
       if (cb !== undefined) cb.recordFailure();
-      const deny: PermissionDecision = {
-        effect: "deny",
-        reason: `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
-      };
+      const deny = failClosedDeny(
+        `Permission backend error — failing closed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       for (const i of uncachedIndices) {
         results[i] = deny;
       }
@@ -639,6 +752,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: denialSource(decision),
+          queryKey: decisionCacheKey(queries[i]!),
         });
         return false;
       }
@@ -717,6 +832,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: denialSource(decision),
+          queryKey: decisionCacheKey(query),
         });
 
         throw new KoiRuntimeError({
@@ -865,6 +982,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
+          source: "approval",
         });
 
         throw new KoiRuntimeError({

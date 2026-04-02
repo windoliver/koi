@@ -769,6 +769,580 @@ describe("createPermissionsMiddleware", () => {
     });
   });
 
+  describe("denial escalation", () => {
+    test("auto-denies after threshold denials without hitting backend", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+      const ctx = makeTurnContext();
+
+      // Denial 1 — backend called
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+
+      // Denial 2 — backend called
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Denial 3 — escalated, backend NOT called
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).message).toContain("Auto-denied");
+      }
+
+      expect(checkFn).toHaveBeenCalledTimes(2); // still 2, not 3
+    });
+
+    test("below threshold still queries backend", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 5 },
+      });
+      const ctx = makeTurnContext();
+
+      for (let i = 0; i < 4; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // All 4 calls below threshold — backend called each time
+      expect(checkFn).toHaveBeenCalledTimes(4);
+    });
+
+    test("disabled by default (no config)", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({ backend });
+      const ctx = makeTurnContext();
+
+      for (let i = 0; i < 5; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // No escalation — backend called every time
+      expect(checkFn).toHaveBeenCalledTimes(5);
+    });
+
+    test("denialEscalation: true uses default threshold (3)", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: true,
+      });
+      const ctx = makeTurnContext();
+
+      // 3 denials hit backend
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3);
+
+      // 4th denial — escalated
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3); // still 3
+    });
+
+    test("escalation is per-tool — other tools still query backend", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+      const ctx = makeTurnContext();
+
+      // Deny "bash" twice → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // "rm" is a different tool — should still query backend
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("rm"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+
+      // 2 calls for bash + 1 for rm = 3
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("session isolation — escalation in session A does not affect session B", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // Escalate in session A
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ sessionId: "s-A" }),
+            makeToolRequest("bash"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+      // 2 backend calls (3rd was escalated)
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Session B — should still query backend
+      try {
+        await mw.wrapToolCall?.(
+          makeTurnContext({ sessionId: "s-B" }),
+          makeToolRequest("bash"),
+          noopToolHandler,
+        );
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("wrapModelCall filters escalated tools without backend query", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+      const ctx = makeTurnContext();
+
+      // Deny "bash" twice via wrapToolCall to build up tracker
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Now wrapModelCall with bash + multiply
+      const _result = await mw.wrapModelCall?.(
+        ctx,
+        makeModelRequest(["bash", "multiply"]),
+        noopModelHandler,
+      );
+
+      // bash should be escalated (no backend call), multiply should query backend
+      // Total: 2 (prior) + 1 (multiply) = 3
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("onSessionEnd clears escalation state", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // Escalate in session
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ sessionId: "s-1" }),
+            makeToolRequest("bash"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+      // 2 backend calls (3rd escalated)
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // End session — clears tracker
+      await mw.onSessionEnd?.({
+        agentId: "agent:test",
+        sessionId: "s-1" as never,
+        runId: "r-1" as never,
+        metadata: {},
+      });
+
+      // Same session ID after re-start — should query backend again
+      try {
+        await mw.wrapToolCall?.(
+          makeTurnContext({ sessionId: "s-1" }),
+          makeToolRequest("bash"),
+          noopToolHandler,
+        );
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("backend errors do not count toward escalation threshold", async () => {
+      let callCount = 0;
+      const backend: PermissionBackend = {
+        check: () => {
+          callCount++;
+          throw new Error("backend down");
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+      const ctx = makeTurnContext();
+
+      // 3 backend errors — all fail-closed but should NOT trigger escalation
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // All 3 calls hit the backend (none escalated)
+      expect(callCount).toBe(3);
+
+      // 4th call still hits backend (not escalated despite 3 denials)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(callCount).toBe(4);
+    });
+
+    test("cached deny replays do not count toward escalation threshold", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        cache: { maxEntries: 100, allowTtlMs: 30_000, denyTtlMs: 30_000 },
+        denialEscalation: { threshold: 3 },
+      });
+      const ctx = makeTurnContext();
+
+      // 1 backend deny → cached
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(1);
+
+      // 4 more calls — all cache hits (denyTtl: 30s)
+      for (let i = 0; i < 4; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // Only 1 backend call — rest were cache hits
+      expect(checkFn).toHaveBeenCalledTimes(1);
+
+      // 6th call should NOT be escalated (only 1 policy denial, 4 cached replays)
+      // If cached replays counted, we'd have 5 "policy" denials → escalation at 3
+      // Instead, backend should be called again (cache hit, not escalated)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      // Still 1 — all served from cache, not escalated
+      expect(checkFn).toHaveBeenCalledTimes(1);
+    });
+
+    test("approval rejections do not count toward escalation threshold", async () => {
+      let backendCalls = 0;
+      const backend: PermissionBackend = {
+        check: () => {
+          backendCalls++;
+          return { effect: "ask" as const, reason: "needs approval" };
+        },
+      };
+      const approvalFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+          kind: "deny",
+          reason: "user said no",
+        }),
+      );
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // 3 approval rejections
+      for (let i = 0; i < 3; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ requestApproval: approvalFn }),
+            makeToolRequest("deploy"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+
+      // All 3 calls hit backend (approval denials don't trigger escalation)
+      expect(backendCalls).toBe(3);
+
+      // 4th call — user should still be prompted (not auto-denied)
+      const approveFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "allow" }),
+      );
+      await mw.wrapToolCall?.(
+        makeTurnContext({ requestApproval: approveFn }),
+        makeToolRequest("deploy"),
+        noopToolHandler,
+      );
+
+      // Backend called, approval prompted, tool executed
+      expect(backendCalls).toBe(4);
+      expect(approveFn).toHaveBeenCalledTimes(1);
+    });
+
+    test("escalation expires after windowMs", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 denials at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // 3rd call at t=1000 → auto-denied (escalated)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2); // still 2
+
+      // Advance clock past window (t=7000, window=5000, cutoff=2000 > 1000)
+      now = 7000;
+
+      // 4th call — denials have aged out, backend queried again
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3); // backend called again
+    });
+
+    test("retries during escalation do not extend the window", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 policy denials at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Retry at t=3000 — still within window, escalated (no backend call)
+      now = 3000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // Retry at t=5000 — still within window of original denials
+      now = 5000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // t=7000 — original denials (t=1000) have aged out despite retries at t=3000,5000
+      // Escalation retries must NOT have refreshed the window
+      now = 7000;
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3); // backend consulted again
+    });
+
+    test("wrapModelCall retries do not extend the escalation window", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 policy denials via wrapToolCall at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // wrapModelCall at t=3000 — escalated, bash filtered out (no backend call)
+      now = 3000;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // wrapModelCall at t=5500 — within window from retry but NOT from originals
+      now = 5500;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // t=7000 — original denials (t=1000) fully aged out, model retries must not have refreshed
+      now = 7000;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      // bash should query backend again since escalation expired
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
+    test("different contexts escalate independently", async () => {
+      const checkFn = mock((q: PermissionQuery) => {
+        // Deny bash in context A, allow in context B
+        const ctx = q.context as Record<string, unknown> | undefined;
+        if (ctx?.zone === "restricted") {
+          return { effect: "deny" as const, reason: "restricted zone" };
+        }
+        return { effect: "allow" as const };
+      });
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // 2 denials in restricted zone
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ metadata: { zone: "restricted" } }),
+            makeToolRequest("bash"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+
+      // Same tool in unrestricted zone — should still query backend and be allowed
+      const result = await mw.wrapToolCall?.(
+        makeTurnContext({ metadata: { zone: "open" } }),
+        makeToolRequest("bash"),
+        noopToolHandler,
+      );
+      expect(result?.output).toBe("done");
+    });
+  });
+
   describe("cross-session isolation", () => {
     test("approval cache is scoped per session", async () => {
       const approvalFn = mock(

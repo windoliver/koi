@@ -9,12 +9,19 @@
 // Types
 // ---------------------------------------------------------------------------
 
+/** Why a denial was recorded — only "policy" denials count toward escalation. */
+export type DenialSource = "policy" | "backend-error" | "approval" | "escalation";
+
 export interface DenialRecord {
   readonly toolId: string;
   readonly reason: string;
   readonly timestamp: number;
   readonly principal: string;
   readonly turnIndex: number;
+  /** Origin of the denial. Only "policy" denials trigger escalation. */
+  readonly source: DenialSource;
+  /** Cache key scoping the query context. Used to scope escalation per-context. */
+  readonly queryKey?: string | undefined;
 }
 
 export interface DenialTracker {

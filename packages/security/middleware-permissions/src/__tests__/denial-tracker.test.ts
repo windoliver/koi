@@ -2,13 +2,18 @@ import { describe, expect, test } from "bun:test";
 import type { DenialRecord } from "../denial-tracker.js";
 import { createDenialTracker } from "../denial-tracker.js";
 
-function makeDenial(toolId: string, turnIndex: number = 0): DenialRecord {
+function makeDenial(
+  toolId: string,
+  turnIndex: number = 0,
+  source: "policy" | "backend-error" | "approval" | "escalation" = "policy",
+): DenialRecord {
   return {
     toolId,
     reason: `Tool "${toolId}" denied`,
     timestamp: 1000 + turnIndex,
     principal: "agent:test",
     turnIndex,
+    source,
   };
 }
 

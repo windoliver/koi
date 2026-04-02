@@ -87,7 +87,9 @@ describe("enforceBudget", () => {
       const store = createInMemoryReplacementStore();
       // Window: 200, soft: 100, hard: 150. Messages: 60 tokens (under soft).
       // New result: small (not replaced), 50 chars = 50 tokens with charEstimator.
-      // Post-ingestion: 60 + 50 = 110. 100 < 110 < 150 → micro.
+      // Post-ingestion: 60 + 50 = 110. 100 < 110 < 150 → micro attempted.
+      // microTarget = 0.35 * 200 = 70. With preserveRecent: 2 and 2 messages,
+      // micro can't compact → promoted to full.
       const config = testConfig({
         contextWindowSize: 200,
         maxResultTokens: 1000, // high threshold, no replacement
@@ -97,8 +99,8 @@ describe("enforceBudget", () => {
       // 50-char result = 50 tokens. Post-ingestion: 60 + 50 = 110 > soft (100)
       const result = await enforceBudget(messages, store, config, "x".repeat(50));
 
-      // Budget check should see post-ingestion total and trigger micro
-      expect(result.compaction).toBe("micro");
+      // Micro can't meet target with preserveRecent → promoted to full
+      expect(result.compaction).toBe("full");
       // No replacement occurred (result too small)
       expect(result.replacement).toBeUndefined();
     });
@@ -325,6 +327,140 @@ describe("enforceBudget", () => {
       const messages = [textMsg("hello"), textMsg("world")];
       const result = await enforceBudget(messages);
       expect(result.compaction).toBe("noop");
+    });
+  });
+
+  describe("new result reservation", () => {
+    it("micro compaction target reserves space for the new tool result", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, soft: 50 (0.5), microTarget: 0.35 (=35 tokens)
+      // Existing messages: 40 chars = 40 tokens (charEstimator: 1 char = 1 token)
+      // New tool result: 20 chars = 20 tokens
+      // Post-ingestion: 60 > 50 soft → micro
+      // Without reservation: target = 35, messages compact to 35, plus 20 result = 55
+      // With reservation: target = 35 - 20 = 15, messages compact to 15, plus 20 result = 35
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        preserveRecent: 0,
+        maxResultTokens: 1000, // high so no replacement kicks in
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20))];
+      const result = await enforceBudget(messages, store, config, "x".repeat(20));
+
+      expect(result.compaction).toBe("micro");
+      if (result.compaction === "micro") {
+        // Compacted tokens should account for the 20-token result reservation
+        expect(result.compactedTokens).toBeLessThanOrEqual(15);
+      }
+    });
+
+    it("full compaction split reserves space for the new tool result", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, hard: 75 (0.75)
+      // Existing messages: 80 chars = 80 tokens
+      // New tool result: 10 chars = 10 tokens
+      // Post-ingestion: 90 > 75 hard → full
+      // Split budget = (100 - 10) - maxSummaryTokens(10) = 80
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        maxSummaryTokens: 10,
+        preserveRecent: 0,
+        maxResultTokens: 1000,
+      });
+      // 4 messages of 20 chars each
+      const messages = [
+        textMsg("a".repeat(20)),
+        textMsg("b".repeat(20)),
+        textMsg("c".repeat(20)),
+        textMsg("d".repeat(20)),
+      ];
+      const result = await enforceBudget(messages, store, config, "x".repeat(10));
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        // Split index should be > 0 (some messages dropped to make room)
+        expect(result.splitIdx).toBeGreaterThan(0);
+      }
+    });
+
+    it("accounts for new tool result tokens even without a replacement store", async () => {
+      // Window: 100, soft: 50
+      // Existing messages: 30 chars = 30 tokens
+      // New tool result: 25 chars = 25 tokens
+      // Post-ingestion: 55 > 50 soft → should trigger micro, not noop
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        preserveRecent: 0,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(30))];
+      // Pass undefined store — replacement disabled, but tokens must still be counted
+      const result = await enforceBudget(messages, undefined, config, "x".repeat(25));
+
+      // Without the fix this would be "noop" because newResultTokens would be 0
+      expect(result.compaction).toBe("micro");
+    });
+  });
+
+  describe("full compaction split failure", () => {
+    it("returns splitIdx -1 when no valid split fits the budget", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 50, hard: 25 (0.5)
+      // 3 messages of 20 chars each = 60 tokens total
+      // New result: 20 chars = 20 tokens
+      // Post-ingestion: 80 > 25 hard → full
+      // Budget for split: (50 - 20) - maxSummary(10) = 20
+      // preserveRecent: 2 means we must keep last 2 messages (40 tokens)
+      // Even the most aggressive valid split can't fit 40 tokens into budget of 20
+      const config = testConfig({
+        contextWindowSize: 50,
+        softTriggerFraction: 0.3,
+        hardTriggerFraction: 0.5,
+        maxSummaryTokens: 10,
+        preserveRecent: 2,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20)), textMsg("c".repeat(20))];
+      const result = await enforceBudget(messages, store, config, "x".repeat(20));
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        // No valid split exists — must surface -1, not fabricate 1
+        expect(result.splitIdx).toBe(-1);
+      }
+    });
+  });
+
+  describe("micro-to-full promotion", () => {
+    it("promotes to full when micro-compaction cannot meet target", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, soft: 50 (0.5), microTarget: 0.1 (=10 tokens)
+      // Existing: 2 messages of 30 chars each = 60 tokens
+      // Post-ingestion: 60 > 50 soft → micro
+      // microTarget: 10 tokens — but preserveRecent: 2 forces keeping both messages (60 tokens)
+      // microcompact can't reach 10 → returns micro-truncate-partial → promote to full
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.1,
+        preserveRecent: 2,
+        maxSummaryTokens: 10,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(30)), textMsg("b".repeat(30))];
+      const result = await enforceBudget(messages, store, config);
+
+      // Should be promoted to full, not returned as micro
+      expect(result.compaction).toBe("full");
     });
   });
 });

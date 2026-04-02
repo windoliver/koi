@@ -153,15 +153,9 @@ export function evaluateReplacement(
   const previewChars = config?.previewChars ?? COMPACTION_DEFAULTS.replacement.previewChars;
   const estimator = config?.tokenEstimator ?? FALLBACK_ESTIMATOR;
 
-  // Fast-path short-circuit: 4 chars/token is the most generous ratio.
-  // If content is under the threshold at 4 chars/token, it will also be under
-  // with any real tokenizer (which produces more tokens per char, not fewer).
-  const maxResultChars = maxResultTokens * CHARS_PER_TOKEN_FAST_PATH;
-  if (content.length < maxResultChars) {
-    return { replaced: false };
-  }
-
-  // Use the configured estimator for the actual decision
+  // Always consult the configured estimator — a pre-estimator short-circuit
+  // is unsafe because pluggable estimators can count more tokens per char
+  // than the 4-chars/token heuristic (e.g. charEstimator: 1 char = 1 token).
   const estimateResult = estimator.estimateText(content);
 
   // Handle async estimator
@@ -379,6 +373,37 @@ export function collectRefsFromOutcomes(
   for (const outcome of outcomes) {
     if (outcome.replaced) {
       refs.add(outcome.ref);
+    }
+  }
+  return refs;
+}
+
+// ---------------------------------------------------------------------------
+// Ref extraction from surviving messages
+// ---------------------------------------------------------------------------
+
+/** Pattern matching `ref:<hex-hash>` in preview text. */
+const REF_PATTERN = /\bref:([0-9a-f]{64})\b/g;
+
+/**
+ * Extract replacement refs from message text content.
+ *
+ * Scans for `ref:<sha256-hex>` patterns embedded in preview strings.
+ * Use this to build the active ref set from surviving conversation messages
+ * before calling `store.cleanup()` — ensures refs from older turns that
+ * survived compaction are not prematurely deleted.
+ *
+ * @param texts — Message text contents to scan (e.g. from conversation history).
+ * @returns Set of replacement refs found in the text.
+ */
+export function extractRefsFromTexts(texts: readonly string[]): ReadonlySet<ReplacementRef> {
+  const refs = new Set<ReplacementRef>();
+  for (const text of texts) {
+    for (const m of text.matchAll(REF_PATTERN)) {
+      const hash = m[1];
+      if (hash !== undefined) {
+        refs.add(replacementRef(hash));
+      }
     }
   }
   return refs;
