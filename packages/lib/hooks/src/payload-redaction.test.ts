@@ -163,14 +163,16 @@ describe("redactEventData", () => {
     expect((result as Record<string, string>).safe).toBe("ok");
   });
 
-  it("falls back to structural summary for oversized payloads", () => {
-    // Build a payload > 32KB of non-secret content
+  it("truncates oversized payloads with explicit notice", () => {
     const largeValue = "x".repeat(40_000);
     const data: JsonObject = { content: largeValue, name: "test" };
     const result = redactEventData(data, undefined);
-    // Should fall back to structure extraction, not contain the raw value
-    expect(JSON.stringify(result)).not.toContain(largeValue);
-    expect(JSON.stringify(result)).toContain("<string:");
+    const serialized = JSON.stringify(result);
+    // Should not contain the full large value
+    expect(serialized).not.toContain(largeValue);
+    // Should contain truncation metadata
+    expect(serialized).toContain("_truncated");
+    expect(serialized).toContain("_notice");
   });
 
   it("preserves raw payload when under size limit", () => {
@@ -179,29 +181,33 @@ describe("redactEventData", () => {
     expect(result).toEqual(data);
   });
 
-  it("applies size guard even when redaction is disabled", () => {
+  it("truncates oversized payloads even when redaction is disabled", () => {
     const largeValue = "x".repeat(40_000);
     const data: JsonObject = { content: largeValue, name: "test" };
     const result = redactEventData(data, { enabled: false });
-    // Size guard should still trigger, falling back to structure
-    expect(JSON.stringify(result)).not.toContain(largeValue);
-    expect(JSON.stringify(result)).toContain("<string:");
+    const serialized = JSON.stringify(result);
+    // Size guard should still trigger with truncation notice
+    expect(serialized).not.toContain(largeValue);
+    expect(serialized).toContain("_truncated");
   });
 
-  it("falls back to structure on circular references instead of throwing", () => {
+  it("handles circular references with notice instead of throwing", () => {
     const data: Record<string, unknown> = { name: "test" };
     data.self = data; // circular reference
     const result = redactEventData(data as JsonObject, undefined);
-    // Should not throw — should fall back to structural summary
+    // Should not throw — should produce a notice with structure
     expect(result).toBeDefined();
-    expect(JSON.stringify(result)).toContain("<string:");
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain("_truncated");
+    expect(serialized).toContain("circular");
   });
 
-  it("falls back to structure on BigInt values instead of throwing", () => {
+  it("handles BigInt values with notice instead of throwing", () => {
     const data = { value: BigInt(42), name: "test" } as unknown as JsonObject;
     const result = redactEventData(data, undefined);
-    // Should not throw — should fall back to structural summary
+    // Should not throw
     expect(result).toBeDefined();
+    expect(JSON.stringify(result)).toContain("_truncated");
   });
 
   it("uses distinct redactors for sensitiveFields with commas vs separate entries", () => {

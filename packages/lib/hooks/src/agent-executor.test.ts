@@ -407,7 +407,7 @@ describe("spawn request", () => {
 // ---------------------------------------------------------------------------
 
 describe("payload redaction", () => {
-  it("forwards structure-only payload by default (no raw values)", async () => {
+  it("forwards redacted raw payload by default (preserves non-secret values)", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
@@ -415,6 +415,27 @@ describe("payload redaction", () => {
     const executor = createAgentExecutor({ spawnFn });
 
     await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const description = request.description as string;
+    // Default: non-secret values should be present (backward compat)
+    expect(description).toContain("rm -rf /");
+    // Should contain redaction note
+    expect(description).toContain("secrets have been redacted");
+  });
+
+  it("forwards structure-only payload when forwardRawPayload is false", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: false };
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
 
     const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
       string,
@@ -429,40 +450,18 @@ describe("payload redaction", () => {
     expect(description).toContain("structure only");
   });
 
-  it("forwards redacted payload when forwardRawPayload is true", async () => {
+  it("redacts secrets in default payload mode", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
     });
     const executor = createAgentExecutor({ spawnFn });
-    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
-
-    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
-
-    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
-      string,
-      unknown
-    >;
-    const description = request.description as string;
-    // Safe non-secret data should be present
-    expect(description).toContain("rm -rf /");
-    // Should contain redaction note
-    expect(description).toContain("secrets have been redacted");
-  });
-
-  it("redacts secrets in raw payload mode", async () => {
-    const spawnFn = mock<SpawnFn>().mockResolvedValue({
-      ok: true,
-      output: makeVerdictOutput(true),
-    });
-    const executor = createAgentExecutor({ spawnFn });
-    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
     const event: HookEvent = {
       ...baseEvent,
       data: { password: "supersecret123", username: "alice" },
     };
 
-    await executor.execute(hook, event, AbortSignal.timeout(5000));
+    await executor.execute(baseHook, event, AbortSignal.timeout(5000));
 
     const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
       string,
@@ -476,7 +475,7 @@ describe("payload redaction", () => {
     expect(description).toContain("alice");
   });
 
-  it("forwards unredacted payload when forwardRawPayload=true and redaction.enabled=false", async () => {
+  it("forwards unredacted payload when redaction.enabled=false", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
@@ -484,7 +483,6 @@ describe("payload redaction", () => {
     const executor = createAgentExecutor({ spawnFn });
     const hook: AgentHookConfig = {
       ...baseHook,
-      forwardRawPayload: true,
       redaction: { enabled: false },
     };
     const event: HookEvent = {
@@ -503,7 +501,7 @@ describe("payload redaction", () => {
     expect(description).toContain("supersecret123");
   });
 
-  it("redacts custom sensitiveFields in raw payload mode", async () => {
+  it("redacts custom sensitiveFields in default mode", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
@@ -511,7 +509,6 @@ describe("payload redaction", () => {
     const executor = createAgentExecutor({ spawnFn });
     const hook: AgentHookConfig = {
       ...baseHook,
-      forwardRawPayload: true,
       redaction: { sensitiveFields: ["tenantSecret"] },
     };
     const event: HookEvent = {
@@ -533,29 +530,28 @@ describe("payload redaction", () => {
     expect(description).toContain("acme");
   });
 
-  it("falls back to structure for oversized raw payloads", async () => {
+  it("truncates oversized payloads with notice instead of degrading to structure", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
     });
     const executor = createAgentExecutor({ spawnFn });
-    const hook: AgentHookConfig = { ...baseHook, forwardRawPayload: true };
     const event: HookEvent = {
       ...baseEvent,
       data: { content: "x".repeat(40_000), name: "test" },
     };
 
-    await executor.execute(hook, event, AbortSignal.timeout(5000));
+    await executor.execute(baseHook, event, AbortSignal.timeout(5000));
 
     const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
       string,
       unknown
     >;
     const description = request.description as string;
-    // Should not contain the 40KB string
+    // Should not contain the full 40KB string
     expect(description).not.toContain("x".repeat(40_000));
-    // Should contain structure placeholders from fallback
-    expect(description).toContain("<string:");
+    // Should contain truncation notice
+    expect(description).toContain("truncat");
   });
 });
 

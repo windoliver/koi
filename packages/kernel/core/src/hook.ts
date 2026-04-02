@@ -238,14 +238,19 @@ export interface AgentHookConfig {
   /** Tools to exclude from the sub-agent (in addition to default denylist). */
   readonly toolDenylist?: readonly string[] | undefined;
   /**
-   * When true, forward the full event.data payload to the hook agent
-   * (with secret redaction applied unless `redaction.enabled` is false).
-   * Default: false (forward structural summary only — keys and types, no values).
+   * Controls how event.data is forwarded to the hook agent prompt.
+   *
+   * - `true` (default): forward the full payload with secret redaction applied.
+   *   Preserves values so content-based policies (commands, SQL, paths) work.
+   * - `false`: forward structural summary only (keys + type placeholders, no values).
+   *   Maximum privacy but hooks cannot inspect actual content.
+   *
+   * Default: true.
    */
   readonly forwardRawPayload?: boolean | undefined;
   /**
    * Redaction configuration for event data forwarded to the hook agent.
-   * Only meaningful when `forwardRawPayload` is true.
+   * Applied when `forwardRawPayload` is true (the default).
    * Default: `{ enabled: true, censor: "redact" }`.
    */
   readonly redaction?: HookRedactionConfig | undefined;

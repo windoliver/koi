@@ -110,12 +110,44 @@ function getRedactor(
 }
 
 /**
+ * Safely compute the serialized size of data, returning -1 on failure
+ * (circular refs, BigInt, etc.).
+ */
+function safeSerializedSize(data: JsonObject): number {
+  try {
+    return JSON.stringify(data).length;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Truncate a serialized JSON string to fit within the size limit,
+ * preserving as much inspectable content as possible.
+ */
+function truncatePayload(data: JsonObject): JsonObject {
+  const serialized = JSON.stringify(data);
+  const truncated = serialized.slice(0, MAX_RAW_PAYLOAD_SIZE);
+  return {
+    _truncated: true,
+    _originalSize: serialized.length,
+    _maxSize: MAX_RAW_PAYLOAD_SIZE,
+    _notice: "Payload exceeded size limit and was truncated. Inspect available content carefully.",
+    _content: truncated,
+  } as unknown as JsonObject;
+}
+
+/**
  * Apply secret redaction to event data using `@koi/redaction`.
  * Returns a copy with detected secrets masked according to the censor strategy.
  *
- * When `config.enabled` is explicitly false, returns the data unchanged.
- * When the redacted payload exceeds MAX_RAW_PAYLOAD_SIZE, falls back to
- * a structural summary to prevent context overflow in the hook agent.
+ * When `config.enabled` is explicitly false, returns the data unchanged
+ * (but oversized payloads are still truncated with an explicit notice).
+ *
+ * When the payload cannot be serialized (circular refs, BigInt), or exceeds
+ * MAX_RAW_PAYLOAD_SIZE, the payload is truncated with metadata rather than
+ * silently degraded to structure-only — preserving inspectable content for
+ * content-based hook policies.
  */
 export function redactEventData(
   data: JsonObject | undefined,
@@ -123,17 +155,19 @@ export function redactEventData(
 ): JsonObject | undefined {
   if (data === undefined) return undefined;
 
-  // Size guard applies regardless of redaction setting — prevents
-  // context overflow even when redaction is explicitly disabled.
-  // Catches circular references and BigInt (which throw on JSON.stringify)
-  // and falls back to structural summary instead of crashing the hook path.
-  try {
-    const serialized = JSON.stringify(data);
-    if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
-      return extractStructure(data);
-    }
-  } catch {
-    return extractStructure(data);
+  // Size guard applies regardless of redaction setting.
+  // Non-serializable data (circular, BigInt) gets truncated with notice.
+  const size = safeSerializedSize(data);
+  if (size === -1) {
+    // Cannot serialize — truncate the structural summary as fallback
+    return {
+      _truncated: true,
+      _notice: "Payload could not be serialized (circular reference or unsupported type).",
+      _structure: extractStructure(data),
+    } as unknown as JsonObject;
+  }
+  if (size > MAX_RAW_PAYLOAD_SIZE) {
+    return truncatePayload(data);
   }
 
   // Opt-out: explicit disable bypasses secret redaction (size already checked)
