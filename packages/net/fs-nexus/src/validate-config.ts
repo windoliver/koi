@@ -51,7 +51,13 @@ export function validateNexusFileSystemConfig(
         },
       };
     }
-    const normalized = decoded.replace(/^\/+/, "");
+    // Fully canonicalize: strip leading slashes, collapse duplicate separators
+    // and "." segments so basePath is consistent with computeFullPath() output.
+    const segments = decoded
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter((s) => s !== "" && s !== ".");
+    const normalized = segments.join("/");
     if (normalized === "") {
       return {
         ok: false,

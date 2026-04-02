@@ -394,10 +394,18 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         };
       }
     }
+    // Filter to the requested path (not just basePath) — prevents sibling
+    // directories under the same base from leaking into the result.
+    const requestedPrefix = fullPathResult.value;
     const entries = rawEntries
       .filter((entry) => {
         const normalized = normalizeServerPath(entry.path);
-        return isWithinBasePath(basePath, normalized);
+        // Must be within basePath AND within the requested subtree
+        if (!isWithinBasePath(basePath, normalized)) return false;
+        if (normalized !== requestedPrefix && !normalized.startsWith(`${requestedPrefix}/`)) {
+          return false;
+        }
+        return true;
       })
       .map((entry) => ({
         ...entry,
