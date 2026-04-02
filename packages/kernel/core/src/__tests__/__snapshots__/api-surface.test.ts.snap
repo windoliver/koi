@@ -4121,8 +4121,13 @@ exports[`@koi/core API surface ./memory has stable type surface 1`] = `
  * persistent agent memory.
  *
  * Models the CC-style file-per-memory system where each memory is a
- * Markdown file with YAML frontmatter (name, description, type) and
- * a body containing the memory content.
+ * Markdown file with key-value frontmatter (name, description, type)
+ * and a body containing the memory content.
+ *
+ * NOTE: The frontmatter format is a bespoke \`key: value\` line format,
+ * NOT standard YAML. It does not support YAML features like comments (#),
+ * quoting, multi-line scalars, or anchors. Values are treated as raw
+ * strings after the first colon.
  *
  * Exception: branded type constructor (memoryRecordId) is permitted in L0
  * as a zero-logic identity cast for type safety.
@@ -4152,7 +4157,7 @@ type MemoryType = "user" | "feedback" | "project" | "reference";
 declare const ALL_MEMORY_TYPES: readonly MemoryType[];
 /** Type guard — returns true if the value is a valid MemoryType. */
 declare function isMemoryType(value: unknown): value is MemoryType;
-/** YAML frontmatter fields for a memory file. */
+/** Frontmatter fields for a memory file (bespoke key: value format, not YAML). */
 interface MemoryFrontmatter {
     readonly name: string;
     readonly description: string;
@@ -4201,7 +4206,7 @@ interface MemoryIndex {
  */
 declare function hasFrontmatterUnsafeChars(value: string): boolean;
 /**
- * Parses YAML frontmatter from a memory Markdown file.
+ * Parses frontmatter from a memory Markdown file.
  *
  * Expects format:
  * \`\`\`markdown
@@ -4229,7 +4234,8 @@ declare function parseMemoryFrontmatter(raw: string): {
  * The \`type\` field is validated at runtime (not just via TypeScript types)
  * to reject injected values from untyped JavaScript callers.
  *
- * Returns undefined if \`type\` is not a valid MemoryType at runtime.
+ * Returns undefined if \`type\` is not a valid MemoryType at runtime,
+ * or if content is empty/whitespace-only (aligned with parser invariant).
  */
 declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string | undefined;
 /** Validation error for memory records. */
@@ -4240,12 +4246,19 @@ interface MemoryValidationError {
 /**
  * Validates a MemoryRecordInput, returning an array of validation errors.
  * An empty array means the input is valid.
+ *
+ * Name and description are validated after sanitization (control char
+ * stripping) to match the serializer's acceptance criteria.
  */
 declare function validateMemoryRecordInput(input: Readonly<Record<string, unknown>>): readonly MemoryValidationError[];
 /**
  * Validates that a file path is safe for use in MEMORY.md index entries.
  *
+ * Paths must not contain percent-encoded characters — the validated path
+ * must be the exact path consumers will use, with no encoding ambiguity.
+ *
  * Requirements:
+ * - Must not contain any percent-encoded sequences
  * - Must be a relative path (no leading \`/\` or drive letters like \`C:\`)
  * - Must not contain \`..\` path traversal segments
  * - Must end with \`.md\` extension
@@ -4264,7 +4277,7 @@ declare function validateMemoryFilePath(filePath: string): string | undefined;
  * are escaped for roundtrip fidelity with \`parseMemoryIndexEntry\`.
  *
  * File paths are validated: must be relative, no \`..\` traversal, \`.md\` extension.
- * Returns undefined if the file path is invalid.
+ * Returns undefined if any field is empty after sanitization or the path is invalid.
  */
 declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined;
 /**
