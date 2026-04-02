@@ -85,6 +85,29 @@ export function computeFullPath(basePath: string, userPath: string): Result<stri
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Normalize a server-returned path: decode percent-encoding, normalize
+ * backslashes, resolve ".." segments. Applied before scope checks to
+ * prevent encoded traversal forms from bypassing the basePath boundary.
+ * Returns the original path unchanged if decoding fails.
+ */
+export function normalizeServerPath(path: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(path.replace(/\\/g, "/"));
+  } catch {
+    return path;
+  }
+  // Resolve ".." segments to catch encoded traversal like %2e%2e
+  const parts = decoded.split("/");
+  const resolved = parts.reduce<readonly string[]>((acc, part) => {
+    if (part === "..") return acc.slice(0, -1);
+    if (part !== "" && part !== ".") return acc.concat(part);
+    return acc;
+  }, []);
+  return decoded.startsWith("/") ? `/${resolved.join("/")}` : resolved.join("/");
+}
+
 /** Check if a full path is within the basePath boundary. */
 export function isWithinBasePath(base: string, fullPath: string): boolean {
   const normalizedBase = base.startsWith("/") ? base : `/${base}`;

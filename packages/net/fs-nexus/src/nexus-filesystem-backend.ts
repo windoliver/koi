@@ -29,6 +29,7 @@ import {
   DEFAULT_BASE_PATH,
   DEFAULT_RETRIES,
   isWithinBasePath,
+  normalizeServerPath,
   rpcMutate,
   rpcRead,
   stripBasePath,
@@ -102,10 +103,32 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       return result;
     }
 
-    const supported =
-      result.value !== null && typeof result.value === "object" && result.value.cas === true;
-    casCapability = supported;
-    return { ok: true, value: supported };
+    // Only cache explicit boolean capability values. Malformed responses
+    // (null, missing cas field, non-boolean cas) are treated as errors
+    // and NOT cached, so the next edit() re-probes after recovery.
+    const raw = result.value;
+    if (raw === null || typeof raw !== "object") {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: "Nexus capabilities response is malformed: expected object",
+          retryable: false,
+        },
+      };
+    }
+    if (typeof raw.cas !== "boolean") {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Nexus capabilities response has invalid 'cas' field: expected boolean, got ${typeof raw.cas}`,
+          retryable: false,
+        },
+      };
+    }
+    casCapability = raw.cas;
+    return { ok: true, value: raw.cas };
   }
 
   async function read(
@@ -253,6 +276,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         path: fullPathResult.value,
         content: modified,
         expectedContentHash,
+        overwrite: true, // edit always targets existing files
       });
       if (!writeResult.ok) return writeResult;
     }
@@ -353,10 +377,13 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       };
     }
     const entries = (structured as unknown as FileListResult).entries
-      .filter((entry) => isWithinBasePath(basePath, entry.path))
+      .filter((entry) => {
+        const normalized = normalizeServerPath(entry.path);
+        return isWithinBasePath(basePath, normalized);
+      })
       .map((entry) => ({
         ...entry,
-        path: stripBasePath(basePath, entry.path),
+        path: stripBasePath(basePath, normalizeServerPath(entry.path)),
       }));
 
     const truncated = typeof structured.truncated === "boolean" ? structured.truncated : false;
@@ -403,10 +430,13 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     const validated = searchRaw as FileSearchResult;
     const matches = validated.matches
-      .filter((match) => isWithinBasePath(basePath, match.path))
+      .filter((match) => {
+        const normalized = normalizeServerPath(match.path);
+        return isWithinBasePath(basePath, normalized);
+      })
       .map((match) => ({
         ...match,
-        path: stripBasePath(basePath, match.path),
+        path: stripBasePath(basePath, normalizeServerPath(match.path)),
       }));
 
     const searchTruncated = typeof validated.truncated === "boolean" ? validated.truncated : false;
