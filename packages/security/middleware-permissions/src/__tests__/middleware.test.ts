@@ -1219,6 +1219,47 @@ describe("createPermissionsMiddleware", () => {
       expect(checkFn).toHaveBeenCalledTimes(3); // backend consulted again
     });
 
+    test("wrapModelCall retries do not extend the escalation window", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 policy denials via wrapToolCall at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // wrapModelCall at t=3000 — escalated, bash filtered out (no backend call)
+      now = 3000;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // wrapModelCall at t=5500 — within window from retry but NOT from originals
+      now = 5500;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // t=7000 — original denials (t=1000) fully aged out, model retries must not have refreshed
+      now = 7000;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(["bash"]), noopModelHandler);
+      // bash should query backend again since escalation expired
+      expect(checkFn).toHaveBeenCalledTimes(3);
+    });
+
     test("different contexts escalate independently", async () => {
       const checkFn = mock((q: PermissionQuery) => {
         // Deny bash in context A, allow in context B

@@ -600,7 +600,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           results[i] = {
             effect: "deny",
             reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
-          };
+            [IS_ESCALATED]: true,
+          } as PermissionDecision;
         }
       }
     }
