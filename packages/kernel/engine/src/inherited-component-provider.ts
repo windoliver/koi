@@ -29,6 +29,11 @@ export interface InheritedComponentProviderConfig {
    * Tools with scope "agent" are excluded from inheritance.
    */
   readonly scopeChecker?: (toolName: string) => ForgeScope | undefined;
+  /**
+   * Optional tool denylist — tool names to exclude from inheritance.
+   * Applied after scope filtering. Used by hook agents to prevent recursion.
+   */
+  readonly toolDenylist?: ReadonlySet<string> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +63,11 @@ export function createInheritedComponentProvider(
 
         // Exclude agent-scoped tools — they are local to the parent
         if (scope === "agent") {
+          continue;
+        }
+
+        // Exclude denylisted tools (e.g., spawn/agent for hook agents)
+        if (config.toolDenylist?.has(toolName)) {
           continue;
         }
 

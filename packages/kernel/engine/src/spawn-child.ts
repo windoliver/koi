@@ -22,8 +22,16 @@ import type {
   DelegationId,
   EngineEvent,
   EngineInput,
+  Tool,
 } from "@koi/core";
-import { channelToken, DEFAULT_SPAWN_CHANNEL_POLICY, DELEGATION, ENV } from "@koi/core";
+import {
+  channelToken,
+  DEFAULT_SPAWN_CHANNEL_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  DELEGATION,
+  ENV,
+} from "@koi/core";
+import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
 import { createAgentEnvProvider } from "./agent-env-provider.js";
 import { createChildHandle } from "./child-handle.js";
@@ -76,14 +84,37 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   const inheritance = options.inheritance ?? {};
   const scopeChecker = inheritance.tools?.scopeChecker ?? options.scopeChecker;
 
-  // 3. Build inherited component provider (scope-filtered)
+  // 3. Build inherited component provider (scope-filtered + denylist-filtered)
+  //    When nonInteractive, also strip interactive/approval-capable tools.
+  const baseDenylist =
+    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined;
+  const toolDenylist =
+    options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),
+    ...(toolDenylist !== undefined ? { toolDenylist } : {}),
   });
 
   // 4. Build additional providers from inheritance config
   const inheritanceProviders: ComponentProvider[] = [];
+
+  // 4.0 Additional tool descriptors (e.g., HookVerdict for agent hooks)
+  if (options.additionalTools !== undefined && options.additionalTools.length > 0) {
+    const toolEntries = options.additionalTools.map((desc) => {
+      const tool: Tool = {
+        descriptor: desc,
+        origin: "operator",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
+        execute: async (input) => ({ result: input }),
+      };
+      return [`tool:${desc.name}`, tool] as const;
+    });
+    inheritanceProviders.push({
+      name: "additional-tools",
+      attach: async () => new Map(toolEntries),
+    });
+  }
 
   // 4a. Env inheritance
   const parentHasEnv = options.parentAgent.has(ENV);
@@ -124,7 +155,15 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 6. Resolve priority
   const childPriority = inheritance.priority ?? 10;
 
-  // 7. Delegate to createKoi with child-specific options
+  // 7. Build additional middleware for child-specific constraints
+  const childMiddleware = [...(options.middleware ?? [])];
+  if (options.requiredOutputTool !== undefined) {
+    childMiddleware.push(
+      createStructuredOutputGuard({ requiredToolName: options.requiredOutputTool }),
+    );
+  }
+
+  // 8. Delegate to createKoi with child-specific options
   //    Manifest lifecycle drives agentType — no explicit agentType override needed.
   let childRuntime: KoiRuntime;
   try {
@@ -135,7 +174,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       providers: [inheritedProvider, ...inheritanceProviders, ...(options.providers ?? [])],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
-      ...(options.middleware !== undefined ? { middleware: options.middleware } : {}),
+      ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
       ...(options.forge !== undefined ? { forge: options.forge } : {}),
       ...(options.registry !== undefined ? { registry: options.registry } : {}),
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
@@ -307,4 +346,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     ...(childNexusApiKey !== undefined ? { nexusApiKey: childNexusApiKey } : {}),
     ...(childGrantId !== undefined ? { delegationId: childGrantId } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Tool names stripped from nonInteractive agents to prevent user-facing prompts. */
+const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
+  "AskUser",
+  "AskUserQuestion",
+  "ask-user",
+  "ask_user",
+]);
+
+/** Expand a tool denylist with interactive tool names for nonInteractive agents. */
+function expandDenylistForNonInteractive(
+  base: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const merged = new Set(base ?? []);
+  for (const tool of NON_INTERACTIVE_DENIED_TOOLS) {
+    merged.add(tool);
+  }
+  return merged;
 }

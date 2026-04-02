@@ -1102,3 +1102,29 @@ describe("describeCapabilities", () => {
     expect(fragment).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent hook spawnFn validation (Decision 12A)
+// ---------------------------------------------------------------------------
+
+describe("agent hook spawnFn validation", () => {
+  it("throws when agent hooks present but spawnFn not provided", () => {
+    const agentHooks: readonly HookConfig[] = [{ kind: "agent", name: "verify", prompt: "check" }];
+    expect(() => createHookMiddleware({ hooks: agentHooks })).toThrow("spawnFn");
+  });
+
+  it("does not throw when agent hooks present and spawnFn provided", () => {
+    const agentHooks: readonly HookConfig[] = [{ kind: "agent", name: "verify", prompt: "check" }];
+    const spawnFn = mock().mockResolvedValue({ ok: true, output: "" });
+    expect(() => createHookMiddleware({ hooks: agentHooks, spawnFn })).not.toThrow();
+  });
+
+  it("does not throw when no agent hooks and no spawnFn", () => {
+    expect(() => createHookMiddleware({ hooks: TEST_HOOKS })).not.toThrow();
+  });
+
+  it("does not throw when spawnFn provided without agent hooks", () => {
+    const spawnFn = mock().mockResolvedValue({ ok: true, output: "" });
+    expect(() => createHookMiddleware({ hooks: TEST_HOOKS, spawnFn })).not.toThrow();
+  });
+});

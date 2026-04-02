@@ -146,6 +146,8 @@ export interface CreateKoiOptions {
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
+  /** The session ID assigned to this runtime instance. */
+  readonly sessionId: string;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
   /** Run the agent with the given input. Returns an async iterable of engine events. */
@@ -239,6 +241,26 @@ export interface SpawnChildOptions {
    * Takes precedence over manifest.delivery when resolving the effective policy.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+
+  // ---------------------------------------------------------------------------
+  // Sub-agent constraints (hook agents, sandboxed spawns)
+  // ---------------------------------------------------------------------------
+
+  /** Tool names to exclude from the child's tool set (filters inherited + additional tools). */
+  readonly toolDenylist?: readonly string[] | undefined;
+  /** Additional tool descriptors to inject into the child's tool set. */
+  readonly additionalTools?: readonly ToolDescriptor[] | undefined;
+  /**
+   * When true, the child runs non-interactively — approval prompts are
+   * auto-denied and AskUser-style tools are stripped. Used by hook agents.
+   */
+  readonly nonInteractive?: boolean | undefined;
+  /**
+   * Name of a tool that must be called before the agent can complete.
+   * When set, a structured output guard middleware is injected that
+   * re-prompts the agent if it tries to finish without calling this tool.
+   */
+  readonly requiredOutputTool?: string | undefined;
 }
 
 /**

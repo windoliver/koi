@@ -19,7 +19,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
+export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -2784,17 +2784,14 @@ exports[`@koi/core API surface ./hook has stable type surface 1`] = `
 /**
  * Hook contract — L0 types for session-scoped side-effect triggers.
  *
- * Hooks fire in response to session lifecycle events. Two transport types
- * are supported in Phase 1: \`command\` (local process via Bun.spawn) and
- * \`http\` (network request). The \`prompt\` type is deferred.
- *
- * Phase 1 scope: type definitions (this file), loader, schema validation,
- * and session-scoped registry (@koi/hooks). Engine-level integration
- * (automatic dispatch during session lifecycle) is separate work.
+ * Hooks fire in response to session lifecycle events. Three transport types:
+ * - \`command\` — local process via Bun.spawn
+ * - \`http\` — network request (HTTPS, loopback HTTP in dev)
+ * - \`agent\` — sub-agent LLM loop for verification/policy enforcement
  */
 
 /** Supported hook transport types. */
-type HookType = "command" | "http";
+type HookType = "command" | "http" | "agent";
 /** Canonical list of hook lifecycle events. Single source of truth. */
 declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "compact.blocked", "subagent.started", "subagent.stopped", "config.changed"];
 /** Typed hook lifecycle event discriminator (known events). */
@@ -2918,8 +2915,61 @@ interface HttpHookConfig {
      */
     readonly failClosed?: boolean | undefined;
 }
+/**
+ * A hook that spawns a sub-agent (LLM loop) to verify conditions.
+ *
+ * The sub-agent runs in non-interactive mode with a restricted tool set
+ * and must return a structured verdict via the HookVerdict synthetic tool.
+ * Agent hooks default to fail-closed: if the sub-agent times out or errors,
+ * the operation is blocked.
+ *
+ * Agent hooks produce \`continue\` or \`block\` decisions only — \`modify\` is
+ * not supported because LLMs cannot reliably produce JSON patches.
+ */
+interface AgentHookConfig {
+    readonly kind: "agent";
+    /** Human-readable hook name (unique within a manifest). */
+    readonly name: string;
+    /** Instructions for the verification sub-agent. */
+    readonly prompt: string;
+    /** Override model for the sub-agent (default: cheap/fast model). */
+    readonly model?: string | undefined;
+    /** Override system prompt (default: verification-focused prompt). */
+    readonly systemPrompt?: string | undefined;
+    /** Timeout in milliseconds. Default: 60_000. */
+    readonly timeoutMs?: number | undefined;
+    /** Maximum assistant turns for the sub-agent loop. Default: 10. */
+    readonly maxTurns?: number | undefined;
+    /** Max tokens per model call for the sub-agent. Default: 4_096. */
+    readonly maxTokens?: number | undefined;
+    /** Cumulative token budget across all invocations in a session. Default: 50_000. */
+    readonly maxSessionTokens?: number | undefined;
+    /** Tools to exclude from the sub-agent (in addition to default denylist). */
+    readonly toolDenylist?: readonly string[] | undefined;
+    /** Filter conditions — when absent, fires on all events. */
+    readonly filter?: HookFilter | undefined;
+    /** Whether this hook is active. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+    readonly serial?: boolean | undefined;
+    /**
+     * Post-execution failure behavior. Default: true (fail-closed).
+     *
+     * This flag only affects post-tool hook failures. Pre-hook failures are
+     * always fail-open (treated as "no opinion") to avoid availability risk.
+     *
+     * When true: if this hook fails during post-tool execution, the tool's
+     * raw output is suppressed (replaced with a redaction notice). Use for
+     * security-critical hooks like output redaction/scrubbing.
+     *
+     * When false: if this hook fails post-execution, the tool's output is
+     * preserved with taint metadata. Use for observational/telemetry hooks
+     * where suppressing committed output would cause retry risk.
+     */
+    readonly failClosed?: boolean | undefined;
+}
 /** Discriminated union of all hook config types. */
-type HookConfig = CommandHookConfig | HttpHookConfig;
+type HookConfig = CommandHookConfig | HttpHookConfig | AgentHookConfig;
 /**
  * System-wide policy controlling which env vars hooks may access
  * via \`\${VAR}\` expansion in headers and secrets.
@@ -2970,10 +3020,21 @@ type HookExecutionResult = {
     /** Whether this hook's failure should suppress output. Default: true. */
     readonly failClosed?: boolean | undefined;
 };
-/** Default hook timeout in milliseconds. */
+/** Default hook timeout in milliseconds (command + http). */
 declare const DEFAULT_HOOK_TIMEOUT_MS: 30000;
+/** Default agent hook timeout in milliseconds. */
+declare const DEFAULT_AGENT_HOOK_TIMEOUT_MS: 60000;
+/** Default maximum assistant turns for agent hooks. */
+declare const DEFAULT_AGENT_MAX_TURNS: 10;
+/** Default max tokens per model call for agent hooks. */
+declare const DEFAULT_AGENT_MAX_TOKENS: 4096;
+/**
+ * Default cumulative token budget per session for agent hooks.
+ * Sized for ~12 worst-case invocations at default settings (10 turns * 4096 tokens).
+ */
+declare const DEFAULT_AGENT_SESSION_TOKEN_BUDGET: 500000;
 
-export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
+export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
 "
 `;
 
