@@ -179,7 +179,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     const merged = current.items.map((item, i) => {
       const det = detected[i];
       if (item.completed) return item;
-      if (det && det.completed) return det;
+      if (det?.completed) return det;
       return item;
     });
 
