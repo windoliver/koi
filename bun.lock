@@ -275,6 +275,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/ui/tui": {
+      "name": "@koi/tui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -481,6 +488,8 @@
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
+
+    "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
