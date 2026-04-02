@@ -183,6 +183,26 @@ export interface HttpHookConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Hook redaction config — controls payload forwarding to agent hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Redaction options for event data forwarded to agent hook prompts.
+ *
+ * Only meaningful when `forwardRawPayload` is true on an `AgentHookConfig`.
+ * When raw payload forwarding is enabled, detected secrets are redacted
+ * by default unless `enabled` is explicitly set to false.
+ */
+export interface HookRedactionConfig {
+  /** Whether to apply secret redaction to forwarded data. Default: true. */
+  readonly enabled?: boolean | undefined;
+  /** Censor strategy for detected secrets. Default: "redact". */
+  readonly censor?: "redact" | "mask" | "remove" | undefined;
+  /** Additional field names to treat as sensitive (exact match, case-insensitive). */
+  readonly sensitiveFields?: readonly string[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Agent hook config
 // ---------------------------------------------------------------------------
 
@@ -217,6 +237,23 @@ export interface AgentHookConfig {
   readonly maxSessionTokens?: number | undefined;
   /** Tools to exclude from the sub-agent (in addition to default denylist). */
   readonly toolDenylist?: readonly string[] | undefined;
+  /**
+   * Controls how event.data is forwarded to the hook agent prompt.
+   *
+   * - `true` (default): forward the full payload with secret redaction applied.
+   *   Preserves values so content-based policies (commands, SQL, paths) work.
+   * - `false`: forward structural summary only (keys + type placeholders, no values).
+   *   Maximum privacy but hooks cannot inspect actual content.
+   *
+   * Default: true.
+   */
+  readonly forwardRawPayload?: boolean | undefined;
+  /**
+   * Redaction configuration for event data forwarded to the hook agent.
+   * Applied when `forwardRawPayload` is true (the default).
+   * Default: `{ enabled: true, censor: "redact" }`.
+   */
+  readonly redaction?: HookRedactionConfig | undefined;
   /** Filter conditions — when absent, fires on all events. */
   readonly filter?: HookFilter | undefined;
   /** Whether this hook is active. Default: true. */

@@ -25,6 +25,8 @@ export type { LoadHooksResult } from "./loader.js";
 export { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
 export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middleware.js";
 export { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
+export type { PayloadStatus, RedactedPayload } from "./payload-redaction.js";
+export { extractStructure, redactEventData } from "./payload-redaction.js";
 export type { CreateHookRegistryOptions, HookRegistry } from "./registry.js";
 export { createHookRegistry } from "./registry.js";
 export {

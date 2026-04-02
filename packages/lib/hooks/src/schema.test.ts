@@ -365,6 +365,54 @@ describe("agentHookSchema", () => {
     const result = agentHookSchema.safeParse({ kind: "agent", name: "test" });
     expect(result.success).toBe(false);
   });
+
+  it("accepts forwardRawPayload boolean", () => {
+    const result = agentHookSchema.safeParse({ ...validAgent, forwardRawPayload: true });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts redaction config with valid censor strategy", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      forwardRawPayload: true,
+      redaction: { enabled: true, censor: "mask" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts redaction config with sensitiveFields", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      redaction: { sensitiveFields: ["custom_secret"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects redaction with invalid censor strategy", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      redaction: { censor: "invalid" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects redaction with empty sensitiveFields", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      redaction: { sensitiveFields: [] },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts all three censor strategies", () => {
+    for (const censor of ["redact", "mask", "remove"]) {
+      const result = agentHookSchema.safeParse({
+        ...validAgent,
+        redaction: { censor },
+      });
+      expect(result.success).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

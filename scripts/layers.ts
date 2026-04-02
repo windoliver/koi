@@ -26,6 +26,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/file-resolution",
   "@koi/git-utils",
   "@koi/hash",
+  "@koi/redaction",
   "@koi/session-repair",
   "@koi/shutdown",
   "@koi/token-estimator",
