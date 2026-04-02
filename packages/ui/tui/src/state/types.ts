@@ -66,7 +66,10 @@ export type TuiAssistantBlock =
       readonly callId: string;
       readonly toolName: string;
       readonly status: ToolCallStatus;
-      readonly output?: string | undefined;
+      /** Streamed argument JSON fragments (model generating the function call). */
+      readonly args?: string | undefined;
+      /** Tool execution result from tool_call_end (the actual tool response). */
+      readonly result?: unknown;
     };
 
 /** Materialized message — reducer accumulates streaming deltas into these. */

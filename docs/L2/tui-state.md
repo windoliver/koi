@@ -68,12 +68,18 @@ type TuiAssistantBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "tool_call"; callId: string; toolName: string;
-      status: "running" | "complete" | "error"; output?: string }
+      status: "running" | "complete" | "error";
+      args?: string;    // streamed argument JSON fragments
+      result?: unknown } // tool execution result from tool_call_end
 ```
 
 **IDs are deterministic:** `assistant-${turnIndex}`, `tool-${callId}`, caller-provided for user messages.
 
-**Tool output is capped:** 50KB tail-slice per tool call to prevent memory bloat.
+**Tool call semantics:** `tool_call_delta` streams argument JSON fragments into `args`.
+`tool_call_end.result` stores the execution result into `result`. These are separate
+fields — args are what the model sends, result is what the tool returns.
+
+**Tool args are capped:** 50KB tail-slice per tool call to prevent memory bloat.
 
 ## Views and Modals
 

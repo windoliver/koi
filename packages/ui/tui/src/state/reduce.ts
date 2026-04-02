@@ -233,6 +233,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_delta": {
+      // tool_call_delta streams argument JSON fragments (model generating the call),
+      // NOT tool execution output. Accumulate into `args`.
       const found = findLastAssistant(state.messages);
       if (!found) return state;
 
@@ -240,10 +242,10 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const tool = findToolBlock(found.msg.blocks, callId);
       if (!tool) return state;
 
-      const appended = (tool.block.output ?? "") + event.delta;
+      const appended = (tool.block.args ?? "") + event.delta;
       const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
         ...tool.block,
-        output: capOutput(appended),
+        args: capOutput(appended),
       });
 
       return {
@@ -253,6 +255,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_end": {
+      // tool_call_end.result carries the accumulated tool call object
+      // (parsed args + execution result). Store it as `result`.
       const found = findLastAssistant(state.messages);
       if (!found) return state;
 
@@ -263,6 +267,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
         ...tool.block,
         status: "complete",
+        result: event.result,
       });
 
       return {

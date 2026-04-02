@@ -217,12 +217,13 @@ describe("reduce — engine_event — tool_call", () => {
         expect(block.toolName).toBe("read_file");
         expect(block.callId).toBe("call-1");
         expect(block.status).toBe("running");
-        expect(block.output).toBeUndefined();
+        expect(block.args).toBeUndefined();
+        expect(block.result).toBeUndefined();
       }
     }
   });
 
-  test("tool_call_delta accumulates output on matching tool block", () => {
+  test("tool_call_delta accumulates argument fragments into args", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "read_file", status: "running" },
     ];
@@ -231,37 +232,51 @@ describe("reduce — engine_event — tool_call", () => {
     });
     let next = reduce(
       state,
-      engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: "line1\n" }),
+      engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: '{"path":' }),
     );
     next = reduce(
       next,
-      engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: "line2\n" }),
+      engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: '"foo.ts"}' }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.output).toBe("line1\nline2\n");
+        expect(block.args).toBe('{"path":"foo.ts"}');
       }
     }
   });
 
-  test("tool_call_end marks tool as complete", () => {
+  test("tool_call_end marks tool as complete and stores result", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "running", output: "files" },
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "running",
+        args: '{"dir":"."}',
+      },
     ];
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
+    const toolResult = {
+      toolName: "ls",
+      callId: "call-1",
+      rawArgs: '{"dir":"."}',
+      parsedArgs: { dir: "." },
+    };
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: "ok" }),
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: toolResult }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
+        expect(block.result).toEqual(toolResult);
+        expect(block.args).toBe('{"dir":"."}'); // args preserved
       }
     }
   });
@@ -284,10 +299,10 @@ describe("reduce — engine_event — tool_call", () => {
     if (msg.kind === "assistant") {
       // Original text block is untouched
       expect(blockAt(msg, 0)).toEqual({ kind: "text", text: "analyzing" });
-      // Tool block has accumulated delta
+      // Tool block has accumulated arg fragments
       const toolBlock = msg.blocks.find((b) => b.kind === "tool_call");
       if (toolBlock?.kind === "tool_call") {
-        expect(toolBlock.output).toBe("found: x");
+        expect(toolBlock.args).toBe("found: x");
       }
       // New text block was created after the tool
       expect(msg.blocks).toHaveLength(3);
@@ -297,7 +312,13 @@ describe("reduce — engine_event — tool_call", () => {
 
   test("duplicate callId updates existing tool block", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running", output: "old" },
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "bash",
+        status: "running",
+        args: '{"cmd":"old"}',
+      },
     ];
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
@@ -323,8 +344,8 @@ describe("reduce — engine_event — tool_call", () => {
 // engine_event — tool output cap
 // ---------------------------------------------------------------------------
 
-describe("reduce — engine_event — tool output cap", () => {
-  test("caps tool output at MAX_TOOL_OUTPUT_CHARS (tail-sliced)", () => {
+describe("reduce — engine_event — tool args cap", () => {
+  test("caps tool args at MAX_TOOL_OUTPUT_CHARS (tail-sliced)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
     ];
@@ -340,8 +361,8 @@ describe("reduce — engine_event — tool output cap", () => {
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.output?.length).toBe(MAX_TOOL_OUTPUT_CHARS);
-        expect(block.output?.endsWith("x")).toBe(true);
+        expect(block.args?.length).toBe(MAX_TOOL_OUTPUT_CHARS);
+        expect(block.args?.endsWith("x")).toBe(true);
       }
     }
   });
@@ -415,7 +436,7 @@ describe("reduce — edge cases", () => {
 
   test("done with completed tools leaves them as complete", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", output: "ok" },
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", result: "ok" },
     ];
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
@@ -433,7 +454,7 @@ describe("reduce — edge cases", () => {
 
   test("done with mixed tool statuses only marks running ones as error", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", output: "ok" },
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", result: "ok" },
       { kind: "tool_call", callId: "call-2", toolName: "bash", status: "running" },
     ];
     const state = stateWith({
