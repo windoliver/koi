@@ -53,24 +53,32 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
   const retries = DEFAULT_RETRIES;
 
   // Lazy-cached CAS capability check via a dedicated non-mutating RPC.
-  // Resolved once on first edit(), then reused for the backend lifetime.
-  let casCapability: Promise<boolean> | undefined;
+  // Only confirmed results (true/false) are cached. Transport failures
+  // (timeouts, connection errors) leave the cache unset so the next
+  // edit() can re-probe after the server recovers.
+  let casCapability: boolean | undefined;
 
-  function checkCasSupport(): Promise<boolean> {
-    if (casCapability === undefined) {
-      casCapability = rpcRead<{ readonly cas?: boolean } | null>(
-        transport,
-        "capabilities",
-        {},
-        retries,
-      ).then((result) => {
-        if (!result.ok) return false;
-        return (
-          result.value !== null && typeof result.value === "object" && result.value.cas === true
-        );
-      });
+  async function checkCasSupport(): Promise<Result<boolean, KoiError>> {
+    if (casCapability !== undefined) {
+      return { ok: true, value: casCapability };
     }
-    return casCapability;
+
+    const result = await rpcRead<{ readonly cas?: boolean } | null>(
+      transport,
+      "capabilities",
+      {},
+      retries,
+    );
+
+    if (!result.ok) {
+      // Transport failure — do NOT cache, allow re-probe on next edit
+      return result;
+    }
+
+    const supported =
+      result.value !== null && typeof result.value === "object" && result.value.cas === true;
+    casCapability = supported;
+    return { ok: true, value: supported };
   }
 
   async function read(
@@ -208,9 +216,10 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     // Write back (unless dry run)
     if (!options?.dryRun) {
       // Negotiate CAS support via the non-mutating "capabilities" RPC.
-      // This is resolved once and cached — no mutation, no ambiguity.
-      const hasCas = await checkCasSupport();
-      if (!hasCas) {
+      // Confirmed results are cached; transport failures allow re-probe.
+      const casResult = await checkCasSupport();
+      if (!casResult.ok) return casResult;
+      if (!casResult.value) {
         return {
           ok: false,
           error: {
@@ -265,6 +274,18 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     const raw = result.value;
 
+    // Validate response shape — Nexus must return a non-null object
+    if (raw === null || raw === undefined || typeof raw !== "object") {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Nexus returned invalid list response: expected object, got ${typeof raw}`,
+          retryable: false,
+        },
+      };
+    }
+
     // Handle flat file list from Nexus
     if ("files" in raw && Array.isArray(raw.files)) {
       const prefix = fullPathResult.value.replace(/^\/+/, "");
@@ -311,16 +332,27 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       return { ok: true, value: { entries, truncated: false } };
     }
 
-    // Structured response — filter to scope, then remap paths
-    const structured = raw as FileListResult;
-    const entries = structured.entries
+    // Structured response — validate shape, filter to scope, remap paths
+    const structured = raw as Record<string, unknown>;
+    if (!Array.isArray(structured.entries)) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: "Nexus returned invalid list response: missing 'entries' array",
+          retryable: false,
+        },
+      };
+    }
+    const entries = (structured as unknown as FileListResult).entries
       .filter((entry) => isWithinBasePath(basePath, entry.path))
       .map((entry) => ({
         ...entry,
         path: stripBasePath(basePath, entry.path),
       }));
 
-    return { ok: true, value: { entries, truncated: structured.truncated } };
+    const truncated = typeof structured.truncated === "boolean" ? structured.truncated : false;
+    return { ok: true, value: { entries, truncated } };
   }
 
   async function search(
@@ -343,14 +375,34 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     if (!result.ok) return result;
 
-    const matches = result.value.matches
+    // Validate response shape
+    const searchRaw = result.value as unknown;
+    if (
+      searchRaw === null ||
+      searchRaw === undefined ||
+      typeof searchRaw !== "object" ||
+      !Array.isArray((searchRaw as Record<string, unknown>).matches)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: "Nexus returned invalid search response: missing 'matches' array",
+          retryable: false,
+        },
+      };
+    }
+
+    const validated = searchRaw as FileSearchResult;
+    const matches = validated.matches
       .filter((match) => isWithinBasePath(basePath, match.path))
       .map((match) => ({
         ...match,
         path: stripBasePath(basePath, match.path),
       }));
 
-    return { ok: true, value: { matches, truncated: result.value.truncated } };
+    const searchTruncated = typeof validated.truncated === "boolean" ? validated.truncated : false;
+    return { ok: true, value: { matches, truncated: searchTruncated } };
   }
 
   async function del(path: string): Promise<Result<FileDeleteResult, KoiError>> {

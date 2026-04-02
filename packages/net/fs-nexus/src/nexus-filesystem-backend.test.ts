@@ -1008,3 +1008,156 @@ describe("list flat response handling", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Capability cache resilience
+// ---------------------------------------------------------------------------
+
+describe("capability cache resilience", () => {
+  test("transient probe failure does not poison cache — re-probes on next edit", async () => {
+    const transport = createMockTransport();
+    let capCallCount = 0;
+    let shouldFail = true;
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "capabilities") {
+        capCallCount += 1;
+        if (shouldFail) {
+          // Fail all retries (rpcRead retries up to DEFAULT_RETRIES=2)
+          throw new Error("connection refused");
+        }
+        return { cas: true } as T;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const backend = createNexusFileSystem({ transport });
+    transport.store.set("/fs/file.txt", "original");
+
+    // First edit — capabilities probe fails on all retry attempts
+    const result1 = await backend.edit("/file.txt", [{ oldText: "original", newText: "new" }]);
+    expect(result1.ok).toBe(false);
+    const failedAttempts = capCallCount;
+
+    // Server recovers — stop failing
+    shouldFail = false;
+
+    // Second edit — should re-probe successfully (cache was NOT poisoned)
+    const result2 = await backend.edit("/file.txt", [{ oldText: "original", newText: "new" }]);
+    expect(result2.ok).toBe(true);
+    // Should have made at least one more capabilities call
+    expect(capCallCount).toBeGreaterThan(failedAttempts);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation error retryability
+// ---------------------------------------------------------------------------
+
+describe("mutation error retryability", () => {
+  test("write timeout error is NOT retryable", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        throw new Error("request timed out");
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.write("/any.txt", "data");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("delete connection error is NOT retryable", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const deleteFn = backend.delete;
+    if (deleteFn === undefined) throw new Error("delete not defined");
+    const result = await deleteFn("/any.txt");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed response shape validation
+// ---------------------------------------------------------------------------
+
+describe("response shape validation", () => {
+  test("list returns error for null response", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        return null as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("invalid list response");
+    }
+  });
+
+  test("list returns error for response missing entries array", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        return { someOtherField: true } as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("entries");
+    }
+  });
+
+  test("search returns error for null response", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        return null as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.search("pattern");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("invalid search response");
+    }
+  });
+
+  test("search returns error for response missing matches array", async () => {
+    const transport: NexusTransport = {
+      call: async <T>(_method: string, _params: Record<string, unknown>): Promise<T> => {
+        return { truncated: false } as T;
+      },
+      close: async () => {},
+    };
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.search("pattern");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("matches");
+    }
+  });
+});

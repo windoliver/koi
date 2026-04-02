@@ -211,6 +211,10 @@ export async function rpcMutate<T>(
     const result = await transport.call<T>(method, params);
     return { ok: true, value: result };
   } catch (error: unknown) {
-    return { ok: false, error: mapTransportError(error, method) };
+    const mapped = mapTransportError(error, method);
+    // Force all mutation errors to non-retryable. Ambiguous failures
+    // (timeout, connection drop) may have committed the mutation server-side.
+    // Marking them retryable would invite duplicate writes/deletes/renames.
+    return { ok: false, error: { ...mapped, retryable: false } };
   }
 }
