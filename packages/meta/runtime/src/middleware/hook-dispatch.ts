@@ -20,11 +20,6 @@ import type {
   HookExecutionResult,
   JsonObject,
   KoiMiddleware,
-  ModelChunk,
-  ModelHandler,
-  ModelRequest,
-  ModelResponse,
-  ModelStreamHandler,
   RichTrajectoryStep,
   ToolHandler,
   ToolRequest,
@@ -116,49 +111,21 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     phase: "observe",
     priority: 950,
 
-    async wrapModelCall(
-      ctx: TurnContext,
-      request: ModelRequest,
-      next: ModelHandler,
-    ): Promise<ModelResponse> {
+    // turn.ended fires from onAfterTurn (engine turn boundary), NOT from
+    // per-model-call wrappers. In a model→tool→model loop, wrapModelCall/
+    // wrapModelStream fire per model invocation, but turn.ended should fire
+    // exactly once per user turn.
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
       try {
-        return await next(request);
-      } finally {
-        // turn.ended fires on success, error, and cancellation — always.
-        try {
-          const event: HookEvent = {
-            event: "turn.ended",
-            agentId: ctx.session.agentId,
-            sessionId: ctx.session.sessionId as string,
-          };
-          const results = await executeHooks(hooks, event, ctx.signal ?? signal);
-          await recordHookResults(results, "turn.ended");
-        } catch {
-          // Observer hook dispatch must not mask the original error
-        }
-      }
-    },
-
-    async *wrapModelStream(
-      ctx: TurnContext,
-      request: ModelRequest,
-      next: ModelStreamHandler,
-    ): AsyncIterable<ModelChunk> {
-      try {
-        yield* next(request);
-      } finally {
-        // turn.ended fires on success, error, abort, and consumer cancellation — always.
-        try {
-          const event: HookEvent = {
-            event: "turn.ended",
-            agentId: ctx.session.agentId,
-            sessionId: ctx.session.sessionId as string,
-          };
-          const results = await executeHooks(hooks, event, ctx.signal ?? signal);
-          await recordHookResults(results, "turn.ended");
-        } catch {
-          // Observer hook dispatch must not mask the original error
-        }
+        const event: HookEvent = {
+          event: "turn.ended",
+          agentId: ctx.session.agentId,
+          sessionId: ctx.session.sessionId as string,
+        };
+        const results = await executeHooks(hooks, event, ctx.signal ?? signal);
+        await recordHookResults(results, "turn.ended");
+      } catch {
+        // Observer hook dispatch — swallow to avoid breaking the turn loop
       }
     },
 

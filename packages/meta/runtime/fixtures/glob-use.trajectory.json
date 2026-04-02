@@ -23,7 +23,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:53.808Z",
+      "timestamp": "2026-04-02T09:26:23.726Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -38,7 +38,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:53.808Z",
+      "timestamp": "2026-04-02T09:26:23.726Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -52,7 +52,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-02T09:04:53.809Z",
+      "timestamp": "2026-04-02T09:26:23.728Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Glob tool to find files matching \"package.json\" in the current directory. Report the count of matches.",
       "observation": {
@@ -66,7 +66,7 @@
         "prompt_tokens": 376,
         "completion_tokens": 5
       },
-      "duration_ms": 652,
+      "duration_ms": 671,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -92,27 +92,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:54.464Z",
-      "model_name": "middleware:hook-dispatch",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Glob tool to find files matching \"package.json\" in the current directory. Report the count of matches.",
-      "duration_ms": 654.7739999999994,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hook-dispatch",
-        "hook": "wrapModelStream",
-        "phase": "observe",
-        "priority": 950,
-        "nextCalled": true
-      }
-    },
-    {
-      "step_id": 4,
-      "source": "system",
-      "timestamp": "2026-04-02T09:04:54.464Z",
+      "timestamp": "2026-04-02T09:26:24.403Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Glob tool to find files matching \"package.json\" in the current directory. Report the count of matches.",
-      "duration_ms": 654.988417,
+      "duration_ms": 675.3169159999961,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -124,12 +107,12 @@
       }
     },
     {
-      "step_id": 5,
+      "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:54.471Z",
+      "timestamp": "2026-04-02T09:26:24.410Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:Glob → on-tool-exec",
-      "duration_ms": 5.87079199999971,
+      "duration_ms": 5.442374999998719,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -138,9 +121,9 @@
       }
     },
     {
-      "step_id": 6,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:54.476Z",
+      "timestamp": "2026-04-02T09:26:24.415Z",
       "model_name": "middleware:hook-dispatch",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -150,7 +133,7 @@
           }
         ]
       },
-      "duration_ms": 13.30749999999989,
+      "duration_ms": 13.69879100000253,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -162,12 +145,12 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 6,
       "source": "tool",
-      "timestamp": "2026-04-02T09:04:54.463Z",
+      "timestamp": "2026-04-02T09:26:24.401Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_Glob_7",
+          "tool_call_id": "call_Glob_6",
           "function_name": "Glob",
           "arguments": {
             "pattern": "package.json"
@@ -177,18 +160,18 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_Glob_7",
+            "source_call_id": "call_Glob_6",
             "content": "{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}"
           }
         ]
       },
-      "duration_ms": 13,
+      "duration_ms": 14,
       "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:54.477Z",
+      "timestamp": "2026-04-02T09:26:24.416Z",
       "model_name": "middleware:permissions",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -198,7 +181,7 @@
           }
         ]
       },
-      "duration_ms": 14.596875000000182,
+      "duration_ms": 15.494875000003958,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -210,23 +193,23 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 8,
       "source": "agent",
-      "timestamp": "2026-04-02T09:04:54.478Z",
+      "timestamp": "2026-04-02T09:26:24.417Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}",
       "observation": {
         "results": [
           {
-            "content": "There is 1 file matching the glob pattern \"package.json\"."
+            "content": "There is 1 file matching \"package.json\" in the current directory."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 403,
-        "completion_tokens": 14
+        "prompt_tokens": 402,
+        "completion_tokens": 16
       },
-      "duration_ms": 576,
+      "duration_ms": 579,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -250,29 +233,12 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-02T09:04:55.056Z",
-      "model_name": "middleware:hook-dispatch",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Glob tool to find files matching \"package.json\" in the current directory. Report the count of matches.\n\n{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}",
-      "duration_ms": 577.8926670000001,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hook-dispatch",
-        "hook": "wrapModelStream",
-        "phase": "observe",
-        "priority": 950,
-        "nextCalled": true
-      }
-    },
-    {
-      "step_id": 11,
-      "source": "system",
-      "timestamp": "2026-04-02T09:04:55.056Z",
+      "timestamp": "2026-04-02T09:26:24.998Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Glob tool to find files matching \"package.json\" in the current directory. Report the count of matches.\n\n{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}",
-      "duration_ms": 578.0955000000004,
+      "duration_ms": 581.588334,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

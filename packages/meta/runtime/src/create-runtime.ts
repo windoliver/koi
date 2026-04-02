@@ -23,6 +23,8 @@ import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose
 import {
   createDebugInstrumentation,
   recomposeChains,
+  runSessionHooks,
+  runTurnHooks,
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware } from "@koi/event-trace";
@@ -762,10 +764,8 @@ function composeMiddlewareIntoAdapter(
             }
           : { modelCall: tracedModelCall, toolCall: tracedToolCall, tools: advertisedTools };
 
-      // Start per-stream event-trace session before the stream runs
-      if (perStreamEventTrace?.onSessionStart) {
-        void perStreamEventTrace.onSessionStart(ctx.session).catch(noop);
-      }
+      // Run lifecycle hooks on ALL middleware (not just event-trace)
+      void runSessionHooks(sorted, "onSessionStart", ctx.session).catch(noop);
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
       return wrapStreamWithFlush(
@@ -786,7 +786,6 @@ function composeMiddlewareIntoAdapter(
                   ),
                 );
               } else if (!sc.completed) {
-                // Stream was abandoned — adapter stopped consuming before terminal chunk
                 buffer.push(
                   createModelErrorStep(
                     buffer.size(),
@@ -814,15 +813,9 @@ function composeMiddlewareIntoAdapter(
           }
         },
         async () => {
-          // Flush event-trace after harness steps are flushed
-          if (perStreamEventTrace !== undefined) {
-            if (perStreamEventTrace.onAfterTurn) {
-              await perStreamEventTrace.onAfterTurn(ctx);
-            }
-            if (perStreamEventTrace.onSessionEnd) {
-              await perStreamEventTrace.onSessionEnd(ctx.session);
-            }
-          }
+          // Run lifecycle hooks on ALL middleware for session end
+          await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
+          await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
         },
       );
     },
