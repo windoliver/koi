@@ -71,6 +71,13 @@ export interface CreateHookMiddlewareOptions {
 // Decision aggregation
 // ---------------------------------------------------------------------------
 
+/** Result of aggregating hook decisions — includes the winning hook's identity. */
+export interface AggregatedDecision {
+  readonly decision: HookDecision;
+  /** Name of the hook that produced the winning decision (set for block). */
+  readonly hookName?: string;
+}
+
 /**
  * Aggregate **pre-call** hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
@@ -79,8 +86,10 @@ export interface CreateHookMiddlewareOptions {
  * - Multiple `modify` patches are merged (later patches override earlier keys).
  * - `transform` decisions are ignored — they are post-call only.
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ *
+ * Returns the decision plus the winning hook's name (for block decisions).
  */
-export function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision {
+export function aggregateDecisions(results: readonly HookExecutionResult[]): AggregatedDecision {
   let hasModify = false;
   let mergedPatch: JsonObject = {};
 
@@ -89,7 +98,7 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Hoo
 
     switch (result.decision.kind) {
       case "block":
-        return result.decision;
+        return { decision: result.decision, hookName: result.hookName };
       case "transform":
         // Ignored in pre-call — transform is post-call only
         break;
@@ -103,10 +112,19 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Hoo
   }
 
   if (hasModify) {
-    return { kind: "modify", patch: mergedPatch };
+    return { decision: { kind: "modify", patch: mergedPatch } };
   }
 
-  return { kind: "continue" };
+  return { decision: { kind: "continue" } };
+}
+
+// ---------------------------------------------------------------------------
+// Block message formatting
+// ---------------------------------------------------------------------------
+
+/** Format a consistent block message across all hook block paths. */
+function formatBlockMessage(context: string, reason: string): string {
+  return `Hook blocked ${context}: ${reason}`;
 }
 
 /**
@@ -312,27 +330,35 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
   /**
    * Run model.pre hooks and return the effective request.
+   *
+   * Note: registry.execute awaits ALL matching hooks before aggregateDecisions
+   * can short-circuit on the first block. A slow hook delays the block decision
+   * even if a faster hook already returned block. Flagged for future optimization.
    */
   async function dispatchModelPre(
     sessionId: string,
     ctx: TurnContext,
     request: ModelRequest,
   ): Promise<
-    | { readonly blocked: true; readonly reason: string }
+    | { readonly blocked: true; readonly reason: string; readonly hookName?: string }
     | { readonly blocked: false; readonly request: ModelRequest }
   > {
     const preEvent = buildEvent(ctx.session, "compact.before", {
       data: buildModelPreData(request),
     });
     const preResults = await registry.execute(sessionId, preEvent);
-    const decision = aggregateDecisions(preResults);
+    const aggregated = aggregateDecisions(preResults);
 
-    if (decision.kind === "block") {
-      return { blocked: true, reason: decision.reason };
+    if (aggregated.decision.kind === "block") {
+      return {
+        blocked: true,
+        reason: aggregated.decision.reason,
+        ...(aggregated.hookName !== undefined ? { hookName: aggregated.hookName } : {}),
+      };
     }
 
-    if (decision.kind === "modify") {
-      const safePatch = filterModelPatch(decision.patch);
+    if (aggregated.decision.kind === "modify") {
+      const safePatch = filterModelPatch(aggregated.decision.patch);
       if (safePatch !== undefined) {
         return { blocked: false, request: { ...request, ...safePatch } };
       }
@@ -351,10 +377,10 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       registry.register(sessionId, ctx.agentId, hooks, envPolicy);
       const event = buildEvent(ctx, "session.started");
       const results = await registry.execute(sessionId, event);
-      const decision = aggregateDecisions(results);
-      if (decision.kind === "block") {
+      const aggregated = aggregateDecisions(results);
+      if (aggregated.decision.kind === "block") {
         registry.cleanup(sessionId);
-        throw new Error(`Session blocked by hook: ${decision.reason}`);
+        throw new Error(formatBlockMessage("session", aggregated.decision.reason));
       }
     },
 
@@ -375,9 +401,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const sessionId = ctx.session.sessionId as string;
       const event = buildEvent(ctx.session, "turn.started");
       const results = await registry.execute(sessionId, event);
-      const decision = aggregateDecisions(results);
-      if (decision.kind === "block") {
-        throw new Error(`Turn blocked by hook: ${decision.reason}`);
+      const aggregated = aggregateDecisions(results);
+      if (aggregated.decision.kind === "block") {
+        throw new Error(formatBlockMessage("turn", aggregated.decision.reason));
       }
     },
 
@@ -401,18 +427,18 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         data: { input: request.input } as JsonObject,
       });
       const preResults = await registry.execute(sessionId, preEvent);
-      const decision = aggregateDecisions(preResults);
+      const aggregated = aggregateDecisions(preResults);
 
-      if (decision.kind === "block") {
+      if (aggregated.decision.kind === "block") {
         return {
-          output: { error: `Blocked by hook: ${decision.reason}` },
-          metadata: { blockedByHook: true },
+          output: { error: formatBlockMessage("tool_call", aggregated.decision.reason) },
+          metadata: { blockedByHook: true, hookName: aggregated.hookName },
         };
       }
 
       const effectiveRequest: ToolRequest =
-        decision.kind === "modify"
-          ? { ...request, input: { ...request.input, ...decision.patch } }
+        aggregated.decision.kind === "modify"
+          ? { ...request, input: { ...request.input, ...aggregated.decision.patch } }
           : request;
 
       const response = await next(effectiveRequest);
@@ -485,7 +511,25 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResult = await dispatchModelPre(sessionId, ctx, request);
 
       if (preResult.blocked) {
-        throw new Error(`Model call blocked by hook: ${preResult.reason}`);
+        // Observability: emit custom event for telemetry/audit (fire-and-forget)
+        const blockEvent = buildEvent(ctx.session, "compact.blocked", {
+          data: {
+            reason: preResult.reason,
+            hookName: preResult.hookName,
+          } as JsonObject,
+        });
+        fireAndForget(sessionId, blockEvent);
+
+        return {
+          content: formatBlockMessage("model_call", preResult.reason),
+          model: request.model ?? "unknown",
+          stopReason: "hook_blocked",
+          metadata: {
+            blockedByHook: true,
+            reason: preResult.reason,
+            hookName: preResult.hookName,
+          },
+        };
       }
 
       const response = await next(preResult.request);
@@ -508,9 +552,18 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResult = await dispatchModelPre(sessionId, ctx, request);
 
       if (preResult.blocked) {
+        // Observability: emit custom event for telemetry/audit (fire-and-forget)
+        const blockEvent = buildEvent(ctx.session, "compact.blocked", {
+          data: {
+            reason: preResult.reason,
+            hookName: preResult.hookName,
+          } as JsonObject,
+        });
+        fireAndForget(sessionId, blockEvent);
+
         yield {
           kind: "error",
-          message: `Hook blocked model stream: ${preResult.reason}`,
+          message: formatBlockMessage("model_stream", preResult.reason),
           code: "PERMISSION",
           retryable: false,
         };
