@@ -197,6 +197,10 @@
         "zod": "4.3.6",
       },
     },
+    "packages/meta/cli": {
+      "name": "@koi/cli",
+      "version": "0.0.0",
+    },
     "packages/mm/model-openai-compat": {
       "name": "@koi/model-openai-compat",
       "version": "0.0.0",
@@ -398,6 +402,8 @@
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
+
+    "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
