@@ -396,7 +396,7 @@ describe("createGoalMiddleware", () => {
     expect(injected).toBe(false);
   });
 
-  it("does not skip goals on multiple model calls within same turn", async () => {
+  it("only injects goals on first model call within a turn", async () => {
     const mw = createGoalMiddleware({ objectives: ["Test"] });
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
@@ -404,19 +404,20 @@ describe("createGoalMiddleware", () => {
     const ctx = makeTurnCtx(session);
     await mw.onBeforeTurn?.(ctx);
 
-    // Both model calls in the same turn should see shouldInject=true
+    // First model call gets injection
     let injected1 = false;
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
       injected1 = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
       return makeModelResponse("ok");
     });
+    // Second model call in same turn does NOT get injection
     let injected2 = false;
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
       injected2 = req.messages.length > 0 && req.messages[0]?.senderId === "system:goal";
       return makeModelResponse("ok");
     });
     expect(injected1).toBe(true);
-    expect(injected2).toBe(true);
+    expect(injected2).toBe(false);
   });
 
   it("injects goals on streamed model call", async () => {

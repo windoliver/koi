@@ -64,7 +64,8 @@ export function createAccumulator(maxActions: number): Accumulator {
   let totalIssues = 0;
 
   const artifacts: ArtifactRef[] = [];
-  let truncated = false;
+  let actionsTruncated = false;
+  let issuesTruncated = false;
   let inputTokens = 0;
   let outputTokens = 0;
 
@@ -76,7 +77,7 @@ export function createAccumulator(maxActions: number): Accumulator {
       if (actionCount < maxActions) {
         actionCount++;
       } else {
-        truncated = true;
+        actionsTruncated = true;
       }
     },
 
@@ -92,6 +93,8 @@ export function createAccumulator(maxActions: number): Accumulator {
       totalIssues++;
       if (issueCount < maxActions) {
         issueCount++;
+      } else {
+        issuesTruncated = true;
       }
     },
 
@@ -109,7 +112,7 @@ export function createAccumulator(maxActions: number): Accumulator {
         outputTokens,
         totalActions,
         totalIssues,
-        truncated,
+        truncated: actionsTruncated || issuesTruncated,
       };
     },
   };

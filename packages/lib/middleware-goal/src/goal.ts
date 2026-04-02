@@ -40,8 +40,10 @@ interface GoalSessionState {
   readonly items: readonly GoalItem[];
   readonly currentInterval: number;
   readonly lastReminderTurn: number;
-  /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn. */
+  /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn, consumed by first model call. */
   shouldInject: boolean;
+  /** Whether injection was performed this turn (for onAfterTurn interval update). */
+  injectedThisTurn: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +169,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
    * Detect completions in text and update session state + fire callbacks.
    * Monotonic: completed objectives never revert to pending, even if a
    * later model call in the same turn lacks the completion signal.
+   * Persists state before invoking callbacks so callback failures cannot
+   * leave stale state.
    */
   function updateCompletions(sid: SessionId, text: string): void {
     // Always read the latest state from the map to avoid stale snapshots
@@ -183,17 +187,32 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       return item;
     });
 
+    // Persist state BEFORE invoking callbacks
+    sessions.set(sid, { ...current, items: merged });
+
+    // Fire callbacks with error isolation — never fail the model call
     if (config.onComplete) {
       for (let i = 0; i < merged.length; i++) {
         const prev = current.items[i];
         const curr = merged[i];
         if (prev && curr && !prev.completed && curr.completed) {
-          config.onComplete(curr.text);
+          try {
+            config.onComplete(curr.text);
+          } catch {
+            // Swallow: observability callbacks must not fail model calls
+          }
         }
       }
     }
+  }
 
-    sessions.set(sid, { ...current, items: merged });
+  /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
+  function consumeInjection(sid: SessionId): boolean {
+    const state = sessions.get(sid);
+    if (!state || !state.shouldInject) return false;
+    state.shouldInject = false;
+    state.injectedThisTurn = true;
+    return true;
   }
 
   return {
@@ -220,6 +239,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         currentInterval: baseInterval,
         lastReminderTurn: -1,
         shouldInject: true,
+        injectedThisTurn: false,
       });
     },
 
@@ -229,13 +249,14 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
+      state.injectedThisTurn = false;
     },
 
     async onAfterTurn(ctx) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
 
-      if (state.shouldInject) {
+      if (state.injectedThisTurn) {
         const drifting = isDrifting(ctx.messages, allKeywords);
         const nextInterval = computeNextInterval(
           state.currentInterval,
@@ -256,7 +277,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return next(request);
 
-      const enrichedRequest = state.shouldInject
+      const inject = consumeInjection(ctx.session.sessionId);
+      const enrichedRequest = inject
         ? {
             ...request,
             messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],
@@ -282,7 +304,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         return;
       }
 
-      const enrichedRequest = state.shouldInject
+      const inject = consumeInjection(ctx.session.sessionId);
+      const enrichedRequest = inject
         ? {
             ...request,
             messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],

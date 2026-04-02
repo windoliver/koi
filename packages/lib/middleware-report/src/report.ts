@@ -356,16 +356,24 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
         }
       }
 
-      if (config?.onReport) {
-        const formatted = formatter(report);
-        try {
-          await config.onReport(report, formatted);
-        } catch (e: unknown) {
-          swallowError(e, { package: "@koi/middleware-report", operation: "onReport" });
+      try {
+        if (config?.onReport) {
+          let formatted: string;
+          try {
+            formatted = formatter(report);
+          } catch (e: unknown) {
+            swallowError(e, { package: "@koi/middleware-report", operation: "formatter" });
+            formatted = "";
+          }
+          try {
+            await config.onReport(report, formatted);
+          } catch (e: unknown) {
+            swallowError(e, { package: "@koi/middleware-report", operation: "onReport" });
+          }
         }
+      } finally {
+        sessions.delete(ctx.sessionId);
       }
-
-      sessions.delete(ctx.sessionId);
     },
   };
 
