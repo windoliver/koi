@@ -55,10 +55,18 @@ interface ApprovalCacheConfig {
     /** Max cached approvals. Default: 256. */
     readonly maxEntries?: number;
 }
+interface DenialEscalationConfig {
+    /** Auto-deny after this many denials per tool per session. Default: 3. */
+    readonly threshold?: number;
+    /** Time window in ms — only denials within this window count. Default: 300_000 (5 min). 0 = no expiry. */
+    readonly windowMs?: number;
+}
 declare const DEFAULT_CACHE_CONFIG: Required<PermissionCacheConfig>;
 declare const DEFAULT_APPROVAL_CACHE_TTL_MS: number;
 declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number;
 declare const DEFAULT_APPROVAL_TIMEOUT_MS: number;
+declare const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number;
+declare const DEFAULT_DENIAL_ESCALATION_WINDOW_MS: number;
 interface PermissionsMiddlewareConfig {
     /** Pluggable authorization backend. Required. */
     readonly backend: PermissionBackend;
@@ -76,6 +84,8 @@ interface PermissionsMiddlewareConfig {
     readonly auditSink?: AuditSink;
     /** Circuit breaker config for remote backends. */
     readonly circuitBreaker?: CircuitBreakerConfig;
+    /** Auto-deny after repeated denials per tool per session. Default: disabled. */
+    readonly denialEscalation?: boolean | DenialEscalationConfig;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 
@@ -85,12 +95,18 @@ declare function validatePermissionsConfig(input: unknown): Result<PermissionsMi
  * Records every denied tool call within a session. Queryable for
  * UI overlays, debug views, and audit analysis. Cleared on session end.
  */
+/** Why a denial was recorded — only "policy" denials count toward escalation. */
+type DenialSource = "policy" | "backend-error" | "approval" | "escalation";
 interface DenialRecord {
     readonly toolId: string;
     readonly reason: string;
     readonly timestamp: number;
     readonly principal: string;
     readonly turnIndex: number;
+    /** Origin of the denial. Only "policy" denials trigger escalation. */
+    readonly source: DenialSource;
+    /** Cache key scoping the query context. Used to scope escalation per-context. */
+    readonly queryKey?: string | undefined;
 }
 interface DenialTracker {
     /** Record a denied tool call. */
@@ -119,6 +135,6 @@ declare function createDenialTracker(maxEntries?: number): DenialTracker;
 
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware;
 
-export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialRecord, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
+export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
 "
 `;

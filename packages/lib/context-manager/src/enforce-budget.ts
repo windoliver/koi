@@ -172,46 +172,51 @@ export async function enforceBudget(
   const previewChars = config?.previewChars ?? COMPACTION_DEFAULTS.replacement.previewChars;
   const maxSummaryTokens = config?.maxSummaryTokens ?? COMPACTION_DEFAULTS.full.maxSummaryTokens;
 
-  // Stage 1: Content replacement (pre-ingestion, non-terminal)
+  // Stage 1a: Estimate new tool-result tokens unconditionally (even without a store)
   let replacementInfo: ReplacementInfo | undefined;
-  let newResultTokens = 0; // let: tokens from new tool results (post-replacement)
+  let newResultTokens = 0;
 
-  if (newToolResults !== undefined && store !== undefined) {
+  if (newToolResults !== undefined) {
     const results = typeof newToolResults === "string" ? [newToolResults] : newToolResults;
 
-    const messageOutcome = await evaluateMessageResults(results, store, {
-      maxResultTokens,
-      maxMessageTokens,
-      previewChars,
-      tokenEstimator: estimator,
-    });
+    // Stage 1b: Content replacement (only when a ReplacementStore is configured)
+    if (store !== undefined) {
+      const messageOutcome = await evaluateMessageResults(results, store, {
+        maxResultTokens,
+        maxMessageTokens,
+        previewChars,
+        tokenEstimator: estimator,
+      });
 
-    const anyReplaced = messageOutcome.outcomes.some((o) => o.replaced);
+      const anyReplaced = messageOutcome.outcomes.some((o) => o.replaced);
 
-    // Build previews array (replaced → preview, unreplaced → original)
-    const previews = messageOutcome.outcomes.map((o, i) => {
-      if (o.replaced) return o.preview;
-      return results[i] ?? "";
-    });
+      // Build previews array (replaced → preview, unreplaced → original)
+      const previews = messageOutcome.outcomes.map((o, i) => {
+        if (o.replaced) return o.preview;
+        return results[i] ?? "";
+      });
 
-    // Compute token contribution of new results (post-replacement)
-    for (let i = 0; i < previews.length; i++) {
-      const text = previews[i];
-      if (text !== undefined) {
+      // Compute token contribution of new results (post-replacement)
+      for (let i = 0; i < previews.length; i++) {
+        const text = previews[i];
+        if (text !== undefined) {
+          newResultTokens += await Promise.resolve(estimator.estimateText(text));
+        }
+      }
+
+      if (anyReplaced) {
+        replacementInfo = {
+          previews,
+          outcomes: messageOutcome.outcomes,
+          tokensSaved: messageOutcome.totalSavedTokens,
+          activeRefs: collectRefsFromOutcomes(messageOutcome.outcomes),
+        };
+      }
+    } else {
+      // No store — estimate raw result tokens for budget accounting
+      for (const text of results) {
         newResultTokens += await Promise.resolve(estimator.estimateText(text));
       }
-    }
-
-    if (anyReplaced) {
-      replacementInfo = {
-        previews,
-        outcomes: messageOutcome.outcomes,
-        tokensSaved: messageOutcome.totalSavedTokens,
-        activeRefs: collectRefsFromOutcomes(messageOutcome.outcomes),
-      };
-    } else {
-      // Even when no replacement occurred, account for the new result tokens
-      // in the budget check below
     }
   }
 
@@ -234,26 +239,33 @@ export async function enforceBudget(
 
   // Stage 4: Microcompact (operates on existing messages only —
   // new results haven't been ingested into the message array yet)
+  // Reserve space for the incoming tool result so post-compaction + result fits.
   if (decision === "micro") {
-    const targetTokens = Math.floor(contextWindowSize * microTarget);
+    const targetTokens = Math.floor(contextWindowSize * microTarget) - newResultTokens;
     const result = await microcompact(messages, targetTokens, preserveRecent, estimator);
 
-    return {
-      compaction: "micro",
-      messages: result.messages,
-      originalTokens: result.originalTokens,
-      compactedTokens: result.compactedTokens,
-      strategy: result.strategy,
-      ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
-    };
+    // If micro-compaction met the target (post-compaction + result fits), return it.
+    // Otherwise promote to full compaction.
+    if (result.compactedTokens + newResultTokens <= Math.floor(contextWindowSize * microTarget)) {
+      return {
+        compaction: "micro",
+        messages: result.messages,
+        originalTokens: result.originalTokens,
+        compactedTokens: result.compactedTokens,
+        strategy: result.strategy,
+        ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+      };
+    }
+    // Fall through to full compaction
   }
 
   // Stage 5: Full compact — compute split, don't summarize
+  // Reserve space for the incoming tool result in the split budget.
   const validSplitPoints = findValidSplitPoints(messages, preserveRecent);
   const splitIdx = await findOptimalSplit(
     messages,
     validSplitPoints,
-    contextWindowSize,
+    contextWindowSize - newResultTokens,
     maxSummaryTokens,
     estimator,
   );
@@ -261,7 +273,7 @@ export async function enforceBudget(
   return {
     compaction: "full",
     messages,
-    splitIdx: splitIdx >= 0 ? splitIdx : 1,
+    splitIdx,
     totalTokens,
     ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
   };

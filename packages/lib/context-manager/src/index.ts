@@ -39,6 +39,7 @@ export {
   createInMemoryReplacementStore,
   evaluateMessageResults,
   evaluateReplacement,
+  extractRefsFromTexts,
   generatePreview,
 } from "./replacement.js";
 export type { ConfigResult } from "./resolve-config.js";

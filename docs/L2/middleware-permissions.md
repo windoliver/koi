@@ -359,6 +359,42 @@ Reuses `createCircuitBreaker` from `@koi/errors` (L0u). Accepts `clock` injectio
 
 ---
 
+## Denial Escalation
+
+When the same tool is repeatedly denied within a session, the middleware can short-circuit to deny without re-querying the backend. This saves latency and prevents the model from repeatedly attempting tools that will always be denied.
+
+```
+Tool "bash" denied 3 times this session
+    │
+    ├── denialEscalation disabled? → query backend as normal
+    │
+    └── denialEscalation enabled?
+         │
+         └── tracker.getByTool("bash").length >= threshold?
+              │
+              ├── yes → instant DENY (backend skipped, "auto-denied" reason)
+              │
+              └── no  → query backend as normal
+```
+
+Disabled by default (backward-compatible). Enable via config:
+
+```typescript
+const middleware = createPermissionsMiddleware({
+  backend,
+  denialEscalation: true,              // threshold: 3 (default)
+  // or:
+  denialEscalation: { threshold: 5 },  // custom threshold
+});
+```
+
+- Scope: per-tool, per-session (cleared on `onSessionEnd`)
+- Applies to both `wrapToolCall` (execution) and `wrapModelCall` (filtering)
+- Escalated denials are still recorded in the `DenialTracker` for observability
+- Escalated denials bypass the decision cache (no cache key computation needed)
+
+---
+
 ## Pluggable Backend
 
 The `PermissionBackend` is an L0 interface — swap implementations without changing middleware code:
@@ -431,6 +467,7 @@ Creates the middleware instance.
 | `config.clock` | `() => number` | `Date.now` | Inject clock for testing |
 | `config.auditSink` | `AuditSink` | — | Structured decision logging |
 | `config.circuitBreaker` | `CircuitBreakerConfig` | — | Resilience for remote backends |
+| `config.denialEscalation` | `boolean \| DenialEscalationConfig` | `false` | Auto-deny after repeated denials |
 | `config.description` | `string` | `"Permission checks enabled"` | Capability label |
 
 **Returns:** `KoiMiddleware`
@@ -499,6 +536,7 @@ Default decision cache settings: `{ maxEntries: 1024, allowTtlMs: 300_000, denyT
 | `DenialRecord` | `{ toolId, reason, timestamp, principal, turnIndex }` |
 | `DenialTracker` | `{ record, getAll, getByTool, count, clear }` |
 | `ApprovalCacheConfig` | `{ ttlMs?, maxEntries? }` |
+| `DenialEscalationConfig` | `{ threshold?, enabled? }` |
 | `PermissionBackend` | L0 interface: `check()` + optional `checkBatch()` + `dispose()` |
 | `PermissionDecision` | `{ effect: "allow" } \| { effect: "deny", reason } \| { effect: "ask", reason }` |
 | `PermissionQuery` | `{ principal, action, resource, context? }` |

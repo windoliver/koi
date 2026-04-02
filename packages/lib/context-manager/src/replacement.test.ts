@@ -10,6 +10,7 @@ import {
   createInMemoryReplacementStore,
   evaluateMessageResults,
   evaluateReplacement,
+  extractRefsFromTexts,
   generatePreview,
 } from "./replacement.js";
 
@@ -142,6 +143,27 @@ describe("evaluateReplacement", () => {
     const result = evaluateReplacement("tiny", store, { maxResultTokens: 1000 });
     expect(result).toEqual({ replaced: false });
   });
+
+  it("replaces content under 4-chars/token threshold when estimator is stricter", () => {
+    // 1-char-per-token estimator: 390 chars = 390 tokens > 100 threshold
+    // This is below the old fast-path cutoff of maxResultTokens * 4 = 400 chars,
+    // which would have wrongly short-circuited to replaced:false.
+    const charEstimator = {
+      estimateText: (text: string) => text.length,
+      estimateMessages: () => 0,
+    };
+    const content = "a".repeat(390);
+    const result = evaluateReplacement(content, store, {
+      maxResultTokens: 100,
+      tokenEstimator: charEstimator,
+    });
+    if (!("replaced" in result) || !result.replaced) {
+      expect.unreachable("expected replacement with strict estimator");
+      return;
+    }
+    expect(result.replaced).toBe(true);
+    expect(result.originalTokens).toBe(390);
+  });
 });
 
 describe("evaluateMessageResults", () => {
@@ -259,5 +281,57 @@ describe("collectRefsFromOutcomes", () => {
     const refs = collectRefsFromOutcomes(outcomes);
     expect(refs.size).toBe(1);
     expect(refs.has(customRef)).toBe(true);
+  });
+});
+
+describe("extractRefsFromTexts", () => {
+  it("extracts refs from preview text", () => {
+    const hash = "a".repeat(64);
+    const preview = `[Full content stored as ref:${hash}. Use retrieval tool to access.]`;
+    const refs = extractRefsFromTexts([preview]);
+    expect(refs.size).toBe(1);
+    expect(refs.has(replacementRef(hash))).toBe(true);
+  });
+
+  it("extracts multiple refs from multiple texts", () => {
+    const hash1 = "a".repeat(64);
+    const hash2 = "b".repeat(64);
+    const refs = extractRefsFromTexts([`ref:${hash1} some text`, `other text ref:${hash2}`]);
+    expect(refs.size).toBe(2);
+  });
+
+  it("deduplicates identical refs", () => {
+    const hash = "c".repeat(64);
+    const refs = extractRefsFromTexts([`ref:${hash}`, `ref:${hash}`]);
+    expect(refs.size).toBe(1);
+  });
+
+  it("returns empty set for text without refs", () => {
+    const refs = extractRefsFromTexts(["no refs here", "just plain text"]);
+    expect(refs.size).toBe(0);
+  });
+
+  it("ignores partial or malformed refs", () => {
+    const refs = extractRefsFromTexts([
+      "ref:tooshort",
+      `ref:${"g".repeat(64)}`, // 'g' is not hex
+    ]);
+    expect(refs.size).toBe(0);
+  });
+
+  it("round-trips with generatePreview", () => {
+    const store = createInMemoryReplacementStore();
+    const content = "x".repeat(60_000);
+    const result = evaluateReplacement(content, store);
+    if (!("replaced" in result) || !result.replaced) {
+      expect.unreachable("expected replacement");
+      return;
+    }
+    // Extract ref from the preview text
+    const extracted = extractRefsFromTexts([result.preview]);
+    expect(extracted.size).toBe(1);
+    expect(extracted.has(result.ref)).toBe(true);
+    // Verify content is still retrievable
+    expect(store.get(result.ref)).toBe(content);
   });
 });
