@@ -196,14 +196,23 @@ export function parseMemoryFrontmatter(
   const yamlBlock = rest.slice(0, closeMatch.index).trim();
   const content = rest.slice(closeMatch.index + closeMatch[0].length).replace(/^\n/, "");
 
+  // Parse fields with strict validation:
+  // - Only known keys (name, description, type) are accepted
+  // - Duplicate keys are rejected (fail closed)
+  // - Non-empty lines that aren't valid key: value pairs are rejected
   const fields = new Map<string, string>();
   for (const line of yamlBlock.split("\n")) {
-    const colonIndex = line.indexOf(":");
-    if (colonIndex === -1) continue;
-    const key = line.slice(0, colonIndex).trim();
-    // Only accept known keys to prevent injected fields from being consumed
-    if (key !== "name" && key !== "description" && key !== "type") continue;
-    const value = line.slice(colonIndex + 1).trim();
+    const trimmedLine = line.trim();
+    if (trimmedLine.length === 0) continue;
+
+    const colonIndex = trimmedLine.indexOf(":");
+    if (colonIndex === -1) return undefined; // Non-empty line without key: value → malformed
+
+    const key = trimmedLine.slice(0, colonIndex).trim();
+    if (key !== "name" && key !== "description" && key !== "type") return undefined; // Unknown key → malformed
+    if (fields.has(key)) return undefined; // Duplicate key → malformed
+
+    const value = trimmedLine.slice(colonIndex + 1).trim();
     fields.set(key, value);
   }
 
@@ -321,14 +330,25 @@ function unescapeTitle(value: string): string {
 }
 
 /**
+ * Normalizes a file path to POSIX format (forward slashes only).
+ *
+ * Memory file paths are always project-relative and stored in POSIX format.
+ * Backslashes from Windows-style paths are converted to forward slashes.
+ */
+function normalizeFilePath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+/**
  * Escapes a file path for safe use in Markdown link destinations.
  *
+ * Backslashes are normalized to forward slashes first (POSIX-only invariant).
  * Encoding is reversible: literal `%` is escaped to `%25` first,
  * then `(` and `)` are encoded to `%28` and `%29`. This ensures
  * paths already containing `%28` or `%29` roundtrip correctly.
  */
 function escapeFilePath(value: string): string {
-  return value.replace(/%/g, "%25").replace(/\(/g, "%28").replace(/\)/g, "%29");
+  return normalizeFilePath(value).replace(/%/g, "%25").replace(/\(/g, "%28").replace(/\)/g, "%29");
 }
 
 /**

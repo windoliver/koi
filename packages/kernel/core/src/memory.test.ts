@@ -549,4 +549,62 @@ describe("parseMemoryFrontmatter (adversarial delimiters)", () => {
     expect(result).toBeDefined();
     expect(result?.frontmatter.name).toBe("valid");
   });
+
+  test("rejects duplicate keys (type overwrite attack)", () => {
+    const raw = "---\nname: test\ndescription: desc\ntype: user\ntype: project\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects duplicate name key", () => {
+    const raw = "---\nname: first\nname: second\ndescription: desc\ntype: user\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects unknown keys in frontmatter block", () => {
+    const raw = "---\nname: test\ndescription: desc\ntype: user\nevil: injected\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects non-key-value lines in frontmatter block", () => {
+    const raw = "---\nname: test\nsome random text\ndescription: desc\ntype: user\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+
+  test("rejects frontmatter with body text before closing delimiter", () => {
+    // Simulates a partially written file where body leaks into frontmatter
+    const raw = "---\nname: test\ndescription: desc\ntype: user\nThis is body text\n---\ncontent";
+    expect(parseMemoryFrontmatter(raw)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: index path backslash handling
+// ---------------------------------------------------------------------------
+
+describe("formatMemoryIndexEntry / parseMemoryIndexEntry (backslash paths)", () => {
+  test("normalizes backslashes to forward slashes", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Test",
+      filePath: "a\\b\\c.md",
+      hook: "a hook",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toBeDefined();
+    // Backslashes normalized to forward slashes
+    expect(parsed?.filePath).toBe("a/b/c.md");
+  });
+
+  test("roundtrips Windows-style path after normalization", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Windows Memory",
+      filePath: "memories\\user_role.md",
+      hook: "user role info",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    expect(formatted).not.toContain("\\");
+    const parsed = parseMemoryIndexEntry(formatted);
+    expect(parsed).toBeDefined();
+    expect(parsed?.filePath).toBe("memories/user_role.md");
+  });
 });
