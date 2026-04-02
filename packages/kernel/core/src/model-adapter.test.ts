@@ -27,6 +27,8 @@ function stopReasonLabel(reason: ModelStopReason): string {
       return "tool_use";
     case "error":
       return "error";
+    case "hook_blocked":
+      return "hook_blocked";
     default: {
       const _exhaustive: never = reason;
       return String(_exhaustive);
@@ -49,6 +51,10 @@ describe("ModelStopReason exhaustiveness", () => {
 
   test("error", () => {
     expect(stopReasonLabel("error")).toBe("error");
+  });
+
+  test("hook_blocked", () => {
+    expect(stopReasonLabel("hook_blocked")).toBe("hook_blocked");
   });
 });
 

@@ -17,12 +17,13 @@ import type { ModelCapabilities } from "./model-provider.js";
 /**
  * Why the model stopped generating.
  *
- * - "stop"     — natural end of generation
- * - "length"   — hit max tokens
- * - "tool_use" — model wants to call a tool
- * - "error"    — provider-side error during generation
+ * - "stop"         — natural end of generation
+ * - "length"       — hit max tokens
+ * - "tool_use"     — model wants to call a tool
+ * - "error"        — provider-side error during generation
+ * - "hook_blocked" — pre-call hook denied the request
  */
-export type ModelStopReason = "stop" | "length" | "tool_use" | "error";
+export type ModelStopReason = "stop" | "length" | "tool_use" | "error" | "hook_blocked";
 
 // ---------------------------------------------------------------------------
 // Model content blocks (rich response content)
