@@ -153,15 +153,9 @@ export function evaluateReplacement(
   const previewChars = config?.previewChars ?? COMPACTION_DEFAULTS.replacement.previewChars;
   const estimator = config?.tokenEstimator ?? FALLBACK_ESTIMATOR;
 
-  // Fast-path short-circuit: 4 chars/token is the most generous ratio.
-  // If content is under the threshold at 4 chars/token, it will also be under
-  // with any real tokenizer (which produces more tokens per char, not fewer).
-  const maxResultChars = maxResultTokens * CHARS_PER_TOKEN_FAST_PATH;
-  if (content.length < maxResultChars) {
-    return { replaced: false };
-  }
-
-  // Use the configured estimator for the actual decision
+  // Always consult the configured estimator — a pre-estimator short-circuit
+  // is unsafe because pluggable estimators can count more tokens per char
+  // than the 4-chars/token heuristic (e.g. charEstimator: 1 char = 1 token).
   const estimateResult = estimator.estimateText(content);
 
   // Handle async estimator

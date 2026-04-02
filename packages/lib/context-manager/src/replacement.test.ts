@@ -142,6 +142,27 @@ describe("evaluateReplacement", () => {
     const result = evaluateReplacement("tiny", store, { maxResultTokens: 1000 });
     expect(result).toEqual({ replaced: false });
   });
+
+  it("replaces content under 4-chars/token threshold when estimator is stricter", () => {
+    // 1-char-per-token estimator: 390 chars = 390 tokens > 100 threshold
+    // This is below the old fast-path cutoff of maxResultTokens * 4 = 400 chars,
+    // which would have wrongly short-circuited to replaced:false.
+    const charEstimator = {
+      estimateText: (text: string) => text.length,
+      estimateMessages: () => 0,
+    };
+    const content = "a".repeat(390);
+    const result = evaluateReplacement(content, store, {
+      maxResultTokens: 100,
+      tokenEstimator: charEstimator,
+    });
+    if (!("replaced" in result) || !result.replaced) {
+      expect.unreachable("expected replacement with strict estimator");
+      return;
+    }
+    expect(result.replaced).toBe(true);
+    expect(result.originalTokens).toBe(390);
+  });
 });
 
 describe("evaluateMessageResults", () => {

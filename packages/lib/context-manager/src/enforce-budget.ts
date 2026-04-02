@@ -234,8 +234,9 @@ export async function enforceBudget(
 
   // Stage 4: Microcompact (operates on existing messages only —
   // new results haven't been ingested into the message array yet)
+  // Reserve space for the incoming tool result so post-compaction + result fits.
   if (decision === "micro") {
-    const targetTokens = Math.floor(contextWindowSize * microTarget);
+    const targetTokens = Math.floor(contextWindowSize * microTarget) - newResultTokens;
     const result = await microcompact(messages, targetTokens, preserveRecent, estimator);
 
     return {
@@ -249,11 +250,12 @@ export async function enforceBudget(
   }
 
   // Stage 5: Full compact — compute split, don't summarize
+  // Reserve space for the incoming tool result in the split budget.
   const validSplitPoints = findValidSplitPoints(messages, preserveRecent);
   const splitIdx = await findOptimalSplit(
     messages,
     validSplitPoints,
-    contextWindowSize,
+    contextWindowSize - newResultTokens,
     maxSummaryTokens,
     estimator,
   );

@@ -327,4 +327,64 @@ describe("enforceBudget", () => {
       expect(result.compaction).toBe("noop");
     });
   });
+
+  describe("new result reservation", () => {
+    it("micro compaction target reserves space for the new tool result", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, soft: 50 (0.5), microTarget: 0.35 (=35 tokens)
+      // Existing messages: 40 chars = 40 tokens (charEstimator: 1 char = 1 token)
+      // New tool result: 20 chars = 20 tokens
+      // Post-ingestion: 60 > 50 soft → micro
+      // Without reservation: target = 35, messages compact to 35, plus 20 result = 55
+      // With reservation: target = 35 - 20 = 15, messages compact to 15, plus 20 result = 35
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        preserveRecent: 0,
+        maxResultTokens: 1000, // high so no replacement kicks in
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20))];
+      const result = await enforceBudget(messages, store, config, "x".repeat(20));
+
+      expect(result.compaction).toBe("micro");
+      if (result.compaction === "micro") {
+        // Compacted tokens should account for the 20-token result reservation
+        expect(result.compactedTokens).toBeLessThanOrEqual(15);
+      }
+    });
+
+    it("full compaction split reserves space for the new tool result", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, hard: 75 (0.75)
+      // Existing messages: 80 chars = 80 tokens
+      // New tool result: 10 chars = 10 tokens
+      // Post-ingestion: 90 > 75 hard → full
+      // Split budget = (100 - 10) - maxSummaryTokens(10) = 80
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        maxSummaryTokens: 10,
+        preserveRecent: 0,
+        maxResultTokens: 1000,
+      });
+      // 4 messages of 20 chars each
+      const messages = [
+        textMsg("a".repeat(20)),
+        textMsg("b".repeat(20)),
+        textMsg("c".repeat(20)),
+        textMsg("d".repeat(20)),
+      ];
+      const result = await enforceBudget(messages, store, config, "x".repeat(10));
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        // Split index should be > 0 (some messages dropped to make room)
+        expect(result.splitIdx).toBeGreaterThan(0);
+      }
+    });
+  });
 });
