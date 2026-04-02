@@ -550,6 +550,21 @@ export {
   GOVERNANCE_ALLOW,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
+// hook — lifecycle hooks for agent manifests
+export type {
+  AgentHookConfig,
+  CommandHookConfig,
+  HookConfig,
+  HookEvent,
+  HookEventKind,
+  HookExecutor,
+  HookFilter,
+  HookType,
+  HookVerdict,
+  HttpHookConfig,
+  PromptHookConfig,
+} from "./hook.js";
+export { HOOK_EVENT_KINDS } from "./hook.js";
 // handoff — types
 export type {
   ArtifactRef,

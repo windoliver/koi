@@ -161,6 +161,16 @@
         "zod": "4.3.6",
       },
     },
+    "packages/exec/hook-prompt": {
+      "name": "@koi/hook-prompt",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/exec/temporal": {
       "name": "@koi/temporal",
       "version": "0.0.0",
@@ -3948,6 +3958,8 @@
     "@koi/harness-synth": ["@koi/harness-synth@workspace:packages/forge/harness-synth"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/hook-prompt": ["@koi/hook-prompt@workspace:packages/exec/hook-prompt"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc/ipc-local"],
 

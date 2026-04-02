@@ -1,0 +1,25 @@
+{
+  "name": "@koi/hook-prompt",
+  "description": "Prompt hook executor — single-shot LLM verification for agent hooks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

@@ -9,6 +9,7 @@ import type { DelegationConfig } from "./delegation.js";
 import type { DeliveryPolicy } from "./delivery.js";
 import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
+import type { HookConfig } from "./hook.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
 
 export interface ModelConfig {
@@ -154,6 +155,8 @@ export interface AgentManifest {
   readonly supervision?: SupervisionConfig;
   readonly skills?: readonly SkillConfig[];
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
+  /** Lifecycle hooks — command, http, prompt, or agent hooks triggered by engine events. */
+  readonly hooks?: readonly HookConfig[] | undefined;
   /**
    * Lifecycle behavior declaration — "copilot" survives parent death,
    * "worker" is cascade-terminated with parent.
