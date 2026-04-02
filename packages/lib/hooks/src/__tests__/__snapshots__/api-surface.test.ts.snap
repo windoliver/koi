@@ -358,6 +358,12 @@ interface CreateHookMiddlewareOptions {
      */
     readonly postToolHookDeadlineMs?: number | undefined;
 }
+/** Result of aggregating hook decisions — includes the winning hook's identity. */
+interface AggregatedDecision {
+    readonly decision: HookDecision;
+    /** Name of the hook that produced the winning decision (set for block). */
+    readonly hookName?: string;
+}
 /**
  * Aggregate **pre-call** hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
@@ -366,8 +372,10 @@ interface CreateHookMiddlewareOptions {
  * - Multiple \`modify\` patches are merged (later patches override earlier keys).
  * - \`transform\` decisions are ignored — they are post-call only.
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ *
+ * Returns the decision plus the winning hook's name (for block decisions).
  */
-declare function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision;
+declare function aggregateDecisions(results: readonly HookExecutionResult[]): AggregatedDecision;
 /**
  * Aggregate post-execution hook decisions.
  *
@@ -452,6 +460,6 @@ declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
 "
 `;

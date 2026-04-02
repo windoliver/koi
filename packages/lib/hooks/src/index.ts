@@ -23,7 +23,7 @@ export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
 export type { LoadHooksResult } from "./loader.js";
 export { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
-export type { CreateHookMiddlewareOptions } from "./middleware.js";
+export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middleware.js";
 export { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
 export type { CreateHookRegistryOptions, HookRegistry } from "./registry.js";
 export { createHookRegistry } from "./registry.js";

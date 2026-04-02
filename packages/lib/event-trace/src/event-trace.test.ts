@@ -181,6 +181,39 @@ describe("wrapModelCall", () => {
     const step = store.steps[0]?.[0];
     expect(step?.outcome).toBe("failure");
   });
+
+  test("records failure when model response has hook_blocked stopReason", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const blockedResponse: ModelResponse = {
+      content: "",
+      model: "test-model",
+      stopReason: "hook_blocked",
+      metadata: { blockedByHook: true, reason: "budget exceeded", hookName: "quota-guard" },
+    };
+
+    await middleware.wrapModelCall?.(
+      makeTurnCtx(0),
+      makeModelRequest(),
+      async () => blockedResponse,
+    );
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const step = store.steps[0]?.[0];
+    expect(step?.outcome).toBe("failure");
+    expect(step?.identifier).toBe("test-model");
+    expect((step?.metadata as Record<string, unknown>)?.modelStopReason).toBe("hook_blocked");
+  });
 });
 
 describe("wrapToolCall", () => {
@@ -209,6 +242,38 @@ describe("wrapToolCall", () => {
     expect(step?.kind).toBe("tool_call");
     expect(step?.identifier).toBe("web_search");
     expect(step?.response?.truncated).toBe(true);
+  });
+
+  test("records blocked tool call as failure with denial metadata", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const blockedToolResponse: ToolResponse = {
+      output: { error: "Hook blocked tool_call: not permitted" },
+      metadata: { blockedByHook: true, hookName: "tool-blocker" },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest(),
+      async () => blockedToolResponse,
+    );
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const step = store.steps[0]?.[0];
+    expect(step?.outcome).toBe("failure");
+    expect(step?.identifier).toBe("web_search");
+    expect((step?.metadata as Record<string, unknown>)?.blockedByHook).toBe(true);
+    expect((step?.metadata as Record<string, unknown>)?.hookName).toBe("tool-blocker");
   });
 
   test("passes through response from next handler", async () => {

@@ -2793,7 +2793,7 @@ exports[`@koi/core API surface ./hook has stable type surface 1`] = `
 /** Supported hook transport types. */
 type HookType = "command" | "http" | "agent";
 /** Canonical list of hook lifecycle events. Single source of truth. */
-declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "subagent.started", "subagent.stopped", "config.changed"];
+declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "compact.blocked", "subagent.started", "subagent.stopped", "config.changed"];
 /** Typed hook lifecycle event discriminator (known events). */
 type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
 /**

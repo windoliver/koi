@@ -4,11 +4,12 @@
  *
  * Run: OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts
  *
- * Golden queries (4 trajectories):
+ * Golden queries (5 trajectories + web-fetch):
  *   simple-text      — text response, no tools, permissions bypass
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
- *   permission-deny  — permissions default mode denies add_numbers, Glob allowed
+ *   permission-deny  — permissions default mode denies add_numbers
+ *   hook-blocked     — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -33,7 +34,7 @@ import type {
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
-import { loadHooks } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -164,10 +165,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     agentName: `golden-${name}`,
   });
 
-  // @koi/hooks
+  // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
   const hookResult = loadHooks([...config.hooks]);
+  const loadedHooks = hookResult.ok ? hookResult.value : [];
+  const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
+  // Runtime hook dispatch — tool hooks + trajectory recording
   const hookMw = createHookDispatchMiddleware({
-    hooks: hookResult.ok ? hookResult.value : [],
+    hooks: loadedHooks,
     store,
     docId,
   });
@@ -297,7 +301,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     },
   };
 
-  const tracedMiddleware = [eventTrace, hookMw, permMiddleware].map((mw) =>
+  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, permMiddleware].map((mw) =>
     wrapMiddlewareWithTrace(mw, { store, docId }),
   );
 
@@ -560,7 +564,26 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 5. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  {
+    name: "hook-blocked",
+    prompt: "What is 2+2?",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "budget-guard",
+        cmd: ["sh", "-c", 'echo \'{"decision":"block","reason":"budget exceeded"}\''],
+        filter: { events: ["compact.before"] },
+      },
+    ],
+    providers: [],
+    maxTurns: 0,
+  },
+
+  // 6. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
