@@ -3,35 +3,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { InboundMessage, TokenEstimator } from "@koi/core";
+import type { InboundMessage } from "@koi/core";
+import { charEstimator, textMsg as msg } from "./__tests__/test-helpers.js";
 import { findOptimalSplit } from "./find-split.js";
-
-/** Create a message with known text length. */
-function msg(text: string, sender = "user"): InboundMessage {
-  return {
-    content: [{ kind: "text", text }],
-    senderId: sender,
-    timestamp: Date.now(),
-  };
-}
-
-/** Simple estimator: 1 char = 1 token. */
-const charEstimator: TokenEstimator = {
-  estimateText(text: string): number {
-    return text.length;
-  },
-  estimateMessages(messages: readonly InboundMessage[]): number {
-    let total = 0; // let: accumulator
-    for (const m of messages) {
-      for (const b of m.content) {
-        if (b.kind === "text") {
-          total += b.text.length;
-        }
-      }
-    }
-    return total;
-  },
-};
 
 describe("findOptimalSplit", () => {
   it("returns -1 for empty messages", async () => {

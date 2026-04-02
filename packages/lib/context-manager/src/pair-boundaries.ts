@@ -25,13 +25,23 @@ function readCallId(msg: InboundMessage): string | undefined {
 }
 
 /**
- * Map each message index to its atomic group (set of indices that
- * must stay together). Messages not in any pair map to a singleton
- * group containing only themselves.
+ * A matched assistant+tool pair: the assistant index and its tool result index.
  */
-function buildAtomicGroups(
+export interface AssistantToolPair {
+  readonly assistantIdx: number;
+  readonly toolIdx: number;
+}
+
+/**
+ * Match each tool result to its nearest preceding unmatched assistant
+ * with the same callId. Returns matched pairs in tool-index order.
+ *
+ * This is the core matching algorithm shared by atomic group detection,
+ * pair partner mapping, and content replacement identification.
+ */
+export function matchAssistantToolPairs(
   messages: readonly InboundMessage[],
-): ReadonlyMap<number, ReadonlySet<number>> {
+): readonly AssistantToolPair[] {
   // Collect all assistant indices per callId, in order
   const assistantsByCallId = new Map<string, number[]>();
   for (let i = 0; i < messages.length; i++) {
@@ -47,9 +57,8 @@ function buildAtomicGroups(
     }
   }
 
-  // Track consumed assistants and build pair groups
   const consumed = new Set<number>();
-  const groups = new Map<number, Set<number>>();
+  const pairs: AssistantToolPair[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -71,13 +80,29 @@ function buildAtomicGroups(
 
     if (matchIdx === undefined) continue;
     consumed.add(matchIdx);
+    pairs.push({ assistantIdx: matchIdx, toolIdx: i });
+  }
 
+  return pairs;
+}
+
+/**
+ * Map each message index to its atomic group (set of indices that
+ * must stay together). Messages not in any pair map to a singleton
+ * group containing only themselves.
+ */
+function buildAtomicGroups(
+  messages: readonly InboundMessage[],
+): ReadonlyMap<number, ReadonlySet<number>> {
+  const pairs = matchAssistantToolPairs(messages);
+  const groups = new Map<number, Set<number>>();
+
+  for (const { assistantIdx, toolIdx } of pairs) {
     // Build the group: all indices from assistant through tool (inclusive)
     const group = new Set<number>();
-    for (let j = matchIdx; j <= i; j++) {
+    for (let j = assistantIdx; j <= toolIdx; j++) {
       group.add(j);
     }
-
     // Map every member to the same group
     for (const idx of group) {
       groups.set(idx, group);
@@ -151,45 +176,10 @@ export function findValidSplitPoints(
  */
 function buildPairPartners(messages: readonly InboundMessage[]): ReadonlyMap<number, number> {
   const partners = new Map<number, number>();
-  const assistantsByCallId = new Map<string, number[]>();
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg === undefined || msg.senderId !== "assistant") continue;
-    const callId = readCallId(msg);
-    if (callId === undefined) continue;
-    const existing = assistantsByCallId.get(callId);
-    if (existing !== undefined) {
-      existing.push(i);
-    } else {
-      assistantsByCallId.set(callId, [i]);
-    }
+  for (const { assistantIdx, toolIdx } of matchAssistantToolPairs(messages)) {
+    partners.set(assistantIdx, toolIdx);
+    partners.set(toolIdx, assistantIdx);
   }
-
-  const consumed = new Set<number>();
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg === undefined || msg.senderId !== "tool") continue;
-    const callId = readCallId(msg);
-    if (callId === undefined) continue;
-    const candidates = assistantsByCallId.get(callId);
-    if (candidates === undefined) continue;
-
-    let matchIdx: number | undefined;
-    for (let c = candidates.length - 1; c >= 0; c--) {
-      const candidateIdx = candidates[c];
-      if (candidateIdx !== undefined && candidateIdx < i && !consumed.has(candidateIdx)) {
-        matchIdx = candidateIdx;
-        break;
-      }
-    }
-
-    if (matchIdx === undefined) continue;
-    consumed.add(matchIdx);
-    partners.set(matchIdx, i);
-    partners.set(i, matchIdx);
-  }
-
   return partners;
 }
 

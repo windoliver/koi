@@ -21,6 +21,7 @@
 import type { TokenEstimator } from "@koi/core";
 import type { CompactionResult } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
+import { maybeAwait } from "./async-util.js";
 import { findValidSplitPoints, rescuePinnedGroups } from "./pair-boundaries.js";
 
 /**
@@ -73,7 +74,7 @@ export async function microcompact(
   estimator: TokenEstimator,
   model?: string,
 ): Promise<CompactionResult> {
-  const originalTokens = await estimator.estimateMessages(messages, model);
+  const originalTokens = await maybeAwait(estimator.estimateMessages(messages, model));
 
   // Already below target — no truncation needed
   if (originalTokens <= targetTokens) {
@@ -91,7 +92,7 @@ export async function microcompact(
   // Rescued pinned messages (and their pair partners) are included in the tail.
   for (const splitIdx of validSplitPoints) {
     const tail = buildTailWithRescued(messages, splitIdx);
-    const tailTokens = await estimator.estimateMessages(tail, model);
+    const tailTokens = await maybeAwait(estimator.estimateMessages(tail, model));
     if (tailTokens <= targetTokens) {
       return {
         messages: tail,
@@ -107,7 +108,7 @@ export async function microcompact(
   const lastSplit = validSplitPoints[validSplitPoints.length - 1];
   if (lastSplit !== undefined) {
     const tail = buildTailWithRescued(messages, lastSplit);
-    const tailTokens = await estimator.estimateMessages(tail, model);
+    const tailTokens = await maybeAwait(estimator.estimateMessages(tail, model));
     return {
       messages: tail,
       originalTokens,

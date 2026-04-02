@@ -12,6 +12,7 @@
 
 import type { TokenEstimator } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
+import { maybeAwait } from "./async-util.js";
 import { rescuePinnedGroups } from "./pair-boundaries.js";
 
 /**
@@ -52,7 +53,7 @@ export async function findOptimalSplit(
     const rescued = rescuePinnedGroups(messages, splitIdx);
     const rawTail = messages.slice(splitIdx);
     const fullTail = rescued.length > 0 ? [...rescued, ...rawTail] : rawTail;
-    const tailTokens = await estimator.estimateMessages(fullTail, model);
+    const tailTokens = await maybeAwait(estimator.estimateMessages(fullTail, model));
 
     if (tailTokens <= budget) {
       return splitIdx;

@@ -3,28 +3,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { InboundMessage } from "@koi/core";
+import { assistantWithToolUse, structMsg as msg } from "./__tests__/test-helpers.js";
 import { findValidSplitPoints, rescuePinnedGroups } from "./pair-boundaries.js";
-
-function msg(sender: string, callId?: string, pinned?: boolean): InboundMessage {
-  return {
-    content: [{ kind: "text", text: "content" }],
-    senderId: sender,
-    timestamp: Date.now(),
-    ...(callId !== undefined ? { metadata: { callId } } : {}),
-    ...(pinned !== undefined ? { pinned } : {}),
-  };
-}
-
-function assistantWithToolUse(callId: string, pinned?: boolean): InboundMessage {
-  return {
-    content: [{ kind: "custom", type: "tool_use", data: { id: callId, name: "test" } }],
-    senderId: "assistant",
-    timestamp: Date.now(),
-    metadata: { callId },
-    ...(pinned !== undefined ? { pinned } : {}),
-  };
-}
 
 describe("findValidSplitPoints", () => {
   it("returns empty for too few messages to split", () => {

@@ -6,7 +6,6 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { InboundMessage, TokenEstimator } from "@koi/core";
 import { createBackoffTracker } from "../backoff.js";
 import { findOptimalSplit } from "../find-split.js";
 import { microcompact } from "../micro-compact.js";
@@ -14,33 +13,7 @@ import { shouldCompact } from "../policy.js";
 import { createPressureTrendTracker } from "../pressure-trend.js";
 import type { CompactionState } from "../types.js";
 import { INITIAL_STATE } from "../types.js";
-
-/** Create a message with known text length. */
-function msg(text: string, sender = "user"): InboundMessage {
-  return {
-    content: [{ kind: "text", text }],
-    senderId: sender,
-    timestamp: Date.now(),
-  };
-}
-
-/** 1 char = 1 token estimator. */
-const charEstimator: TokenEstimator = {
-  estimateText(text: string): number {
-    return text.length;
-  },
-  estimateMessages(messages: readonly InboundMessage[]): number {
-    let total = 0; // let: accumulator
-    for (const m of messages) {
-      for (const b of m.content) {
-        if (b.kind === "text") {
-          total += b.text.length;
-        }
-      }
-    }
-    return total;
-  },
-};
+import { charEstimator, textMsg as msg, overheadEstimator } from "./test-helpers.js";
 
 describe("integration: policy → microcompact pipeline", () => {
   const WINDOW = 100;
@@ -130,28 +103,6 @@ describe("integration: policy → microcompact pipeline", () => {
 });
 
 describe("non-additive estimator support", () => {
-  /**
-   * Estimator with per-sequence overhead: adds 10 tokens once per
-   * estimateMessages() call. sum(est([m_i])) > est([m_1, ..., m_n]).
-   */
-  const overheadEstimator: TokenEstimator = {
-    estimateText(text: string): number {
-      return text.length;
-    },
-    estimateMessages(messages: readonly InboundMessage[]): number {
-      const SEQUENCE_OVERHEAD = 10;
-      let total = SEQUENCE_OVERHEAD; // let: accumulator
-      for (const m of messages) {
-        for (const b of m.content) {
-          if (b.kind === "text") {
-            total += b.text.length;
-          }
-        }
-      }
-      return total;
-    },
-  };
-
   it("findOptimalSplit uses real tail estimate, not prefix-sum subtraction", async () => {
     // 4 messages, 20 chars each
     // Singleton estimates: est([m]) = 20 + 10 = 30 each → sum = 120
