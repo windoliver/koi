@@ -306,6 +306,27 @@ describe("consumeModelStream", () => {
     expect(meta.error).toBe("provider timeout");
     expect(meta.errorCode).toBeUndefined();
     expect(meta.retryable).toBeUndefined();
+    expect(meta.retryAfterMs).toBeUndefined();
+  });
+
+  test("error chunk preserves retryAfterMs in metadata for backoff hints", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "error",
+        message: "rate limited",
+        code: "RATE_LIMIT",
+        retryable: true,
+        retryAfterMs: 30_000,
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.error).toBe("rate limited");
+    expect(meta.errorCode).toBe("RATE_LIMIT");
+    expect(meta.retryable).toBe(true);
+    expect(meta.retryAfterMs).toBe(30_000);
   });
 
   test("done with in-flight tool calls downgrades to error and surfaces dangling calls", async () => {

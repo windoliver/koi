@@ -152,6 +152,7 @@ export async function* consumeModelStream(
               // hook blocks (code: "PERMISSION") from provider errors.
               ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
               ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+              ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
               ...(danglingOnError.length > 0 ? { danglingToolCalls: danglingOnError } : {}),
             },
           },
