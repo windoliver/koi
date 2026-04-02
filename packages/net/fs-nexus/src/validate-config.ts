@@ -34,10 +34,25 @@ export function validateNexusFileSystemConfig(
   }
 
   if (config.basePath !== undefined) {
-    // Normalize before validation: strip leading slashes the same way the
-    // factory does, so we catch paths like "/" that collapse to empty.
-    const normalized = config.basePath.replace(/^\/+/, "");
-    if (normalized === "" || config.basePath === "") {
+    // Normalize basePath with the same rules as user paths before validation:
+    // decode percent-encoding, normalize backslashes to forward slashes,
+    // strip leading slashes. This ensures encoded traversal forms like
+    // "safe%2F..%2Fother" or "safe\\..\\other" are caught.
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(config.basePath.replace(/\\/g, "/"));
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "NexusFileSystemConfig.basePath contains malformed percent-encoding",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
+    const normalized = decoded.replace(/^\/+/, "");
+    if (normalized === "") {
       return {
         ok: false,
         error: {
@@ -48,12 +63,12 @@ export function validateNexusFileSystemConfig(
         },
       };
     }
-    if (config.basePath.includes("..")) {
+    if (normalized.includes("..")) {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: "NexusFileSystemConfig.basePath must not contain '..'",
+          message: "NexusFileSystemConfig.basePath must not contain '..' (after normalization)",
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         },
       };

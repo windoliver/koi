@@ -111,10 +111,8 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const result = await rpcMutate<null>(transport, "write", {
       path: fullPathResult.value,
       content,
-      ...(options?.createDirectories !== undefined
-        ? { createDirectories: options.createDirectories }
-        : {}),
-      ...(options?.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
+      createDirectories: options?.createDirectories ?? false,
+      overwrite: options?.overwrite ?? false,
     });
 
     if (!result.ok) return result;
@@ -227,7 +225,10 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         };
       }
 
-      // Server confirmed CAS support — perform the actual conditional write.
+      // Server confirmed CAS support on probe — perform the actual write and
+      // verify CAS enforcement on the real response too. This guards against
+      // server version skew where the probe path supports CAS but the actual
+      // write path does not.
       const writeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
         transport,
         "write",
@@ -238,6 +239,22 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         },
       );
       if (!writeResult.ok) return writeResult;
+
+      const writeCasConfirmed =
+        writeResult.value !== null &&
+        typeof writeResult.value === "object" &&
+        writeResult.value.casEnforced === true;
+      if (!writeCasConfirmed) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Nexus server did not confirm CAS on the actual write for '${path}' — file may have been modified without conflict protection`,
+            retryable: false,
+            context: { path, expectedContentHash },
+          },
+        };
+      }
     }
 
     return { ok: true, value: { path, hunksApplied } };

@@ -203,6 +203,29 @@ describe("write", () => {
       expect(result.value.content).toBe("roundtrip");
     }
   });
+
+  test("write without options sends overwrite: false", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const transport = createMockTransport();
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "write") {
+        capturedParams = params;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const backend = createNexusFileSystem({ transport });
+    await backend.write("/defaults.txt", "data");
+
+    expect(capturedParams).toBeDefined();
+    expect(capturedParams?.overwrite).toBe(false);
+    expect(capturedParams?.createDirectories).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -586,6 +609,33 @@ describe("validateNexusFileSystemConfig", () => {
   test("basePath '///' (all slashes) fails validation", () => {
     const transport = createMockTransport();
     const result = validateNexusFileSystemConfig({ transport, basePath: "///" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("basePath with backslash traversal fails validation", () => {
+    const transport = createMockTransport();
+    const result = validateNexusFileSystemConfig({ transport, basePath: "safe\\..\\other" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("basePath with percent-encoded traversal fails validation", () => {
+    const transport = createMockTransport();
+    const result = validateNexusFileSystemConfig({ transport, basePath: "safe%2F..%2Fother" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("basePath with malformed percent-encoding fails validation", () => {
+    const transport = createMockTransport();
+    const result = validateNexusFileSystemConfig({ transport, basePath: "bad%ZZpath" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
