@@ -36,6 +36,7 @@ export const HOOK_EVENT_KINDS = [
   "permission.denied",
   "compact.before",
   "compact.after",
+  "compact.blocked",
   "subagent.started",
   "subagent.stopped",
   "config.changed",

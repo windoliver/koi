@@ -319,3 +319,58 @@ describe("E2E: session blocked by hook", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// E2E: compact.blocked event is filterable by hook configs
+// ---------------------------------------------------------------------------
+
+describe("E2E: compact.blocked event filtering", () => {
+  it("hook subscribed to compact.blocked receives the block audit event", async () => {
+    // A blocking hook that triggers the block
+    const blocker: HookConfig = {
+      kind: "command",
+      name: "blocker",
+      cmd: ["sh", "-c", 'echo \'{"decision":"block","reason":"denied"}\''],
+      filter: { events: ["compact.before"] },
+      timeoutMs: 5000,
+    };
+
+    // An audit hook that only subscribes to compact.blocked
+    // It writes a marker file so we can verify it fired
+    const markerPath = `/tmp/koi-e2e-blocked-${Date.now()}.marker`;
+    const auditor: HookConfig = {
+      kind: "command",
+      name: "block-auditor",
+      cmd: ["sh", "-c", `touch ${markerPath}`],
+      filter: { events: ["compact.blocked"] },
+      timeoutMs: 5000,
+    };
+
+    const mw = createHookMiddleware({ hooks: [blocker, auditor] });
+    const sessionCtx = makeSessionCtx();
+    const turnCtx = makeTurnCtx({ session: sessionCtx });
+
+    await mw.onSessionStart?.(sessionCtx);
+
+    const nextFn = mock<ModelHandler>().mockResolvedValue({
+      content: "nope",
+      model: "test",
+    });
+
+    await mw.wrapModelCall?.(turnCtx, { messages: [] }, nextFn);
+
+    // Wait for fire-and-forget audit hook to complete
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // The audit hook should have fired and created the marker file
+    const markerExists = await Bun.file(markerPath).exists();
+    expect(markerExists).toBe(true);
+
+    // Cleanup
+    await Bun.write(markerPath, ""); // truncate
+    const { unlinkSync } = await import("node:fs");
+    unlinkSync(markerPath);
+
+    await mw.onSessionEnd?.(sessionCtx);
+  });
+});
