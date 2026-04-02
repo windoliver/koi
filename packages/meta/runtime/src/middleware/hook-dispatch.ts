@@ -83,12 +83,24 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * Aggregate hook decisions. First block wins, modify patches are merged
    * in order (last writer wins per key).
    */
-  function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision {
+  /**
+   * Aggregate pre-execution hook decisions. Used for tool.before.
+   * - Failed hooks with failClosed !== false → block (deny on failure)
+   * - Failed hooks with failClosed: false → skip (fail-open)
+   * - Successful block → block
+   * - Successful modify → merge patches
+   */
+  function aggregatePreDecisions(results: readonly HookExecutionResult[]): HookDecision {
     // let: mutable — accumulates modify patches
     let mergedPatch: Record<string, unknown> | undefined;
 
     for (const result of results) {
-      if (!result.ok) continue;
+      if (!result.ok) {
+        if (result.failClosed !== false) {
+          return { kind: "block", reason: `Hook ${result.hookName} failed: ${result.error}` };
+        }
+        continue;
+      }
       const { decision } = result;
       if (decision.kind === "block") return decision;
       if (decision.kind === "modify") {
@@ -104,6 +116,17 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       return { kind: "modify", patch: mergedPatch as JsonObject };
     }
     return { kind: "continue" };
+  }
+
+  /**
+   * Check if any post-execution hooks failed. Used for tool.succeeded/tool.failed.
+   * Post-hook failures always redact output (security: partial redaction is worse
+   * than no redaction). Returns the failure reason or undefined if all passed.
+   */
+  function checkPostHookFailures(results: readonly HookExecutionResult[]): string | undefined {
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length === 0) return undefined;
+    return `Post-hook(s) failed: ${failed.map((r) => r.hookName).join(", ")}`;
   }
 
   return {
@@ -145,7 +168,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       await recordHookResults(preResults, `tool.before:${request.toolId}`);
 
       // Enforce pre-execution decisions
-      const decision = aggregateDecisions(preResults);
+      const decision = aggregatePreDecisions(preResults);
       if (decision.kind === "block") {
         throw new Error(`Hook blocked tool ${request.toolId}: ${decision.reason}`);
       }
@@ -156,34 +179,53 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           ? { ...request, input: { ...request.input, ...decision.patch } }
           : request;
 
+      // Execute the tool
       // let: mutable — tracks whether tool succeeded
       let response: ToolResponse | undefined;
       let toolError: unknown;
       try {
         response = await next(effectiveRequest);
-        return response;
       } catch (e: unknown) {
         toolError = e;
-        throw e;
-      } finally {
-        // Post-execution: tool.succeeded or tool.failed (observe only).
-        // Wrapped in try/catch — observer failures must never override the
-        // tool's actual result. The action already happened; masking a
-        // successful response as failure invites duplicate retries.
-        try {
-          const postEventName = toolError === undefined ? "tool.succeeded" : "tool.failed";
-          const postEvent: HookEvent = {
-            event: postEventName,
-            agentId: ctx.session.agentId,
-            sessionId: ctx.session.sessionId as string,
-            toolName: request.toolId,
+      }
+
+      // Post-execution hooks: tool.succeeded or tool.failed
+      try {
+        const postEventName = toolError === undefined ? "tool.succeeded" : "tool.failed";
+        const postEvent: HookEvent = {
+          event: postEventName,
+          agentId: ctx.session.agentId,
+          sessionId: ctx.session.sessionId as string,
+          toolName: request.toolId,
+        };
+        const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
+        await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
+
+        // Post-hook failures redact output (security: partial redaction is
+        // worse than no redaction). The tool already ran and side effects
+        // are committed, but raw output is suppressed.
+        const postFailure = checkPostHookFailures(postResults);
+        if (postFailure !== undefined && response !== undefined) {
+          return {
+            output: `[output redacted: ${postFailure}]`,
+            ...(response.metadata !== undefined
+              ? { metadata: { ...response.metadata, committedButRedacted: true } }
+              : { metadata: { committedButRedacted: true } }),
           };
-          const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
-          await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
-        } catch {
-          // Observer hook failure — swallow to preserve the original tool outcome
+        }
+      } catch {
+        // Hook dispatch itself failed — redact to be safe
+        if (response !== undefined) {
+          return {
+            output: "[output redacted: post-hook dispatch error]",
+            metadata: { committedButRedacted: true },
+          };
         }
       }
+
+      // Return original result or re-throw original error
+      if (toolError !== undefined) throw toolError;
+      return response as ToolResponse;
     },
 
     describeCapabilities: () => ({
