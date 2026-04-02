@@ -2858,6 +2858,21 @@ interface CommandHookConfig {
     readonly timeoutMs?: number | undefined;
     /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
     readonly serial?: boolean | undefined;
+    /**
+     * Post-execution failure behavior. Default: true (fail-closed).
+     *
+     * This flag only affects post-tool hook failures. Pre-hook failures are
+     * always fail-open (treated as "no opinion") to avoid availability risk.
+     *
+     * When true: if this hook fails during post-tool execution, the tool's
+     * raw output is suppressed (replaced with a redaction notice). Use for
+     * security-critical hooks like output redaction/scrubbing.
+     *
+     * When false: if this hook fails post-execution, the tool's output is
+     * preserved with taint metadata. Use for observational/telemetry hooks
+     * where suppressing committed output would cause retry risk.
+     */
+    readonly failClosed?: boolean | undefined;
 }
 /**
  * A hook that sends an HTTP request to a URL.
@@ -2877,6 +2892,8 @@ interface HttpHookConfig {
     readonly headers?: Readonly<Record<string, string>> | undefined;
     /** HMAC-SHA256 signing secret. Supports env-var substitution. */
     readonly secret?: string | undefined;
+    /** Env vars this hook is allowed to reference via \${VAR} expansion. */
+    readonly allowedEnvVars?: readonly string[] | undefined;
     /** Filter conditions — when absent, fires on all events. */
     readonly filter?: HookFilter | undefined;
     /** Whether this hook is active. Default: true. */
@@ -2885,9 +2902,35 @@ interface HttpHookConfig {
     readonly timeoutMs?: number | undefined;
     /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
     readonly serial?: boolean | undefined;
+    /**
+     * Post-execution failure behavior. Default: true (fail-closed).
+     *
+     * This flag only affects post-tool hook failures. Pre-hook failures are
+     * always fail-open (treated as "no opinion") to avoid availability risk.
+     *
+     * When true: if this hook fails during post-tool execution, the tool's
+     * raw output is suppressed (replaced with a redaction notice). Use for
+     * security-critical hooks like output redaction/scrubbing.
+     *
+     * When false: if this hook fails post-execution, the tool's output is
+     * preserved with taint metadata. Use for observational/telemetry hooks
+     * where suppressing committed output would cause retry risk.
+     */
+    readonly failClosed?: boolean | undefined;
 }
 /** Discriminated union of all hook config types. */
 type HookConfig = CommandHookConfig | HttpHookConfig;
+/**
+ * System-wide policy controlling which env vars hooks may access
+ * via \`\${VAR}\` expansion in headers and secrets.
+ *
+ * Patterns support simple glob wildcards (\`*\` and \`?\`).
+ * A var must match at least one pattern to be expandable.
+ * When combined with per-hook \`allowedEnvVars\`, a var must pass both.
+ */
+interface HookEnvPolicy {
+    readonly allowedPatterns: readonly string[];
+}
 /**
  * Decision returned by a hook execution, expressing the hook's intent.
  *
@@ -2924,11 +2967,13 @@ type HookExecutionResult = {
     readonly hookName: string;
     readonly error: string;
     readonly durationMs: number;
+    /** Whether this hook's failure should suppress output. Default: true. */
+    readonly failClosed?: boolean | undefined;
 };
 /** Default hook timeout in milliseconds. */
 declare const DEFAULT_HOOK_TIMEOUT_MS: 30000;
 
-export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
+export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
 "
 `;
 
