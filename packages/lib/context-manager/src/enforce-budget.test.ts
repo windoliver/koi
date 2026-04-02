@@ -386,5 +386,54 @@ describe("enforceBudget", () => {
         expect(result.splitIdx).toBeGreaterThan(0);
       }
     });
+
+    it("accounts for new tool result tokens even without a replacement store", async () => {
+      // Window: 100, soft: 50
+      // Existing messages: 30 chars = 30 tokens
+      // New tool result: 25 chars = 25 tokens
+      // Post-ingestion: 55 > 50 soft → should trigger micro, not noop
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        preserveRecent: 0,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(30))];
+      // Pass undefined store — replacement disabled, but tokens must still be counted
+      const result = await enforceBudget(messages, undefined, config, "x".repeat(25));
+
+      // Without the fix this would be "noop" because newResultTokens would be 0
+      expect(result.compaction).toBe("micro");
+    });
+  });
+
+  describe("full compaction split failure", () => {
+    it("returns splitIdx -1 when no valid split fits the budget", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 50, hard: 25 (0.5)
+      // 3 messages of 20 chars each = 60 tokens total
+      // New result: 20 chars = 20 tokens
+      // Post-ingestion: 80 > 25 hard → full
+      // Budget for split: (50 - 20) - maxSummary(10) = 20
+      // preserveRecent: 2 means we must keep last 2 messages (40 tokens)
+      // Even the most aggressive valid split can't fit 40 tokens into budget of 20
+      const config = testConfig({
+        contextWindowSize: 50,
+        softTriggerFraction: 0.3,
+        hardTriggerFraction: 0.5,
+        maxSummaryTokens: 10,
+        preserveRecent: 2,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20)), textMsg("c".repeat(20))];
+      const result = await enforceBudget(messages, store, config, "x".repeat(20));
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        // No valid split exists — must surface -1, not fabricate 1
+        expect(result.splitIdx).toBe(-1);
+      }
+    });
   });
 });
