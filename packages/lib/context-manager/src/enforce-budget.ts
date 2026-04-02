@@ -244,14 +244,19 @@ export async function enforceBudget(
     const targetTokens = Math.floor(contextWindowSize * microTarget) - newResultTokens;
     const result = await microcompact(messages, targetTokens, preserveRecent, estimator);
 
-    return {
-      compaction: "micro",
-      messages: result.messages,
-      originalTokens: result.originalTokens,
-      compactedTokens: result.compactedTokens,
-      strategy: result.strategy,
-      ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
-    };
+    // If micro-compaction met the target (post-compaction + result fits), return it.
+    // Otherwise promote to full compaction.
+    if (result.compactedTokens + newResultTokens <= Math.floor(contextWindowSize * microTarget)) {
+      return {
+        compaction: "micro",
+        messages: result.messages,
+        originalTokens: result.originalTokens,
+        compactedTokens: result.compactedTokens,
+        strategy: result.strategy,
+        ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+      };
+    }
+    // Fall through to full compaction
   }
 
   // Stage 5: Full compact — compute split, don't summarize

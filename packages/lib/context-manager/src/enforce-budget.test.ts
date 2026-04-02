@@ -87,7 +87,9 @@ describe("enforceBudget", () => {
       const store = createInMemoryReplacementStore();
       // Window: 200, soft: 100, hard: 150. Messages: 60 tokens (under soft).
       // New result: small (not replaced), 50 chars = 50 tokens with charEstimator.
-      // Post-ingestion: 60 + 50 = 110. 100 < 110 < 150 → micro.
+      // Post-ingestion: 60 + 50 = 110. 100 < 110 < 150 → micro attempted.
+      // microTarget = 0.35 * 200 = 70. With preserveRecent: 2 and 2 messages,
+      // micro can't compact → promoted to full.
       const config = testConfig({
         contextWindowSize: 200,
         maxResultTokens: 1000, // high threshold, no replacement
@@ -97,8 +99,8 @@ describe("enforceBudget", () => {
       // 50-char result = 50 tokens. Post-ingestion: 60 + 50 = 110 > soft (100)
       const result = await enforceBudget(messages, store, config, "x".repeat(50));
 
-      // Budget check should see post-ingestion total and trigger micro
-      expect(result.compaction).toBe("micro");
+      // Micro can't meet target with preserveRecent → promoted to full
+      expect(result.compaction).toBe("full");
       // No replacement occurred (result too small)
       expect(result.replacement).toBeUndefined();
     });
@@ -434,6 +436,31 @@ describe("enforceBudget", () => {
         // No valid split exists — must surface -1, not fabricate 1
         expect(result.splitIdx).toBe(-1);
       }
+    });
+  });
+
+  describe("micro-to-full promotion", () => {
+    it("promotes to full when micro-compaction cannot meet target", async () => {
+      const store = createInMemoryReplacementStore();
+      // Window: 100, soft: 50 (0.5), microTarget: 0.1 (=10 tokens)
+      // Existing: 2 messages of 30 chars each = 60 tokens
+      // Post-ingestion: 60 > 50 soft → micro
+      // microTarget: 10 tokens — but preserveRecent: 2 forces keeping both messages (60 tokens)
+      // microcompact can't reach 10 → returns micro-truncate-partial → promote to full
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.1,
+        preserveRecent: 2,
+        maxSummaryTokens: 10,
+        maxResultTokens: 1000,
+      });
+      const messages = [textMsg("a".repeat(30)), textMsg("b".repeat(30))];
+      const result = await enforceBudget(messages, store, config);
+
+      // Should be promoted to full, not returned as micro
+      expect(result.compaction).toBe("full");
     });
   });
 });

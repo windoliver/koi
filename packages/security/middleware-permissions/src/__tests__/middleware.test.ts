@@ -1072,6 +1072,51 @@ describe("createPermissionsMiddleware", () => {
       expect(callCount).toBe(4);
     });
 
+    test("cached deny replays do not count toward escalation threshold", async () => {
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        cache: { maxEntries: 100, allowTtlMs: 30_000, denyTtlMs: 30_000 },
+        denialEscalation: { threshold: 3 },
+      });
+      const ctx = makeTurnContext();
+
+      // 1 backend deny → cached
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(1);
+
+      // 4 more calls — all cache hits (denyTtl: 30s)
+      for (let i = 0; i < 4; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+
+      // Only 1 backend call — rest were cache hits
+      expect(checkFn).toHaveBeenCalledTimes(1);
+
+      // 6th call should NOT be escalated (only 1 policy denial, 4 cached replays)
+      // If cached replays counted, we'd have 5 "policy" denials → escalation at 3
+      // Instead, backend should be called again (cache hit, not escalated)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      // Still 1 — all served from cache, not escalated
+      expect(checkFn).toHaveBeenCalledTimes(1);
+    });
+
     test("approval rejections do not count toward escalation threshold", async () => {
       let backendCalls = 0;
       const backend: PermissionBackend = {

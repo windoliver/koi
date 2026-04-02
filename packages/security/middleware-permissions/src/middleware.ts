@@ -194,6 +194,28 @@ function isEscalated(decision: PermissionDecision): boolean {
   return (decision as Record<symbol, unknown>)[IS_ESCALATED] === true;
 }
 
+/** Symbol to tag cached deny replays so they don't inflate escalation counts. */
+const IS_CACHED: unique symbol = Symbol.for("@koi/middleware-permissions/cached");
+
+function isCached(decision: PermissionDecision): boolean {
+  return (decision as Record<symbol, unknown>)[IS_CACHED] === true;
+}
+
+function tagCached(decision: PermissionDecision): PermissionDecision {
+  if (decision.effect !== "deny") return decision;
+  return { ...decision, [IS_CACHED]: true } as PermissionDecision;
+}
+
+/** Determine denial source for tracker recording. Only "policy" counts toward escalation. */
+function denialSource(
+  decision: PermissionDecision,
+): "policy" | "backend-error" | "escalation" | "approval" {
+  if (isFailClosed(decision)) return "backend-error";
+  if (isEscalated(decision)) return "escalation";
+  if (isCached(decision)) return "escalation"; // cached replays must not inflate escalation
+  return "policy";
+}
+
 /**
  * Validate a backend decision at the trust boundary. Malformed or
  * unexpected shapes are converted to deny (fail-closed) rather than
@@ -541,7 +563,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const cacheKey = decisionCacheKey(query);
     if (decisionCache !== undefined && cacheKey !== undefined) {
       const cached = decisionCache.get(cacheKey);
-      if (cached !== undefined) return cached;
+      if (cached !== undefined) return tagCached(cached);
     }
 
     try {
@@ -613,7 +635,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         const key = decisionCacheKey(query);
         const cached = key !== undefined ? decisionCache.get(key) : undefined;
         if (cached !== undefined) {
-          results[i] = cached;
+          results[i] = tagCached(cached);
         } else {
           uncachedIndices.push(i);
         }
@@ -724,11 +746,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: isFailClosed(decision)
-            ? "backend-error"
-            : isEscalated(decision)
-              ? "escalation"
-              : "policy",
+          source: denialSource(decision),
           queryKey: decisionCacheKey(queries[i]!),
         });
         return false;
@@ -808,11 +826,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: isFailClosed(decision)
-            ? "backend-error"
-            : isEscalated(decision)
-              ? "escalation"
-              : "policy",
+          source: denialSource(decision),
           queryKey: decisionCacheKey(query),
         });
 
