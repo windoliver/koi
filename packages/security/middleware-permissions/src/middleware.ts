@@ -45,6 +45,7 @@ import {
   DEFAULT_APPROVAL_TIMEOUT_MS,
   DEFAULT_CACHE_CONFIG,
   DEFAULT_DENIAL_ESCALATION_THRESHOLD,
+  DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
 } from "./config.js";
 import { createDenialTracker, type DenialTracker } from "./denial-tracker.js";
 
@@ -398,6 +399,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       ? (config.denialEscalation.threshold ?? DEFAULT_DENIAL_ESCALATION_THRESHOLD)
       : DEFAULT_DENIAL_ESCALATION_THRESHOLD
     : Infinity;
+  const escalationWindowMs = escalationEnabled
+    ? typeof config.denialEscalation === "object"
+      ? (config.denialEscalation.windowMs ?? DEFAULT_DENIAL_ESCALATION_WINDOW_MS)
+      : DEFAULT_DENIAL_ESCALATION_WINDOW_MS
+    : 0;
 
   // Forged-tool default-deny bypass removed (v2): forged tools must be
   // explicitly allowed via backend rules. Name-based bypasses are unsafe
@@ -495,11 +501,21 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     query: PermissionQuery,
     sessionId: string,
   ): Promise<PermissionDecision> {
-    // Denial escalation: skip backend if this tool has enough policy denials
+    // Denial escalation: skip backend if this tool+context has enough recent policy denials
     if (escalationEnabled) {
       const tracker = getTracker(sessionId);
-      const policyDenials = tracker.getByTool(query.resource).filter((r) => r.source === "policy");
-      if (policyDenials.length >= escalationThreshold) {
+      const cacheKey = decisionCacheKey(query);
+      const now = clock();
+      const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
+      const recentPolicyDenials = tracker
+        .getByTool(query.resource)
+        .filter(
+          (r) =>
+            r.source === "policy" &&
+            r.timestamp >= cutoff &&
+            (cacheKey === undefined || r.queryKey === undefined || r.queryKey === cacheKey),
+        );
+      if (recentPolicyDenials.length >= escalationThreshold) {
         return {
           effect: "deny",
           reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
@@ -559,12 +575,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     // Denial escalation: resolve escalated tools before cache/backend
     if (escalationEnabled) {
       const tracker = getTracker(sessionId);
+      const now = clock();
+      const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
       for (let i = 0; i < queries.length; i++) {
         const query = queries[i]!;
-        const policyDenials = tracker
+        const cacheKey = decisionCacheKey(query);
+        const recentPolicyDenials = tracker
           .getByTool(query.resource)
-          .filter((r) => r.source === "policy");
-        if (policyDenials.length >= escalationThreshold) {
+          .filter(
+            (r) =>
+              r.source === "policy" &&
+              r.timestamp >= cutoff &&
+              (cacheKey === undefined || r.queryKey === undefined || r.queryKey === cacheKey),
+          );
+        if (recentPolicyDenials.length >= escalationThreshold) {
           results[i] = {
             effect: "deny",
             reason: `Auto-denied: ${escalationThreshold}+ prior denials this session`,
@@ -692,6 +716,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           source: isFailClosed(decision) ? "backend-error" : "policy",
+          queryKey: decisionCacheKey(queries[i]!),
         });
         return false;
       }
@@ -771,6 +796,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           source: isFailClosed(decision) ? "backend-error" : "policy",
+          queryKey: decisionCacheKey(query),
         });
 
         throw new KoiRuntimeError({

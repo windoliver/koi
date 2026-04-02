@@ -20,6 +20,8 @@ export interface DenialRecord {
   readonly turnIndex: number;
   /** Origin of the denial. Only "policy" denials trigger escalation. */
   readonly source: DenialSource;
+  /** Cache key scoping the query context. Used to scope escalation per-context. */
+  readonly queryKey?: string | undefined;
 }
 
 export interface DenialTracker {

@@ -1121,6 +1121,87 @@ describe("createPermissionsMiddleware", () => {
       expect(backendCalls).toBe(4);
       expect(approveFn).toHaveBeenCalledTimes(1);
     });
+
+    test("escalation expires after windowMs", async () => {
+      let now = 1000;
+      const checkFn = mock((_q: PermissionQuery) => ({
+        effect: "deny" as const,
+        reason: "denied",
+      }));
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2, windowMs: 5000 },
+        clock: () => now,
+      });
+      const ctx = makeTurnContext();
+
+      // 2 denials at t=1000 → escalated
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+        } catch {
+          /* expected */
+        }
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2);
+
+      // 3rd call at t=1000 → auto-denied (escalated)
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(2); // still 2
+
+      // Advance clock past window (t=7000, window=5000, cutoff=2000 > 1000)
+      now = 7000;
+
+      // 4th call — denials have aged out, backend queried again
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+      } catch {
+        /* expected */
+      }
+      expect(checkFn).toHaveBeenCalledTimes(3); // backend called again
+    });
+
+    test("different contexts escalate independently", async () => {
+      const checkFn = mock((q: PermissionQuery) => {
+        // Deny bash in context A, allow in context B
+        const ctx = q.context as Record<string, unknown> | undefined;
+        if (ctx?.zone === "restricted") {
+          return { effect: "deny" as const, reason: "restricted zone" };
+        }
+        return { effect: "allow" as const };
+      });
+      const backend: PermissionBackend = { check: checkFn };
+      const mw = createPermissionsMiddleware({
+        backend,
+        denialEscalation: { threshold: 2 },
+      });
+
+      // 2 denials in restricted zone
+      for (let i = 0; i < 2; i++) {
+        try {
+          await mw.wrapToolCall?.(
+            makeTurnContext({ metadata: { zone: "restricted" } }),
+            makeToolRequest("bash"),
+            noopToolHandler,
+          );
+        } catch {
+          /* expected */
+        }
+      }
+
+      // Same tool in unrestricted zone — should still query backend and be allowed
+      const result = await mw.wrapToolCall?.(
+        makeTurnContext({ metadata: { zone: "open" } }),
+        makeToolRequest("bash"),
+        noopToolHandler,
+      );
+      expect(result?.output).toBe("done");
+    });
   });
 
   describe("cross-session isolation", () => {
