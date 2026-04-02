@@ -73,6 +73,13 @@ export function validateNexusFileSystemConfig(
         },
       };
     }
+
+    // Return config with canonicalized basePath so the factory uses the
+    // same normalized form for RPC routing, scope checks, and response stripping.
+    return {
+      ok: true,
+      value: { ...config, basePath: normalized },
+    };
   }
 
   return { ok: true, value: config };

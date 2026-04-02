@@ -47,9 +47,36 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     throw new Error(validated.error.message, { cause: validated.error });
   }
 
-  const rawBase = config.basePath ?? DEFAULT_BASE_PATH;
-  const basePath = rawBase.startsWith("/") ? rawBase.slice(1) : rawBase;
-  const transport = config.transport;
+  // Use the validated config — basePath is already canonicalized (decoded,
+  // backslash-normalized, leading-slash-stripped) by validateNexusFileSystemConfig.
+  const basePath = validated.value.basePath ?? DEFAULT_BASE_PATH;
+  const transport = validated.value.transport;
+
+  /** Decode a Nexus read response into a content string. Handles raw string,
+   *  { content: string }, and { __type__: "bytes", data: base64 } forms.
+   *  Returns EXTERNAL error for unrecognized shapes instead of coercing. */
+  function decodeReadResponse(raw: unknown): Result<string, KoiError> {
+    if (typeof raw === "string") {
+      return { ok: true, value: raw };
+    }
+    if (typeof raw === "object" && raw !== null) {
+      const obj = raw as Record<string, unknown>;
+      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+        return { ok: true, value: Buffer.from(obj.data, "base64").toString("utf-8") };
+      }
+      if (typeof obj.content === "string") {
+        return { ok: true, value: obj.content };
+      }
+    }
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: `Nexus returned unrecognized read response shape: ${typeof raw}`,
+        retryable: false,
+      },
+    };
+  }
   const retries = DEFAULT_RETRIES;
 
   // Lazy-cached CAS capability check via a dedicated non-mutating RPC.
@@ -102,22 +129,9 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     if (!result.ok) return result;
 
-    const raw = result.value;
-    let content: string;
-    if (typeof raw === "string") {
-      content = raw;
-    } else if (typeof raw === "object" && raw !== null) {
-      const obj = raw as unknown as Record<string, unknown>;
-      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
-        content = Buffer.from(obj.data, "base64").toString("utf-8");
-      } else if (typeof obj.content === "string") {
-        content = obj.content;
-      } else {
-        content = JSON.stringify(raw, null, 2);
-      }
-    } else {
-      content = String(raw);
-    }
+    const decoded = decodeReadResponse(result.value);
+    if (!decoded.ok) return decoded;
+    const content = decoded.value;
 
     return {
       ok: true,
@@ -172,16 +186,10 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     );
     if (!readResult.ok) return readResult;
 
-    // Extract content string
-    const raw = readResult.value;
-    let currentContent: string;
-    if (typeof raw === "string") {
-      currentContent = raw;
-    } else if (typeof raw === "object" && raw !== null && typeof raw.content === "string") {
-      currentContent = raw.content;
-    } else {
-      currentContent = String(raw);
-    }
+    // Decode content using shared decoder (handles string, { content }, bytes)
+    const decoded = decodeReadResponse(readResult.value);
+    if (!decoded.ok) return decoded;
+    const currentContent = decoded.value;
 
     // Apply hunks sequentially
     let modified = currentContent;
