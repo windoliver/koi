@@ -9,13 +9,14 @@ import type {
   CommandHookConfig,
   HookConfig,
   HookDecision,
+  HookEnvPolicy,
   HookEvent,
   HookExecutionResult,
   HttpHookConfig,
   JsonObject,
 } from "@koi/core";
 import { DEFAULT_HOOK_TIMEOUT_MS as TIMEOUT_DEFAULT } from "@koi/core";
-import { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
+import { buildEnvAllowSet, expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 import { matchesHookFilter } from "./filter.js";
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,13 @@ async function executeCommandHook(
     const durationMs = performance.now() - start;
 
     if (signal.aborted) {
-      return { ok: false, hookName: hook.name, error: "aborted", durationMs };
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: "aborted",
+        durationMs,
+        failClosed: hook.failClosed,
+      };
     }
 
     if (exitCode !== 0) {
@@ -181,6 +188,7 @@ async function executeCommandHook(
         hookName: hook.name,
         error: `exit code ${exitCode}: ${stderrText.slice(0, 500)}`,
         durationMs,
+        failClosed: hook.failClosed,
       };
     }
 
@@ -189,7 +197,13 @@ async function executeCommandHook(
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, hookName: hook.name, error: message, durationMs };
+    return {
+      ok: false,
+      hookName: hook.name,
+      error: message,
+      durationMs,
+      failClosed: hook.failClosed,
+    };
   }
 }
 
@@ -197,6 +211,7 @@ async function executeHttpHook(
   hook: HttpHookConfig,
   event: HookEvent,
   signal: AbortSignal,
+  envPolicy?: HookEnvPolicy | undefined,
 ): Promise<HookExecutionResult> {
   const start = performance.now();
   try {
@@ -206,18 +221,35 @@ async function executeHttpHook(
     const urlError = validateHookUrl(hook.url);
     if (urlError !== undefined) {
       const durationMs = performance.now() - start;
-      return { ok: false, hookName: hook.name, error: `URL rejected: ${urlError}`, durationMs };
-    }
-
-    const expandedHeaders =
-      hook.headers !== undefined ? expandEnvVarsInRecord(hook.headers) : undefined;
-    if (expandedHeaders !== undefined && !expandedHeaders.ok) {
-      const durationMs = performance.now() - start;
       return {
         ok: false,
         hookName: hook.name,
-        error: `unresolved env vars in headers: ${expandedHeaders.missing.join(", ")}`,
+        error: `URL rejected: ${urlError}`,
         durationMs,
+        failClosed: hook.failClosed,
+      };
+    }
+
+    // Build effective env-var allowlist from per-hook + policy
+    const allowedVars = buildEnvAllowSet(hook.allowedEnvVars, envPolicy);
+
+    const expandedHeaders =
+      hook.headers !== undefined ? expandEnvVarsInRecord(hook.headers, allowedVars) : undefined;
+    if (expandedHeaders !== undefined && !expandedHeaders.ok) {
+      const durationMs = performance.now() - start;
+      const parts: string[] = [];
+      if (expandedHeaders.missing.length > 0) {
+        parts.push(`unresolved: ${expandedHeaders.missing.join(", ")}`);
+      }
+      if (expandedHeaders.denied.length > 0) {
+        parts.push(`denied by policy: ${expandedHeaders.denied.join(", ")}`);
+      }
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `env var errors in headers: ${parts.join("; ")}`,
+        durationMs,
+        failClosed: hook.failClosed,
       };
     }
     const headers: Record<string, string> = {
@@ -227,14 +259,22 @@ async function executeHttpHook(
 
     // HMAC-SHA256 signing if secret is provided
     if (hook.secret !== undefined) {
-      const resolvedSecret = expandEnvVars(hook.secret);
+      const resolvedSecret = expandEnvVars(hook.secret, allowedVars);
       if (!resolvedSecret.ok) {
         const durationMs = performance.now() - start;
+        const parts: string[] = [];
+        if (resolvedSecret.missing.length > 0) {
+          parts.push(`unresolved: ${resolvedSecret.missing.join(", ")}`);
+        }
+        if (resolvedSecret.denied.length > 0) {
+          parts.push(`denied by policy: ${resolvedSecret.denied.join(", ")}`);
+        }
         return {
           ok: false,
           hookName: hook.name,
-          error: `unresolved env vars in secret: ${resolvedSecret.missing.join(", ")}`,
+          error: `env var errors in secret: ${parts.join("; ")}`,
           durationMs,
+          failClosed: hook.failClosed,
         };
       }
       const body = JSON.stringify(event);
@@ -268,6 +308,7 @@ async function executeHttpHook(
         hookName: hook.name,
         error: `HTTP ${response.status}: ${response.statusText}`,
         durationMs,
+        failClosed: hook.failClosed,
       };
     }
 
@@ -277,7 +318,13 @@ async function executeHttpHook(
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, hookName: hook.name, error: message, durationMs };
+    return {
+      ok: false,
+      hookName: hook.name,
+      error: message,
+      durationMs,
+      failClosed: hook.failClosed,
+    };
   }
 }
 
@@ -289,6 +336,7 @@ function executeSingleHook(
   hook: HookConfig,
   event: HookEvent,
   sessionSignal: AbortSignal | undefined,
+  envPolicy?: HookEnvPolicy | undefined,
 ): Promise<HookExecutionResult> {
   const timeoutMs = hook.timeoutMs ?? TIMEOUT_DEFAULT;
   const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
@@ -301,7 +349,7 @@ function executeSingleHook(
     case "command":
       return executeCommandHook(hook, event, composedSignal);
     case "http":
-      return executeHttpHook(hook, event, composedSignal);
+      return executeHttpHook(hook, event, composedSignal, envPolicy);
     default: {
       const _exhaustive: never = hook;
       throw new Error(`Unknown hook kind: ${(_exhaustive as HookConfig).kind}`);
@@ -323,12 +371,14 @@ function executeSingleHook(
  * @param hooks - All hooks to consider (pre-filtered to active only)
  * @param event - The event that triggered execution
  * @param sessionSignal - Optional session-level abort signal for cancellation
+ * @param envPolicy - Optional system-wide env-var policy for allowlisting
  * @returns Results for all matching hooks, in declaration order
  */
 export async function executeHooks(
   hooks: readonly HookConfig[],
   event: HookEvent,
   sessionSignal?: AbortSignal | undefined,
+  envPolicy?: HookEnvPolicy | undefined,
 ): Promise<readonly HookExecutionResult[]> {
   const matching = hooks.filter((h) => matchesHookFilter(h.filter, event));
   if (matching.length === 0) {
@@ -342,7 +392,7 @@ export async function executeHooks(
   const flushParallel = async (): Promise<void> => {
     if (parallelBatch.length === 0) return;
     const settled = await Promise.allSettled(
-      parallelBatch.map((entry) => executeSingleHook(entry.hook, event, sessionSignal)),
+      parallelBatch.map((entry) => executeSingleHook(entry.hook, event, sessionSignal, envPolicy)),
     );
     for (let i = 0; i < settled.length; i++) {
       const s = settled[i];
@@ -356,6 +406,7 @@ export async function executeHooks(
               hookName: entry.hook.name,
               error: s.reason instanceof Error ? s.reason.message : String(s.reason),
               durationMs: 0,
+              failClosed: entry.hook.failClosed,
             };
     }
     parallelBatch = [];
@@ -368,7 +419,7 @@ export async function executeHooks(
     if (hook.serial === true) {
       // Flush any pending parallel batch before running serial hook
       await flushParallel();
-      results[i] = await executeSingleHook(hook, event, sessionSignal);
+      results[i] = await executeSingleHook(hook, event, sessionSignal, envPolicy);
     } else {
       parallelBatch.push({ hook, index: i });
     }

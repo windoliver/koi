@@ -181,6 +181,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/tools-web": {
+      "name": "@koi/tools-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/validation": {
       "name": "@koi/validation",
       "version": "0.0.0",
@@ -189,6 +196,10 @@
         "@koi/token-estimator": "workspace:*",
         "zod": "4.3.6",
       },
+    },
+    "packages/meta/cli": {
+      "name": "@koi/cli",
+      "version": "0.0.0",
     },
     "packages/mm/model-openai-compat": {
       "name": "@koi/model-openai-compat",
@@ -392,6 +403,8 @@
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
 
+    "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
+
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
@@ -441,6 +454,8 @@
     "@koi/tools-builtin": ["@koi/tools-builtin@workspace:packages/lib/tools-builtin"],
 
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
+
+    "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 

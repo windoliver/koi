@@ -30,7 +30,7 @@ import type {
   TurnId,
 } from "@koi/core";
 import * as executorModule from "./executor.js";
-import { aggregateDecisions, createHookMiddleware } from "./middleware.js";
+import { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -175,6 +175,93 @@ describe("aggregateDecisions", () => {
     const result = aggregateDecisions([successResult("observer")]);
     expect(result.hookName).toBeUndefined();
   });
+
+  it("merges transform outputPatch from multiple hooks (later overrides earlier)", () => {
+    const result = aggregateDecisions([
+      successResult("a", { kind: "transform", outputPatch: { x: 1, y: 2 } }),
+      successResult("b", { kind: "transform", outputPatch: { y: 99, z: 3 } }),
+    ]);
+    // transform is post-call only — ignored in pre-call aggregation
+    expect(result.decision).toEqual({ kind: "continue" });
+  });
+
+  it("ignores transform metadata in pre-call aggregation", () => {
+    const result = aggregateDecisions([
+      successResult("a", { kind: "transform", outputPatch: { x: 1 }, metadata: { ctx: "a" } }),
+    ]);
+    // transform is post-call only — ignored in pre-call aggregation
+    expect(result.decision).toEqual({ kind: "continue" });
+  });
+
+  it("block wins even with transform present", () => {
+    const result = aggregateDecisions([
+      successResult("a", { kind: "transform", outputPatch: { x: 1 } }),
+      successResult("b", { kind: "block", reason: "denied" }),
+    ]);
+    expect(result.decision).toEqual({ kind: "block", reason: "denied" });
+  });
+
+  it("modify applies when transform is also present (transform ignored pre-call)", () => {
+    const result = aggregateDecisions([
+      successResult("a", { kind: "modify", patch: { x: 1 } }),
+      successResult("b", { kind: "transform", outputPatch: { y: 2 } }),
+    ]);
+    expect(result.decision).toEqual({ kind: "modify", patch: { x: 1 } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aggregatePostDecisions unit tests
+// ---------------------------------------------------------------------------
+
+describe("aggregatePostDecisions", () => {
+  it("ignores block decisions (tool already executed)", () => {
+    const result = aggregatePostDecisions([
+      successResult("a", { kind: "block", reason: "too late" }),
+      successResult("b", { kind: "transform", outputPatch: { redacted: true } }),
+    ]);
+    expect(result).toEqual({ kind: "transform", outputPatch: { redacted: true } });
+  });
+
+  it("ignores modify decisions post-execution", () => {
+    const result = aggregatePostDecisions([
+      successResult("a", { kind: "modify", patch: { x: 1 } }),
+    ]);
+    expect(result).toEqual({ kind: "continue" });
+  });
+
+  it("merges multiple transforms", () => {
+    const result = aggregatePostDecisions([
+      successResult("a", { kind: "transform", outputPatch: { x: 1 } }),
+      successResult("b", { kind: "transform", outputPatch: { y: 2 }, metadata: { source: "b" } }),
+    ]);
+    expect(result).toEqual({
+      kind: "transform",
+      outputPatch: { x: 1, y: 2 },
+      metadata: { source: "b" },
+    });
+  });
+
+  it("returns continue when all hooks succeed with no transforms", () => {
+    const result = aggregatePostDecisions([successResult("a"), successResult("b")]);
+    expect(result).toEqual({ kind: "continue" });
+  });
+
+  it("returns block when any hook fails (signals taint to middleware)", () => {
+    const result = aggregatePostDecisions([successResult("a"), failureResult("broken", "timeout")]);
+    expect(result.kind).toBe("block");
+  });
+
+  it("block does not suppress transform (security: redaction must apply)", () => {
+    const result = aggregatePostDecisions([
+      successResult("blocker", { kind: "block", reason: "denied" }),
+      successResult("redactor", {
+        kind: "transform",
+        outputPatch: { secretField: "[REDACTED]" },
+      }),
+    ]);
+    expect(result.kind).toBe("transform");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -253,14 +340,12 @@ describe("createHookMiddleware", () => {
     });
 
     it("drains pending post-hooks before cleanup so last-turn hooks complete", async () => {
-      let postHookCompleted = false;
-      let _callIndex = 0;
+      let turnEndHookCompleted = false;
       executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
-        _callIndex++;
-        if (event.event === "tool.succeeded") {
+        if (event.event === "turn.ended") {
           // Simulate a slow post-hook (50ms) — must complete before cleanup
           await new Promise((resolve) => setTimeout(resolve, 50));
-          postHookCompleted = true;
+          turnEndHookCompleted = true;
         }
         return [];
       });
@@ -270,20 +355,17 @@ describe("createHookMiddleware", () => {
       const turnCtx = makeTurnCtx({ session: ctx });
       await mw.onSessionStart?.(ctx);
 
-      // Trigger a tool call which fires a fire-and-forget tool.post
-      const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
-        output: "done",
-      });
-      await mw.wrapToolCall?.(turnCtx, { toolId: "bash", input: {} }, nextFn);
+      // Trigger a turn end which fires a fire-and-forget turn.ended hook
+      await mw.onAfterTurn?.(turnCtx);
 
       // Post-hook is still in-flight (50ms delay)
-      expect(postHookCompleted).toBe(false);
+      expect(turnEndHookCompleted).toBe(false);
 
       // onSessionEnd should drain pending post-hooks before cleanup
       await mw.onSessionEnd?.(ctx);
 
       // After session end, the post-hook must have completed
-      expect(postHookCompleted).toBe(true);
+      expect(turnEndHookCompleted).toBe(true);
     });
   });
 
@@ -431,8 +513,17 @@ describe("wrapToolCall", () => {
     expect(result.output).toEqual({ error: "Hook blocked tool_call: denied" });
   });
 
-  it("proceeds when hook execution fails (fail-open)", async () => {
-    executeSpy.mockResolvedValue([failureResult("broken-hook", "timeout")]);
+  it("pre-call hooks fail-open (failed hooks = no opinion)", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex <= 2) {
+        // session start + pre-call: return failure
+        return [failureResult("broken-hook", "timeout")];
+      }
+      // post-call: return success (no transforms)
+      return [];
+    });
 
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await mw.onSessionStart?.(makeSessionCtx());
@@ -447,6 +538,33 @@ describe("wrapToolCall", () => {
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("success despite hook failure");
+  });
+
+  it("post-call hook failure redacts output (fail-closed)", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex <= 2) return [];
+      return [failureResult("broken-hook", "timeout")];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "sensitive data",
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    // Raw output suppressed — redacted string, not error object
+    expect(result.output).not.toBe("sensitive data");
+    expect(typeof result.output).toBe("string");
+    expect(result.output).toContain("[output redacted:");
+    expect(result.metadata).toMatchObject({ committedButRedacted: true });
   });
 
   it("post-call event uses effective (modified) input for audit consistency", async () => {
@@ -472,12 +590,12 @@ describe("wrapToolCall", () => {
     const request: ToolRequest = { toolId: "bash", input: { cmd: "rm -rf /" } };
     await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Post-call is now awaited, so event is available immediately
     assertDefined(postCallEvent);
     expect((postCallEvent.data as Record<string, unknown>).input).toEqual({ cmd: "ls -la" });
   });
 
-  it("fires post-call hooks after next() returns (fire-and-forget)", async () => {
+  it("fires both pre-call and post-call hooks", async () => {
     let callCount = 0;
     executeSpy.mockImplementation(async () => {
       callCount++;
@@ -495,12 +613,194 @@ describe("wrapToolCall", () => {
     const request: ToolRequest = { toolId: "bash", input: {} };
     await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
 
-    expect(callCount).toBeGreaterThanOrEqual(1);
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Both pre-call and post-call should have fired
+    // Both pre-call and post-call should have fired (post-call is now awaited)
     expect(callCount).toBe(2);
+  });
+
+  it("post-call transform replaces output via shallow merge", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) return [successResult("pre")]; // pre-call: continue
+      // post-call: transform
+      return [
+        successResult("redactor", {
+          kind: "transform",
+          outputPatch: { redacted: true, extra: "injected" },
+        }),
+      ];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: { content: "secret data", format: "text" },
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    // next() must still have been called
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    // Output should be shallow-merged
+    expect(result.output).toEqual({
+      content: "secret data",
+      format: "text",
+      redacted: true,
+      extra: "injected",
+    });
+  });
+
+  it("post-call transform injects metadata", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) return [successResult("pre")]; // pre-call
+      return [
+        successResult("ctx-injector", {
+          kind: "transform",
+          outputPatch: {},
+          metadata: { additionalContext: "see also: docs/api.md" },
+        }),
+      ];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "result",
+      metadata: { existing: true },
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    expect(result.metadata).toEqual({
+      existing: true,
+      additionalContext: "see also: docs/api.md",
+    });
+  });
+
+  it("post-call transform replaces non-object output entirely", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) return [successResult("pre")]; // pre-call
+      return [
+        successResult("replacer", {
+          kind: "transform",
+          outputPatch: { normalized: true, value: 42 },
+        }),
+      ];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    // Tool returns a string, not an object
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "raw string output",
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    // Non-object output gets replaced entirely by outputPatch
+    expect(result.output).toEqual({ normalized: true, value: 42 });
+  });
+
+  it("post-call continue returns response unchanged", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      return [successResult("observer")]; // pre + post: continue
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "original",
+      metadata: { key: "value" },
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    expect(result.output).toBe("original");
+    expect(result.metadata).toEqual({ key: "value" });
+  });
+
+  it("post-call block is ignored (tool already executed)", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) return [successResult("pre")]; // pre-call
+      // post-call: block (should be ignored)
+      return [successResult("late-blocker", { kind: "block", reason: "too late" })];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "completed",
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    // next() was called and response returned despite post-call block
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    // block from aggregateDecisions is not acted upon post-call — only transform is
+    // Since block > transform in aggregation, no transform is applied either
+    expect(result.output).toBe("completed");
+  });
+
+  it("taints response when post-call hooks exceed deadline", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start
+      if (callIndex === 2) return [successResult("pre")]; // pre-call
+      // post-call: slow hook that exceeds the short deadline
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return [
+        successResult("slow-redactor", {
+          kind: "transform",
+          outputPatch: { redacted: true },
+        }),
+      ];
+    });
+
+    // Use a very short deadline to avoid test timeout
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS, postToolHookDeadlineMs: 50 });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: { sensitive: "data" },
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    // Tool completed but deadline expired — output redacted, not error-shaped
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    expect(result.output).toContain("[output redacted:");
+    expect(result.metadata).toMatchObject({ committedButRedacted: true });
   });
 });
 
@@ -593,7 +893,7 @@ describe("wrapModelCall", () => {
     expect(passedRequest.systemPrompt).toBe("original");
   });
 
-  it("blocks model call with hook_blocked stop reason and empty content", async () => {
+  it("blocks model call with hook_blocked stop reason and denial message in content", async () => {
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await startSessionThen(mw, executeSpy, [
       successResult("guard", { kind: "block", reason: "context too large" }),
