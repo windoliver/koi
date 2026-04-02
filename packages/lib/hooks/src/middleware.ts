@@ -409,6 +409,8 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     },
 
     async onAfterTurn(ctx: TurnContext): Promise<void> {
+      // Skip turn.ended for stop-gate vetoes — the turn was blocked, not completed.
+      if (ctx.stopBlocked === true) return;
       const sessionId = ctx.session.sessionId as string;
       const event = buildEvent(ctx.session, "turn.ended");
       // After-turn hooks are fire-and-forget but tracked for drain

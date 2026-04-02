@@ -41,6 +41,8 @@ export interface TurnContext {
   readonly requestApproval?: ApprovalHandler;
   /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
+  /** True when this turn was ended by a stop-gate veto, not normal completion. */
+  readonly stopBlocked?: true;
 }
 
 export interface ModelRequest {

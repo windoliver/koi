@@ -51,6 +51,7 @@ export function createTurnContext(opts: {
   readonly signal?: AbortSignal | undefined;
   readonly approvalHandler?: ApprovalHandler | undefined;
   readonly sendStatus?: ((status: ChannelStatus) => Promise<void>) | undefined;
+  readonly stopBlocked?: true;
 }): TurnContext {
   return {
     session: opts.session,
@@ -61,5 +62,6 @@ export function createTurnContext(opts: {
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     ...(opts.approvalHandler !== undefined ? { requestApproval: opts.approvalHandler } : {}),
     ...(opts.sendStatus !== undefined ? { sendStatus: opts.sendStatus } : {}),
+    ...(opts.stopBlocked === true ? { stopBlocked: true } : {}),
   };
 }
