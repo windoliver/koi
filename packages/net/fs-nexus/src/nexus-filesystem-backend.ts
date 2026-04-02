@@ -187,41 +187,24 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     // Write back (unless dry run)
     if (!options?.dryRun) {
-      // Optimistic concurrency: re-read to detect concurrent modifications
-      const verifyResult = await rpcRead<string | Record<string, unknown>>(
-        transport,
-        "read",
-        { path: fullPathResult.value },
-        retries,
-      );
-      if (!verifyResult.ok) return verifyResult;
-      const verifyRaw = verifyResult.value;
-      let verifyContent: string;
-      if (typeof verifyRaw === "string") {
-        verifyContent = verifyRaw;
-      } else if (
-        typeof verifyRaw === "object" &&
-        verifyRaw !== null &&
-        typeof verifyRaw.content === "string"
-      ) {
-        verifyContent = verifyRaw.content;
-      } else {
-        verifyContent = String(verifyRaw);
-      }
-      if (verifyContent !== currentContent) {
-        return {
-          ok: false,
-          error: {
-            code: "CONFLICT",
-            message: `File '${path}' was modified concurrently — edit aborted to prevent data loss`,
-            retryable: false,
-          },
-        };
-      }
+      // Optimistic concurrency via content-hash CAS: compute a SHA-256 hash
+      // of the content we read, and pass it as expectedContentHash in the write
+      // call. Nexus servers that support CAS will reject the write atomically
+      // if the file changed since our read. Servers that don't support CAS
+      // will ignore the extra parameter — the write still succeeds but without
+      // conflict detection. This is the only correct approach; client-side
+      // verify-then-write has an inherent TOCTOU race.
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(currentContent));
+      const hashArray = new Uint8Array(hashBuffer);
+      const expectedContentHash = Array.from(hashArray)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
 
       const writeResult = await rpcMutate<null>(transport, "write", {
         path: fullPathResult.value,
         content: modified,
+        expectedContentHash,
       });
       if (!writeResult.ok) return writeResult;
     }
@@ -258,6 +241,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       const seen = new Set<string>();
       const entries: FileListEntry[] = [];
 
+      const isRecursive = options?.recursive === true;
       for (const file of raw.files as readonly string[]) {
         const normalized = file.replace(/^\/+/, "");
         const relative =
@@ -267,15 +251,20 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         if (relative.length === 0) continue;
         const slashIdx = relative.indexOf("/");
         if (slashIdx === -1) {
-          // Flat list gives no metadata — conservatively treat all immediate
-          // children as files. Inferring kind from extension presence would
-          // misclassify extensionless files (Dockerfile, LICENSE, Makefile)
-          // as directories.
+          // Immediate child — conservatively treat as file (no metadata in
+          // flat lists to distinguish files from extensionless directories)
+          if (!seen.has(relative)) {
+            seen.add(relative);
+            entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind: "file" });
+          }
+        } else if (isRecursive) {
+          // Recursive mode: emit the full descendant file entry
           if (!seen.has(relative)) {
             seen.add(relative);
             entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind: "file" });
           }
         } else {
+          // Non-recursive: collapse nested paths to top-level directory
           const dirName = relative.slice(0, slashIdx);
           if (!seen.has(dirName)) {
             seen.add(dirName);

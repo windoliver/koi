@@ -685,40 +685,81 @@ describe("mutation safety", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Edit concurrency guard
+// Edit CAS (content-hash compare-and-swap)
 // ---------------------------------------------------------------------------
 
-describe("edit concurrency", () => {
-  test("edit detects concurrent modification and returns CONFLICT", async () => {
+describe("edit CAS", () => {
+  test("edit sends expectedContentHash in write params", async () => {
     const { backend, transport } = createTestBackend();
-    await backend.write("/race.txt", "original");
+    await backend.write("/cas.txt", "original");
 
-    // Simulate concurrent modification: after the edit's initial read,
-    // another writer changes the file before the verify-read
-    let readCount = 0;
+    // Intercept the write call to capture params
+    let capturedWriteParams: Record<string, unknown> | undefined;
     const originalCall = transport.call.bind(transport);
     const interceptedCall = async <T>(
       method: string,
       params: Record<string, unknown>,
     ): Promise<T> => {
-      const result = await originalCall<T>(method, params);
-      if (method === "read") {
-        readCount += 1;
-        // After the first read returns, mutate the file so the verify-read sees different content
-        if (readCount === 1) {
-          transport.store.set("/fs/race.txt", "modified-by-other");
-        }
+      if (method === "write" && params.expectedContentHash !== undefined) {
+        capturedWriteParams = params;
       }
-      return result;
+      return originalCall<T>(method, params);
     };
-    // Patch the transport's call method for this test
     (transport as { call: typeof interceptedCall }).call = interceptedCall;
 
-    const result = await backend.edit("/race.txt", [{ oldText: "original", newText: "my-edit" }]);
+    const result = await backend.edit("/cas.txt", [{ oldText: "original", newText: "modified" }]);
+    expect(result.ok).toBe(true);
+
+    // Verify the write included a SHA-256 content hash
+    expect(capturedWriteParams).toBeDefined();
+    expect(typeof capturedWriteParams?.expectedContentHash).toBe("string");
+    expect((capturedWriteParams?.expectedContentHash as string).length).toBe(64); // SHA-256 hex
+  });
+
+  test("edit dry run does not send write with hash", async () => {
+    const { backend, transport } = createTestBackend();
+    await backend.write("/cas-dry.txt", "content");
+
+    let writeCallCount = 0;
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "write" && params.expectedContentHash !== undefined) {
+        writeCallCount += 1;
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    await backend.edit("/cas-dry.txt", [{ oldText: "content", newText: "new" }], { dryRun: true });
+    expect(writeCallCount).toBe(0);
+  });
+
+  test("CAS write rejected by server returns CONFLICT", async () => {
+    const { backend, transport } = createTestBackend();
+    await backend.write("/cas-reject.txt", "original");
+
+    // Simulate server rejecting the CAS write with a 409 conflict
+    const originalCall = transport.call.bind(transport);
+    const interceptedCall = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<T> => {
+      if (method === "write" && params.expectedContentHash !== undefined) {
+        throw new Error("409 conflict: content hash mismatch");
+      }
+      return originalCall<T>(method, params);
+    };
+    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+
+    const result = await backend.edit("/cas-reject.txt", [
+      { oldText: "original", newText: "modified" },
+    ]);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("CONFLICT");
-      expect(result.error.message).toContain("concurrently");
     }
   });
 });
@@ -727,41 +768,92 @@ describe("edit concurrency", () => {
 // Flat list — extensionless files
 // ---------------------------------------------------------------------------
 
-describe("list extensionless files", () => {
-  test("extensionless files are listed as files, not directories", async () => {
-    const transport = createMockTransport();
-    // Simulate Nexus returning flat file list with extensionless entries
-    const originalCall = transport.call.bind(transport);
+describe("list flat response handling", () => {
+  function createFlatListTransport(files: readonly string[]): NexusTransport & {
+    readonly store: Map<string, string>;
+  } {
+    const mock = createMockTransport();
+    const originalCall = mock.call.bind(mock);
     const interceptedCall = async <T>(
       method: string,
       params: Record<string, unknown>,
     ): Promise<T> => {
       if (method === "list") {
-        return {
-          files: ["/fs/Dockerfile", "/fs/LICENSE", "/fs/Makefile", "/fs/README", "/fs/src/main.ts"],
-        } as T;
+        return { files } as T;
       }
       return originalCall<T>(method, params);
     };
-    (transport as { call: typeof interceptedCall }).call = interceptedCall;
+    (mock as { call: typeof interceptedCall }).call = interceptedCall;
+    return mock;
+  }
 
+  test("extensionless files are listed as files, not directories", async () => {
+    const transport = createFlatListTransport([
+      "/fs/Dockerfile",
+      "/fs/LICENSE",
+      "/fs/Makefile",
+      "/fs/README",
+      "/fs/src/main.ts",
+    ]);
     const backend = createNexusFileSystem({ transport });
     const result = await backend.list("/");
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const fileEntries = result.value.entries.filter((e) => e.kind === "file");
-      const dirEntries = result.value.entries.filter((e) => e.kind === "directory");
-
-      // Extensionless entries should be files
-      const filePaths = fileEntries.map((e) => e.path);
+      const filePaths = result.value.entries.filter((e) => e.kind === "file").map((e) => e.path);
       expect(filePaths).toContain("/Dockerfile");
       expect(filePaths).toContain("/LICENSE");
       expect(filePaths).toContain("/Makefile");
       expect(filePaths).toContain("/README");
 
-      // Nested path (src/) should still be a directory
-      const dirPaths = dirEntries.map((e) => e.path);
+      // Non-recursive: nested path collapsed to directory
+      const dirPaths = result.value.entries
+        .filter((e) => e.kind === "directory")
+        .map((e) => e.path);
       expect(dirPaths).toContain("/src");
+    }
+  });
+
+  test("non-recursive list collapses nested paths to directories", async () => {
+    const transport = createFlatListTransport([
+      "/fs/a.txt",
+      "/fs/src/main.ts",
+      "/fs/src/lib/utils.ts",
+      "/fs/docs/readme.md",
+    ]);
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const paths = result.value.entries.map((e) => `${e.kind}:${e.path}`);
+      expect(paths).toContain("file:/a.txt");
+      expect(paths).toContain("directory:/src");
+      expect(paths).toContain("directory:/docs");
+      // Nested files should NOT appear in non-recursive listing
+      expect(paths).not.toContain("file:/src/main.ts");
+      expect(paths).not.toContain("file:/src/lib/utils.ts");
+    }
+  });
+
+  test("recursive list emits all descendant files", async () => {
+    const transport = createFlatListTransport([
+      "/fs/a.txt",
+      "/fs/src/main.ts",
+      "/fs/src/lib/utils.ts",
+      "/fs/docs/readme.md",
+    ]);
+    const backend = createNexusFileSystem({ transport });
+    const result = await backend.list("/", { recursive: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const paths = result.value.entries.map((e) => e.path);
+      expect(paths).toContain("/a.txt");
+      expect(paths).toContain("/src/main.ts");
+      expect(paths).toContain("/src/lib/utils.ts");
+      expect(paths).toContain("/docs/readme.md");
+      // All should be files
+      for (const entry of result.value.entries) {
+        expect(entry.kind).toBe("file");
+      }
     }
   });
 });
