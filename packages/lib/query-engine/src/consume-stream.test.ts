@@ -269,13 +269,14 @@ describe("consumeModelStream", () => {
     expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
   });
 
-  test("error chunk with no prior text yields empty content", async () => {
+  test("error chunk with no prior text synthesizes content from error message", async () => {
     const chunks: readonly ModelChunk[] = [{ kind: "error", message: "auth failed" }];
 
     const events = await collect(consumeModelStream(toStream(chunks)));
     const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("error");
-    expect(done.output.content).toEqual([]);
+    // Error message is promoted to content so users see denial reasons
+    expect(done.output.content).toEqual([{ kind: "text", text: "auth failed" }]);
   });
 
   test("error chunk propagates structured errorCode and retryable to metadata", async () => {

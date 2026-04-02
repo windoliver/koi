@@ -302,6 +302,38 @@ describe("wrapToolCall", () => {
     expect(step?.response?.truncated).toBe(true);
   });
 
+  test("records blocked tool call as failure with denial metadata", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const blockedToolResponse: ToolResponse = {
+      output: { error: "Hook blocked tool_call: not permitted" },
+      metadata: { blockedByHook: true, hookName: "tool-blocker" },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest(),
+      async () => blockedToolResponse,
+    );
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const step = store.steps[0]?.[0];
+    expect(step?.outcome).toBe("failure");
+    expect(step?.identifier).toBe("web_search");
+    expect((step?.metadata as Record<string, unknown>)?.blockedByHook).toBe(true);
+    expect((step?.metadata as Record<string, unknown>)?.hookName).toBe("tool-blocker");
+  });
+
   test("passes through response from next handler", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({
@@ -1219,7 +1251,7 @@ describe("safe tool output serialization", () => {
 
     // Create circular reference
     const circular: Record<string, unknown> = { a: 1 };
-    circular["self"] = circular;
+    circular.self = circular;
 
     // This must NOT throw — observer contract
     const response = await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest(), async () =>

@@ -146,14 +146,14 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     const meta: Record<string, unknown> = {
       totalMessages: request.messages.length,
     };
-    if (request.model !== undefined) meta["requestModel"] = request.model;
-    if (request.temperature !== undefined) meta["temperature"] = request.temperature;
-    if (request.maxTokens !== undefined) meta["maxTokens"] = request.maxTokens;
+    if (request.model !== undefined) meta.requestModel = request.model;
+    if (request.temperature !== undefined) meta.temperature = request.temperature;
+    if (request.maxTokens !== undefined) meta.maxTokens = request.maxTokens;
     const systemPrompt = extractSystemPrompt(request);
-    if (systemPrompt !== undefined) meta["systemPrompt"] = systemPrompt;
+    if (systemPrompt !== undefined) meta.systemPrompt = systemPrompt;
     if (request.tools !== undefined && request.tools.length > 0) {
-      meta["toolCount"] = request.tools.length;
-      meta["tools"] = request.tools.map((t) => ({ name: t.name, description: t.description }));
+      meta.toolCount = request.tools.length;
+      meta.tools = request.tools.map((t) => ({ name: t.name, description: t.description }));
     }
     return meta as JsonObject;
   }
@@ -422,18 +422,26 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
           const stepIndex = state.nextLocalIndex;
           state.nextLocalIndex += 1;
 
+          // Tool responses with blockedByHook metadata are policy denials,
+          // not successful executions — trace them as failures.
+          const blockedByHook =
+            response?.metadata !== undefined &&
+            (response.metadata as Record<string, unknown>).blockedByHook === true;
+          const toolOutcome = response === undefined || blockedByHook ? "failure" : "success";
+
           const step: RichTrajectoryStep = {
             stepIndex,
             timestamp: startTime,
             source: "tool",
             kind: "tool_call",
             identifier: request.toolId,
-            outcome: response !== undefined ? "success" : "failure",
+            outcome: toolOutcome,
             durationMs,
             request: { data: request.input },
             ...pickDefined({
               response: response !== undefined ? captureToolOutput(response.output) : undefined,
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
+              metadata: blockedByHook ? (response?.metadata as JsonObject) : undefined,
             }),
           };
           state.pendingSteps.push(step);

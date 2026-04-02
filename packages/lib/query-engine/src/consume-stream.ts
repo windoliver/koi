@@ -132,12 +132,15 @@ export async function* consumeModelStream(
           outputTokens = chunk.usage.outputTokens;
         }
         const errorPartialText = textFragments.join("");
+        // When no model text has streamed, use the error message as content
+        // so hook-block denial reasons are visible to users, not swallowed.
+        const errorContent = errorPartialText.length > 0 ? errorPartialText : chunk.message;
         // Surface any in-flight tool calls that never completed
         const danglingOnError = buildDanglingToolCalls(accumulators);
         yield {
           kind: "done",
           output: {
-            content: errorPartialText.length > 0 ? [{ kind: "text", text: errorPartialText }] : [],
+            content: errorContent.length > 0 ? [{ kind: "text", text: errorContent }] : [],
             stopReason: "error",
             metrics: {
               totalTokens: inputTokens + outputTokens,
