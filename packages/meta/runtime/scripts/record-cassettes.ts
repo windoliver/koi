@@ -4,39 +4,43 @@
  *
  * Run: OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts
  *
- * ALL L2 packages wired:
- *   @koi/model-openai-compat  — model adapter (stream + complete)
- *   @koi/query-engine         — stream consumer (ModelChunk → EngineEvent)
- *   @koi/event-trace          — trajectory recording middleware
- *   @koi/hooks                — hook dispatch middleware
- *   @koi/mcp                  — transport state machine lifecycle
- *   @koi/permissions          — permission backend (bypass mode)
- *   @koi/middleware-permissions — permission gating middleware (MW spans)
- *   @koi/tools-core           — buildTool() for add_numbers
- *   @koi/tools-builtin        — Glob/Grep/ToolSearch providers
+ * Golden queries (4 trajectories):
+ *   simple-text      — text response, no tools, permissions bypass
+ *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
+ *   glob-use         — Glob builtin tool call, permissions bypass
+ *   permission-deny  — permissions default mode denies add_numbers, Glob allowed
  *
- * Produces:
- *   fixtures/simple-text.cassette.json      — VCR replay: text response
- *   fixtures/simple-text.trajectory.json    — Full ATIF: simple text (no tools)
- *   fixtures/tool-use.cassette.json         — VCR replay: tool call
- *   fixtures/tool-use.trajectory.json       — Full ATIF: tool use (model → tool → model)
+ * ALL L2 packages wired across queries:
+ *   @koi/model-openai-compat  — model adapter
+ *   @koi/query-engine         — stream consumer
+ *   @koi/event-trace          — trajectory recording
+ *   @koi/hooks                — hook dispatch
+ *   @koi/mcp                  — transport lifecycle
+ *   @koi/permissions          — permission backend
+ *   @koi/middleware-permissions — permission gating MW
+ *   @koi/tools-core           — buildTool()
+ *   @koi/tools-builtin        — Glob/Grep/ToolSearch
  */
 
-import type { EngineAdapter, EngineEvent, EngineInput, JsonObject, ModelChunk } from "@koi/core";
+import type {
+  ComponentProvider,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  JsonObject,
+  ModelChunk,
+} from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
-// @koi/middleware-permissions: permission gating middleware
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
-// @koi/permissions: permission backend
+import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
-// @koi/tools-builtin: builtin search tools
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
-// @koi/tools-core: tool building
 import { buildTool } from "@koi/tools-core";
 import type { Cassette } from "../src/cassette/types.js";
 import { createHookDispatchMiddleware } from "../src/middleware/hook-dispatch.js";
@@ -62,7 +66,7 @@ const modelAdapter = createOpenAICompatAdapter({
 });
 
 // ---------------------------------------------------------------------------
-// Tool: add_numbers (built via @koi/tools-core buildTool)
+// Tools (built via @koi/tools-core)
 // ---------------------------------------------------------------------------
 
 const addToolResult = buildTool({
@@ -78,7 +82,6 @@ const addToolResult = buildTool({
     result: (args.a as number) + (args.b as number),
   }),
 });
-
 if (!addToolResult.ok) {
   console.error(`buildTool failed: ${addToolResult.error.message}`);
   process.exit(1);
@@ -86,7 +89,7 @@ if (!addToolResult.ok) {
 const addTool = addToolResult.value;
 
 // =========================================================================
-// Helpers
+// Recording helpers
 // =========================================================================
 
 async function recordCassette(
@@ -107,17 +110,31 @@ async function recordCassette(
   console.log(`  ${chunks.length} chunks`);
 }
 
-/**
- * Records a full-stack ATIF trajectory with ALL L2 packages active.
- * @param name - fixture name (e.g., "simple-text" or "tool-use")
- * @param prompt - the user prompt
- * @param withTools - whether to register add_numbers tool + builtin tools
- */
-async function recordFullStackTrajectory(
-  name: string,
-  prompt: string,
-  withTools: boolean,
-): Promise<void> {
+// ---------------------------------------------------------------------------
+// Per-query config
+// ---------------------------------------------------------------------------
+
+interface QueryConfig {
+  readonly name: string;
+  readonly prompt: string;
+  readonly permissionMode: "bypass" | "default";
+  readonly permissionRules: readonly SourcedRule[];
+  readonly permissionDescription: string;
+  readonly hooks: readonly {
+    readonly kind: "command";
+    readonly name: string;
+    readonly cmd: readonly string[];
+    readonly filter: { readonly events: readonly string[] };
+  }[];
+  readonly providers: readonly ComponentProvider[];
+}
+
+// ---------------------------------------------------------------------------
+// Full-stack trajectory recorder
+// ---------------------------------------------------------------------------
+
+async function recordTrajectory(config: QueryConfig): Promise<void> {
+  const { name, prompt } = config;
   console.log(`\nRecording ${name}.trajectory.json (full-stack, all L2)...`);
 
   const trajDir = `/tmp/koi-record-${name}-${Date.now()}`;
@@ -135,24 +152,7 @@ async function recordFullStackTrajectory(
   });
 
   // @koi/hooks
-  const hookResult = loadHooks([
-    {
-      kind: "command",
-      name: "on-model-done",
-      cmd: ["echo", "model-done"],
-      filter: { events: ["model.completed"] },
-    },
-    ...(withTools
-      ? [
-          {
-            kind: "command" as const,
-            name: "on-tool-exec",
-            cmd: ["echo", "tool-done"],
-            filter: { events: ["tool.executed"] },
-          },
-        ]
-      : []),
-  ]);
+  const hookResult = loadHooks([...config.hooks]);
   const hookMw = createHookDispatchMiddleware({
     hooks: hookResult.ok ? hookResult.value : [],
     store,
@@ -161,12 +161,12 @@ async function recordFullStackTrajectory(
 
   // @koi/permissions + @koi/middleware-permissions
   const permBackend = createPermissionBackend({
-    mode: "bypass",
-    rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    mode: config.permissionMode,
+    rules: [...config.permissionRules],
   });
   const permMiddleware = createPermissionsMiddleware({
     backend: permBackend,
-    description: "golden query permissions (bypass mode)",
+    description: config.permissionDescription,
   });
 
   // @koi/mcp
@@ -237,18 +237,29 @@ async function recordFullStackTrajectory(
             if (tc.kind !== "tool_call_end") continue;
             const r = tc.result as { readonly toolName: string; readonly parsedArgs?: JsonObject };
             if (!r.parsedArgs) continue;
-            const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
-            const out = typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
-            msgs.push({
-              senderId: "tool",
-              timestamp: Date.now(),
-              content: [{ kind: "text", text: `Tool ${r.toolName}: ${out}` }],
-            });
+            try {
+              const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
+              const out =
+                typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
+              msgs.push({
+                senderId: "tool",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: `Tool ${r.toolName}: ${out}` }],
+              });
+            } catch (toolErr: unknown) {
+              // Permission deny or tool error — record as error in messages
+              const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+              msgs.push({
+                senderId: "tool",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: `Tool ${r.toolName} DENIED: ${errMsg}` }],
+              });
+            }
           }
           msgs.push({
             senderId: "system",
             timestamp: Date.now(),
-            content: [{ kind: "text", text: "Respond with the result. No tools." }],
+            content: [{ kind: "text", text: "Respond with the result. No more tool calls." }],
           });
           yield { kind: "turn_end" as const, turnIndex: turn };
           turn++;
@@ -265,29 +276,15 @@ async function recordFullStackTrajectory(
     },
   };
 
-  // Wrap middleware with trace (auto-captures all MW I/O)
-  // event-trace excluded from trace wrapper (TRACE_EXCLUDED), hook-dispatch + permissions traced
   const tracedMiddleware = [eventTrace, hookMw, permMiddleware].map((mw) =>
     wrapMiddlewareWithTrace(mw, { store, docId }),
   );
-
-  const providers = withTools
-    ? [
-        createSingleToolProvider({
-          name: "add-numbers",
-          toolName: "add_numbers",
-          createTool: () => addTool,
-        }),
-        // @koi/tools-builtin: builtin search tools (Glob, Grep, ToolSearch)
-        createBuiltinSearchProvider({ cwd: process.cwd() }),
-      ]
-    : [];
 
   const runtime = await createKoi({
     manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
     adapter: bridge,
     middleware: tracedMiddleware,
-    providers,
+    providers: [...config.providers],
     loopDetection: false,
   });
 
@@ -295,7 +292,7 @@ async function recordFullStackTrajectory(
     /* drain */
   }
 
-  // Manually flush event-trace (engine's onSessionEnd may not complete before we read)
+  // Flush event-trace
   const fakeSession = {
     agentId: name,
     sessionId: docId as never,
@@ -317,7 +314,7 @@ async function recordFullStackTrajectory(
   await runtime.dispose();
   await new Promise((r) => setTimeout(r, 300));
 
-  // Save full ATIF document
+  // Save ATIF document
   const { readdir, readFile } = await import("node:fs/promises");
   const files = await readdir(trajDir);
   const atifFile = files.find((f) => f.endsWith(".atif.json"));
@@ -328,6 +325,7 @@ async function recordFullStackTrajectory(
   const rawAtif = JSON.parse(await readFile(`${trajDir}/${atifFile}`, "utf-8"));
   await Bun.write(`${FIXTURES}/${name}.trajectory.json`, JSON.stringify(rawAtif, null, 2));
 
+  // Print summary
   const steps = rawAtif.steps ?? [];
   console.log(
     `  ${steps.length} steps | model: ${rawAtif.agent?.model_name} | tools: ${JSON.stringify(rawAtif.agent?.tool_definitions?.map((t: { name: string }) => t.name) ?? [])}`,
@@ -346,14 +344,120 @@ async function recordFullStackTrajectory(
               : s.source === "tool"
                 ? "TOOL"
                 : s.source;
+    const obs = s.observation?.results?.[0]?.content ?? "";
+    const obsPreview = obs ? ` → ${obs.slice(0, 60)}` : "";
     console.log(
-      `  [${s.step_id.toString().padStart(2)}] ${label.padEnd(20)} ${s.outcome ?? "?"} ${(s.duration_ms ?? 0).toFixed(0).padStart(5)}ms`,
+      `  [${s.step_id.toString().padStart(2)}] ${label.padEnd(20)} ${(s.outcome ?? "?").padEnd(8)} ${(s.duration_ms ?? 0).toFixed(0).padStart(5)}ms${obsPreview}`,
     );
   }
 
   const { rmSync } = await import("node:fs");
   rmSync(trajDir, { recursive: true, force: true });
 }
+
+// =========================================================================
+// Query configs
+// =========================================================================
+
+const BYPASS_RULES: readonly SourcedRule[] = [
+  { pattern: "*", action: "*", effect: "allow", source: "policy" },
+];
+
+const queries: readonly QueryConfig[] = [
+  // 1. simple-text: text response, no tools
+  {
+    name: "simple-text",
+    prompt: "What is 2+2? Answer with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-model-done",
+        cmd: ["echo", "model-done"],
+        filter: { events: ["model.completed"] },
+      },
+    ],
+    providers: [],
+  },
+
+  // 2. tool-use: add_numbers tool call
+  {
+    name: "tool-use",
+    prompt:
+      "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.executed"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+  },
+
+  // 3. glob-use: Glob builtin tool call (@koi/tools-builtin exercised)
+  {
+    name: "glob-use",
+    prompt:
+      'Use the Glob tool to find files matching "package.json" in the current directory. Report the count of matches.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.executed"] },
+      },
+    ],
+    providers: [createBuiltinSearchProvider({ cwd: process.cwd() })],
+  },
+
+  // 4. permission-deny: permissions in default mode denies add_numbers
+  {
+    name: "permission-deny",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    permissionMode: "default",
+    permissionRules: [
+      // Deny add_numbers — the LLM should see it filtered from available tools
+      { pattern: "tool:add_numbers", action: "*", effect: "deny", source: "policy" },
+      // Allow everything else
+      { pattern: "*", action: "*", effect: "allow", source: "user" },
+    ],
+    permissionDescription: "default mode — add_numbers denied",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.executed"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+  },
+];
 
 // =========================================================================
 // Record everything
@@ -384,18 +488,14 @@ await recordCassette("tool-use", () =>
   }),
 );
 
-// Full-stack ATIF trajectories (both golden queries)
-// simple-text: covers model call, MCP lifecycle, MW spans (hook-dispatch + permissions), hooks
-// tool-use: covers model call, tool call, MCP lifecycle, MW spans, hooks, permissions wrapToolCall
-await recordFullStackTrajectory("simple-text", "What is 2+2? Answer with just the number.", false);
-await recordFullStackTrajectory(
-  "tool-use",
-  "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-  true,
-);
+// Full-stack ATIF trajectories
+for (const q of queries) {
+  await recordTrajectory(q);
+}
 
-console.log("\nDone. 4 fixture files ready:");
+console.log(`\nDone. ${2 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
-console.log("  fixtures/simple-text.trajectory.json");
 console.log("  fixtures/tool-use.cassette.json");
-console.log("  fixtures/tool-use.trajectory.json");
+for (const q of queries) {
+  console.log(`  fixtures/${q.name}.trajectory.json`);
+}

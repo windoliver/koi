@@ -1,7 +1,7 @@
 {
   "name": "simple-text",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775115347087,
+  "recordedAt": 1775115743550,
   "chunks": [
     {
       "kind": "text_delta",
@@ -22,7 +22,7 @@
         "content": "4\n",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "stop",
-        "responseId": "gen-1775115346-ri11Dpjo8Udt9k8af8Pf",
+        "responseId": "gen-1775115743-Mb4T42bTLrahEkxlNh2H",
         "richContent": [
           {
             "kind": "text",

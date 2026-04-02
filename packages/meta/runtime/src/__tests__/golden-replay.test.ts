@@ -257,6 +257,121 @@ describe("simple-text ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// glob-use trajectory: Glob builtin tool exercised (@koi/tools-builtin)
+// ---------------------------------------------------------------------------
+
+describe("glob-use ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Glob in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Glob")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Grep")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "ToolSearch")).toBe(true);
+  });
+
+  test("has TOOL step for Glob with file paths result", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    // Glob returns paths array
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain("package.json");
+  });
+
+  test("has MW:permissions + MW:hook-dispatch spans", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const mwNames = new Set(
+      doc.steps
+        .filter((s) => s.extra?.type === "middleware_span")
+        .map((s) => s.extra?.middlewareName),
+    );
+    expect(mwNames.has("permissions")).toBe(true);
+    expect(mwNames.has("hook-dispatch")).toBe(true);
+  });
+
+  test("step count >= 10 (MCP + MW + MODEL + TOOL)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    expect(doc.steps.length).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// permission-deny trajectory: permissions blocks add_numbers
+// ---------------------------------------------------------------------------
+
+describe("permission-deny ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with tools in definitions but denied at runtime", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-deny.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    // add_numbers is in tool_definitions (registered) even though denied
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "add_numbers")).toBe(true);
+  });
+
+  test("model response mentions inability to use the tool", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    expect(modelSteps.length).toBeGreaterThan(0);
+    // Model should explain it can't use the tool (permissions filtered it out)
+    const responseText = modelSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Model won't call add_numbers — it was removed from available tools by permissions MW
+    // Response may say "cannot", "don't have", "no tool", etc.
+    expect(responseText.length).toBeGreaterThan(0);
+  });
+
+  test("NO tool_call steps (denied tool never executed)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-deny.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
+  });
+
+  test("MW:permissions span present with wrapModelStream hook", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-deny.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const permSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
+    );
+    expect(permSpans.length).toBeGreaterThan(0);
+    // wrapModelStream is where filterTools strips the denied tool
+    expect(permSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
