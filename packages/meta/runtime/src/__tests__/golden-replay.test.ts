@@ -11,12 +11,38 @@
  * Re-record: OPENROUTER_API_KEY=... bun run packages/meta/runtime/scripts/record-cassettes.ts
  */
 
-import { describe, expect, test } from "bun:test";
-import type { EngineEvent, JsonObject } from "@koi/core";
+import { afterEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import type {
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  JsonObject,
+  ModelChunk,
+  ModelRequest,
+  ModelResponse,
+  ToolRequest,
+  ToolResponse,
+} from "@koi/core";
+import { createSingleToolProvider } from "@koi/core";
+import { createKoi } from "@koi/engine";
+import { createEventTraceMiddleware } from "@koi/event-trace";
+import { loadHooks } from "@koi/hooks";
+import { createTransportStateMachine } from "@koi/mcp";
+import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
+import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+import { buildTool } from "@koi/tools-core";
 import { loadCassette } from "../cassette/load-cassette.js";
+import { createHookDispatchMiddleware } from "../middleware/hook-dispatch.js";
+import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
+import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
+import { createAtifDocumentStore } from "../trajectory/atif-store.js";
+import { createFsAtifDelegate } from "../trajectory/fs-delegate.js";
 
 const FIXTURES = `${import.meta.dirname}/../../fixtures`;
+const MODEL = "google/gemini-2.0-flash-001";
 
 async function collectEvents(stream: AsyncIterable<EngineEvent>): Promise<readonly EngineEvent[]> {
   const events: EngineEvent[] = [];
@@ -73,7 +99,287 @@ describe("Cassette replay: tool use flow", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tool-use trajectory: full ATIF validation (14 steps, all L2 packages)
+// Full-loop replay: cassette → createKoi → live ATIF (no LLM, CI-safe)
+// ---------------------------------------------------------------------------
+
+const trajDirs: string[] = [];
+afterEach(() => {
+  for (const dir of trajDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  trajDirs.length = 0;
+});
+
+// Tool: add_numbers via @koi/tools-core
+const addToolResult = buildTool({
+  name: "add_numbers",
+  description: "Add two numbers together",
+  inputSchema: {
+    type: "object",
+    properties: { a: { type: "number" }, b: { type: "number" } },
+    required: ["a", "b"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => ({
+    result: (args.a as number) + (args.b as number),
+  }),
+});
+if (!addToolResult.ok) throw new Error(`buildTool failed: ${addToolResult.error.message}`);
+const addTool = addToolResult.value;
+
+/**
+ * Creates a mock adapter that replays cassette chunks through modelStream terminal.
+ * The bridge adapter handles the model→tool→model loop using consumeModelStream.
+ */
+function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
+  // Track how many times the model terminal is called — cassette is for first call only,
+  // second call (after tool result) returns a simple text done response
+  // let: mutable call counter
+  let callCount = 0;
+
+  return {
+    engineId: "cassette-replay",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: {
+      modelCall: async (_request: ModelRequest): Promise<ModelResponse> => ({
+        content: "fallback",
+        model: MODEL,
+      }),
+      modelStream: (_request: ModelRequest): AsyncIterable<ModelChunk> => {
+        const currentCall = callCount;
+        callCount++;
+        if (currentCall === 0) {
+          // First call: replay cassette chunks
+          return toAsyncIterable(chunks);
+        }
+        // Subsequent calls: return simple text done (model has seen tool result)
+        return toAsyncIterable([
+          { kind: "text_delta" as const, delta: "12" },
+          {
+            kind: "done" as const,
+            response: { content: "12", model: MODEL, usage: { inputTokens: 10, outputTokens: 1 } },
+          },
+        ]);
+      },
+      toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+        // Execute real tool
+        const output = await addTool.execute(request.input);
+        return { output };
+      },
+    },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      const h = input.callHandlers;
+      if (!h) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const msgs: {
+        readonly senderId: string;
+        readonly timestamp: number;
+        readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+        readonly metadata?: JsonObject;
+      }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
+      return (async function* () {
+        // let: mutable
+        let turn = 0;
+        while (turn < 2) {
+          const evts: EngineEvent[] = [];
+          // let: mutable
+          let done: EngineEvent | undefined;
+          for await (const e of consumeModelStream(
+            h.modelStream
+              ? h.modelStream({ messages: msgs, model: MODEL })
+              : (async function* (): AsyncIterable<ModelChunk> {
+                  const r = await h.modelCall({ messages: msgs, model: MODEL });
+                  yield { kind: "done" as const, response: { content: r.content, model: MODEL } };
+                })(),
+            input.signal,
+          )) {
+            if (e.kind === "done") done = e;
+            else {
+              evts.push(e);
+              yield e;
+            }
+          }
+          const tcs = evts.filter((e) => e.kind === "tool_call_end");
+          if (tcs.length === 0) {
+            if (done) yield done;
+            break;
+          }
+          for (const tc of tcs) {
+            if (tc.kind !== "tool_call_end") continue;
+            const r = tc.result as { readonly toolName: string; readonly parsedArgs?: JsonObject };
+            if (!r.parsedArgs) continue;
+            msgs.push({
+              senderId: "assistant",
+              timestamp: Date.now(),
+              content: [{ kind: "text", text: "" }],
+              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+            });
+            const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
+            const out = typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
+            msgs.push({
+              senderId: "tool",
+              timestamp: Date.now(),
+              content: [{ kind: "text", text: out }],
+              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+            });
+          }
+          turn++;
+        }
+        yield {
+          kind: "done" as const,
+          output: {
+            content: [],
+            stopReason: "max_turns" as const,
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        };
+      })();
+    },
+  };
+}
+
+describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () => {
+  test("produces live ATIF with MCP, MW spans, hooks, model+tool steps", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-tool-use";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    // @koi/event-trace
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-test",
+    });
+
+    // @koi/hooks
+    const hookResult = loadHooks([
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "hook"],
+        filter: { events: ["tool.executed"] },
+      },
+    ]);
+    const hookMw = createHookDispatchMiddleware({
+      hooks: hookResult.ok ? hookResult.value : [],
+      store,
+      docId,
+    });
+
+    // @koi/permissions + @koi/middleware-permissions
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permMiddleware = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "replay test (bypass)",
+    });
+
+    // @koi/mcp
+    const mcpSm = createTransportStateMachine();
+    const unsubMcp = recordMcpLifecycle({
+      stateMachine: mcpSm,
+      store,
+      docId,
+      serverName: "test-mcp",
+    });
+    mcpSm.transition({ kind: "connecting", attempt: 1 });
+    mcpSm.transition({ kind: "connected" });
+
+    // Mock adapter replaying cassette chunks
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    // Run the full loop
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    // Flush
+    unsubMcp();
+    mcpSm.transition({ kind: "closed" });
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate live ATIF
+    const steps = await store.getDocument(docId);
+
+    // MCP lifecycle
+    const mcpSteps = steps.filter((s) => s.metadata?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(2);
+    expect(mcpSteps.some((s) => s.metadata?.transportState === "connecting")).toBe(true);
+    expect(mcpSteps.some((s) => s.metadata?.transportState === "connected")).toBe(true);
+
+    // Model call steps
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // Tool call step — add_numbers executed with result 12
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+    expect(toolSteps[0]?.response?.text).toContain("12");
+
+    // Hook execution
+    const hookSteps = steps.filter((s) => s.metadata?.type === "hook_execution");
+    expect(hookSteps.length).toBeGreaterThan(0);
+    expect(hookSteps[0]?.metadata?.hookName).toBe("on-tool-exec");
+
+    // MW spans — permissions + hook-dispatch
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    expect(mwSpans.length).toBeGreaterThan(0);
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("permissions")).toBe(true);
+    expect(mwNames.has("hook-dispatch")).toBe(true);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// tool-use trajectory: static ATIF validation (golden file)
 // ---------------------------------------------------------------------------
 
 describe("tool-use ATIF trajectory (golden file)", () => {
