@@ -125,6 +125,12 @@ interface CreateHookMiddlewareOptions {
     /** Validated hook configs to dispatch. Typically from \`loadHooks()\`. */
     readonly hooks: readonly HookConfig[];
 }
+/** Result of aggregating hook decisions — includes the winning hook's identity. */
+interface AggregatedDecision {
+    readonly decision: HookDecision;
+    /** Name of the hook that produced the winning decision (set for block). */
+    readonly hookName?: string;
+}
 /**
  * Aggregate hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
@@ -132,8 +138,10 @@ interface CreateHookMiddlewareOptions {
  * - First \`block\` wins immediately (short-circuits).
  * - Multiple \`modify\` patches are merged (later patches override earlier keys).
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ *
+ * Returns the decision plus the winning hook's name (for block decisions).
  */
-declare function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision;
+declare function aggregateDecisions(results: readonly HookExecutionResult[]): AggregatedDecision;
 /**
  * Creates a KoiMiddleware that dispatches hook definitions to command/http
  * executors during the engine lifecycle.
@@ -191,6 +199,6 @@ declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { type CreateHookMiddlewareOptions, type HookRegistry, type LoadHooksResult, aggregateDecisions, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
+export { type AggregatedDecision, type CreateHookMiddlewareOptions, type HookRegistry, type LoadHooksResult, aggregateDecisions, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
 "
 `;
