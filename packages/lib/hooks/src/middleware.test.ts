@@ -573,7 +573,7 @@ describe("wrapModelCall", () => {
     expect(passedRequest.systemPrompt).toBe("original");
   });
 
-  it("blocks model call when hook returns block decision", async () => {
+  it("throws when hook returns block decision (consistent with onBeforeTurn)", async () => {
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await startSessionThen(mw, executeSpy, [
       successResult("guard", { kind: "block", reason: "context too large" }),
@@ -585,12 +585,11 @@ describe("wrapModelCall", () => {
     });
 
     const request: ModelRequest = { messages: [], model: "test-model" };
-    const result = await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
-    assertDefined(result);
 
+    await expect(mw.wrapModelCall?.(makeTurnCtx(), request, nextFn)).rejects.toThrow(
+      "Model call blocked by hook: context too large",
+    );
     expect(nextFn).not.toHaveBeenCalled();
-    expect(result.content).toContain("context too large");
-    expect(result.metadata).toEqual({ blockedByHook: true });
   });
 });
 
@@ -649,6 +648,8 @@ describe("wrapModelStream", () => {
     expect(chunks[0]?.kind).toBe("error");
     if (chunks[0]?.kind === "error") {
       expect(chunks[0].message).toContain("not today");
+      expect(chunks[0].code).toBe("PERMISSION");
+      expect(chunks[0].retryable).toBe(false);
     }
   });
 
