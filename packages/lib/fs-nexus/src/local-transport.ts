@@ -42,6 +42,8 @@ export interface LocalTransportConfig {
    * Never logged or included in error messages.
    */
   readonly env?: Readonly<Record<string, string>> | undefined;
+  /** Per-RPC call timeout (ms). Default: 30_000. Kills bridge on expiry. */
+  readonly callTimeoutMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +52,7 @@ export interface LocalTransportConfig {
 
 const DEFAULT_PYTHON = "python3";
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * Resolve bridge.py path — works from both src/ (dev) and dist/ (built).
@@ -106,6 +109,7 @@ function createLineReader(stream: ReadableStream<Uint8Array>): {
 export async function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport> {
   const pythonPath = config.pythonPath ?? DEFAULT_PYTHON;
   const startupTimeout = config.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+  const callTimeout = config.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const mountUris = typeof config.mountUri === "string" ? [config.mountUri] : config.mountUri;
 
   const spawnEnv = config.env !== undefined ? { ...process.env, ...config.env } : process.env;
@@ -177,8 +181,16 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
         proc.stdin.write(`${request}\n`);
         await proc.stdin.flush();
 
-        // Read response from stdout (persistent reader)
-        const line = await lineReader.nextLine();
+        // Read response from stdout with per-call timeout.
+        // If the bridge stalls, we timeout and kill the process
+        // so queued operations fail fast instead of wedging.
+        const line = await Promise.race([
+          lineReader.nextLine(),
+          rejectAfter(
+            callTimeout,
+            `Bridge call "${method}" timed out after ${String(callTimeout)}ms`,
+          ),
+        ]);
         const response = JSON.parse(line) as JsonRpcResponse<T>;
 
         // Verify response matches our request
@@ -204,6 +216,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             ok: false,
             error: { code: "INTERNAL", message: "Transport closed", retryable: false },
           };
+        }
+        // On timeout, kill the bridge so queued calls fail fast
+        const isTimeout = e instanceof Error && e.message.includes("timed out");
+        if (isTimeout) {
+          close();
         }
         return { ok: false, error: mapNexusError(e, method) };
       }

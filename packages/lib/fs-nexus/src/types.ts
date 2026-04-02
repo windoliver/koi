@@ -9,7 +9,7 @@ import type { KoiError, Result } from "@koi/core";
 // ---------------------------------------------------------------------------
 
 export interface NexusFileSystemConfig {
-  /** Nexus server URL, e.g. "http://localhost:3100" or "unix:///tmp/nexus.sock". */
+  /** Nexus server URL, e.g. "http://localhost:3100" or "https://nexus.example.com". */
   readonly url: string;
   /** Optional API key for Bearer auth. */
   readonly apiKey?: string | undefined;

@@ -51,14 +51,23 @@ async def dispatch(fs, method, params):
 
         # Enforce optimistic concurrency: if if_match is set,
         # verify the current etag matches before writing.
+        # Treat missing file or missing etag as conflict — prevents
+        # resurrecting deleted files with stale content.
         if if_match is not None:
             current_stat = await fs.stat(path)
-            if current_stat is not None:
-                current_etag = current_stat.get("etag")
-                if current_etag is not None and current_etag != if_match:
-                    raise ConflictError(
-                        f"Conflict: file was modified (expected etag {if_match}, got {current_etag})"
-                    )
+            if current_stat is None:
+                raise ConflictError(
+                    f"Conflict: file was deleted (expected etag {if_match}, file no longer exists)"
+                )
+            current_etag = current_stat.get("etag")
+            if current_etag is None:
+                raise ConflictError(
+                    f"Conflict: backend does not provide etag for {path}, cannot verify if_match"
+                )
+            if current_etag != if_match:
+                raise ConflictError(
+                    f"Conflict: file was modified (expected etag {if_match}, got {current_etag})"
+                )
 
         result = await fs.write(path, raw) or {}
         size = len(raw)

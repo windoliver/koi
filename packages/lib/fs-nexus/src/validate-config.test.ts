@@ -43,6 +43,22 @@ describe("validateNexusFileSystemConfig", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("rejects unix:// url (not implemented)", () => {
+    const result = validateNexusFileSystemConfig({ url: "unix:///tmp/nexus.sock" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("http://");
+  });
+
+  test("rejects ftp:// url", () => {
+    const result = validateNexusFileSystemConfig({ url: "ftp://example.com" });
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts https:// url", () => {
+    const result = validateNexusFileSystemConfig({ url: "https://nexus.example.com" });
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects mountPoint with ..", () => {
     const result = validateNexusFileSystemConfig({
       url: "http://localhost",

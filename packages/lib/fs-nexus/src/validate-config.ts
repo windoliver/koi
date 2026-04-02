@@ -34,6 +34,19 @@ export function validateNexusFileSystemConfig(
     };
   }
 
+  // Only HTTP(S) URLs are supported by the HTTP transport.
+  // Unix socket transport is not implemented.
+  if (!c.url.startsWith("http://") && !c.url.startsWith("https://")) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `NexusFileSystemConfig.url must use http:// or https:// scheme, got: "${c.url.split("://")[0] ?? "unknown"}://"`,
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+
   if (c.mountPoint !== undefined) {
     if (typeof c.mountPoint !== "string") {
       return {
