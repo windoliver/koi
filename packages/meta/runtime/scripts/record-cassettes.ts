@@ -241,23 +241,25 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             if (tc.kind !== "tool_call_end") continue;
             const r = tc.result as { readonly toolName: string; readonly parsedArgs?: JsonObject };
             if (!r.parsedArgs) continue;
+            // Use the real callId from the model, not the tool name
+            const realCallId = tc.callId as string;
             // Append assistant message (the tool-use intent)
             msgs.push({
               senderId: "assistant",
               timestamp: Date.now(),
               content: [{ kind: "text", text: "" }],
-              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+              metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
             });
             try {
               const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
               const out =
                 typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
-              // Append tool result with callId linkage — no text injection hacks
+              // Append tool result with real callId linkage
               msgs.push({
                 senderId: "tool",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: out }],
-                metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
               });
             } catch (toolErr: unknown) {
               const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -265,7 +267,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
                 senderId: "tool",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: `error: ${errMsg}` }],
-                metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
               });
             }
           }
@@ -300,27 +302,26 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     /* drain */
   }
 
-  // Flush event-trace
-  const fakeSession = {
-    agentId: name,
-    sessionId: docId as never,
-    runId: `${docId}:r0` as never,
-    metadata: {},
-  };
-  const fakeTurn = {
-    session: fakeSession,
-    turnIndex: 0,
-    turnId: `${docId}:r0:t0` as never,
-    messages: [] as readonly never[],
-    metadata: {},
-  };
-  if (eventTrace.onAfterTurn) await eventTrace.onAfterTurn(fakeTurn);
-  if (eventTrace.onSessionEnd) await eventTrace.onSessionEnd(fakeSession);
-
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
   await runtime.dispose();
-  await new Promise((r) => setTimeout(r, 300));
+
+  // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
+  // Poll the store until model steps appear or timeout.
+  const maxWaitMs = 3000;
+  const pollIntervalMs = 100;
+  // let: mutable
+  let waited = 0;
+  while (waited < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    waited += pollIntervalMs;
+    const current = await store.getDocument(docId).catch(() => []);
+    const hasModelStep = current.some((s) => s.source === "agent");
+    // simple-text has no tools so model step is the only agent step
+    // For queries with tools, we need model + tool steps
+    if (hasModelStep || waited >= maxWaitMs) break;
+  }
+  console.log(`  Waited ${waited}ms for trajectory flush`);
 
   // Save ATIF document
   const { readdir, readFile } = await import("node:fs/promises");

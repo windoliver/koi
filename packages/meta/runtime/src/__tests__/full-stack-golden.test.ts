@@ -250,12 +250,13 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
                 readonly parsedArgs?: JsonObject;
               };
               if (!result.parsedArgs) continue;
+              const realCallId = tc.callId as string;
               // Assistant message (tool-use intent)
               messages.push({
                 senderId: "assistant",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: "" }],
-                metadata: { callId: result.toolName, toolName: result.toolName } as JsonObject,
+                metadata: { callId: realCallId, toolName: result.toolName } as JsonObject,
               });
               const toolResponse = await handlers.toolCall({
                 toolId: result.toolName,
@@ -265,12 +266,12 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
                 typeof toolResponse.output === "string"
                   ? toolResponse.output
                   : JSON.stringify(toolResponse.output);
-              // Tool result with callId linkage
+              // Tool result with real callId linkage
               messages.push({
                 senderId: "tool",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: out }],
-                metadata: { callId: result.toolName, toolName: result.toolName } as JsonObject,
+                metadata: { callId: realCallId, toolName: result.toolName } as JsonObject,
               });
             }
             turnIndex++;

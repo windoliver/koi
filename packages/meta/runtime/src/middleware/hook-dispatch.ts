@@ -121,18 +121,22 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      const response = await next(request);
-
-      // Post-execution: turn.ended (observe only, no decisions enforced)
-      const event: HookEvent = {
-        event: "turn.ended",
-        agentId: ctx.session.agentId,
-        sessionId: ctx.session.sessionId as string,
-      };
-      const results = await executeHooks(hooks, event, ctx.signal ?? signal);
-      await recordHookResults(results, "turn.ended");
-
-      return response;
+      try {
+        return await next(request);
+      } finally {
+        // turn.ended fires on success, error, and cancellation — always.
+        try {
+          const event: HookEvent = {
+            event: "turn.ended",
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId as string,
+          };
+          const results = await executeHooks(hooks, event, ctx.signal ?? signal);
+          await recordHookResults(results, "turn.ended");
+        } catch {
+          // Observer hook dispatch must not mask the original error
+        }
+      }
     },
 
     async *wrapModelStream(
@@ -140,16 +144,22 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      yield* next(request);
-
-      // Post-execution: turn.ended (observe only, same as wrapModelCall)
-      const event: HookEvent = {
-        event: "turn.ended",
-        agentId: ctx.session.agentId,
-        sessionId: ctx.session.sessionId as string,
-      };
-      const results = await executeHooks(hooks, event, ctx.signal ?? signal);
-      await recordHookResults(results, "turn.ended");
+      try {
+        yield* next(request);
+      } finally {
+        // turn.ended fires on success, error, abort, and consumer cancellation — always.
+        try {
+          const event: HookEvent = {
+            event: "turn.ended",
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId as string,
+          };
+          const results = await executeHooks(hooks, event, ctx.signal ?? signal);
+          await recordHookResults(results, "turn.ended");
+        } catch {
+          // Observer hook dispatch must not mask the original error
+        }
+      }
     },
 
     async wrapToolCall(

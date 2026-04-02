@@ -399,7 +399,7 @@ describe("wrapModelStream", () => {
 // ---------------------------------------------------------------------------
 
 describe("turn-based flush", () => {
-  test("steps are not persisted until onAfterTurn", async () => {
+  test("steps are persisted immediately on capture (not deferred to onAfterTurn)", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({
       store,
@@ -414,12 +414,7 @@ describe("turn-based flush", () => {
       makeModelResponse(),
     );
 
-    // Before onAfterTurn, store should be empty
-    expect(store.steps).toHaveLength(0);
-
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
-
-    // After onAfterTurn, store should have the step
+    // Immediately persisted — no need to wait for onAfterTurn
     expect(store.steps).toHaveLength(1);
   });
 
@@ -531,17 +526,17 @@ describe("concurrent tool calls", () => {
     });
 
     await Promise.all([toolA, toolB]);
-    await middleware.onAfterTurn?.(makeTurnCtx(0));
 
-    const steps = store.steps[0] ?? [];
-    expect(steps).toHaveLength(2);
+    // With immediate recording, each tool writes its own append()
+    const allSteps = store.steps.flat();
+    expect(allSteps).toHaveLength(2);
 
     // Both should have unique indices
-    const indices = steps.map((s) => s.stepIndex);
+    const indices = allSteps.map((s) => s.stepIndex);
     expect(new Set(indices).size).toBe(2);
 
     // Both results should be recorded
-    const identifiers = steps.map((s) => s.identifier);
+    const identifiers = allSteps.map((s) => s.identifier);
     expect(identifiers).toContain("tool_a");
     expect(identifiers).toContain("tool_b");
   });
@@ -740,7 +735,8 @@ describe("describeCapabilities", () => {
 
     const caps = middleware.describeCapabilities(makeTurnCtx(0));
     expect(caps?.label).toBe("tracing");
-    expect(caps?.description).toContain("1");
+    // With immediate recording, retryQueue is 0 after successful write
+    expect(caps?.description).toContain("0");
   });
 });
 

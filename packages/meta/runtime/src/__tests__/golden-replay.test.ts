@@ -224,11 +224,12 @@ function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
             if (tc.kind !== "tool_call_end") continue;
             const r = tc.result as { readonly toolName: string; readonly parsedArgs?: JsonObject };
             if (!r.parsedArgs) continue;
+            const realCallId = tc.callId as string;
             msgs.push({
               senderId: "assistant",
               timestamp: Date.now(),
               content: [{ kind: "text", text: "" }],
-              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+              metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
             });
             const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
             const out = typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
@@ -236,7 +237,7 @@ function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
               senderId: "tool",
               timestamp: Date.now(),
               content: [{ kind: "text", text: out }],
-              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+              metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
             });
           }
           turn++;
