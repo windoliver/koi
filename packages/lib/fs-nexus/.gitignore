@@ -1,0 +1,5 @@
+# nexus-fs CAS artifacts from integration tests
+varfolders/
+tmpkoi-test-debug/
+dist/
+coverage/

@@ -1,0 +1,95 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
+"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-wWT0z40R.js';
+import { FileSystemBackend, Result, KoiError } from '@koi/core';
+
+/**
+ * Local subprocess transport — spawns a Python bridge process that
+ * wraps SlimNexusFS with stdin/stdout JSON-RPC.
+ *
+ * No HTTP server, no port, no network. Just IPC at ~1-2ms per call.
+ *
+ * Usage:
+ *   const transport = await createLocalTransport({ mountUri: "local://./workspace" });
+ *   // transport implements NexusTransport — plug into createNexusFileSystem
+ */
+
+interface LocalTransportConfig {
+    /** Nexus mount URI, e.g. "local://./workspace" or "local:///tmp/agent-data". */
+    readonly mountUri: string;
+    /** Path to Python 3 executable. Default: "python3". */
+    readonly pythonPath?: string | undefined;
+    /** Max time to wait for the bridge process to start (ms). Default: 10_000. */
+    readonly startupTimeoutMs?: number | undefined;
+}
+/**
+ * Spawn a local nexus-fs bridge process and return a NexusTransport.
+ *
+ * The bridge imports SlimNexusFS, mounts the given URI, and speaks
+ * JSON-RPC 2.0 over stdin/stdout. No HTTP server needed.
+ *
+ * Call \`transport.close()\` to kill the subprocess.
+ */
+declare function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;
+
+/**
+ * Nexus-backed FileSystemBackend implementation.
+ *
+ * Each operation delegates to a Nexus JSON-RPC call via the transport layer.
+ * Edit and search fall back to client-side composites when the Nexus method
+ * is unavailable (METHOD_NOT_FOUND).
+ */
+
+/** Extended config that allows injecting a transport (for testing). */
+interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
+    /** Injected transport — overrides HTTP transport creation. For testing only. */
+    readonly transport?: NexusTransport | undefined;
+}
+/** Create a Nexus-backed FileSystemBackend for remote file operations. */
+declare function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend;
+
+/**
+ * Config validation for NexusFileSystemConfig.
+ */
+
+/** Validate NexusFileSystemConfig at the system boundary. */
+declare function validateNexusFileSystemConfig(config: unknown): Result<NexusFileSystemConfig, KoiError>;
+
+export { type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
+"
+`;
+
+exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
+"import { FileSystemBackend } from '@koi/core';
+import { N as NexusTransport } from './types-wWT0z40R.js';
+
+/**
+ * Reusable FileSystemBackend contract test suite.
+ *
+ * Tests only the interface — no implementation-specific assertions.
+ * Any backend (mock, local, Nexus) that passes this suite satisfies the L0 contract.
+ *
+ * Will be extracted to a shared test package when a 2nd backend arrives.
+ */
+
+declare function runFileSystemBackendContractTests(createBackend: () => FileSystemBackend | Promise<FileSystemBackend>): void;
+
+/**
+ * Fake Nexus transport for unit tests.
+ *
+ * In-memory filesystem store that handles all Nexus RPC methods.
+ * Supports error injection for testing error paths.
+ */
+
+interface FakeTransportOptions {
+    /** Force a specific RPC method to fail with a JSON-RPC error code. */
+    readonly failMethod?: string | undefined;
+    readonly failCode?: number | undefined;
+    readonly failMessage?: string | undefined;
+}
+declare function createFakeNexusTransport(options?: FakeTransportOptions): NexusTransport;
+
+export { type FakeTransportOptions, createFakeNexusTransport, runFileSystemBackendContractTests };
+"
+`;

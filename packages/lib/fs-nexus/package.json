@@ -1,0 +1,29 @@
+{
+  "name": "@koi/fs-nexus",
+  "description": "Nexus-backed FileSystemBackend via JSON-RPC",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/edit-match": "workspace:*",
+    "@koi/errors": "workspace:*"
+  }
+}

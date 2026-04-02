@@ -1137,3 +1137,49 @@ describe("Golden: @koi/mcp", () => {
     await server.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/fs-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/fs-nexus", () => {
+  test("createNexusFileSystem returns a FileSystemBackend with all operations", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    expect(backend.name).toBe("nexus");
+    expect(typeof backend.read).toBe("function");
+    expect(typeof backend.write).toBe("function");
+    expect(typeof backend.edit).toBe("function");
+    expect(typeof backend.list).toBe("function");
+    expect(typeof backend.search).toBe("function");
+    expect(typeof backend.delete).toBe("function");
+    expect(typeof backend.rename).toBe("function");
+    expect(typeof backend.dispose).toBe("function");
+  });
+
+  test("round-trip write/read through fake transport", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    const writeResult = await backend.write("/golden/test.txt", "golden content");
+    expect(writeResult.ok).toBe(true);
+
+    const readResult = await backend.read("/golden/test.txt");
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("golden content");
+      expect(readResult.value.path).toBe("/golden/test.txt");
+    }
+  });
+});
