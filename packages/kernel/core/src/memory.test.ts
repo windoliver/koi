@@ -661,6 +661,15 @@ describe("validateMemoryFilePath", () => {
     expect(validateMemoryFilePath("%2fetc/passwd.md")).toBeDefined();
   });
 
+  test("rejects double-encoded traversal", () => {
+    expect(validateMemoryFilePath("%252e%252e%252fsecret.md")).toBeDefined();
+    expect(validateMemoryFilePath("%252e%252e/secret.md")).toBeDefined();
+  });
+
+  test("rejects double-encoded absolute path", () => {
+    expect(validateMemoryFilePath("%252fetc/passwd.md")).toBeDefined();
+  });
+
   test("rejects non-.md extensions", () => {
     expect(validateMemoryFilePath("test.txt")).toBeDefined();
     expect(validateMemoryFilePath("test.json")).toBeDefined();
@@ -834,6 +843,42 @@ describe("formatMemoryIndexEntry (path validation)", () => {
       hook: "valid path",
     };
     expect(formatMemoryIndexEntry(entry)).toBeDefined();
+  });
+
+  test("rejects empty title after sanitization", () => {
+    const entry: MemoryIndexEntry = {
+      title: "",
+      filePath: "test.md",
+      hook: "a hook",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("rejects whitespace-only title after sanitization", () => {
+    const entry: MemoryIndexEntry = {
+      title: "   ",
+      filePath: "test.md",
+      hook: "a hook",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("rejects empty hook after sanitization", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Valid",
+      filePath: "test.md",
+      hook: "",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
+  });
+
+  test("rejects whitespace-only hook after sanitization", () => {
+    const entry: MemoryIndexEntry = {
+      title: "Valid",
+      filePath: "test.md",
+      hook: "   ",
+    };
+    expect(formatMemoryIndexEntry(entry)).toBeUndefined();
   });
 });
 

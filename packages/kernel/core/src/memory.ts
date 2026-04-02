@@ -382,6 +382,8 @@ function decodePathForValidation(path: string): string {
 export function validateMemoryFilePath(filePath: string): string | undefined {
   // Decode percent-encoded sequences first to catch encoded traversal
   const decoded = decodePathForValidation(filePath);
+  // Reject any remaining percent-encoded sequences after decode (double-encoding)
+  if (/%[0-9a-fA-F]{2}/.test(decoded)) return "file path must not contain double-encoded sequences";
   const normalized = decoded.replace(/\\/g, "/").trim();
   if (normalized.length === 0) return "file path must not be empty";
   if (normalized.startsWith("/")) return "file path must be relative, not absolute";
@@ -458,17 +460,23 @@ function unescapeFilePath(value: string): string {
  * are escaped for roundtrip fidelity with `parseMemoryIndexEntry`.
  *
  * File paths are validated: must be relative, no `..` traversal, `.md` extension.
- * Returns undefined if the file path is invalid.
+ * Returns undefined if any field is empty after sanitization or the path is invalid.
  */
 export function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined {
   const sanitizedPath = sanitizeIndexValue(entry.filePath);
   const pathError = validateMemoryFilePath(sanitizedPath);
   if (pathError !== undefined) return undefined;
 
-  const title = escapeTitle(sanitizeIndexValue(entry.title));
+  const sanitizedTitle = sanitizeIndexValue(entry.title);
+  const sanitizedHook = sanitizeIndexValue(entry.hook);
+
+  // Reject empty fields after sanitization — parser requires non-empty captures
+  if (sanitizedTitle.length === 0) return undefined;
+  if (sanitizedHook.length === 0) return undefined;
+
+  const title = escapeTitle(sanitizedTitle);
   const filePath = escapeFilePath(sanitizedPath);
-  const hook = sanitizeIndexValue(entry.hook);
-  return `- [${title}](${filePath}) — ${hook}`;
+  return `- [${title}](${filePath}) — ${sanitizedHook}`;
 }
 
 /**
