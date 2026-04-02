@@ -172,7 +172,41 @@ export async function* consumeModelStream(
         // If present, downgrade to error so incomplete tool calls cannot
         // disappear silently behind a "completed" stop reason.
         const danglingOnDone = buildDanglingToolCalls(accumulators);
-        const stopReason = danglingOnDone.length > 0 ? "error" : "completed";
+
+        // Determine engine stop reason. Priority:
+        // 1. Dangling tool calls → "error" (incomplete response)
+        // 2. Non-success model stop reason (error, hook_blocked) → "error"
+        //    (preserve denial/failure signal from middleware or provider)
+        // 3. Otherwise → "completed"
+        const responseStopReason = chunk.response.stopReason;
+        const isNonSuccess =
+          responseStopReason !== undefined &&
+          responseStopReason !== "stop" &&
+          responseStopReason !== "length" &&
+          responseStopReason !== "tool_use";
+        const stopReason =
+          danglingOnDone.length > 0 ? "error" : isNonSuccess ? "error" : "completed";
+
+        // Build metadata: merge response metadata (hook block info, etc.)
+        // with dangling tool call warnings.
+        const responseMeta = chunk.response.metadata;
+        const hasDangling = danglingOnDone.length > 0;
+        const hasResponseMeta = responseMeta !== undefined && Object.keys(responseMeta).length > 0;
+        const metadata =
+          hasDangling || hasResponseMeta
+            ? {
+                ...(hasResponseMeta ? responseMeta : {}),
+                ...(isNonSuccess && responseStopReason !== undefined
+                  ? { modelStopReason: responseStopReason }
+                  : {}),
+                ...(hasDangling
+                  ? {
+                      error: "done received with in-flight tool calls",
+                      danglingToolCalls: danglingOnDone,
+                    }
+                  : {}),
+              }
+            : undefined;
 
         yield {
           kind: "done",
@@ -186,14 +220,7 @@ export async function* consumeModelStream(
               turns: 0,
               durationMs: 0,
             },
-            ...(danglingOnDone.length > 0
-              ? {
-                  metadata: {
-                    error: "done received with in-flight tool calls",
-                    danglingToolCalls: danglingOnDone,
-                  },
-                }
-              : {}),
+            ...(metadata !== undefined ? { metadata } : {}),
           },
         };
         return;

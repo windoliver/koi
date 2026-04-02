@@ -358,6 +358,68 @@ describe("consumeModelStream", () => {
     expect(done.output.metrics.outputTokens).toBe(5);
   });
 
+  test("done with hook_blocked stopReason yields error with modelStopReason in metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "hook_blocked",
+          metadata: { reason: "budget exceeded", hookName: "quota-guard" },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    // Must NOT be "completed" — the model call was denied
+    expect(done.output.stopReason).toBe("error");
+    expect(done.output.content).toEqual([]);
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.modelStopReason).toBe("hook_blocked");
+    expect(meta.reason).toBe("budget exceeded");
+    expect(meta.hookName).toBe("quota-guard");
+  });
+
+  test("done with error stopReason yields error engine stop reason", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "done",
+        response: {
+          content: "partial",
+          model: "test-model",
+          stopReason: "error",
+          metadata: { error: "provider crashed" },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.modelStopReason).toBe("error");
+    expect(meta.error).toBe("provider crashed");
+  });
+
+  test("done with normal stop/length/tool_use stopReason yields completed", async () => {
+    for (const reason of ["stop", "length", "tool_use"] as const) {
+      const chunks: readonly ModelChunk[] = [
+        {
+          kind: "done",
+          response: { content: "ok", model: "test-model", stopReason: reason },
+        },
+      ];
+
+      const events = await collect(consumeModelStream(toStream(chunks)));
+      const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+      expect(done.output.stopReason).toBe("completed");
+    }
+  });
+
   test("done event preserves final response text", async () => {
     const chunks: readonly ModelChunk[] = [
       {
