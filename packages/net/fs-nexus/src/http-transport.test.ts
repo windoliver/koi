@@ -108,4 +108,49 @@ describe("createHttpTransport", () => {
     await transport.call("b", {});
     expect(ids).toEqual([1, 2]);
   });
+
+  test("rejects response with missing jsonrpc field", async () => {
+    const mockFetch = createMockFetch(() => ({ id: 1, result: "ok" }));
+    const transport = createHttpTransport({
+      url: "http://localhost:3100",
+      fetch: mockFetch,
+    });
+
+    await expect(transport.call("read", {})).rejects.toThrow("jsonrpc");
+  });
+
+  test("rejects response with mismatched id", async () => {
+    const mockFetch = createMockFetch(() => ({ jsonrpc: "2.0", id: 999, result: "ok" }));
+    const transport = createHttpTransport({
+      url: "http://localhost:3100",
+      fetch: mockFetch,
+    });
+
+    await expect(transport.call("read", {})).rejects.toThrow("mismatch");
+  });
+
+  test("rejects response with both result and error", async () => {
+    const mockFetch = createMockFetch(() => ({
+      jsonrpc: "2.0",
+      id: 1,
+      result: "ok",
+      error: { code: -1, message: "bad" },
+    }));
+    const transport = createHttpTransport({
+      url: "http://localhost:3100",
+      fetch: mockFetch,
+    });
+
+    await expect(transport.call("read", {})).rejects.toThrow("exactly one");
+  });
+
+  test("rejects response with neither result nor error", async () => {
+    const mockFetch = createMockFetch(() => ({ jsonrpc: "2.0", id: 1 }));
+    const transport = createHttpTransport({
+      url: "http://localhost:3100",
+      fetch: mockFetch,
+    });
+
+    await expect(transport.call("read", {})).rejects.toThrow("exactly one");
+  });
 });

@@ -51,13 +51,30 @@ export function createHttpTransport(config: HttpTransportConfig): NexusTransport
         throw new Error(`HTTP ${String(response.status)}: ${response.statusText}`);
       }
 
-      const body = (await response.json()) as {
-        readonly result?: T;
-        readonly error?: { readonly code: number; readonly message: string };
-      };
+      const body = (await response.json()) as Record<string, unknown>;
 
-      if (body.error) {
-        throw new Error(`RPC error ${String(body.error.code)}: ${body.error.message}`);
+      // Validate JSON-RPC 2.0 envelope
+      if (body.jsonrpc !== "2.0") {
+        throw new Error(
+          `Invalid JSON-RPC response: missing or wrong 'jsonrpc' field (got ${String(body.jsonrpc)})`,
+        );
+      }
+      if (body.id !== id) {
+        throw new Error(
+          `JSON-RPC response id mismatch: expected ${String(id)}, got ${String(body.id)}`,
+        );
+      }
+      const hasResult = "result" in body;
+      const hasError = "error" in body;
+      if (hasResult === hasError) {
+        throw new Error(
+          "Invalid JSON-RPC response: must contain exactly one of 'result' or 'error'",
+        );
+      }
+
+      if (hasError) {
+        const err = body.error as { readonly code: number; readonly message: string };
+        throw new Error(`RPC error ${String(err.code)}: ${err.message}`);
       }
 
       return body.result as T;

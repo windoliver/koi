@@ -85,6 +85,14 @@ export function computeFullPath(basePath: string, userPath: string): Result<stri
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Check if a full path is within the basePath boundary. */
+export function isWithinBasePath(base: string, fullPath: string): boolean {
+  const normalizedBase = base.startsWith("/") ? base : `/${base}`;
+  if (fullPath === normalizedBase) return true;
+  const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
+  return fullPath.startsWith(baseWithSlash);
+}
+
 /** Strip basePath prefix from a full path, returning the user-relative path. */
 export function stripBasePath(base: string, fullPath: string): string {
   const normalizedBase = base.startsWith("/") ? base : `/${base}`;

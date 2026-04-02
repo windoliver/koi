@@ -28,6 +28,7 @@ import {
   computeFullPath,
   DEFAULT_BASE_PATH,
   DEFAULT_RETRIES,
+  isWithinBasePath,
   rpcMutate,
   rpcRead,
   stripBasePath,
@@ -187,11 +188,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     // Write back (unless dry run)
     if (!options?.dryRun) {
-      // Optimistic concurrency via content-hash CAS: compute a SHA-256 hash
-      // of the content we read, and pass it as expectedContentHash in the write
-      // call. The server MUST enforce CAS atomically and confirm it by returning
-      // { casEnforced: true }. If the server does not confirm CAS, we fail
-      // closed — edit() refuses to report success without conflict protection.
+      // Optimistic concurrency via content-hash CAS.
       const encoder = new TextEncoder();
       const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(currentContent));
       const hashArray = new Uint8Array(hashBuffer);
@@ -199,6 +196,38 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
+      // Probe CAS support BEFORE the mutating write. Send a dry-run write
+      // with the hash to verify the server understands CAS. If the probe
+      // does not confirm casEnforced, we reject before any mutation occurs.
+      const probeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
+        transport,
+        "write",
+        {
+          path: fullPathResult.value,
+          content: modified,
+          expectedContentHash,
+          dryRun: true,
+        },
+      );
+      if (!probeResult.ok) return probeResult;
+
+      const casSupported =
+        probeResult.value !== null &&
+        typeof probeResult.value === "object" &&
+        probeResult.value.casEnforced === true;
+      if (!casSupported) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Nexus server does not support CAS — edit of '${path}' blocked to prevent unsafe concurrent writes`,
+            retryable: false,
+            context: { path },
+          },
+        };
+      }
+
+      // Server confirmed CAS support — perform the actual conditional write.
       const writeResult = await rpcMutate<{ readonly casEnforced?: boolean } | null>(
         transport,
         "write",
@@ -209,25 +238,6 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
         },
       );
       if (!writeResult.ok) return writeResult;
-
-      // Fail closed: if the server did not confirm CAS enforcement, the write
-      // may have silently clobbered concurrent changes. Reject rather than
-      // report a potentially unsafe success.
-      const casConfirmed =
-        writeResult.value !== null &&
-        typeof writeResult.value === "object" &&
-        writeResult.value.casEnforced === true;
-      if (!casConfirmed) {
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `Nexus server did not confirm CAS enforcement for edit of '${path}' — write succeeded but conflict detection was not guaranteed`,
-            retryable: false,
-            context: { path, expectedContentHash },
-          },
-        };
-      }
     }
 
     return { ok: true, value: { path, hunksApplied } };
@@ -301,12 +311,14 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       return { ok: true, value: { entries, truncated: false } };
     }
 
-    // Structured response — remap paths
+    // Structured response — filter to scope, then remap paths
     const structured = raw as FileListResult;
-    const entries = structured.entries.map((entry) => ({
-      ...entry,
-      path: stripBasePath(basePath, entry.path),
-    }));
+    const entries = structured.entries
+      .filter((entry) => isWithinBasePath(basePath, entry.path))
+      .map((entry) => ({
+        ...entry,
+        path: stripBasePath(basePath, entry.path),
+      }));
 
     return { ok: true, value: { entries, truncated: structured.truncated } };
   }
@@ -331,10 +343,12 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
 
     if (!result.ok) return result;
 
-    const matches = result.value.matches.map((match) => ({
-      ...match,
-      path: stripBasePath(basePath, match.path),
-    }));
+    const matches = result.value.matches
+      .filter((match) => isWithinBasePath(basePath, match.path))
+      .map((match) => ({
+        ...match,
+        path: stripBasePath(basePath, match.path),
+      }));
 
     return { ok: true, value: { matches, truncated: result.value.truncated } };
   }

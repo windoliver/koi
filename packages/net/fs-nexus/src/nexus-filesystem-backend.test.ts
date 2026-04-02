@@ -37,6 +37,13 @@ function createMockTransport(): NexusTransport & {
       case "write": {
         const path = params.path as string;
         const content = params.content as string;
+        // CAS dry-run probe: confirm support without mutating
+        if (params.dryRun === true) {
+          if (params.expectedContentHash !== undefined) {
+            return { casEnforced: true } as T;
+          }
+          return null as T;
+        }
         store.set(path, content);
         // When CAS hash is provided, confirm enforcement (mock supports CAS)
         if (params.expectedContentHash !== undefined) {
@@ -796,9 +803,7 @@ describe("edit CAS", () => {
       params: Record<string, unknown>,
     ): Promise<T> => {
       if (method === "write" && params.expectedContentHash !== undefined) {
-        // Server writes but doesn't confirm CAS
-        const path = params.path as string;
-        transport.store.set(path, params.content as string);
+        // Server ignores CAS — returns null without casEnforced
         return null as T;
       }
       return originalCall<T>(method, params);
@@ -809,7 +814,14 @@ describe("edit CAS", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("EXTERNAL");
-      expect(result.error.message).toContain("CAS enforcement");
+      expect(result.error.message).toContain("CAS");
+    }
+
+    // File must NOT have been mutated — probe blocked before the write
+    const readResult = await backend.read("/no-cas.txt");
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("content");
     }
   });
 });
