@@ -695,6 +695,54 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// web-fetch trajectory: @koi/tools-web exercised with real HTTP
+// ---------------------------------------------------------------------------
+
+describe("web-fetch ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web tools in definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/web-fetch.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("has TOOL step for web_fetch with HTTP response", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/web-fetch.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain("200");
+  });
+
+  test("model response references Example Domain", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/web-fetch.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    expect(modelSteps.length).toBe(2);
+    const finalResponse = modelSteps[1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toContain("Example Domain");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -821,5 +869,51 @@ describe("Golden: @koi/tools-builtin", () => {
     };
     expect(result.paths).toBeDefined();
     expect(result.paths?.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-cli (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-cli", () => {
+  test("createCliChannel returns a channel with name and text capability", async () => {
+    const { createCliChannel } = await import("@koi/channel-cli");
+
+    const channel = createCliChannel();
+    expect(channel.name).toBeDefined();
+    expect(channel.capabilities.text).toBe(true);
+  });
+
+  test("channel has send and onMessage methods", async () => {
+    const { createCliChannel } = await import("@koi/channel-cli");
+
+    const channel = createCliChannel();
+    expect(typeof channel.send).toBe("function");
+    expect(typeof channel.onMessage).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tools-web (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tools-web", () => {
+  test("SSRF protection blocks private IPs", async () => {
+    const { isBlockedIp } = await import("@koi/tools-web");
+
+    expect(isBlockedIp("127.0.0.1")).toBe(true);
+    expect(isBlockedIp("10.0.0.1")).toBe(true);
+    expect(isBlockedIp("192.168.1.1")).toBe(true);
+    // Public IP should not be blocked
+    expect(isBlockedIp("8.8.8.8")).toBe(false);
+  });
+
+  test("htmlToMarkdown converts HTML to readable text", async () => {
+    const { htmlToMarkdown } = await import("@koi/tools-web");
+
+    const result = htmlToMarkdown("<h1>Hello</h1><p>World</p>");
+    expect(result).toContain("Hello");
+    expect(result).toContain("World");
   });
 });

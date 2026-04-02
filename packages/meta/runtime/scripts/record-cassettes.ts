@@ -42,6 +42,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
+import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { Cassette } from "../src/cassette/types.js";
 import { createHookDispatchMiddleware } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
@@ -368,6 +369,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
 // Query configs
 // =========================================================================
 
+// Web executor for @koi/tools-web (real HTTP in recording, captured in trajectory)
+const webExecutor = createWebExecutor({ allowHttps: true });
+const webProvider = createWebProvider({
+  executor: webExecutor,
+  policy: { sandbox: false, capabilities: { network: { allow: true } } },
+});
+
 const BYPASS_RULES: readonly SourcedRule[] = [
   { pattern: "*", action: "*", effect: "allow", source: "policy" },
 ];
@@ -465,6 +473,24 @@ const queries: readonly QueryConfig[] = [
       }),
       createBuiltinSearchProvider({ cwd: process.cwd() }),
     ],
+  },
+
+  // 5. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  {
+    name: "web-fetch",
+    prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [webProvider],
   },
 ];
 
