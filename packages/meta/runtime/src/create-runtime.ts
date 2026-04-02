@@ -465,7 +465,20 @@ function composeMiddlewareIntoAdapter(
   userId?: string,
   channelId?: string,
 ): EngineAdapter {
-  if (adapter.terminals === undefined) return adapter;
+  if (adapter.terminals === undefined) {
+    // Fail closed: if intercept-phase middleware is configured, refusing to silently
+    // bypass it is a security requirement. Adapters without terminals cannot have
+    // security middleware composed around them.
+    const hasInterceptMiddleware = middleware.some((mw) => mw.phase === "intercept");
+    if (hasInterceptMiddleware) {
+      throw new Error(
+        "Adapter has no terminals but intercept-phase middleware is configured. " +
+          "Middleware would be silently bypassed. Either provide an adapter with terminals " +
+          "or remove intercept-phase middleware.",
+      );
+    }
+    return adapter;
+  }
 
   const toolHandler = adapter.terminals.toolCall ?? defaultToolHandler;
   const modelStream = adapter.terminals.modelStream;
@@ -881,8 +894,16 @@ async function* wrapStreamWithFlush(
   }
 }
 
-async function defaultToolHandler(): Promise<{ readonly output: unknown }> {
-  return { output: "No tool handler configured" };
+/**
+ * Default tool handler — throws a configuration error instead of returning
+ * fake success. Any adapter loop that invokes callHandlers.toolCall will
+ * surface the missing terminal as a runtime error.
+ */
+async function defaultToolHandler(): Promise<never> {
+  throw new Error(
+    "No toolCall terminal configured on adapter. " +
+      "Tool execution requires an adapter with terminals.toolCall.",
+  );
 }
 
 // ---------------------------------------------------------------------------

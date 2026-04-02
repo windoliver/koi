@@ -211,16 +211,16 @@ export function wrapMiddlewareWithTrace(
           const requestPreview = extractModelRequestText(request);
           const start = performance.now();
 
-          // Wrap the stream to record on completion
+          // Wrap the stream to record on completion, tracking success/failure/abort
           const inner = hook(ctx, request, next);
-          return wrapStreamForTrace(inner, () => {
+          return wrapStreamForTrace(inner, (outcome, errorMessage) => {
             recordStep({
               stepIndex: 0,
               timestamp: Date.now(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,
-              outcome: "success",
+              outcome,
               durationMs: performance.now() - start,
               request: { text: requestPreview },
               metadata: {
@@ -230,6 +230,7 @@ export function wrapMiddlewareWithTrace(
                 phase: mw.phase ?? "resolve",
                 priority: mw.priority ?? 500,
                 nextCalled: true,
+                ...(errorMessage !== undefined ? { error: errorMessage } : {}),
               } as JsonObject,
             });
           });
@@ -256,14 +257,27 @@ function extractModelRequestText(request: ModelRequest): string {
   return full.length <= 500 ? full : `${full.slice(0, 500)}…`;
 }
 
-/** Passthrough wrapper that calls onComplete after stream ends. */
+/** Passthrough wrapper that records stream outcome (success/failure/interrupted). */
 async function* wrapStreamForTrace(
   inner: AsyncIterable<ModelChunk>,
-  onComplete: () => void,
+  onComplete: (outcome: "success" | "failure", errorMessage?: string) => void,
 ): AsyncIterable<ModelChunk> {
+  // let: mutable — tracks whether onComplete was already called
+  let recorded = false;
   try {
     yield* inner;
+    recorded = true;
+    onComplete("success");
+  } catch (error: unknown) {
+    recorded = true;
+    const message = error instanceof Error ? error.message : String(error);
+    const isAbort = error instanceof DOMException && error.name === "AbortError";
+    onComplete("failure", isAbort ? "interrupted" : message);
+    throw error;
   } finally {
-    onComplete();
+    // Generator abandoned (return() called without exhaustion or throw)
+    if (!recorded) {
+      onComplete("failure", "stream abandoned");
+    }
   }
 }
