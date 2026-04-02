@@ -115,6 +115,26 @@ describe("reduce — engine_event — turn lifecycle", () => {
       expect(second.id).toBe("assistant-1");
     }
   });
+
+  test("turn_start finalizes running tool calls from previous turn as error", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "text", text: "calling tool" },
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(state, engineEvent({ kind: "turn_start", turnIndex: 1 }));
+    expect(next.messages).toHaveLength(2);
+    const prev = messageAt(next, 0);
+    if (prev.kind === "assistant") {
+      expect(prev.streaming).toBe(false);
+      const tool = prev.blocks.find((b) => b.kind === "tool_call");
+      if (tool?.kind === "tool_call") {
+        expect(tool.status).toBe("error");
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -219,6 +239,61 @@ describe("reduce — engine_event — tool_call", () => {
         expect(block.status).toBe("running");
         expect(block.args).toBeUndefined();
         expect(block.result).toBeUndefined();
+      }
+    }
+  });
+
+  test("tool_call_start with args captures initial arguments", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "read_file",
+        callId: testCallId("call-1"),
+        args: { path: "foo.ts" },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.args).toBe('{"path":"foo.ts"}');
+      }
+    }
+  });
+
+  test("tool_call_start args without any deltas are preserved through tool_call_end", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    let next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "ls",
+        callId: testCallId("call-1"),
+        args: { dir: "." },
+      }),
+    );
+    // No tool_call_delta events — args came on start
+    next = reduce(
+      next,
+      engineEvent({
+        kind: "tool_call_end",
+        callId: testCallId("call-1"),
+        result: { files: ["a.ts"] },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("complete");
+        expect(block.args).toBe('{"dir":"."}');
+        expect(block.result).toEqual({ files: ["a.ts"] });
       }
     }
   });

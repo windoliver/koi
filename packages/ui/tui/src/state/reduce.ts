@@ -140,7 +140,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
   switch (event.kind) {
     // ----- Turn lifecycle -----
     case "turn_start": {
-      const closed = closeActiveAssistant(state.messages);
+      // Finalize (not just close) — stranded tool calls from the prior turn become "error"
+      const closed = finalizeAssistant(state.messages);
       const newMsg: TuiMessage = {
         kind: "assistant",
         id: `assistant-${event.turnIndex}`,
@@ -210,20 +211,22 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const { messages, found } = ensureAssistant(state.messages);
       const callId = event.callId as string;
       const existing = findToolBlock(found.msg.blocks, callId);
+      // Capture initial args if present (some producers emit args on start, not via deltas)
+      const initialArgs = event.args !== undefined ? JSON.stringify(event.args) : undefined;
+
+      const newBlock: TuiAssistantBlock = {
+        kind: "tool_call",
+        callId,
+        toolName: event.toolName,
+        status: "running",
+        ...(initialArgs !== undefined ? { args: initialArgs } : {}),
+      };
 
       let updatedBlocks: readonly TuiAssistantBlock[];
       if (existing) {
-        updatedBlocks = replaceAt(found.msg.blocks, existing.blockIdx, {
-          kind: "tool_call",
-          callId,
-          toolName: event.toolName,
-          status: "running",
-        });
+        updatedBlocks = replaceAt(found.msg.blocks, existing.blockIdx, newBlock);
       } else {
-        updatedBlocks = [
-          ...found.msg.blocks,
-          { kind: "tool_call", callId, toolName: event.toolName, status: "running" },
-        ];
+        updatedBlocks = [...found.msg.blocks, newBlock];
       }
 
       return {
