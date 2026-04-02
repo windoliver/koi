@@ -1171,7 +1171,7 @@ describe("safe tool output serialization", () => {
 
     // Create circular reference
     const circular: Record<string, unknown> = { a: 1 };
-    circular["self"] = circular;
+    circular.self = circular;
 
     // This must NOT throw — observer contract
     const response = await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest(), async () =>
