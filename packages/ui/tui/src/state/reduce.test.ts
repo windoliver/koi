@@ -395,7 +395,7 @@ describe("reduce — edge cases", () => {
     expect(next).toBe(state);
   });
 
-  test("done mid-tool-call sets streaming=false but tool stays running", () => {
+  test("done mid-tool-call sets streaming=false and marks running tools as error", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
     ];
@@ -408,8 +408,44 @@ describe("reduce — edge cases", () => {
       expect(msg.streaming).toBe(false);
       const tool = msg.blocks.find((b) => b.kind === "tool_call");
       if (tool?.kind === "tool_call") {
-        expect(tool.status).toBe("running");
+        expect(tool.status).toBe("error");
       }
+    }
+  });
+
+  test("done with completed tools leaves them as complete", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", output: "ok" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(state, engineEvent({ kind: "done", output: DONE_OUTPUT }));
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      const tool = msg.blocks.find((b) => b.kind === "tool_call");
+      if (tool?.kind === "tool_call") {
+        expect(tool.status).toBe("complete");
+      }
+    }
+  });
+
+  test("done with mixed tool statuses only marks running ones as error", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", output: "ok" },
+      { kind: "tool_call", callId: "call-2", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(state, engineEvent({ kind: "done", output: DONE_OUTPUT }));
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const tool1 = msg.blocks.find((b) => b.kind === "tool_call" && b.callId === "call-1");
+      const tool2 = msg.blocks.find((b) => b.kind === "tool_call" && b.callId === "call-2");
+      if (tool1?.kind === "tool_call") expect(tool1.status).toBe("complete");
+      if (tool2?.kind === "tool_call") expect(tool2.status).toBe("error");
     }
   });
 
@@ -648,6 +684,41 @@ describe("reduce — message compaction", () => {
       blocks: [{ kind: "text", text: "trigger" }],
     });
     expect(state.messages).toHaveLength(MAX_MESSAGES);
+  });
+
+  test("turn_start compacts when messages reach threshold", () => {
+    const messages: readonly TuiMessage[] = Array.from({ length: COMPACT_THRESHOLD }, (_, i) =>
+      userMsg(`msg-${i}`, `user-${i}`),
+    );
+    const state = stateWith({ messages });
+    // turn_start appends an assistant message → should trigger compaction
+    const next = reduce(state, engineEvent({ kind: "turn_start", turnIndex: 0 }));
+    expect(next.messages.length).toBeLessThanOrEqual(MAX_MESSAGES + 1);
+    // The new assistant message should be present
+    const last = lastMessage(next);
+    expect(last.kind).toBe("assistant");
+  });
+
+  test("orphan text_delta compacts when messages reach threshold", () => {
+    const messages: readonly TuiMessage[] = Array.from({ length: COMPACT_THRESHOLD }, (_, i) =>
+      userMsg(`msg-${i}`, `user-${i}`),
+    );
+    const state = stateWith({ messages });
+    // Orphan delta creates an implicit assistant message → should trigger compaction
+    const next = reduce(state, engineEvent({ kind: "text_delta", delta: "orphan" }));
+    expect(next.messages.length).toBeLessThanOrEqual(MAX_MESSAGES + 1);
+    expect(lastAssistantText(next)).toBe("orphan");
+  });
+
+  test("engine-event-only traffic stays bounded", () => {
+    let state = createInitialState();
+    // Simulate 1200 turns of engine-only traffic (no add_user_message)
+    for (let i = 0; i < 1200; i++) {
+      state = reduce(state, engineEvent({ kind: "turn_start", turnIndex: i }));
+      state = reduce(state, engineEvent({ kind: "text_delta", delta: `turn ${i}` }));
+      state = reduce(state, engineEvent({ kind: "turn_end", turnIndex: i }));
+    }
+    expect(state.messages.length).toBeLessThanOrEqual(COMPACT_THRESHOLD);
   });
 });
 

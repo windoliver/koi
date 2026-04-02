@@ -57,6 +57,34 @@ function closeActiveAssistant(messages: readonly TuiMessage[]): readonly TuiMess
   return updateAssistant(messages, found, { streaming: false });
 }
 
+/**
+ * Close the active assistant and mark any in-flight tool_call blocks as "error".
+ * Called on terminal `done` events where the engine has finished but tool calls
+ * may not have received their `tool_call_end`.
+ */
+function finalizeAssistant(messages: readonly TuiMessage[]): readonly TuiMessage[] {
+  const found = findLastAssistant(messages);
+  if (!found) return messages;
+
+  // Mark any "running" tool blocks as "error" — they won't get a tool_call_end
+  const hasRunningTools = found.msg.blocks.some(
+    (b) => b.kind === "tool_call" && b.status === "running",
+  );
+  const updatedBlocks = hasRunningTools
+    ? found.msg.blocks.map((b) =>
+        b.kind === "tool_call" && b.status === "running" ? { ...b, status: "error" as const } : b,
+      )
+    : found.msg.blocks;
+
+  const needsUpdate = found.msg.streaming || hasRunningTools;
+  if (!needsUpdate) return messages;
+
+  return updateAssistant(messages, found, {
+    streaming: false,
+    blocks: updatedBlocks,
+  });
+}
+
 /** Apply hysteresis compaction if messages reach or exceed threshold. */
 function maybeCompact(messages: readonly TuiMessage[]): readonly TuiMessage[] {
   if (messages.length >= COMPACT_THRESHOLD) {
@@ -88,7 +116,7 @@ function ensureAssistant(messages: readonly TuiMessage[]): {
     blocks: [],
     streaming: true,
   };
-  const updated = [...messages, implicit];
+  const updated = maybeCompact([...messages, implicit]);
   return { messages: updated, found: { msg: implicit, idx: updated.length - 1 } };
 }
 
@@ -119,7 +147,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         blocks: [],
         streaming: true,
       };
-      return { ...state, messages: [...closed, newMsg] };
+      return { ...state, messages: maybeCompact([...closed, newMsg]) };
     }
 
     case "turn_end": {
@@ -128,7 +156,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "done": {
-      const messages = closeActiveAssistant(state.messages);
+      const messages = finalizeAssistant(state.messages);
       return messages === state.messages ? state : { ...state, messages };
     }
 

@@ -109,8 +109,10 @@ Append-only message list with **hysteresis** compaction:
 - `MAX_MESSAGES = 1000` — target after compaction
 - `COMPACT_THRESHOLD = 1100` — triggers compaction
 
-When messages exceed 1100, the reducer slices to the most recent 1000.
+When messages reach 1100, the reducer slices to the most recent 1000.
 The 100-message gap prevents per-message array allocation at steady state.
+Compaction runs on **all** message-append paths (user messages, `turn_start`,
+and implicit assistant creation), not just user input.
 
 ## Store
 
@@ -143,7 +145,7 @@ dispatch skips notification entirely.
 | `text_delta` before `turn_start` | Creates implicit assistant message |
 | `tool_call_end` without `tool_call_start` | No-op (drop silently) |
 | `text_delta` + `tool_call_delta` interleaved | Accumulate to separate blocks |
-| `done` mid-tool-call | `streaming=false`, tool stays `"running"` |
+| `done` mid-tool-call | `streaming=false`, running tools marked `"error"` |
 | Empty `text_delta` (delta: `""`) | No-op |
 | `turn_start` without prior `turn_end` | Auto-close previous turn |
 | Duplicate `callId` | Update existing tool block |
