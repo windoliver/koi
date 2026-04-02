@@ -19,7 +19,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
+export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -2938,6 +2938,10 @@ interface HookEnvPolicy {
  * - \`continue\` — no opinion, proceed normally (default when no response)
  * - \`block\` — stop this operation with a reason visible to the model
  * - \`modify\` — patch the operation's input before proceeding
+ * - \`transform\` — patch the operation's output after execution (PostToolUse only).
+ *   \`outputPatch\` is shallow-merged into the tool response output (or replaces
+ *   it when the output is not a plain object). Optional \`metadata\` is merged
+ *   into the response metadata for additional context injection.
  */
 type HookDecision = {
     readonly kind: "continue";
@@ -2947,6 +2951,10 @@ type HookDecision = {
 } | {
     readonly kind: "modify";
     readonly patch: JsonObject;
+} | {
+    readonly kind: "transform";
+    readonly outputPatch: JsonObject;
+    readonly metadata?: JsonObject;
 };
 /** Outcome of a single hook execution. */
 type HookExecutionResult = {
