@@ -59,6 +59,22 @@ describe("validateNexusFileSystemConfig", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("rejects empty mountPoint", () => {
+    const result = validateNexusFileSystemConfig({ url: "http://localhost", mountPoint: "" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("non-empty");
+  });
+
+  test("rejects root mountPoint '/'", () => {
+    const result = validateNexusFileSystemConfig({ url: "http://localhost", mountPoint: "/" });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects mountPoint with only slashes '///'", () => {
+    const result = validateNexusFileSystemConfig({ url: "http://localhost", mountPoint: "///" });
+    expect(result.ok).toBe(false);
+  });
+
   test("rejects mountPoint with ..", () => {
     const result = validateNexusFileSystemConfig({
       url: "http://localhost",

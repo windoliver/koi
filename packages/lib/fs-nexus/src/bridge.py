@@ -78,15 +78,28 @@ async def dispatch(fs, method, params):
         preview = params.get("preview", False)
         if_match = params.get("if_match")
 
-        # Capture etag before read for OCC guard on write
+        # Capture etag before read for OCC guard on write.
+        # Fail closed: if the backend doesn't provide etags, refuse
+        # to perform a non-preview edit (can't detect concurrent mods).
         pre_stat = await fs.stat(path)
         pre_etag = pre_stat.get("etag") if pre_stat else None
 
-        # Honor caller-supplied if_match (from composite fallback)
-        if if_match is not None and pre_etag is not None and pre_etag != if_match:
-            raise ConflictError(
-                f"Conflict: file was modified before edit (expected etag {if_match}, got {pre_etag})"
+        if not preview and pre_etag is None:
+            raise ValueError(
+                f"Edit requires ETag for concurrency protection, but stat({path}) "
+                f"did not return one. Use a backend that provides ETags."
             )
+
+        # Honor caller-supplied if_match (from composite fallback)
+        if if_match is not None:
+            if pre_etag is None:
+                raise ConflictError(
+                    f"Conflict: cannot verify if_match — no etag available for {path}"
+                )
+            if pre_etag != if_match:
+                raise ConflictError(
+                    f"Conflict: file was modified before edit (expected etag {if_match}, got {pre_etag})"
+                )
 
         data = await fs.read(path)
         content = data.decode("utf-8") if isinstance(data, bytes) else str(data)
@@ -108,7 +121,11 @@ async def dispatch(fs, method, params):
             # OCC guard: verify file hasn't changed since our read
             post_stat = await fs.stat(path)
             post_etag = post_stat.get("etag") if post_stat else None
-            if pre_etag is not None and post_etag is not None and post_etag != pre_etag:
+            if post_etag is None:
+                raise ConflictError(
+                    f"Conflict: etag disappeared during edit for {path}"
+                )
+            if post_etag != pre_etag:
                 raise ConflictError(
                     f"Conflict: file was modified during edit (etag changed from {pre_etag} to {post_etag})"
                 )

@@ -38,6 +38,17 @@ export interface FakeTransportOptions {
 
 const METHOD_NOT_FOUND = -32601;
 const FILE_NOT_FOUND = -32000;
+const CONFLICT = -32006;
+
+/** Simple string hash for fake etags (FNV-1a). */
+function simpleHash(s: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
 
 /**
  * Simple glob matching for fake transport (supports * and ** patterns).
@@ -124,13 +135,17 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
         const file = getFile(path);
         if (file === undefined) return rpcError(FILE_NOT_FOUND, `not found: ${path}`);
         if (file.isDirectory) return rpcError(-32002, `is a directory: ${path}`);
+        // Compute a simple etag from content for OCC support
+        const contentBytes = new TextEncoder().encode(file.content);
+        const etag = simpleHash(file.content);
         return {
           ok: true,
           value: {
             content: file.content,
             metadata: {
               path,
-              size: new TextEncoder().encode(file.content).byteLength,
+              size: contentBytes.byteLength,
+              etag,
               is_directory: false,
               modified_at: file.modifiedAt,
             },
@@ -141,6 +156,23 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
       case "write": {
         if (path === undefined) return rpcError(-32002, "path required");
         const content = (params.content as string | undefined) ?? "";
+        const ifMatch = params.if_match as string | undefined;
+
+        // OCC: check if_match against current content's etag
+        if (ifMatch !== undefined) {
+          const existing = files.get(path);
+          if (existing === undefined) {
+            return rpcError(CONFLICT, `Conflict: file deleted (expected etag ${ifMatch})`);
+          }
+          const currentEtag = simpleHash(existing.content);
+          if (currentEtag !== ifMatch) {
+            return rpcError(
+              CONFLICT,
+              `Conflict: etag mismatch (expected ${ifMatch}, got ${currentEtag})`,
+            );
+          }
+        }
+
         ensureParents(path);
         const existing = files.get(path);
         if (existing !== undefined) {

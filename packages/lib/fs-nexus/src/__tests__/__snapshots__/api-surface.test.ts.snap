@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
-"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-wWT0z40R.js';
+"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-CBnD242n.js';
 import { FileSystemBackend, Result, KoiError } from '@koi/core';
 
 /**
@@ -40,6 +40,8 @@ interface LocalTransportConfig {
      * Never logged or included in error messages.
      */
     readonly env?: Readonly<Record<string, string>> | undefined;
+    /** Per-RPC call timeout (ms). Default: 30_000. Kills bridge on expiry. */
+    readonly callTimeoutMs?: number | undefined;
 }
 /**
  * Spawn a local nexus-fs bridge process and return a NexusTransport.
@@ -80,7 +82,7 @@ export { type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemF
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-wWT0z40R.js';
+import { N as NexusTransport } from './types-CBnD242n.js';
 
 /**
  * Reusable FileSystemBackend contract test suite.

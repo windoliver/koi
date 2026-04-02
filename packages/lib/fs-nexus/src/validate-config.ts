@@ -58,6 +58,19 @@ export function validateNexusFileSystemConfig(
         },
       };
     }
+    // Reject empty or root mount — prevents addressing the entire Nexus namespace
+    const stripped = c.mountPoint.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (stripped.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "NexusFileSystemConfig.mountPoint must be a non-empty namespace prefix (e.g., 'fs', 'workspace/agent1')",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
     if (c.mountPoint.includes("..")) {
       return {
         ok: false,

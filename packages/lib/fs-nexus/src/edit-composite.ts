@@ -63,6 +63,23 @@ export async function applyEditsComposite(
     const originalContent = typeof raw === "string" ? raw : raw.content;
     const etag = typeof raw === "object" && raw !== null ? raw.metadata?.etag : undefined;
 
+    // Fail closed: refuse composite edit without a concurrency token.
+    // Without an etag, the write path cannot detect concurrent modifications
+    // and would silently perform last-write-wins.
+    if (etag === undefined && options?.dryRun !== true) {
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message:
+            "Composite edit requires ETag for concurrency protection, but the backend did not return one. " +
+            "Use the native edit RPC or a backend that provides ETags.",
+          retryable: false,
+          context: { path },
+        },
+      };
+    }
+
     // Step 2: Apply all hunks sequentially in-memory
     let workingContent = originalContent;
     for (let i = 0; i < edits.length; i++) {
@@ -86,13 +103,11 @@ export async function applyEditsComposite(
 
     // Step 3: Write back with OCC guard (skip for dryRun)
     if (options?.dryRun !== true) {
+      // etag is guaranteed non-undefined here (fail-closed check above)
       const writeResult = await transport.call<unknown>("write", {
         path: fullPath,
         content: workingContent,
-        // Use if_match when ETag is available to prevent lost updates.
-        // If the file was modified between our read and this write,
-        // Nexus returns CONFLICT (-32006) instead of silently clobbering.
-        ...(etag !== undefined ? { if_match: etag } : {}),
+        if_match: etag,
       });
       if (!writeResult.ok) return writeResult;
     }
