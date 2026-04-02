@@ -488,6 +488,9 @@ describe("step index monotonicity", () => {
     );
     await middleware.onAfterTurn?.(makeTurnCtx(1));
 
+    // onSessionEnd awaits all in-flight writes
+    await middleware.onSessionEnd?.(makeSessionCtx());
+
     const allSteps = await realStore.getDocument("doc-1");
     expect(allSteps).toHaveLength(3);
     expect(allSteps[0]?.stepIndex).toBe(0);

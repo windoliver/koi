@@ -105,16 +105,27 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   const onTraceLoss = config.onTraceLoss;
 
   const sessions = new Map<string, SessionState>();
+  /** In-flight write promises — awaited on session end to ensure all data lands. */
+  const pendingWrites = new Set<Promise<void>>();
 
   function getState(sessionId: string): SessionState | undefined {
     return sessions.get(sessionId);
   }
 
   /**
-   * Record a step immediately to the store. Each step gets its own retry budget.
-   * Observer code — must never throw into the request path.
+   * Record a step to the store without blocking the request path.
+   * Fire-and-forget: the store write runs concurrently so observer I/O
+   * cannot add latency to model/tool completions. Each step gets its
+   * own retry budget.
    */
-  async function recordStep(state: SessionState, step: RichTrajectoryStep): Promise<void> {
+  function recordStep(state: SessionState, step: RichTrajectoryStep): void {
+    // Fire-and-forget — runs concurrently, never blocks the caller
+    const p = writeStep(state, step);
+    pendingWrites.add(p);
+    void p.finally(() => pendingWrites.delete(p));
+  }
+
+  async function writeStep(state: SessionState, step: RichTrajectoryStep): Promise<void> {
     // Drain retry queue independently — stale failures don't consume fresh step's budget
     if (state.retryQueue.length > 0) {
       const stale = [...state.retryQueue];
@@ -122,7 +133,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       try {
         await store.append(docId, stale);
       } catch {
-        // Stale retries failed again — drop them
         onTraceLoss?.(stale.length, new Error("retry queue flush failed"));
       }
     }
@@ -131,7 +141,6 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     try {
       await store.append(docId, [step]);
     } catch {
-      // First failure for this step — queue for one retry
       state.retryQueue.push(step);
     }
   }
@@ -283,6 +292,10 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // Wait for all in-flight writes to complete before session cleanup
+      if (pendingWrites.size > 0) {
+        await Promise.allSettled([...pendingWrites]);
+      }
       const state = sessions.get(ctx.sessionId as string);
       if (state !== undefined && state.retryQueue.length > 0) {
         // Last chance to flush retries
@@ -322,7 +335,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       } finally {
         try {
           const step = buildModelStep(state, startTime, request, response, caughtError, undefined);
-          await recordStep(state, step);
+          recordStep(state, step);
         } catch {
           // Trace capture failed
         }
@@ -371,7 +384,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
                 undefined,
                 reasoning,
               );
-              await recordStep(state, step);
+              recordStep(state, step);
               recorded = true;
             } catch {
               // Trace capture failed
@@ -395,7 +408,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
               caughtError,
               reasoning,
             );
-            await recordStep(state, step);
+            recordStep(state, step);
           } catch {
             // Trace capture failed
           }
@@ -440,7 +453,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
             }),
           };
-          await recordStep(state, step);
+          recordStep(state, step);
         } catch {
           // Trace capture failed
         }
