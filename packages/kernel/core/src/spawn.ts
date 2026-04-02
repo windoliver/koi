@@ -10,8 +10,9 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
+import type { JsonObject } from "./common.js";
 import type { DeliveryPolicy } from "./delivery.js";
-import type { AgentId } from "./ecs.js";
+import type { AgentId, ToolDescriptor } from "./ecs.js";
 import type { KoiError } from "./errors.js";
 import type { TaskItemId } from "./task-board.js";
 
@@ -45,6 +46,39 @@ export interface SpawnRequest {
    * Takes precedence over manifest.delivery.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+
+  // ---------------------------------------------------------------------------
+  // Sub-agent constraints (used by hook agents and sandboxed spawns)
+  // ---------------------------------------------------------------------------
+
+  /** System prompt for the spawned agent. */
+  readonly systemPrompt?: string | undefined;
+  /**
+   * Additional tools to inject into the spawned agent.
+   * These are merged with the agent's resolved tool set.
+   */
+  readonly additionalTools?: readonly ToolDescriptor[] | undefined;
+  /** Tool names to exclude from the spawned agent's tool set. */
+  readonly toolDenylist?: readonly string[] | undefined;
+  /** Maximum assistant turns before the agent is stopped. */
+  readonly maxTurns?: number | undefined;
+  /** Max tokens per model call for the spawned agent. */
+  readonly maxTokens?: number | undefined;
+  /**
+   * When true, the spawned agent runs non-interactively — it cannot
+   * prompt the user or request permissions. Equivalent to CC's `denyAsk`.
+   */
+  readonly nonInteractive?: boolean | undefined;
+  /**
+   * Expected structured output schema. When set, the engine should
+   * enforce that the agent calls a tool matching this schema before completing.
+   */
+  readonly outputSchema?: JsonObject | undefined;
+  /**
+   * Explicit name of the required output tool. Used by the structured output
+   * guard and verdict collector. Avoids brittle inference from additionalTools.
+   */
+  readonly requiredOutputToolName?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

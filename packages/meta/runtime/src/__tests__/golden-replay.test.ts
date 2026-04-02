@@ -917,3 +917,70 @@ describe("Golden: @koi/tools-web", () => {
     expect(result).toContain("World");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/hooks — agent hook type (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hooks agent hooks", () => {
+  test("agent hook executor creates, handles agent hooks, and parses verdicts", async () => {
+    const { createAgentExecutor, parseVerdictOutput, verdictToDecision } = await import(
+      "@koi/hooks"
+    );
+
+    // Factory returns a working executor
+    const spawnFn = async () => ({ ok: true as const, output: '{"ok":true}' });
+    const executor = createAgentExecutor({ spawnFn });
+    expect(executor.name).toBe("agent");
+    expect(executor.canHandle({ kind: "agent", name: "t", prompt: "verify" })).toBe(true);
+    expect(executor.canHandle({ kind: "command", name: "t", cmd: ["echo"] })).toBe(false);
+
+    // Verdict parsing: valid ok=true
+    const okVerdict = parseVerdictOutput('{"ok":true,"reason":"all good"}');
+    expect(okVerdict).toEqual({ ok: true, reason: "all good" });
+    expect(verdictToDecision(okVerdict!)).toEqual({ kind: "continue" });
+
+    // Verdict parsing: valid ok=false
+    const failVerdict = parseVerdictOutput('{"ok":false,"reason":"unsafe"}');
+    expect(failVerdict).toEqual({ ok: false, reason: "unsafe" });
+    expect(verdictToDecision(failVerdict!)).toEqual({ kind: "block", reason: "unsafe" });
+
+    // Verdict parsing: invalid → undefined
+    expect(parseVerdictOutput("not json")).toBeUndefined();
+    expect(parseVerdictOutput('{"reason":"missing ok"}')).toBeUndefined();
+  });
+
+  test("agent hook config validates and tool denylist merges defaults", async () => {
+    const { loadHooks, mergeToolDenylist, HOOK_VERDICT_TOOL_NAME } = await import("@koi/hooks");
+
+    // Agent hook config validates through loadHooks
+    const result = loadHooks([
+      {
+        kind: "agent",
+        name: "security-gate",
+        prompt: "Check for dangerous commands",
+        filter: { events: ["tool.before"], tools: ["Bash"] },
+        maxTurns: 5,
+        maxTokens: 2048,
+        failClosed: true,
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      expect(result.value[0]?.kind).toBe("agent");
+    }
+
+    // Tool denylist includes safety defaults
+    const denylist = mergeToolDenylist(undefined);
+    expect(denylist.has("spawn")).toBe(true); // recursion prevention
+    expect(denylist.has("Bash")).toBe(true); // read-only by default
+    expect(denylist.has("Write")).toBe(true); // read-only by default
+    expect(denylist.has(HOOK_VERDICT_TOOL_NAME)).toBe(true); // namespace reserved
+
+    // User denylist merges with defaults
+    const custom = mergeToolDenylist(["WebFetch"]);
+    expect(custom.has("spawn")).toBe(true); // defaults preserved
+    expect(custom.has("WebFetch")).toBe(true); // user addition
+  });
+});

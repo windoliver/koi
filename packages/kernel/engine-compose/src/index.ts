@@ -78,6 +78,9 @@ export {
   createSpawnGuard,
   detectRepeatingPattern,
 } from "./guards.js";
+// structured output guard
+export type { StructuredOutputGuardConfig } from "./structured-output-guard.js";
+export { createStructuredOutputGuard } from "./structured-output-guard.js";
 // tool execution guard
 export { createToolExecutionGuard } from "./tool-execution-guard.js";
 // visibility filter
