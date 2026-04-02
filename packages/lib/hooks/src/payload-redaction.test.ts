@@ -178,4 +178,13 @@ describe("redactEventData", () => {
     const result = redactEventData(data, undefined);
     expect(result).toEqual(data);
   });
+
+  it("applies size guard even when redaction is disabled", () => {
+    const largeValue = "x".repeat(40_000);
+    const data: JsonObject = { content: largeValue, name: "test" };
+    const result = redactEventData(data, { enabled: false });
+    // Size guard should still trigger, falling back to structure
+    expect(JSON.stringify(result)).not.toContain(largeValue);
+    expect(JSON.stringify(result)).toContain("<string:");
+  });
 });

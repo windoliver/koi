@@ -133,9 +133,19 @@ function walkObject(
   const entries: Array<readonly [string, unknown]> = [];
 
   for (const key of keys) {
-    // Prototype pollution guard
-    if (UNSAFE_KEYS.has(key) || !Object.hasOwn(obj, key)) {
+    if (!Object.hasOwn(obj, key)) {
       entries.push([key, obj[key]] as const);
+      continue;
+    }
+
+    // Prototype pollution guard: do NOT recurse into __proto__/constructor/prototype
+    // objects, but still scan/censor the leaf value to prevent redaction bypass.
+    if (UNSAFE_KEYS.has(key)) {
+      const leafResult = walkValue(obj[key], key, ctx, depth + 1, new WeakSet<object>());
+      if (leafResult.changed) anyChanged = true;
+      totalSecrets += leafResult.secretCount;
+      totalFields += leafResult.fieldCount;
+      entries.push([key, leafResult.value] as const);
       continue;
     }
 

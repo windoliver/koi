@@ -121,18 +121,19 @@ export function redactEventData(
 ): JsonObject | undefined {
   if (data === undefined) return undefined;
 
-  // Opt-out: explicit disable bypasses all redaction
+  // Size guard applies regardless of redaction setting — prevents
+  // context overflow even when redaction is explicitly disabled.
+  const serialized = JSON.stringify(data);
+  if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
+    return extractStructure(data);
+  }
+
+  // Opt-out: explicit disable bypasses secret redaction (size already checked)
   if (config?.enabled === false) return data;
 
   const strategy = config?.censor ?? "redact";
   const redactor = getRedactor(strategy, config?.sensitiveFields);
   const result = redactor.redactObject(data);
-
-  // Size guard: fall back to structural summary if payload is too large
-  const serialized = JSON.stringify(result.value);
-  if (serialized.length > MAX_RAW_PAYLOAD_SIZE) {
-    return extractStructure(data);
-  }
 
   return result.value;
 }

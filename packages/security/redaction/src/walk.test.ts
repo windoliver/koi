@@ -94,11 +94,23 @@ describe("walkAndRedact", () => {
     expect(innerC?.password).toBe("secret");
   });
 
-  test("skips __proto__ keys", () => {
+  test("preserves non-secret __proto__ values but does not recurse into them", () => {
     const obj = Object.create(null) as Record<string, string>;
     obj.safe = "ok";
     obj.__proto__ = "malicious";
     const result = walkAndRedact(obj, ctx);
+    // Non-secret value passes through scanning unchanged
     expect((result.value as Record<string, string>).__proto__).toBe("malicious");
+  });
+
+  test("redacts secrets hidden under __proto__ key", () => {
+    const obj = Object.create(null) as Record<string, string>;
+    obj.safe = "ok";
+    obj.__proto__ =
+      "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    const result = walkAndRedact(obj, ctx);
+    expect((result.value as Record<string, string>).__proto__).not.toContain("eyJhbGci");
+    expect(result.changed).toBe(true);
+    expect(result.secretCount).toBeGreaterThan(0);
   });
 });
