@@ -212,6 +212,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
           readonly senderId: string;
           readonly timestamp: number;
           readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+          readonly metadata?: JsonObject;
         }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
         return (async function* () {
           const MAX_TURNS = 2;
@@ -249,6 +250,13 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
                 readonly parsedArgs?: JsonObject;
               };
               if (!result.parsedArgs) continue;
+              // Assistant message (tool-use intent)
+              messages.push({
+                senderId: "assistant",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: "" }],
+                metadata: { callId: result.toolName, toolName: result.toolName } as JsonObject,
+              });
               const toolResponse = await handlers.toolCall({
                 toolId: result.toolName,
                 input: result.parsedArgs,
@@ -257,17 +265,14 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
                 typeof toolResponse.output === "string"
                   ? toolResponse.output
                   : JSON.stringify(toolResponse.output);
+              // Tool result with callId linkage
               messages.push({
                 senderId: "tool",
                 timestamp: Date.now(),
-                content: [{ kind: "text", text: `Tool ${result.toolName}: ${out}` }],
+                content: [{ kind: "text", text: out }],
+                metadata: { callId: result.toolName, toolName: result.toolName } as JsonObject,
               });
             }
-            messages.push({
-              senderId: "system",
-              timestamp: Date.now(),
-              content: [{ kind: "text", text: "Respond with the result. No tools." }],
-            });
             turnIndex++;
           }
           yield {

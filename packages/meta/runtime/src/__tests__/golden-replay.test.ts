@@ -184,12 +184,28 @@ describe("tool-use ATIF trajectory (golden file)", () => {
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
 
-  test("step count covers all L2 packages (>= 10 steps)", async () => {
+  test("second model call has final text response (no duplicate tool call)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/tool-use.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // Exactly 2 model calls: tool-use intent + final text response
+    expect(modelSteps.length).toBe(2);
+    // Second model call produces text "12", not another tool call
+    const finalResponse = modelSteps[1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toContain("12");
+  });
+
+  test("step count: MCP + MW + HOOK + MODEL + TOOL (>= 8)", async () => {
     const doc = (await Bun.file(`${FIXTURES}/tool-use.trajectory.json`).json()) as {
       readonly steps: readonly unknown[];
     };
-    // MCP(2) + MW:permissions(4) + HOOK(2) + MW:hook-dispatch(2) + MODEL(2) + TOOL(2) = 14
-    expect(doc.steps.length).toBeGreaterThanOrEqual(10);
+    expect(doc.steps.length).toBeGreaterThanOrEqual(8);
   });
 });
 

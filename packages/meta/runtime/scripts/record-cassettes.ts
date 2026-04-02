@@ -127,6 +127,8 @@ interface QueryConfig {
     readonly filter: { readonly events: readonly string[] };
   }[];
   readonly providers: readonly ComponentProvider[];
+  /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
+  readonly maxTurns?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,15 +202,17 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
           };
         })();
       const text = input.kind === "text" ? input.text : "";
+      const maxTurns = config.maxTurns ?? 1;
       const msgs: {
         readonly senderId: string;
         readonly timestamp: number;
         readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+        readonly metadata?: JsonObject;
       }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
       return (async function* () {
         // let: mutable
         let turn = 0;
-        while (turn < 2) {
+        while (turn < maxTurns + 1) {
           const evts: EngineEvent[] = [];
           // let: mutable
           let done: EngineEvent | undefined;
@@ -237,30 +241,34 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             if (tc.kind !== "tool_call_end") continue;
             const r = tc.result as { readonly toolName: string; readonly parsedArgs?: JsonObject };
             if (!r.parsedArgs) continue;
+            // Append assistant message (the tool-use intent)
+            msgs.push({
+              senderId: "assistant",
+              timestamp: Date.now(),
+              content: [{ kind: "text", text: "" }],
+              metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
+            });
             try {
               const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
               const out =
                 typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
+              // Append tool result with callId linkage — no text injection hacks
               msgs.push({
                 senderId: "tool",
                 timestamp: Date.now(),
-                content: [{ kind: "text", text: `Tool ${r.toolName}: ${out}` }],
+                content: [{ kind: "text", text: out }],
+                metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
               });
             } catch (toolErr: unknown) {
-              // Permission deny or tool error — record as error in messages
               const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
               msgs.push({
                 senderId: "tool",
                 timestamp: Date.now(),
-                content: [{ kind: "text", text: `Tool ${r.toolName} DENIED: ${errMsg}` }],
+                content: [{ kind: "text", text: `error: ${errMsg}` }],
+                metadata: { callId: r.toolName, toolName: r.toolName } as JsonObject,
               });
             }
           }
-          msgs.push({
-            senderId: "system",
-            timestamp: Date.now(),
-            content: [{ kind: "text", text: "Respond with the result. No more tool calls." }],
-          });
           yield { kind: "turn_end" as const, turnIndex: turn };
           turn++;
         }
