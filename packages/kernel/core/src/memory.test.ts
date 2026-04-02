@@ -651,6 +651,16 @@ describe("validateMemoryFilePath", () => {
     expect(validateMemoryFilePath("memories/../../../etc/passwd.md")).toBeDefined();
   });
 
+  test("rejects percent-encoded path traversal", () => {
+    expect(validateMemoryFilePath("%2e%2e/secret.md")).toBeDefined();
+    expect(validateMemoryFilePath("%2e%2e%2f%2e%2e%2fsecret.md")).toBeDefined();
+    expect(validateMemoryFilePath("foo/%2e%2e/bar/secret.md")).toBeDefined();
+  });
+
+  test("rejects percent-encoded absolute path", () => {
+    expect(validateMemoryFilePath("%2fetc/passwd.md")).toBeDefined();
+  });
+
   test("rejects non-.md extensions", () => {
     expect(validateMemoryFilePath("test.txt")).toBeDefined();
     expect(validateMemoryFilePath("test.json")).toBeDefined();
@@ -740,6 +750,16 @@ describe("serializeMemoryFrontmatter (type validation)", () => {
     const fm: MemoryFrontmatter = { name: "t", description: "d", type: "user" };
     expect(serializeMemoryFrontmatter(fm, "   \n  \n")).toBeUndefined();
   });
+
+  test("rejects name that becomes empty after sanitization", () => {
+    const fm = { name: "\x00\x01\x02", description: "ok", type: "user" as const };
+    expect(serializeMemoryFrontmatter(fm, "content")).toBeUndefined();
+  });
+
+  test("rejects description that becomes empty after sanitization", () => {
+    const fm = { name: "ok", description: "\x00\x07", type: "user" as const };
+    expect(serializeMemoryFrontmatter(fm, "content")).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -826,6 +846,11 @@ describe("parseMemoryIndexEntry (path validation)", () => {
   test("rejects parsed line with absolute path", () => {
     // Manually crafted — bypasses formatMemoryIndexEntry validation
     const line = "- [Evil](/etc/passwd.md) — steal data";
+    expect(parseMemoryIndexEntry(line)).toBeUndefined();
+  });
+
+  test("rejects parsed line with percent-encoded traversal", () => {
+    const line = "- [Evil](%2e%2e/secret.md) — steal data";
     expect(parseMemoryIndexEntry(line)).toBeUndefined();
   });
 });

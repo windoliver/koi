@@ -3,8 +3,13 @@
  * persistent agent memory.
  *
  * Models the CC-style file-per-memory system where each memory is a
- * Markdown file with YAML frontmatter (name, description, type) and
- * a body containing the memory content.
+ * Markdown file with key-value frontmatter (name, description, type)
+ * and a body containing the memory content.
+ *
+ * NOTE: The frontmatter format is a bespoke `key: value` line format,
+ * NOT standard YAML. It does not support YAML features like comments (#),
+ * quoting, multi-line scalars, or anchors. Values are treated as raw
+ * strings after the first colon.
  *
  * Exception: branded type constructor (memoryRecordId) is permitted in L0
  * as a zero-logic identity cast for type safety.
@@ -69,7 +74,7 @@ export function isMemoryType(value: unknown): value is MemoryType {
 // Memory record — a single memory fact
 // ---------------------------------------------------------------------------
 
-/** YAML frontmatter fields for a memory file. */
+/** Frontmatter fields for a memory file (bespoke key: value format, not YAML). */
 export interface MemoryFrontmatter {
   readonly name: string;
   readonly description: string;
@@ -136,7 +141,7 @@ const CONTROL_CHAR_REPLACE_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 const CONTROL_CHAR_TEST_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
 
 /**
- * Sanitizes a frontmatter field value for safe YAML-like serialization.
+ * Sanitizes a frontmatter field value for safe serialization.
  *
  * - Replaces newlines (LF, CR, CRLF) with spaces to prevent line injection
  * - Strips control characters (except tab, which is harmless)
@@ -167,9 +172,9 @@ export function hasFrontmatterUnsafeChars(value: string): boolean {
  * Parses frontmatter fields with strict validation.
  * Returns undefined if any field is missing, duplicated, unknown, or malformed.
  */
-function parseFrontmatterFields(yamlBlock: string): MemoryFrontmatter | undefined {
+function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined {
   const fields = new Map<string, string>();
-  for (const line of yamlBlock.split("\n")) {
+  for (const line of fmBlock.split("\n")) {
     const trimmedLine = line.trim();
     if (trimmedLine.length === 0) continue;
 
@@ -195,7 +200,7 @@ function parseFrontmatterFields(yamlBlock: string): MemoryFrontmatter | undefine
 }
 
 /**
- * Parses YAML frontmatter from a memory Markdown file.
+ * Parses frontmatter from a memory Markdown file.
  *
  * Expects format:
  * ```markdown
@@ -236,7 +241,7 @@ export function parseMemoryFrontmatter(
     return undefined;
   }
 
-  const yamlBlock = rest.slice(0, closeMatch.index).trim();
+  const fmBlock = rest.slice(0, closeMatch.index).trim();
 
   // The serializer emits "---\n\n<content>" — the close regex consumed
   // "---\n" (or "---\r\n"), so afterClose starts with "\r?\n<content>".
@@ -245,7 +250,7 @@ export function parseMemoryFrontmatter(
   const afterClose = rest.slice(closeMatch.index + closeMatch[0].length);
   const content = afterClose.replace(/^\r?\n/, "");
 
-  const frontmatter = parseFrontmatterFields(yamlBlock);
+  const frontmatter = parseFrontmatterFields(fmBlock);
   if (!frontmatter) return undefined;
 
   // Reject empty/whitespace-only bodies — a truncated write should not
@@ -279,6 +284,10 @@ export function serializeMemoryFrontmatter(
 
   const name = sanitizeFrontmatterValue(frontmatter.name);
   const description = sanitizeFrontmatterValue(frontmatter.description);
+
+  // Re-validate after sanitization — stripping control chars can empty fields
+  if (name.length === 0) return undefined;
+  if (description.length === 0) return undefined;
 
   return [
     "---",
@@ -347,18 +356,33 @@ export function validateMemoryRecordInput(
 // ---------------------------------------------------------------------------
 
 /**
+ * Decodes all percent-encoded sequences in a path for validation.
+ * This ensures encoded traversal like `%2e%2e` is caught.
+ */
+function decodePathForValidation(path: string): string {
+  return path.replace(/%([0-9a-fA-F]{2})/g, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+}
+
+/**
  * Validates that a file path is safe for use in MEMORY.md index entries.
+ *
+ * The path is fully percent-decoded before validation to catch encoded
+ * traversal attacks like `%2e%2e/secret.md`.
  *
  * Requirements:
  * - Must be a relative path (no leading `/` or drive letters like `C:`)
- * - Must not contain `..` path traversal segments
+ * - Must not contain `..` path traversal segments (including percent-encoded)
  * - Must end with `.md` extension
  * - Must not be empty
  *
  * Returns undefined if valid, or an error message string if invalid.
  */
 export function validateMemoryFilePath(filePath: string): string | undefined {
-  const normalized = filePath.replace(/\\/g, "/").trim();
+  // Decode percent-encoded sequences first to catch encoded traversal
+  const decoded = decodePathForValidation(filePath);
+  const normalized = decoded.replace(/\\/g, "/").trim();
   if (normalized.length === 0) return "file path must not be empty";
   if (normalized.startsWith("/")) return "file path must be relative, not absolute";
   if (/^[a-zA-Z]:/.test(normalized)) return "file path must not contain drive letters";
