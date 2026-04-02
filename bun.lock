@@ -154,6 +154,22 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/middleware-goal": {
+      "name": "@koi/middleware-goal",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-report": {
+      "name": "@koi/middleware-report",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -485,7 +501,11 @@
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
+    "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
+
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
+
+    "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
