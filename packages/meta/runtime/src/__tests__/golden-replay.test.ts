@@ -29,7 +29,9 @@ import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
+import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
@@ -376,6 +378,105 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
     expect(mwNames.has("hook-dispatch")).toBe(true);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-goal + @koi/middleware-report (cassette replay)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
+  test("both MW compose through createKoi with tool-use cassette", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-mw-goal-report-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-goal-report";
+
+    const store = createAtifDocumentStore(
+      { agentName: "goal-report-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "goal-report-test",
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permMiddleware = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    // @koi/middleware-goal
+    const completed: string[] = [];
+    const goalMw = createGoalMiddleware({
+      objectives: ["Compute the sum of two numbers"],
+      onComplete: (obj) => completed.push(obj),
+    });
+
+    // @koi/middleware-report
+    const reportHandle = createReportMiddleware({
+      objective: "Golden query: tool-use with goal + report MW",
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, goalMw, reportHandle.middleware, permMiddleware].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate ATIF has MW spans for both new middlewares
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // @koi/middleware-goal spans present
+    expect(mwNames.has("goal")).toBe(true);
+
+    // @koi/middleware-report spans present
+    expect(mwNames.has("report")).toBe(true);
+
+    // @koi/middleware-permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call still executed successfully through the full MW chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model call steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
   }, 15000);
 });
 

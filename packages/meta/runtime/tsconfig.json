@@ -18,6 +18,8 @@
     { "path": "../../lib/tools-web" },
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../net/mcp" },
+    { "path": "../../lib/middleware-goal" },
+    { "path": "../../lib/middleware-report" },
     { "path": "../../security/middleware-permissions" },
     { "path": "../../security/permissions" }
   ]
