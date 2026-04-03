@@ -213,11 +213,12 @@ export interface PromptHookConfig {
   /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
   readonly serial?: boolean | undefined;
   /**
-   * Failure behavior when the model response cannot be parsed.
-   * - "closed" (default): treat parse failure as a block
-   * - "open": treat parse failure as continue (allow through)
+   * Post-execution failure behavior. Default: true (fail-closed).
+   *
+   * When true: if the model response cannot be parsed, the action is blocked.
+   * When false: if parsing fails, the action is allowed through (fail-open).
    */
-  readonly failMode?: "open" | "closed" | undefined;
+  readonly failClosed?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------

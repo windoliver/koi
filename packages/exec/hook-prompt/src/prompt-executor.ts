@@ -60,7 +60,7 @@ export function createPromptExecutor(caller: PromptModelCaller): PromptHookExecu
     kind: "prompt",
 
     async execute(config: PromptHookConfig, event: HookEvent): Promise<HookDecision> {
-      const failMode = config.failMode ?? "closed";
+      const failClosed = config.failClosed ?? true;
 
       try {
         const systemPrompt = `${config.prompt}\n\n${SYSTEM_PROMPT_SUFFIX}`;
@@ -80,7 +80,7 @@ export function createPromptExecutor(caller: PromptModelCaller): PromptHookExecu
         const verdict = parseVerdictOutput(response.text);
         return mapVerdictToDecision(verdict);
       } catch (e: unknown) {
-        if (failMode === "open") {
+        if (!failClosed) {
           return { kind: "continue" };
         }
         const message = e instanceof Error ? e.message : "Unknown prompt hook error";

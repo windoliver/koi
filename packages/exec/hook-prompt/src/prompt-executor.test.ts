@@ -49,7 +49,7 @@ describe("createPromptExecutor", () => {
     }
   });
 
-  test("returns block on error with default failMode (closed)", async () => {
+  test("returns block on error with default failClosed (true)", async () => {
     const caller: PromptModelCaller = {
       complete: mock(() => Promise.reject(new Error("timeout"))),
     };
@@ -64,13 +64,13 @@ describe("createPromptExecutor", () => {
     }
   });
 
-  test("returns continue on error with failMode open", async () => {
+  test("returns continue on error with failClosed: false", async () => {
     const caller: PromptModelCaller = {
       complete: mock(() => Promise.reject(new Error("timeout"))),
     };
     const executor = createPromptExecutor(caller);
 
-    const result = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    const result = await executor.execute(makeConfig({ failClosed: false }), makeEvent());
 
     expect(result.kind).toBe("continue");
   });
@@ -145,9 +145,9 @@ describe("createPromptExecutor", () => {
     expect(executor.kind).toBe("prompt");
   });
 
-  // ── Malformed model output + failMode interaction ──
+  // ── Malformed model output + failClosed interaction ──
 
-  test("ambiguous malformed output blocks with default failMode (closed)", async () => {
+  test("ambiguous malformed output blocks with default failClosed (true)", async () => {
     const caller = makeCaller("hmm I think maybe");
     const executor = createPromptExecutor(caller);
 
@@ -159,47 +159,47 @@ describe("createPromptExecutor", () => {
     }
   });
 
-  test("ambiguous malformed output continues with failMode open", async () => {
+  test("ambiguous malformed output continues with failClosed: false", async () => {
     const caller = makeCaller("hmm I think maybe");
     const executor = createPromptExecutor(caller);
 
-    const result = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    const result = await executor.execute(makeConfig({ failClosed: false }), makeEvent());
 
     expect(result.kind).toBe("continue");
   });
 
-  test('{ ok: "false" } is coerced to false — blocks regardless of failMode', async () => {
+  test('{ ok: "false" } is coerced to false — blocks regardless of failClosed', async () => {
     const caller = makeCaller('{ "ok": "false", "reason": "block" }');
     const executor = createPromptExecutor(caller);
 
-    // failMode:open — still blocks because the model expressed a clear denial
-    const resultOpen = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    // failClosed:false — still blocks because the model expressed a clear denial
+    const resultOpen = await executor.execute(makeConfig({ failClosed: false }), makeEvent());
     expect(resultOpen.kind).toBe("block");
     if (resultOpen.kind === "block") {
       expect(resultOpen.reason).toBe("block");
     }
 
     // failMode:closed — also blocks
-    const resultClosed = await executor.execute(makeConfig({ failMode: "closed" }), makeEvent());
+    const resultClosed = await executor.execute(makeConfig({ failClosed: true }), makeEvent());
     expect(resultClosed.kind).toBe("block");
   });
 
-  test("plain-text denial blocks even under failMode:open", async () => {
+  test("plain-text denial blocks even under failClosed:false", async () => {
     const caller = makeCaller("This is dangerous and should be blocked");
     const executor = createPromptExecutor(caller);
 
-    const result = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    const result = await executor.execute(makeConfig({ failClosed: false }), makeEvent());
     expect(result.kind).toBe("block");
     if (result.kind === "block") {
       expect(result.reason).toContain("dangerous");
     }
   });
 
-  test("empty model response triggers failMode", async () => {
+  test("empty model response respects failClosed", async () => {
     const caller = makeCaller("");
     const executor = createPromptExecutor(caller);
 
-    const resultOpen = await executor.execute(makeConfig({ failMode: "open" }), makeEvent());
+    const resultOpen = await executor.execute(makeConfig({ failClosed: false }), makeEvent());
     expect(resultOpen.kind).toBe("continue");
 
     const resultClosed = await executor.execute(makeConfig(), makeEvent());
