@@ -231,12 +231,14 @@ export async function* consumeModelStream(
             outputTokens = chunk.usage.outputTokens;
           }
           const errorPartialText = textFragments.join("");
+          // When no model text has streamed, use the error message as content
+          // so hook-block denial reasons are visible to users, not swallowed.
+          const errorContent = errorPartialText.length > 0 ? errorPartialText : chunk.message;
           const danglingOnError = buildDanglingToolCalls(accumulators);
           yield {
             kind: "done",
             output: {
-              content:
-                errorPartialText.length > 0 ? [{ kind: "text", text: errorPartialText }] : [],
+              content: errorContent.length > 0 ? [{ kind: "text", text: errorContent }] : [],
               stopReason: "error",
               metrics: {
                 totalTokens: inputTokens + outputTokens,
@@ -247,6 +249,11 @@ export async function* consumeModelStream(
               },
               metadata: {
                 error: chunk.message,
+                // Propagate structured error fields so consumers can distinguish
+                // hook blocks (code: "PERMISSION") from provider errors.
+                ...(chunk.code !== undefined ? { errorCode: chunk.code } : {}),
+                ...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+                ...(chunk.retryAfterMs !== undefined ? { retryAfterMs: chunk.retryAfterMs } : {}),
                 ...(danglingOnError.length > 0 ? { danglingToolCalls: danglingOnError } : {}),
               },
             },
@@ -264,7 +271,43 @@ export async function* consumeModelStream(
             chunk.response.content.length > 0 ? chunk.response.content : textFragments.join("");
 
           const danglingOnDone = buildDanglingToolCalls(accumulators);
-          const stopReason = danglingOnDone.length > 0 ? "error" : "completed";
+
+          // Determine engine stop reason. Priority:
+          // 1. Dangling tool calls → "error" (incomplete response)
+          // 2. Non-success model stop reason (error, hook_blocked) → "error"
+          //    (preserve denial/failure signal from middleware or provider)
+          // 3. Otherwise → "completed"
+          const responseStopReason = chunk.response.stopReason;
+          const isNonSuccess =
+            responseStopReason !== undefined &&
+            responseStopReason !== "stop" &&
+            responseStopReason !== "length" &&
+            responseStopReason !== "tool_use";
+          const stopReason =
+            danglingOnDone.length > 0 ? "error" : isNonSuccess ? "error" : "completed";
+
+          // Build metadata: merge response metadata (hook block info, etc.)
+          // with dangling tool call warnings. Use distinct keys so dangling-tool-call
+          // diagnostics never overwrite upstream error details from the response.
+          const responseMeta = chunk.response.metadata;
+          const hasDangling = danglingOnDone.length > 0;
+          const hasResponseMeta =
+            responseMeta !== undefined && Object.keys(responseMeta).length > 0;
+          const metadata =
+            hasDangling || hasResponseMeta
+              ? {
+                  ...(hasResponseMeta ? responseMeta : {}),
+                  ...(isNonSuccess && responseStopReason !== undefined
+                    ? { modelStopReason: responseStopReason }
+                    : {}),
+                  ...(hasDangling
+                    ? {
+                        danglingToolCallsError: "done received with in-flight tool calls",
+                        danglingToolCalls: danglingOnDone,
+                      }
+                    : {}),
+                }
+              : undefined;
 
           yield {
             kind: "done",
@@ -278,14 +321,7 @@ export async function* consumeModelStream(
                 turns: 0,
                 durationMs: 0,
               },
-              ...(danglingOnDone.length > 0
-                ? {
-                    metadata: {
-                      error: "done received with in-flight tool calls",
-                      danglingToolCalls: danglingOnDone,
-                    },
-                  }
-                : {}),
+              ...(metadata !== undefined ? { metadata } : {}),
             },
           };
           return;

@@ -1,0 +1,35 @@
+{
+  "name": "@koi/tui",
+  "description": "OpenTUI-based terminal UI for Koi agent conversations",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./state": {
+      "types": "./dist/state/index.d.ts",
+      "import": "./dist/state/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@opentui/core": "0.1.96",
+    "@opentui/react": "0.1.96",
+    "react": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.2"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  }
+}

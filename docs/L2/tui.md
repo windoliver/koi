@@ -1,0 +1,217 @@
+# @koi/tui — State Layer
+
+> TUI rendering state: types, reducer, and store for the Ink-based terminal UI.
+
+**Layer:** UI (depends on `@koi/core` only)
+**Location:** `packages/ui/tui/src/state/`
+**Issue:** #1265 (Phase 2j-1)
+
+## Purpose
+
+Manages all state needed to render the TUI: conversation messages, active view,
+modal overlays, connection status, layout, and zoom level. This is a
+**rendering concern only** — not a data store, not an admin panel, not a
+persistence layer.
+
+## Architecture
+
+```
+EngineEvent (from @koi/core)
+    │
+    ▼
+┌──────────────────────┐
+│  reduce(state, action)│  ← pure function, no side effects
+│  - delta accumulation │
+│  - message compaction │
+│  - view transitions   │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  TuiStore            │  ← thin wrapper (~50 LOC)
+│  - getState()        │     always returns latest state
+│  - dispatch(action)  │     applies reducer + microtask-batched notify
+│  - subscribe(fn)     │     returns unsubscribe function
+└──────────────────────┘
+           │
+           ▼
+    useSyncExternalStore (React 18+)
+```
+
+## State Shape
+
+```typescript
+interface TuiState {
+  readonly messages: readonly TuiMessage[];
+  readonly activeView: TuiView;
+  readonly modal: TuiModal | null;
+  readonly connectionStatus: ConnectionStatus;
+  readonly layoutTier: LayoutTier;
+  readonly zoomLevel: number;
+}
+```
+
+Six flat fields. No nesting, no grouping. Rule of Three: group only at 12+ fields.
+
+## Message Model
+
+Messages are **materialized** — the reducer accumulates streaming deltas into
+render-ready objects. Views never reconstruct display state from raw events.
+
+```typescript
+type TuiMessage =
+  | { kind: "user"; id: string; blocks: readonly ContentBlock[] }
+  | { kind: "assistant"; id: string; blocks: readonly TuiAssistantBlock[]; streaming: boolean }
+  | { kind: "system"; id: string; text: string }
+
+type TuiAssistantBlock =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool_call"; callId: string; toolName: string;
+      status: "running" | "complete" | "error";
+      args?: string;    // streamed argument JSON fragments
+      result?: unknown } // tool execution result from tool_call_end
+  | { kind: "error"; code: string; message: string }
+```
+
+**IDs are deterministic:** `assistant-${turnIndex}`, `tool-${callId}`, caller-provided for user messages.
+
+**Tool call semantics:** `tool_call_delta` streams argument JSON fragments into `args`.
+`tool_call_end.result` stores the execution result into `result`. These are separate
+fields — args are what the model sends, result is what the tool returns.
+
+**Tool payloads are capped:** 50KB tail-slice via `capOutput()`/`capResult()` — applies
+to tool call args and tool results. Text and thinking blocks are unbounded because
+they are user-facing content; memory is bounded by the 1000-message compaction.
+
+## Views and Modals
+
+Two-layer navigation: persistent **views** and transient **modals**.
+
+| Type | Members | Behavior |
+|------|---------|----------|
+| View | `conversation`, `sessions`, `doctor`, `help` | Screen-level, one active |
+| Modal | `command-palette`, `permission-prompt` | Overlay, preserves underlying view |
+
+Modals are nullable. Dismissing returns to the underlying view without state loss.
+
+## Actions
+
+```typescript
+type TuiAction =
+  | { kind: "engine_event"; event: EngineEvent }    // coarse wrapper, no DRY violation
+  | { kind: "add_user_message"; id: string; blocks: readonly ContentBlock[] }
+  | { kind: "set_view"; view: TuiView }
+  | { kind: "set_modal"; modal: TuiModal | null }
+  | { kind: "set_connection_status"; status: ConnectionStatus }
+  | { kind: "set_layout"; tier: LayoutTier }
+  | { kind: "set_zoom"; level: number }
+  | { kind: "add_error"; code: string; message: string }
+  | { kind: "clear_messages" }
+```
+
+`engine_event` wraps the full `EngineEvent` discriminated union from `@koi/core`.
+The reducer internally switches on `event.kind`. No duplication of event variants.
+
+## Compaction
+
+Append-only message list with **hysteresis** compaction:
+
+- `MAX_MESSAGES = 1000` — target after compaction
+- `COMPACT_THRESHOLD = 1100` — triggers compaction
+
+When messages reach 1100, the reducer slices to the most recent 1000.
+The 100-message gap prevents per-message array allocation at steady state.
+Compaction runs on **all** message-append paths (user messages, `turn_start`,
+and implicit assistant creation), not just user input.
+
+## Store
+
+Minimal API matching `useSyncExternalStore` contract:
+
+- `getState()` — always returns latest state (never stale, even during batched notify)
+- `dispatch(action)` — applies reducer synchronously, coalesces notifications via `queueMicrotask`
+- `subscribe(listener)` — returns unsubscribe function
+
+**Microtask batching:** State updates are immediate; subscriber notifications are
+coalesced. 50-100 text_delta dispatches/sec collapse into 1-3 notifications.
+
+**No-op guard:** If `reduce()` returns the same reference (`next === state`),
+dispatch skips notification entirely.
+
+## Performance Characteristics
+
+| Concern | Strategy |
+|---------|----------|
+| Streaming deltas (50-100/sec) | Microtask-batched notifications |
+| Message array updates | `Array.with()` for last-element clarity |
+| Tool output growth | 50KB tail-slice cap (args + results) |
+| Text/thinking growth | Unbounded (user-facing content, bounded by compaction) |
+| No-op actions | Early return (same reference), store skips notify |
+| Memory bounds | 1000-message cap with hysteresis |
+
+## Edge Case Behavior
+
+| Event | Reducer behavior |
+|-------|-----------------|
+| `text_delta` before `turn_start` | Creates implicit assistant message |
+| `tool_call_end` without `tool_call_start` | No-op (drop silently) |
+| `text_delta` + `tool_call_delta` interleaved | Accumulate to separate blocks |
+| `done` mid-tool-call | `streaming=false`, running tools marked `"error"` |
+| Empty `text_delta` (delta: `""`) | No-op |
+| `turn_start` without prior `turn_end` | Auto-close previous turn |
+| Duplicate `callId` | Update existing tool block |
+| `add_error` without assistant | Creates implicit assistant + error block |
+| `set_modal(null)` when already `null` | No-op (same reference) |
+
+## File Organization
+
+```
+packages/ui/tui/src/
+├── state/
+│   ├── types.ts           ~135 LOC  — all types, constants
+│   ├── reduce.ts          ~345 LOC  — pure reducer + helpers
+│   ├── store.ts           ~70 LOC   — createStore()
+│   ├── initial.ts         ~18 LOC   — createInitialState()
+│   ├── test-helpers.ts    ~90 LOC   — test factories
+│   └── index.ts           ~15 LOC   — re-exports
+├── components/
+│   ├── text-block.tsx     ~20 LOC   — text/markdown renderer
+│   ├── thinking-block.tsx ~15 LOC   — dimmed thinking display
+│   ├── tool-call-block.tsx ~55 LOC  — tool lifecycle (spinner/result/error)
+│   ├── error-block.tsx    ~30 LOC   — styled error display
+│   ├── message-row.tsx    ~90 LOC   — turn router, React.memo wrapped
+│   ├── message-list.tsx   ~30 LOC   — scrollable conversation
+│   └── index.ts           ~7 LOC    — re-exports
+├── store-context.tsx      ~35 LOC   — useTuiStore(selector) hook + Context
+└── index.ts               ~10 LOC   — top-level re-exports
+```
+
+## Components
+
+Six core components built on OpenTUI primitives:
+
+| Component | Purpose | Key behavior |
+|-----------|---------|-------------|
+| `TextBlock` | Text/markdown | `<text>` baseline, `<markdown>` when syntaxStyle provided |
+| `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
+| `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
+| `ErrorBlock` | Error display | Red border, code + message |
+| `MessageRow` | Turn router | `React.memo` — only re-renders when message reference changes |
+| `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
+
+## Store Hook
+
+`useTuiStore(selector)` — wraps `useSyncExternalStore` with selector support.
+Components select only the state slice they need, preventing unnecessary re-renders.
+
+```typescript
+const messages = useTuiStore(s => s.messages);
+const view = useTuiStore(s => s.activeView);
+```
+
+## Layer Compliance
+
+- State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
+- Component layer imports from `@koi/core` + `@opentui/core` + `@opentui/react` + `react`
+- No imports from `@koi/engine`, peer L2, or external state libraries
