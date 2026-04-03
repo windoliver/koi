@@ -19,7 +19,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookRedactionConfig, HookType, HttpHookConfig } from './hook.js';
+export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookRedactionConfig, HookType, HttpHookConfig, PromptHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, MemoryFrontmatter, MemoryIndex, MemoryIndexEntry, MemoryRecord, MemoryRecordId, MemoryRecordInput, MemoryRecordPatch, MemoryType, MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } from './memory.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
@@ -1909,6 +1909,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2052,6 +2053,7 @@ exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
 "export { q as AgentManifest, aI as CapabilityConfig, aK as ChannelConfig, aL as ChannelIdentity, cd as FilesystemSkillSource, cp as ForgedSkillSource, c_ as ManifestSandboxConfig, c$ as ManifestSandboxPersistence, d9 as MiddlewareConfig, dd as ModelConfig, h as PermissionConfig, ep as SearchConfig, ey as SkillConfig, eK as SkillSource, fn as ToolConfig, g7 as forgedSkill, g8 as fsSkill } from './assembly-HASH.js';
 import './common.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './errors.js';
 import './message.js';
@@ -2179,6 +2181,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2196,6 +2199,7 @@ import './errors.js';
 import './message.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 "
 `;
 
@@ -2207,6 +2211,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2221,6 +2226,7 @@ import './errors.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2385,6 +2391,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2471,6 +2478,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2643,6 +2651,7 @@ import './errors.js';
 import './message.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2657,6 +2666,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2713,6 +2723,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -2917,6 +2928,39 @@ interface HttpHookConfig {
     readonly failClosed?: boolean | undefined;
 }
 /**
+ * A hook that makes a single-shot LLM call (~100-200 tokens) for pass/fail
+ * verification. Fills the gap between static hooks (command/http) and expensive
+ * agent hooks (4000+ tokens).
+ *
+ * The model receives a verification prompt and must respond with structured
+ * JSON: \`{ "ok": true/false, "reason": "..." }\`.
+ */
+interface PromptHookConfig {
+    readonly kind: "prompt";
+    /** Human-readable hook name (unique within a manifest). */
+    readonly name: string;
+    /** Verification prompt sent to the model. */
+    readonly prompt: string;
+    /** Override model for the verification call (default: cheap/fast model). */
+    readonly model?: string | undefined;
+    /** Timeout in milliseconds. Default: 10_000. */
+    readonly timeoutMs?: number | undefined;
+    /** Max tokens for the verification response. Default: 256. */
+    readonly maxTokens?: number | undefined;
+    /** Filter conditions — when absent, fires on all events. */
+    readonly filter?: HookFilter | undefined;
+    /** Whether this hook is active. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+    readonly serial?: boolean | undefined;
+    /**
+     * Failure behavior when the model response cannot be parsed.
+     * - "closed" (default): treat parse failure as a block
+     * - "open": treat parse failure as continue (allow through)
+     */
+    readonly failMode?: "open" | "closed" | undefined;
+}
+/**
  * Redaction options for event data forwarded to agent hook prompts.
  *
  * Only meaningful when \`forwardRawPayload\` is true on an \`AgentHookConfig\`.
@@ -3002,7 +3046,7 @@ interface AgentHookConfig {
     readonly failClosed?: boolean | undefined;
 }
 /** Discriminated union of all hook config types. */
-type HookConfig = CommandHookConfig | HttpHookConfig | AgentHookConfig;
+type HookConfig = CommandHookConfig | HttpHookConfig | PromptHookConfig | AgentHookConfig;
 /**
  * System-wide policy controlling which env vars hooks may access
  * via \`\${VAR}\` expansion in headers and secrets.
@@ -3067,7 +3111,7 @@ declare const DEFAULT_AGENT_MAX_TOKENS: 4096;
  */
 declare const DEFAULT_AGENT_SESSION_TOKEN_BUDGET: 500000;
 
-export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookRedactionConfig, type HookType, type HttpHookConfig };
+export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookRedactionConfig, type HookType, type HttpHookConfig, type PromptHookConfig };
 "
 `;
 
@@ -3080,6 +3124,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './filesystem-HASH.js';
 "
@@ -3093,6 +3138,7 @@ import './errors.js';
 import './message.js';
 import './channel.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3276,6 +3322,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3290,6 +3337,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3536,6 +3584,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3585,6 +3634,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3599,6 +3649,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3613,6 +3664,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3740,6 +3792,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4059,6 +4112,7 @@ import './message.js';
 import './channel.js';
 import './model-HASH.js';
 import './sandbox-HASH.js';
+import './hook.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';

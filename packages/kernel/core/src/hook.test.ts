@@ -4,12 +4,12 @@ import type { HookConfig, HookEventKind } from "./hook.js";
 
 describe("HOOK_EVENT_KINDS", () => {
   test("contains expected event kinds", () => {
-    expect(HOOK_EVENT_KINDS).toContain("beforeToolCall");
-    expect(HOOK_EVENT_KINDS).toContain("afterToolCall");
-    expect(HOOK_EVENT_KINDS).toContain("beforeModelCall");
-    expect(HOOK_EVENT_KINDS).toContain("afterModelCall");
-    expect(HOOK_EVENT_KINDS).toContain("onError");
-    expect(HOOK_EVENT_KINDS).toHaveLength(5);
+    expect(HOOK_EVENT_KINDS).toContain("session.started");
+    expect(HOOK_EVENT_KINDS).toContain("session.ended");
+    expect(HOOK_EVENT_KINDS).toContain("tool.before");
+    expect(HOOK_EVENT_KINDS).toContain("tool.succeeded");
+    expect(HOOK_EVENT_KINDS).toContain("tool.failed");
+    expect(HOOK_EVENT_KINDS).toHaveLength(15);
   });
 
   test("HookEventKind type matches const array members", () => {
