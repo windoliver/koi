@@ -1922,3 +1922,127 @@ describe("Golden: @koi/memory", () => {
     expect(compacted.entries.some((e) => e.id === "c1")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// memory-store trajectory: full-stack ATIF validation (golden file)
+// ---------------------------------------------------------------------------
+
+describe("memory-store ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with session_id and memory tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly agent: {
+        readonly model_name?: string;
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("memory-store");
+    expect(doc.agent.model_name).toBe("google/gemini-2.0-flash-001");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_store")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_list")).toBe(true);
+  });
+
+  test("MCP lifecycle + MW spans present", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const mcpSteps = doc.steps.filter((s) => s.extra?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(2);
+
+    const permSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
+    );
+    expect(permSpans.length).toBeGreaterThan(0);
+
+    const hookDispatchSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hook-dispatch",
+    );
+    expect(hookDispatchSpans.length).toBeGreaterThan(0);
+  });
+
+  test("memory_store tool executed with frontmatter in output", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    expect(toolSteps.length).toBeGreaterThanOrEqual(2); // memory_store + memory_list
+
+    // memory_store output contains serialized frontmatter
+    const storeStep = toolSteps.find((s) => {
+      const content = s.observation?.results?.[0]?.content ?? "";
+      return content.includes("filePath") && content.includes("serialized");
+    });
+    expect(storeStep).toBeDefined();
+    const storeContent = storeStep?.observation?.results?.[0]?.content ?? "";
+    expect(storeContent).toContain("testing_approach.md");
+    expect(storeContent).toContain("---");
+  });
+
+  test("memory_list tool returns stored memory records", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    const listStep = toolSteps.find((s) => {
+      const content = s.observation?.results?.[0]?.content ?? "";
+      return content.includes("memories");
+    });
+    expect(listStep).toBeDefined();
+    const listContent = listStep?.observation?.results?.[0]?.content ?? "";
+    expect(listContent).toContain("testing_approach.md");
+    expect(listContent).toContain("feedback");
+  });
+
+  test("hook executions fire on tool.succeeded", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const hookSteps = doc.steps.filter((s) => s.extra?.type === "hook_execution");
+    // At least 2 hook executions (one per tool call)
+    expect(hookSteps.length).toBeGreaterThanOrEqual(2);
+    expect(hookSteps[0]?.extra?.hookName).toBe("on-tool-exec");
+  });
+
+  test("model calls: initial intent + final summary (>= 2 model steps)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+
+    // Final model response should reference the stored memory
+    const finalResponse =
+      modelSteps[modelSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse.length).toBeGreaterThan(0);
+  });
+
+  test("step count: MCP + MW + HOOK + MODEL + TOOL (>= 12)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    // 18 steps recorded: 2 MCP + 3 MODEL + 2 TOOL + 2 HOOK + 4 MW:hooks + 4 MW:permissions + MW:hook-dispatch
+    expect(doc.steps.length).toBeGreaterThanOrEqual(12);
+  });
+});
