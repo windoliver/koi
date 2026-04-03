@@ -1238,3 +1238,83 @@ describe("Golden: @koi/mcp", () => {
     await server.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/fs-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/fs-nexus", () => {
+  test("createNexusFileSystem returns a FileSystemBackend with all operations", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    expect(backend.name).toBe("nexus");
+    expect(typeof backend.read).toBe("function");
+    expect(typeof backend.write).toBe("function");
+    expect(typeof backend.edit).toBe("function");
+    expect(typeof backend.list).toBe("function");
+    expect(typeof backend.search).toBe("function");
+    expect(typeof backend.delete).toBe("function");
+    expect(typeof backend.rename).toBe("function");
+    expect(typeof backend.dispose).toBe("function");
+  });
+
+  test("round-trip write/read through fake transport", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    const writeResult = await backend.write("/golden/test.txt", "golden content");
+    expect(writeResult.ok).toBe(true);
+
+    const readResult = await backend.read("/golden/test.txt");
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("golden content");
+      expect(readResult.value.path).toBe("/golden/test.txt");
+    }
+  });
+
+  test("ATIF trajectory: nexus_read tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/nexus-fs-read.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "nexus-fs-read.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with nexus_read
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const hasNexusRead = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "nexus_read"),
+    );
+    expect(hasNexusRead).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});

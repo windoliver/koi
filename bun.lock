@@ -140,6 +140,15 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/fs-nexus": {
+      "name": "@koi/fs-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/edit-match": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/git-utils": {
       "name": "@koi/git-utils",
       "version": "0.0.0",
@@ -244,6 +253,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/fs-nexus": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
@@ -280,14 +290,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-      },
-    },
-    "packages/net/fs-nexus": {
-      "name": "@koi/fs-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
       },
     },
     "packages/net/mcp": {
@@ -576,7 +578,7 @@
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
-    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/net/fs-nexus"],
+    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 

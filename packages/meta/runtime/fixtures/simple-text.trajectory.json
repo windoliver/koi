@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:32.639Z",
+      "timestamp": "2026-04-03T04:28:40.746Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:32.639Z",
+      "timestamp": "2026-04-03T04:28:40.746Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,7 +38,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-02T10:50:32.654Z",
+      "timestamp": "2026-04-03T04:28:40.752Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Answer with just the number.",
       "observation": {
@@ -52,7 +52,7 @@
         "prompt_tokens": 71,
         "completion_tokens": 2
       },
-      "duration_ms": 868,
+      "duration_ms": 563,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -63,10 +63,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:33.526Z",
+      "timestamp": "2026-04-03T04:28:41.339Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-model-done\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 872.3775000000023,
+      "duration_ms": 587.3367920000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -80,10 +80,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:33.526Z",
+      "timestamp": "2026-04-03T04:28:41.339Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-model-done\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 874.4354999999923,
+      "duration_ms": 588.4940829999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -97,10 +97,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:33.529Z",
+      "timestamp": "2026-04-03T04:28:41.341Z",
       "model_name": "hook:on-model-done",
       "message": "turn.ended → on-model-done",
-      "duration_ms": 4.276624999998603,
+      "duration_ms": 2.5883749999993597,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
