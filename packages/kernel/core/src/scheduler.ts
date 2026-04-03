@@ -48,14 +48,14 @@ export function scheduleId(id: string): ScheduleId {
 // Task status state machine
 // ---------------------------------------------------------------------------
 
-export type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_letter";
+export type ScheduledTaskStatus = "pending" | "running" | "completed" | "failed" | "dead_letter";
 
 // ---------------------------------------------------------------------------
-// TaskStatus → ProcessState mapping
+// ScheduledTaskStatus → ProcessState mapping
 // ---------------------------------------------------------------------------
 
 /**
- * Map a scheduler TaskStatus to the equivalent ProcessState for correlation.
+ * Map a ScheduledTaskStatus to the equivalent ProcessState for correlation.
  *
  * A scheduler "task" and an agent "process" are distinct concepts:
  * - Task = "deliver input to agent at scheduled time/priority"
@@ -64,17 +64,17 @@ export type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_
  * This mapping enables cross-domain correlation (e.g., procfs, monitoring)
  * without coupling the scheduler to the lifecycle registry.
  *
- * | TaskStatus  | ProcessState | Rationale                              |
- * |-------------|--------------|----------------------------------------|
- * | pending     | created      | Exists but not yet executing           |
- * | running     | running      | Actively executing                     |
- * | completed   | terminated   | Finished successfully                  |
- * | failed      | terminated   | Finished with error                    |
- * | dead_letter | terminated   | Exhausted retries, moved to DLQ        |
+ * | ScheduledTaskStatus | ProcessState | Rationale                        |
+ * |---------------------|--------------|----------------------------------|
+ * | pending             | created      | Exists but not yet executing     |
+ * | running             | running      | Actively executing               |
+ * | completed           | terminated   | Finished successfully            |
+ * | failed              | terminated   | Finished with error              |
+ * | dead_letter         | terminated   | Exhausted retries, moved to DLQ  |
  *
  * Exception: pure function operating only on L0 types, permitted in L0.
  */
-export function mapTaskStatusToProcessState(status: TaskStatus): ProcessState {
+export function mapScheduledTaskStatusToProcessState(status: ScheduledTaskStatus): ProcessState {
   switch (status) {
     case "pending":
       return "created";
@@ -98,7 +98,7 @@ export interface ScheduledTask {
   readonly mode: "spawn" | "dispatch";
   /** 0 = highest priority. */
   readonly priority: number;
-  readonly status: TaskStatus;
+  readonly status: ScheduledTaskStatus;
   readonly createdAt: number;
   /** Unix timestamp ms for delayed execution. */
   readonly scheduledAt?: number | undefined;
@@ -175,7 +175,7 @@ export interface TaskHistoryFilter {
 // ---------------------------------------------------------------------------
 
 export interface TaskFilter {
-  readonly status?: TaskStatus | undefined;
+  readonly status?: ScheduledTaskStatus | undefined;
   readonly agentId?: AgentId | undefined;
   readonly priority?: number | undefined;
   readonly limit?: number | undefined;
@@ -208,7 +208,7 @@ export interface TaskStore extends AsyncDisposable {
   readonly remove: (id: TaskId) => void | Promise<void>;
   readonly updateStatus: (
     id: TaskId,
-    status: TaskStatus,
+    status: ScheduledTaskStatus,
     patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>,
   ) => void | Promise<void>;
   readonly query: (
@@ -357,7 +357,7 @@ export interface TaskQueueBackend extends AsyncDisposable {
   /** Cancel a queued task. Returns true if found and cancelled. */
   readonly cancel: (taskId: TaskId) => Promise<boolean>;
   /** Get the current status of a queued task. */
-  readonly status: (taskId: TaskId) => Promise<TaskStatus | undefined>;
+  readonly status: (taskId: TaskId) => Promise<ScheduledTaskStatus | undefined>;
 
   // -------------------------------------------------------------------------
   // Optional distributed claim semantics

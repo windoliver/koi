@@ -31,6 +31,7 @@
       - "packages/**/redaction/**"
       - "packages/**/session-repair/**"
       - "packages/**/shutdown/**"
+      - "packages/**/task-board/**"
       - "packages/**/token-estimator/**"
       - "packages/**/validation/**"
 
@@ -63,5 +64,6 @@
       - "!packages/**/runtime/**"
       - "!packages/**/session-repair/**"
       - "!packages/**/shutdown/**"
+      - "!packages/**/task-board/**"
       - "!packages/**/token-estimator/**"
       - "!packages/**/validation/**"

@@ -71,6 +71,7 @@ type TuiAssistantBlock =
       status: "running" | "complete" | "error";
       args?: string;    // streamed argument JSON fragments
       result?: unknown } // tool execution result from tool_call_end
+  | { kind: "error"; code: string; message: string }
 ```
 
 **IDs are deterministic:** `assistant-${turnIndex}`, `tool-${callId}`, caller-provided for user messages.
@@ -79,7 +80,9 @@ type TuiAssistantBlock =
 `tool_call_end.result` stores the execution result into `result`. These are separate
 fields — args are what the model sends, result is what the tool returns.
 
-**Tool args are capped:** 50KB tail-slice per tool call to prevent memory bloat.
+**Tool payloads are capped:** 50KB tail-slice via `capOutput()`/`capResult()` — applies
+to tool call args and tool results. Text and thinking blocks are unbounded because
+they are user-facing content; memory is bounded by the 1000-message compaction.
 
 ## Views and Modals
 
@@ -102,6 +105,8 @@ type TuiAction =
   | { kind: "set_modal"; modal: TuiModal | null }
   | { kind: "set_connection_status"; status: ConnectionStatus }
   | { kind: "set_layout"; tier: LayoutTier }
+  | { kind: "set_zoom"; level: number }
+  | { kind: "add_error"; code: string; message: string }
   | { kind: "clear_messages" }
 ```
 
@@ -140,7 +145,8 @@ dispatch skips notification entirely.
 |---------|----------|
 | Streaming deltas (50-100/sec) | Microtask-batched notifications |
 | Message array updates | `Array.with()` for last-element clarity |
-| Tool output growth | 50KB tail-slice cap |
+| Tool output growth | 50KB tail-slice cap (args + results) |
+| Text/thinking growth | Unbounded (user-facing content, bounded by compaction) |
 | No-op actions | Early return (same reference), store skips notify |
 | Memory bounds | 1000-message cap with hysteresis |
 
@@ -155,20 +161,57 @@ dispatch skips notification entirely.
 | Empty `text_delta` (delta: `""`) | No-op |
 | `turn_start` without prior `turn_end` | Auto-close previous turn |
 | Duplicate `callId` | Update existing tool block |
+| `add_error` without assistant | Creates implicit assistant + error block |
+| `set_modal(null)` when already `null` | No-op (same reference) |
 
 ## File Organization
 
 ```
-packages/ui/tui/src/state/
-├── types.ts      ~120 LOC  — all types, constants
-├── reduce.ts     ~150 LOC  — pure reducer + helpers
-├── store.ts      ~50 LOC   — createStore()
-├── initial.ts    ~30 LOC   — createInitialState()
-└── index.ts      ~15 LOC   — re-exports
+packages/ui/tui/src/
+├── state/
+│   ├── types.ts           ~135 LOC  — all types, constants
+│   ├── reduce.ts          ~345 LOC  — pure reducer + helpers
+│   ├── store.ts           ~70 LOC   — createStore()
+│   ├── initial.ts         ~18 LOC   — createInitialState()
+│   ├── test-helpers.ts    ~90 LOC   — test factories
+│   └── index.ts           ~15 LOC   — re-exports
+├── components/
+│   ├── text-block.tsx     ~20 LOC   — text/markdown renderer
+│   ├── thinking-block.tsx ~15 LOC   — dimmed thinking display
+│   ├── tool-call-block.tsx ~55 LOC  — tool lifecycle (spinner/result/error)
+│   ├── error-block.tsx    ~30 LOC   — styled error display
+│   ├── message-row.tsx    ~90 LOC   — turn router, React.memo wrapped
+│   ├── message-list.tsx   ~30 LOC   — scrollable conversation
+│   └── index.ts           ~7 LOC    — re-exports
+├── store-context.tsx      ~35 LOC   — useTuiStore(selector) hook + Context
+└── index.ts               ~10 LOC   — top-level re-exports
+```
+
+## Components
+
+Six core components built on OpenTUI primitives:
+
+| Component | Purpose | Key behavior |
+|-----------|---------|-------------|
+| `TextBlock` | Text/markdown | `<text>` baseline, `<markdown>` when syntaxStyle provided |
+| `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
+| `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
+| `ErrorBlock` | Error display | Red border, code + message |
+| `MessageRow` | Turn router | `React.memo` — only re-renders when message reference changes |
+| `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
+
+## Store Hook
+
+`useTuiStore(selector)` — wraps `useSyncExternalStore` with selector support.
+Components select only the state slice they need, preventing unnecessary re-renders.
+
+```typescript
+const messages = useTuiStore(s => s.messages);
+const view = useTuiStore(s => s.activeView);
 ```
 
 ## Layer Compliance
 
-- Imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
+- State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
+- Component layer imports from `@koi/core` + `@opentui/core` + `@opentui/react` + `react`
 - No imports from `@koi/engine`, peer L2, or external state libraries
-- No runtime dependencies beyond `@koi/core`

@@ -866,6 +866,7 @@ export type {
 export type {
   CronSchedule,
   ScheduledTask,
+  ScheduledTaskStatus,
   ScheduleId,
   SchedulerComponent,
   SchedulerConfig,
@@ -879,13 +880,15 @@ export type {
   TaskQueueBackend,
   TaskRunRecord,
   TaskScheduler,
-  TaskStatus,
   TaskStore,
 } from "./scheduler.js";
 // scheduler — runtime values (branded constructors + defaults + mapping)
+// scheduler — backward compat aliases (deprecated)
 export {
   DEFAULT_SCHEDULER_CONFIG,
-  mapTaskStatusToProcessState,
+  mapScheduledTaskStatusToProcessState,
+  /** @deprecated Use `mapScheduledTaskStatusToProcessState` instead. */
+  mapScheduledTaskStatusToProcessState as mapTaskStatusToProcessState,
   scheduleId,
   taskId,
 } from "./scheduler.js";
@@ -979,22 +982,38 @@ export type {
 } from "./supervision.js";
 export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // task-board — types
+// NOTE: `TaskStatus` is the task-board lifecycle type (pending | in_progress | completed |
+// failed | killed). The scheduler's status type was renamed to `ScheduledTaskStatus` above.
+// Consumers who previously imported `TaskStatus` for scheduler use should switch to
+// `ScheduledTaskStatus`. This is an intentional v2 domain correction.
+// task-board — backward compat aliases (deprecated)
 export type {
+  Task,
   TaskBoard,
   TaskBoardConfig,
   TaskBoardEvent,
   TaskBoardSnapshot,
+  TaskInput,
   TaskItem,
   TaskItemId,
   TaskItemInput,
   TaskItemPatch,
   TaskItemStatus,
+  TaskPatch,
   TaskReconcileAction,
   TaskReconciler,
   TaskResult,
+  TaskSchedulingHints,
+  TaskStatus,
 } from "./task-board.js";
-// task-board — runtime values (branded constructor + defaults)
-export { DEFAULT_TASK_BOARD_CONFIG, taskItemId } from "./task-board.js";
+// task-board — runtime values (branded constructor + defaults + guards)
+export {
+  DEFAULT_TASK_BOARD_CONFIG,
+  isTerminalTaskStatus,
+  isValidTransition,
+  taskItemId,
+  VALID_TASK_TRANSITIONS,
+} from "./task-board.js";
 // thread — unified execution model with persistent threads and checkpoints
 export type {
   CheckpointPolicy,
