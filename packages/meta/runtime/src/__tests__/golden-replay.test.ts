@@ -2696,3 +2696,87 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(mwNames.has("hook-dispatch")).toBe(true);
   }, 15000);
 });
+
+describe("Golden: @koi/fs-local", () => {
+  test("createLocalFileSystem returns a FileSystemBackend with all operations", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createLocalFileSystem } = await import("@koi/fs-local");
+
+    const tmp = mkdtempSync(join(tmpdir(), "koi-golden-local-test-"));
+    try {
+      const backend = createLocalFileSystem(tmp);
+
+      expect(backend.name).toBe("local");
+      expect(typeof backend.read).toBe("function");
+      expect(typeof backend.write).toBe("function");
+      expect(typeof backend.edit).toBe("function");
+      expect(typeof backend.list).toBe("function");
+      expect(typeof backend.search).toBe("function");
+      expect(typeof backend.delete).toBe("function");
+      expect(typeof backend.rename).toBe("function");
+      expect(typeof backend.dispose).toBe("function");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("round-trip write/read through local filesystem", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createLocalFileSystem } = await import("@koi/fs-local");
+
+    const tmp = mkdtempSync(join(tmpdir(), "koi-golden-local-rw-"));
+    try {
+      const backend = createLocalFileSystem(tmp);
+
+      const writeResult = await backend.write("golden/test.txt", "golden local content");
+      expect(writeResult.ok).toBe(true);
+
+      const readResult = await backend.read("golden/test.txt");
+      expect(readResult.ok).toBe(true);
+      if (readResult.ok) {
+        expect(readResult.value.content).toBe("golden local content");
+        expect(readResult.value.path).toBe("golden/test.txt");
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("ATIF trajectory: local_fs_read tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/local-fs-read.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "local-fs-read.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with local_fs_read
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const hasLocalFsRead = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "local_fs_read"),
+    );
+    expect(hasLocalFsRead).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});
