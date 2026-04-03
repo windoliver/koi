@@ -11,6 +11,7 @@
 import type {
   AgentManifest,
   AgentResolver,
+  ComponentProvider,
   EngineAdapter,
   EngineInput,
   InboxItem,
@@ -67,6 +68,16 @@ export interface CreateAgentSpawnFnOptions {
    * `delivery.kind === "on_demand"` — fail-fast if absent to prevent silent drops.
    */
   readonly reportStore?: ReportStore | undefined;
+  /**
+   * Factory for creating fresh spawn tool providers for child agents.
+   * When provided, each spawned child gets a new `Spawn` tool bound to itself
+   * so nested delegation works correctly. Pass this from `createSpawnToolProvider`
+   * to enable recursive delegation without a circular import.
+   *
+   * Example (inside createSpawnToolProvider's attach()):
+   *   spawnProviderFactory: () => createSpawnToolProvider(config)
+   */
+  readonly spawnProviderFactory?: (() => ComponentProvider) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,12 +134,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
     }
 
-    // 5. Map SpawnRequest constraint fields to SpawnChildOptions
+    // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
+    //    Attach a fresh spawn provider for the child when a factory is provided —
+    //    this enables recursive delegation without circular imports (the factory
+    //    is passed in by createSpawnToolProvider, not imported here directly).
+    const childProviders: ComponentProvider[] =
+      options.spawnProviderFactory !== undefined ? [options.spawnProviderFactory()] : [];
+
     const spawnOptions: SpawnChildOptions = {
       ...base,
       manifest,
       adapter,
       signal: request.signal,
+      ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
       ...(request.additionalTools !== undefined
         ? { additionalTools: request.additionalTools }
@@ -205,10 +223,15 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           ...(options.reportStore !== undefined ? { reportStore: options.reportStore } : {}),
           parentAgentId: base.parentAgent.pid.id,
         });
+        // Use a child-owned signal for background delivery — decoupling the child
+        // lifetime from the parent tool call. request.signal (which may fire when
+        // the Spawn tool call times out or the parent cancels) must NOT interrupt a
+        // deferred/on_demand child that is supposed to outlive the tool invocation.
+        const childController = new AbortController();
         const input: EngineInput = {
           kind: "text",
           text: request.description,
-          signal: request.signal,
+          signal: childController.signal,
         };
         void (async (): Promise<void> => {
           try {

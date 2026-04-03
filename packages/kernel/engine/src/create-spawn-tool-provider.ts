@@ -83,6 +83,9 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
   return {
     name: "spawn-tool-provider",
     attach: async (agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+      // Pass self (via factory closure) as spawnProviderFactory so each spawned
+      // child gets a fresh Spawn tool bound to itself, enabling recursive delegation
+      // without a circular import between this module and createAgentSpawnFn.
       const spawnFn = createAgentSpawnFn({
         resolver: config.resolver,
         base: {
@@ -94,6 +97,7 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
         ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        spawnProviderFactory: () => createSpawnToolProvider(config),
       });
 
       const tool: Tool = {
