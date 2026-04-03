@@ -52,14 +52,16 @@ export function createInMemorySpawnLedger(maxTotal: number): SpawnLedger {
     capacity: (): number => maxTotal,
 
     acquireOrWait: (signal: AbortSignal): Promise<boolean> => {
-      // Fast path: slot available
+      // Check cancellation BEFORE claiming capacity — an already-aborted signal must
+      // never acquire a ledger slot, even if one is available. Claiming then rolling
+      // back is racy; refusing upfront is atomic and correct.
+      if (signal.aborted) {
+        return Promise.resolve(false);
+      }
+      // Fast path: slot available and not cancelled
       if (active < maxTotal) {
         active++;
         return Promise.resolve(true);
-      }
-      // Already cancelled
-      if (signal.aborted) {
-        return Promise.resolve(false);
       }
       // Enqueue and wait for release() to wake us
       return new Promise<boolean>((resolve) => {

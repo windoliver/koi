@@ -380,16 +380,19 @@ function checkPermissionSubset(
     };
   }
 
-  // Check allow-list: child must not allow tools the parent doesn't allow
+  // Check allow-list: child must not allow tools the parent doesn't allow.
+  // Honor wildcard: a parent with allow: ["*"] permits any child allow-list.
   if (childPerms.allow !== undefined && childPerms.allow.length > 0) {
     const parentAllowed = new Set(parentPerms.allow ?? []);
-    const extraAllowed = childPerms.allow.filter((t) => !parentAllowed.has(t));
-    if (extraAllowed.length > 0) {
-      return {
-        code: "PERMISSION",
-        message: `Cannot spawn "${childName}": child allow-list contains tools not permitted by parent: ${extraAllowed.join(", ")}`,
-        retryable: false,
-      };
+    if (!parentAllowed.has("*")) {
+      const extraAllowed = childPerms.allow.filter((t) => !parentAllowed.has(t) && t !== "*");
+      if (extraAllowed.length > 0) {
+        return {
+          code: "PERMISSION",
+          message: `Cannot spawn "${childName}": child allow-list contains tools not permitted by parent: ${extraAllowed.join(", ")}`,
+          retryable: false,
+        };
+      }
     }
   }
 

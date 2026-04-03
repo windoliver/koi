@@ -20,11 +20,15 @@ import type {
 } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
 import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 
 // Process-wide shared spawn ledger — all runtimes on this process account against
 // the same cap when no explicit shared ledger is provided via RuntimeConfig.spawnLedger.
 // A per-runtime private ledger would let multiple runtimes exceed the intended global limit.
-const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(50);
+// Capacity is derived from DEFAULT_SPAWN_POLICY so the ledger and policy limits stay in sync.
+const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(
+  DEFAULT_SPAWN_POLICY.maxTotalProcesses,
+);
 
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
