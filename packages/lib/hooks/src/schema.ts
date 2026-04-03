@@ -11,6 +11,7 @@ import type {
   HookConfig,
   HookFilter,
   HttpHookConfig,
+  PromptHookConfig,
 } from "@koi/core";
 import { z } from "zod";
 
@@ -48,6 +49,7 @@ const hookBaseFields = {
   timeoutMs: z.number().int().positive("timeoutMs must be positive").optional(),
   serial: z.boolean().optional(),
   failClosed: z.boolean().optional(),
+  once: z.boolean().optional(),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -118,25 +120,50 @@ const hookRedactionConfigSchema = z.object({
 });
 
 function createAgentHookSchema(): z.ZodType<AgentHookConfig> {
-  return z.object({
-    kind: z.literal("agent"),
-    ...hookBaseFields,
-    prompt: z.string().min(1, "Agent hook prompt must not be empty"),
-    model: z.string().optional(),
-    systemPrompt: z.string().optional(),
-    maxTurns: z.number().int().positive("maxTurns must be positive").optional(),
-    maxTokens: z.number().int().positive("maxTokens must be positive").optional(),
-    maxSessionTokens: z.number().int().positive("maxSessionTokens must be positive").optional(),
-    toolDenylist: z
-      .array(z.string().min(1))
-      .min(1, "toolDenylist must not be empty — omit the field instead")
-      .optional(),
-    forwardRawPayload: z.boolean().optional(),
-    redaction: hookRedactionConfigSchema.optional(),
-  });
+  return z
+    .object({
+      kind: z.literal("agent"),
+      ...hookBaseFields,
+      prompt: z.string().min(1, "Agent hook prompt must not be empty"),
+      model: z.string().optional(),
+      systemPrompt: z.string().optional(),
+      maxTurns: z.number().int().positive("maxTurns must be positive").optional(),
+      maxTokens: z.number().int().positive("maxTokens must be positive").optional(),
+      maxSessionTokens: z.number().int().positive("maxSessionTokens must be positive").optional(),
+      toolDenylist: z
+        .array(z.string().min(1))
+        .min(1, "toolDenylist must not be empty — omit the field instead")
+        .optional(),
+      toolAllowlist: z
+        .array(z.string().min(1))
+        .min(1, "toolAllowlist must not be empty — omit the field instead")
+        .optional(),
+      forwardRawPayload: z.boolean().optional(),
+      redaction: hookRedactionConfigSchema.optional(),
+    })
+    .refine(
+      (data) => !(data.toolAllowlist !== undefined && data.toolDenylist !== undefined),
+      "toolAllowlist and toolDenylist are mutually exclusive — specify one or neither",
+    ) as z.ZodType<AgentHookConfig>;
 }
 
 export const agentHookSchema: z.ZodType<AgentHookConfig> = createAgentHookSchema();
+
+// ---------------------------------------------------------------------------
+// Prompt hook schema
+// ---------------------------------------------------------------------------
+
+function createPromptHookSchema(): z.ZodType<PromptHookConfig> {
+  return z.object({
+    kind: z.literal("prompt"),
+    ...hookBaseFields,
+    prompt: z.string().min(1, "Prompt hook prompt must not be empty"),
+    model: z.string().optional(),
+    maxTokens: z.number().int().positive("maxTokens must be positive").optional(),
+  });
+}
+
+export const promptHookSchema: z.ZodType<PromptHookConfig> = createPromptHookSchema();
 
 // ---------------------------------------------------------------------------
 // Discriminated union schema
@@ -146,7 +173,7 @@ function createHookConfigSchema(): z.ZodType<HookConfig> {
   // Use z.union since z.discriminatedUnion has ZodType<> annotation issues
   // with exactOptionalPropertyTypes. Runtime discrimination still works via
   // each variant's `kind: z.literal(...)` check.
-  return z.union([commandHookSchema, httpHookSchema, agentHookSchema]);
+  return z.union([commandHookSchema, httpHookSchema, promptHookSchema, agentHookSchema]);
 }
 
 export const hookConfigSchema: z.ZodType<HookConfig> = createHookConfigSchema();

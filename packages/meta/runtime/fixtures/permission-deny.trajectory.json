@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:36.157Z",
+      "timestamp": "2026-04-03T17:53:10.819Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:36.157Z",
+      "timestamp": "2026-04-03T17:53:10.819Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,21 +56,21 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-02T10:50:36.159Z",
+      "timestamp": "2026-04-03T17:53:10.821Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
       "observation": {
         "results": [
           {
-            "content": "I am sorry, I cannot use the `add_numbers` tool since it is denied.\n"
+            "content": "I am sorry, I cannot use the `add_numbers` because it is denied.\n"
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 406,
-        "completion_tokens": 20
+        "completion_tokens": 19
       },
-      "duration_ms": 507,
+      "duration_ms": 683,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:36.667Z",
+      "timestamp": "2026-04-03T17:53:11.505Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: default mode — add_numbers denied\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
-      "duration_ms": 507.7713749999966,
+      "duration_ms": 683.249917000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-02T10:50:36.667Z",
+      "timestamp": "2026-04-03T17:53:11.505Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: default mode — add_numbers denied\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
-      "duration_ms": 508.9568329999893,
+      "duration_ms": 684.4055829999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

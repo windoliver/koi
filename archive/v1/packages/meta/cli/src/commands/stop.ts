@@ -33,7 +33,7 @@ export async function runStop(flags: StopFlags): Promise<void> {
   // Service stop requires a manifest
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: false });
   if (!loadResult.ok) {
     // If --nexus was the only intent, don't fail on missing manifest
     if (flags.nexus) return;
@@ -41,7 +41,10 @@ export async function runStop(flags: StopFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  const { manifest } = loadResult.value;
+  const { manifest, warnings } = loadResult.value;
+  for (const w of warnings) {
+    process.stderr.write(`warn: ${w.message}\n`);
+  }
   const platform = detectPlatform();
   const serviceName = resolveServiceName(manifest.name);
   const system = manifest.deploy?.system ?? false;

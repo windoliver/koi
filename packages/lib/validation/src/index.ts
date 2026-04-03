@@ -14,6 +14,7 @@ export {
   validateCredentialRequires,
 } from "./brick-requires.js";
 export { validateBrickArtifact } from "./brick-validation.js";
+export { createMemoryChangeNotifier } from "./change-notifier.js";
 export {
   compactEntries,
   computeMemoryPriority,

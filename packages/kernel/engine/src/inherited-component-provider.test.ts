@@ -248,6 +248,49 @@ describe("createInheritedComponentProvider", () => {
     expect(provider.priority).toBe(COMPONENT_PRIORITY.BUNDLED);
   });
 
+  test("filters to allowlist-only tools when toolAllowlist is set", async () => {
+    const tools = new Map<string, Tool>([
+      ["tool:Read", mockTool("Read")],
+      ["tool:Grep", mockTool("Grep")],
+      ["tool:Bash", mockTool("Bash")],
+      ["tool:Write", mockTool("Write")],
+    ]);
+    const parent = mockParentAgent(tools);
+    const provider = createInheritedComponentProvider({
+      parent,
+      toolAllowlist: new Set(["Read", "Grep"]),
+    });
+
+    const result = extractMap(await provider.attach(mockChildAgent()));
+
+    expect(result.size).toBe(2);
+    expect(result.has("tool:Read")).toBe(true);
+    expect(result.has("tool:Grep")).toBe(true);
+    expect(result.has("tool:Bash")).toBe(false);
+    expect(result.has("tool:Write")).toBe(false);
+  });
+
+  test("allowlist respects scope filtering (agent-scoped excluded even if in allowlist)", async () => {
+    const tools = new Map<string, Tool>([
+      ["tool:Read", mockTool("Read")],
+      ["tool:private", mockTool("private")],
+    ]);
+    const parent = mockParentAgent(tools);
+    const scopeChecker = (name: string): ForgeScope | undefined =>
+      name === "private" ? "agent" : undefined;
+    const provider = createInheritedComponentProvider({
+      parent,
+      scopeChecker,
+      toolAllowlist: new Set(["Read", "private"]),
+    });
+
+    const result = extractMap(await provider.attach(mockChildAgent()));
+
+    expect(result.size).toBe(1);
+    expect(result.has("tool:Read")).toBe(true);
+    expect(result.has("tool:private")).toBe(false);
+  });
+
   test("tool trust tier is preserved in inherited tools", async () => {
     const verifiedTool = mockVerifiedTool("secure");
     const tools = new Map<string, Tool>([["tool:secure", verifiedTool]]);

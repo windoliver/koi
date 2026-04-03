@@ -254,6 +254,8 @@ export interface SpawnChildOptions {
 
   /** Tool names to exclude from the child's tool set (filters inherited + additional tools). */
   readonly toolDenylist?: readonly string[] | undefined;
+  /** Tool names to exclusively allow from inherited parent tools. Mutually exclusive with toolDenylist. Does not filter additionalTools. */
+  readonly toolAllowlist?: readonly string[] | undefined;
   /** Additional tool descriptors to inject into the child's tool set. */
   readonly additionalTools?: readonly ToolDescriptor[] | undefined;
   /**

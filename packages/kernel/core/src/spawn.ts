@@ -60,6 +60,12 @@ export interface SpawnRequest {
   readonly additionalTools?: readonly ToolDescriptor[] | undefined;
   /** Tool names to exclude from the spawned agent's tool set. */
   readonly toolDenylist?: readonly string[] | undefined;
+  /**
+   * Tool names to exclusively allow from inherited parent tools.
+   * Mutually exclusive with toolDenylist. Does not filter additionalTools
+   * (those are always injected, e.g., HookVerdict for agent hooks).
+   */
+  readonly toolAllowlist?: readonly string[] | undefined;
   /** Maximum assistant turns before the agent is stopped. */
   readonly maxTurns?: number | undefined;
   /** Max tokens per model call for the spawned agent. */

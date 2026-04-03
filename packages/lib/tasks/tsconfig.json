@@ -10,7 +10,10 @@
       "path": "../../kernel/core"
     },
     {
-      "path": "../../lib/errors"
+      "path": "../task-board"
+    },
+    {
+      "path": "../validation"
     }
   ]
 }

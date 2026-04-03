@@ -239,11 +239,19 @@ describe("hookConfigSchema (discriminated union)", () => {
     }
   });
 
-  it("rejects unsupported hook kind", () => {
+  it("accepts prompt hook kind", () => {
     const result = hookConfigSchema.safeParse({
       kind: "prompt",
       name: "test",
       prompt: "hello",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects prompt hook without prompt field", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "prompt",
+      name: "test",
     });
     expect(result.success).toBe(false);
   });
@@ -366,6 +374,39 @@ describe("agentHookSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts toolAllowlist", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      toolAllowlist: ["Read", "Grep"],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects setting both toolAllowlist and toolDenylist", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      toolAllowlist: ["Read"],
+      toolDenylist: ["Bash"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty toolAllowlist array", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      toolAllowlist: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects toolAllowlist with empty strings", () => {
+    const result = agentHookSchema.safeParse({
+      ...validAgent,
+      toolAllowlist: [""],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts forwardRawPayload boolean", () => {
     const result = agentHookSchema.safeParse({ ...validAgent, forwardRawPayload: true });
     expect(result.success).toBe(true);
@@ -456,6 +497,52 @@ describe("failClosed across hook types", () => {
       name: "test",
       cmd: ["echo"],
       failClosed: "maybe",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// once flag across hook types
+// ---------------------------------------------------------------------------
+
+describe("once flag across hook types", () => {
+  it("accepts once on command hooks", () => {
+    const result = commandHookSchema.safeParse({
+      kind: "command",
+      name: "setup",
+      cmd: ["echo"],
+      once: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts once on http hooks", () => {
+    const result = httpHookSchema.safeParse({
+      kind: "http",
+      name: "init-check",
+      url: "https://example.com",
+      once: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts once on agent hooks", () => {
+    const result = agentHookSchema.safeParse({
+      kind: "agent",
+      name: "first-run",
+      prompt: "verify environment",
+      once: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects non-boolean once value", () => {
+    const result = commandHookSchema.safeParse({
+      kind: "command",
+      name: "test",
+      cmd: ["echo"],
+      once: "yes",
     });
     expect(result.success).toBe(false);
   });

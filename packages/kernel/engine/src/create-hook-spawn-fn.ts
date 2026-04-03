@@ -3,20 +3,20 @@
  *
  * Maps SpawnRequest fields to SpawnChildOptions for hook-agent spawns.
  * The returned SpawnFn is passed to `createHookMiddleware({ spawnFn })`.
- *
- * Lifecycle is delegated to runSpawnedAgent (shared with createAgentSpawnFn).
  */
 
 import type {
   AgentManifest,
   EngineAdapter,
+  KoiErrorCode,
   KoiMiddleware,
   SpawnFn,
   SpawnRequest,
   SpawnResult,
 } from "@koi/core";
 import { createVerdictCollector } from "./output-collector.js";
-import { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
+import { createSystemPromptMiddleware } from "./run-spawned-agent.js";
+import { spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ export interface CreateHookSpawnFnOptions {
     SpawnChildOptions,
     | "manifest"
     | "toolDenylist"
+    | "toolAllowlist"
     | "additionalTools"
     | "nonInteractive"
     | "requiredOutputTool"
@@ -75,10 +76,10 @@ export interface CreateHookSpawnFnOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a SpawnFn that spawns hook-agent sub-agents via runSpawnedAgent.
+ * Creates a SpawnFn that spawns hook-agent sub-agents via spawnChildAgent.
  *
  * Maps SpawnRequest sub-agent constraint fields to SpawnChildOptions:
- * - `toolDenylist` → filters inherited tools
+ * - `toolDenylist` / `toolAllowlist` → filters inherited tools
  * - `additionalTools` → injected via component provider
  * - `maxTurns` → mapped to `limits.maxTurns`
  * - `maxTokens` → mapped to `limits.maxTokens`
@@ -104,40 +105,114 @@ export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
         ? request.additionalTools[0]?.name
         : undefined);
 
-    // Build middleware list: inherited (tracing) + system prompt injection
-    const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
-    if (request.systemPrompt !== undefined) {
-      childMiddleware.push(createSystemPromptMiddleware(request.systemPrompt));
+    try {
+      // Build middleware list: inherited (tracing) + system prompt injection
+      const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
+      if (request.systemPrompt !== undefined) {
+        childMiddleware.push(createSystemPromptMiddleware(request.systemPrompt));
+      }
+
+      // Map SpawnRequest constraint fields to SpawnChildOptions
+      const spawnOptions: SpawnChildOptions = {
+        ...base,
+        manifest,
+        adapter,
+        ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
+        ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
+        ...(request.additionalTools !== undefined
+          ? { additionalTools: request.additionalTools }
+          : {}),
+        ...(request.nonInteractive !== undefined ? { nonInteractive: request.nonInteractive } : {}),
+        ...(requiredOutputTool !== undefined ? { requiredOutputTool } : {}),
+        ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
+        limits: {
+          ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
+          ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
+        },
+      };
+
+      const { runtime, handle } = await spawnChildAgent(spawnOptions);
+      const childSessionId = runtime.sessionId;
+
+      // Mark child as hook agent for recursion suppression at the registry level
+      hookAgentMarker?.markHookAgent(childSessionId);
+
+      // Run the child agent to completion.
+      // Identity: manifest.name = "hook-agent:<hookName>" — tracing middleware
+      // reads this from the agent entity to distinguish hook agents from regular agents.
+      // let justified: mutable — captures execution result before teardown
+      let executionResult: SpawnResult | undefined;
+      try {
+        const collector = createVerdictCollector(requiredOutputTool);
+        const input = {
+          kind: "text" as const,
+          text: request.description,
+          signal: request.signal,
+        };
+        for await (const event of runtime.run(input)) {
+          collector.observe(event);
+        }
+
+        executionResult = { ok: true, output: collector.output() };
+      } finally {
+        hookAgentMarker?.unmarkHookAgent(childSessionId);
+        // Best-effort teardown: terminate + dispose. Errors are logged but
+        // cannot override a successful verdict already captured above.
+        try {
+          handle.terminate();
+          // Bound teardown wait to prevent indefinite hangs if terminate fails
+          await Promise.race([
+            handle.waitForCompletion(),
+            new Promise<void>((resolve) => {
+              setTimeout(resolve, 5_000);
+            }),
+          ]);
+          await runtime.dispose();
+        } catch (teardownErr: unknown) {
+          console.error(`[hook-spawn] teardown error for "${request.agentName}"`, teardownErr);
+        }
+      }
+      // Return the captured result. If execution itself threw (executionResult
+      // still undefined), the outer catch handles it.
+      if (executionResult !== undefined) {
+        return executionResult;
+      }
+      // Unreachable in normal flow — execution throw propagates via finally
+      throw new Error("Hook agent execution completed without result");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      // Classify retryable: KoiError carries its own flag, abort/timeout
+      // errors are transient by nature, everything else is non-retryable.
+      const isRetryable = isKoiErrorLike(e) ? e.retryable : isAbortOrTimeoutError(e);
+      return {
+        ok: false,
+        error: {
+          code: isKoiErrorLike(e) ? e.code : "INTERNAL",
+          message: `Hook agent spawn failed: ${message}`,
+          retryable: isRetryable,
+        },
+      };
     }
-
-    // Map SpawnRequest constraint fields to SpawnChildOptions
-    const spawnOptions: SpawnChildOptions = {
-      ...base,
-      manifest,
-      adapter,
-      ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
-      ...(request.additionalTools !== undefined
-        ? { additionalTools: request.additionalTools }
-        : {}),
-      ...(request.nonInteractive !== undefined ? { nonInteractive: request.nonInteractive } : {}),
-      ...(requiredOutputTool !== undefined ? { requiredOutputTool } : {}),
-      ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
-      limits: {
-        ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
-        ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
-      },
-    };
-
-    return runSpawnedAgent({
-      spawnOptions,
-      input: { kind: "text", text: request.description, signal: request.signal },
-      collector: createVerdictCollector(requiredOutputTool),
-      ...(hookAgentMarker
-        ? {
-            onBeforeRun: hookAgentMarker.markHookAgent,
-            onAfterRun: hookAgentMarker.unmarkHookAgent,
-          }
-        : {}),
-    });
   };
+}
+
+/** Detect abort/timeout errors that are transient by nature. */
+function isAbortOrTimeoutError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  // DOMException with name "AbortError" or "TimeoutError" (from AbortSignal.timeout)
+  return e.name === "AbortError" || e.name === "TimeoutError";
+}
+
+/** Type guard for objects that carry KoiError-like code + retryable fields. */
+function isKoiErrorLike(
+  e: unknown,
+): e is { readonly code: KoiErrorCode; readonly retryable: boolean } {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "code" in e &&
+    typeof (e as Record<string, unknown>).code === "string" &&
+    "retryable" in e &&
+    typeof (e as Record<string, unknown>).retryable === "boolean"
+  );
 }

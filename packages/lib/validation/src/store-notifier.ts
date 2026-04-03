@@ -1,51 +1,18 @@
 /**
- * In-memory store change notifier — pub/sub for store mutation observation.
+ * In-memory store change notifier — brick-store-specific convenience wrapper.
  *
- * Extracted to @koi/validation (L0u) so all L2 store implementations can
- * reuse the same notification pattern without cross-L2 imports.
+ * Delegates to the generic `createMemoryChangeNotifier<E>` for shared logic.
+ * Kept for backward compatibility — existing callers import this function.
  */
 
-import type { StoreChangeEvent, StoreChangeNotifier } from "@koi/core";
-
-/** Safety cap — catches leaked listeners before they accumulate unboundedly. */
-const MAX_SUBSCRIBERS = 64;
+import type { StoreChangeNotifier } from "@koi/core";
+import { createMemoryChangeNotifier } from "./change-notifier.js";
 
 /**
- * Creates an in-memory `StoreChangeNotifier` backed by a simple listener map.
+ * Creates an in-memory `StoreChangeNotifier` for brick store mutations.
  *
- * - `notify()` snapshots the listener array and calls each synchronously.
- * - `subscribe()` returns an unsubscribe function.
- * - Throws if subscriber count reaches `MAX_SUBSCRIBERS` (likely a leak).
+ * Convenience wrapper around `createMemoryChangeNotifier<StoreChangeEvent>()`.
  */
 export function createMemoryStoreChangeNotifier(): StoreChangeNotifier {
-  let nextId = 0;
-  const listeners = new Map<number, (event: StoreChangeEvent) => void>();
-
-  const notify = (event: StoreChangeEvent): void => {
-    // Snapshot to avoid issues if a listener unsubscribes during iteration
-    const snapshot = [...listeners.values()];
-    for (const listener of snapshot) {
-      try {
-        listener(event);
-      } catch (_: unknown) {
-        // Never let one listener break others — silently continue
-      }
-    }
-  };
-
-  const subscribe = (listener: (event: StoreChangeEvent) => void): (() => void) => {
-    if (listeners.size >= MAX_SUBSCRIBERS) {
-      throw new Error(
-        `StoreChangeNotifier: subscriber limit (${String(MAX_SUBSCRIBERS)}) reached — likely a listener leak. ` +
-          `Ensure dispose()/unsubscribe() is called when providers are torn down.`,
-      );
-    }
-    const id = nextId++;
-    listeners.set(id, listener);
-    return (): void => {
-      listeners.delete(id);
-    };
-  };
-
-  return { notify, subscribe };
+  return createMemoryChangeNotifier();
 }

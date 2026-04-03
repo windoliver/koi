@@ -115,6 +115,420 @@ describe("createHookRegistry", () => {
     });
   });
 
+  describe("once-hook auto-removal", () => {
+    it("removes once-hook after first successful execution", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "setup-check",
+        cmd: ["echo", "setup"],
+        once: true,
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "setup-check", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook, commandHook]);
+      await registry.execute("s1", baseEvent);
+
+      // First call should still include both hooks
+      const firstCallHooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(firstCallHooks).toHaveLength(2);
+
+      // Second call: only commandHook remains (once-hook consumed)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(secondCallHooks[0]?.name).toBe("test-cmd");
+
+      spy.mockRestore();
+    });
+
+    it("retains once-hook when execution fails", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "setup-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: false, hookName: "setup-check", error: "timeout", durationMs: 1 },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+      await registry.execute("s1", baseEvent);
+
+      // Hook should still be present after failure (restored by rollback)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(secondCallHooks[0]?.name).toBe("setup-check");
+
+      spy.mockRestore();
+    });
+
+    it("does not remove non-once hooks on success", async () => {
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "test-cmd", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [commandHook]);
+      await registry.execute("s1", baseEvent);
+
+      // Hook should still be present (no once flag)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+
+      spy.mockRestore();
+    });
+
+    it("preserves declaration order — once-hooks run in their original position", async () => {
+      const earlyGuard: HookConfig = {
+        kind: "command",
+        name: "early-guard",
+        cmd: ["check"],
+        once: true,
+        serial: true,
+      };
+      const lateHook: HookConfig = {
+        kind: "command",
+        name: "late-hook",
+        cmd: ["run"],
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "early-guard", durationMs: 1, decision: { kind: "continue" } },
+        { ok: true, hookName: "late-hook", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      // Register: early-guard BEFORE late-hook
+      registry.register("s1", "agent-1", [earlyGuard, lateHook]);
+      await registry.execute("s1", baseEvent);
+
+      const hooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(hooks).toHaveLength(2);
+      // Order preserved: early-guard first, late-hook second
+      expect(hooks[0]?.name).toBe("early-guard");
+      expect(hooks[1]?.name).toBe("late-hook");
+
+      spy.mockRestore();
+    });
+
+    it("concurrent execute() calls do not double-fire a once-hook", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "migrate-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      // Simulate slow execution — the mock resolves after a microtask yield
+      const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        });
+        return [
+          { ok: true, hookName: "migrate-check", durationMs: 1, decision: { kind: "continue" } },
+        ];
+      });
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      // Fire two concurrent executions — only the first should see the once-hook
+      const [r1, r2] = await Promise.all([
+        registry.execute("s1", baseEvent),
+        registry.execute("s1", baseEvent),
+      ]);
+
+      const firstCallHooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      const totalOnceExecutions =
+        firstCallHooks.filter((h) => h.name === "migrate-check").length +
+        secondCallHooks.filter((h) => h.name === "migrate-check").length;
+      expect(totalOnceExecutions).toBe(1);
+
+      expect(r1.length).toBeGreaterThanOrEqual(0);
+      expect(r2.length).toBeGreaterThanOrEqual(0);
+
+      spy.mockRestore();
+    });
+
+    it("duplicate-named once-hooks: failure restores only the failing instance", async () => {
+      // Two once-hooks with the same name but different objects
+      const onceA: HookConfig = {
+        kind: "command",
+        name: "check",
+        cmd: ["echo", "a"],
+        once: true,
+      };
+      const onceB: HookConfig = {
+        kind: "command",
+        name: "check",
+        cmd: ["echo", "b"],
+        once: true,
+      };
+      // First hook succeeds, second hook fails
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "check", durationMs: 1, decision: { kind: "continue" } },
+        { ok: false, hookName: "check", error: "timeout", durationMs: 1 },
+      ]);
+
+      registry.register("s1", "agent-1", [onceA, onceB]);
+      await registry.execute("s1", baseEvent);
+
+      // Second call: onceA was consumed (succeeded), onceB was restored (failed)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      // The restored hook should be onceB (the one that failed)
+      expect(secondCallHooks[0]).toBe(onceB);
+
+      spy.mockRestore();
+    });
+
+    it("normal hook sharing name with once-hook does not misattribute results", async () => {
+      const normalCheck: HookConfig = {
+        kind: "command",
+        name: "check",
+        cmd: ["echo", "normal"],
+      };
+      const onceCheck: HookConfig = {
+        kind: "command",
+        name: "check",
+        cmd: ["echo", "once"],
+        once: true,
+      };
+      // Normal hook succeeds, once-hook fails
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "check", durationMs: 1, decision: { kind: "continue" } },
+        { ok: false, hookName: "check", error: "timeout", durationMs: 1 },
+      ]);
+
+      registry.register("s1", "agent-1", [normalCheck, onceCheck]);
+      await registry.execute("s1", baseEvent);
+
+      // Once-hook failed → should be un-consumed (available for retry)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(2);
+      expect(secondCallHooks[0]).toBe(normalCheck);
+      expect(secondCallHooks[1]).toBe(onceCheck);
+
+      spy.mockRestore();
+    });
+
+    it("once-hook with executionFailed (swallowed failure) is un-consumed for retry", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "transient-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      // Simulate a swallowed failure (fail-open agent hook)
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        {
+          ok: true,
+          hookName: "transient-check",
+          durationMs: 1,
+          decision: { kind: "continue" },
+          executionFailed: true,
+        },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+      await registry.execute("s1", baseEvent);
+
+      // Hook should still be available — swallowed failure does not consume
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(secondCallHooks[0]?.name).toBe("transient-check");
+
+      spy.mockRestore();
+    });
+
+    it("filtered once-hook is not consumed by unrelated events", async () => {
+      const filteredOnce: HookConfig = {
+        kind: "command",
+        name: "tool-gate",
+        cmd: ["check"],
+        once: true,
+        filter: { events: ["tool.before"], tools: ["Bash"] },
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([]);
+
+      registry.register("s1", "agent-1", [filteredOnce]);
+
+      // Fire an unrelated event — the once-hook should NOT be consumed
+      const unrelatedEvent: HookEvent = {
+        ...baseEvent,
+        event: "session.started",
+        toolName: undefined,
+      };
+      await registry.execute("s1", unrelatedEvent);
+
+      // Now fire the matching event — the once-hook should still be present
+      const matchingEvent: HookEvent = {
+        ...baseEvent,
+        event: "tool.before",
+        toolName: "Bash",
+      };
+      spy.mockResolvedValue([
+        { ok: true, hookName: "tool-gate", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+      await registry.execute("s1", matchingEvent);
+
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(secondCallHooks[0]?.name).toBe("tool-gate");
+
+      // Third call with the same matching event — consumed, should be gone
+      await registry.execute("s1", matchingEvent);
+      const thirdCallHooks = spy.mock.calls[2]?.[0] as readonly HookConfig[];
+      expect(thirdCallHooks).toHaveLength(0);
+
+      spy.mockRestore();
+    });
+
+    it("duplicate object references are treated as distinct instances", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "setup",
+        cmd: ["echo"],
+        once: true,
+      };
+      // Same object registered at two positions
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "setup", durationMs: 1, decision: { kind: "continue" } },
+        { ok: true, hookName: "setup", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook, onceHook]);
+      await registry.execute("s1", baseEvent);
+
+      // Both positions should have been claimed and executed
+      const firstCallHooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(firstCallHooks).toHaveLength(2);
+
+      // Second call: both consumed, none remain
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(0);
+
+      spy.mockRestore();
+    });
+
+    it("concurrent failure does not let second event skip a once-hook", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "gate",
+        cmd: ["check"],
+        once: true,
+      };
+      // let justified: mutable call counter to vary behavior per call
+      let callCount = 0;
+      const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        callCount++;
+        const thisCall = callCount;
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, thisCall === 1 ? 20 : 5);
+        });
+        if (thisCall === 1) {
+          // First call fails
+          return [{ ok: false, hookName: "gate", error: "timeout", durationMs: 1 }];
+        }
+        // Second call succeeds
+        return [{ ok: true, hookName: "gate", durationMs: 1, decision: { kind: "continue" } }];
+      });
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      // Fire two concurrent executions — serialization ensures the second
+      // waits for the first. First fails → hook un-consumed → second sees it.
+      const [r1, r2] = await Promise.all([
+        registry.execute("s1", baseEvent),
+        registry.execute("s1", baseEvent),
+      ]);
+
+      // First call should have the hook (and it fails)
+      const firstCallHooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(firstCallHooks).toHaveLength(1);
+      expect(r1[0]?.ok).toBe(false);
+
+      // Second call should ALSO have the hook (restored after first failure)
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(r2[0]?.ok).toBe(true);
+
+      spy.mockRestore();
+    });
+
+    it("once-hook is permanently consumed after MAX_ONCE_RETRIES (3) failures", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "flaky-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        {
+          ok: true,
+          hookName: "flaky-check",
+          durationMs: 1,
+          decision: { kind: "continue" },
+          executionFailed: true,
+        },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      // Retries 1, 2, 3 — hook is still present (un-consumed after each failure)
+      for (const attempt of [1, 2, 3]) {
+        await registry.execute("s1", baseEvent);
+        const hooks = spy.mock.calls[attempt - 1]?.[0] as readonly HookConfig[];
+        expect(hooks).toHaveLength(1);
+      }
+
+      // Attempt 4 — retry budget exhausted. Fail-closed once-hook becomes
+      // a permanent blocker: returns synthetic block without calling executeHooks.
+      const r4 = await registry.execute("s1", baseEvent);
+      // executeHooks NOT called for attempt 4 (synthetic block returned early)
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(r4).toHaveLength(1);
+      expect(r4[0]?.ok).toBe(true);
+      if (r4[0]?.ok) {
+        expect(r4[0].decision.kind).toBe("block");
+      }
+
+      spy.mockRestore();
+    });
+
+    it("executeHooks rejection rolls back claimed once-hooks", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "crash-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      const spy = spyOn(executorModule, "executeHooks")
+        .mockRejectedValueOnce(new Error("unexpected crash"))
+        .mockResolvedValue([
+          { ok: true, hookName: "crash-check", durationMs: 1, decision: { kind: "continue" } },
+        ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      // First call — executeHooks rejects
+      await expect(registry.execute("s1", baseEvent)).rejects.toThrow("unexpected crash");
+
+      // Second call — hook should still be available (rolled back)
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy.mock.calls[1]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(1);
+      expect(secondCallHooks[0]?.name).toBe("crash-check");
+
+      spy.mockRestore();
+    });
+  });
+
   describe("session isolation", () => {
     it("sessions have independent hook sets", () => {
       registry.register("s1", "agent-1", [commandHook]);
