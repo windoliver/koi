@@ -83,6 +83,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "forge-types.ts",
   "delivery.ts",
   "replacement.ts",
+  "memory.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

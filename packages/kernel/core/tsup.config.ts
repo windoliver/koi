@@ -51,6 +51,7 @@ export default defineConfig({
     "src/cost-tracker.ts",
     "src/user-model.ts",
     "src/replacement.ts",
+    "src/memory.ts",
   ],
   format: ["esm"],
   dts: {

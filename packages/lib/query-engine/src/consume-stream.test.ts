@@ -269,13 +269,72 @@ describe("consumeModelStream", () => {
     expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
   });
 
-  test("error chunk with no prior text yields empty content", async () => {
+  test("error chunk with no prior text surfaces error message as content", async () => {
     const chunks: readonly ModelChunk[] = [{ kind: "error", message: "auth failed" }];
 
     const events = await collect(consumeModelStream(toStream(chunks)));
     const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("error");
-    expect(done.output.content).toEqual([]);
+    expect(done.output.content).toEqual([{ kind: "text", text: "auth failed" }]);
+  });
+
+  test("error chunk propagates structured errorCode and retryable to metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "error",
+        message: "Hook blocked model_stream: budget exceeded",
+        code: "PERMISSION",
+        retryable: false,
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.errorCode).toBe("PERMISSION");
+    expect(meta.retryable).toBe(false);
+  });
+
+  test("error chunk preserves retryAfterMs in metadata for backoff hints", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "error",
+        message: "rate limited",
+        code: "RATE_LIMIT",
+        retryable: true,
+        retryAfterMs: 30_000,
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.retryAfterMs).toBe(30_000);
+  });
+
+  test("done with hook_blocked stopReason yields error with modelStopReason in metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      {
+        kind: "done",
+        response: {
+          content: "Hook blocked model_call: budget exceeded",
+          model: "test-model",
+          stopReason: "hook_blocked",
+          metadata: { blockedByHook: true, reason: "budget exceeded", hookName: "quota-guard" },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+    expect(done.output.content).toEqual([
+      { kind: "text", text: "Hook blocked model_call: budget exceeded" },
+    ]);
+    const meta = done.output.metadata as Record<string, unknown>;
+    expect(meta.modelStopReason).toBe("hook_blocked");
+    expect(meta.blockedByHook).toBe(true);
   });
 
   test("done with in-flight tool calls downgrades to error and surfaces dangling calls", async () => {
@@ -292,9 +351,9 @@ describe("consumeModelStream", () => {
     expect(done.output.stopReason).toBe("error");
     const meta = done.output.metadata as {
       readonly danglingToolCalls: readonly { readonly callId: string }[];
-      readonly error: string;
+      readonly danglingToolCallsError: string;
     };
-    expect(meta.error).toContain("in-flight tool calls");
+    expect(meta.danglingToolCallsError).toContain("in-flight tool calls");
     expect(meta.danglingToolCalls).toHaveLength(1);
     expect(meta.danglingToolCalls[0]?.callId).toBe(callId("tc1"));
   });

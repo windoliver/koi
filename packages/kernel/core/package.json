@@ -184,6 +184,10 @@
     "./replacement": {
       "types": "./dist/replacement.d.ts",
       "import": "./dist/replacement.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
     }
   },
   "scripts": {

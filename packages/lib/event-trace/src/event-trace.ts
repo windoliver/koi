@@ -250,16 +250,30 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     const responseMeta = response !== undefined ? extractResponseMetadata(response) : {};
     const metadata = { ...requestMeta, ...responseMeta } as JsonObject;
 
+    // Determine outcome: non-success stop reasons (error, hook_blocked) are failures
+    // even when a ModelResponse is returned, since the response is a denial or error
+    // signal rather than a real model completion.
+    const stopReason = response?.stopReason;
+    const isNonSuccessStop =
+      stopReason !== undefined &&
+      stopReason !== "stop" &&
+      stopReason !== "length" &&
+      stopReason !== "tool_use";
+    const outcome = response === undefined || isNonSuccessStop ? "failure" : "success";
+
     return {
       stepIndex,
       timestamp: startTime,
       source: "agent",
       kind: "model_call",
       identifier: response?.model ?? request.model ?? "unknown",
-      outcome: response !== undefined ? "success" : "failure",
+      outcome,
       durationMs,
       request: extractLastUserMessage(request),
-      metadata,
+      metadata: {
+        ...metadata,
+        ...(isNonSuccessStop ? { modelStopReason: stopReason } : {}),
+      } as JsonObject,
       ...pickDefined({
         response: response !== undefined ? { text: response.content } : undefined,
         metrics: response !== undefined ? extractUsageMetrics(response) : undefined,
@@ -439,18 +453,26 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
           const stepIndex = state.nextLocalIndex;
           state.nextLocalIndex += 1;
 
+          // Tool responses with blockedByHook metadata are policy denials,
+          // not successful executions — trace them as failures.
+          const blockedByHook =
+            response?.metadata !== undefined &&
+            (response.metadata as Record<string, unknown>).blockedByHook === true;
+          const toolOutcome = response === undefined || blockedByHook ? "failure" : "success";
+
           const step: RichTrajectoryStep = {
             stepIndex,
             timestamp: startTime,
             source: "tool",
             kind: "tool_call",
             identifier: request.toolId,
-            outcome: response !== undefined ? "success" : "failure",
+            outcome: toolOutcome,
             durationMs,
             request: { data: request.input },
             ...pickDefined({
               response: response !== undefined ? captureToolOutput(response.output) : undefined,
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
+              metadata: blockedByHook ? (response?.metadata as JsonObject) : undefined,
             }),
           };
           recordStep(state, step);

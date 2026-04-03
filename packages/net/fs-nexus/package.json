@@ -1,0 +1,26 @@
+{
+  "name": "@koi/fs-nexus",
+  "description": "Nexus-backed FileSystemBackend — delegates file operations to Nexus via JSON-RPC",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

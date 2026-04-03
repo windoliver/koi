@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, AgentHookConfig, CommandHookConfig, HttpHookConfig } from '@koi/core';
+"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -358,6 +358,12 @@ interface CreateHookMiddlewareOptions {
      */
     readonly postToolHookDeadlineMs?: number | undefined;
 }
+/** Result of aggregating hook decisions — includes the winning hook's identity. */
+interface AggregatedDecision {
+    readonly decision: HookDecision;
+    /** Name of the hook that produced the winning decision (set for block). */
+    readonly hookName?: string;
+}
 /**
  * Aggregate **pre-call** hook decisions with most-restrictive-wins precedence:
  *   block > modify > continue
@@ -366,8 +372,10 @@ interface CreateHookMiddlewareOptions {
  * - Multiple \`modify\` patches are merged (later patches override earlier keys).
  * - \`transform\` decisions are ignored — they are post-call only.
  * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ *
+ * Returns the decision plus the winning hook's name (for block decisions).
  */
-declare function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision;
+declare function aggregateDecisions(results: readonly HookExecutionResult[]): AggregatedDecision;
 /**
  * Aggregate post-execution hook decisions.
  *
@@ -391,6 +399,41 @@ declare function aggregatePostDecisions(results: readonly HookExecutionResult[])
  * @returns A KoiMiddleware at resolve phase, priority 400.
  */
 declare function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware;
+
+/**
+ * Payload redaction for agent hook prompts.
+ *
+ * Two modes:
+ * 1. Structure extraction (default): replace leaf values with type placeholders
+ * 2. Secret redaction (forwardRawPayload): mask secrets while preserving values
+ */
+
+/**
+ * Extract a structural summary of event data — keys and type placeholders only.
+ * Returns undefined for undefined input.
+ */
+declare function extractStructure(data: JsonObject | undefined): JsonObject | undefined;
+/** Describes the actual processing applied to a payload. */
+type PayloadStatus = "redacted" | "unredacted" | "structure_only" | "truncated_redacted" | "truncated_unredacted";
+/** Result of payload processing — includes both data and status for accurate prompt notes. */
+interface RedactedPayload {
+    readonly data: JsonObject | undefined;
+    readonly status: PayloadStatus;
+}
+/**
+ * Apply secret redaction to event data using \`@koi/redaction\`.
+ *
+ * Returns the processed data AND a status describing what was actually done,
+ * so the caller can render an accurate prompt note.
+ *
+ * Processing order:
+ * 1. Redact secrets (unless config.enabled === false)
+ * 2. Serialize the result
+ * 3. Truncate if oversized (truncation always operates on already-redacted data)
+ *
+ * Non-serializable data (circular refs, BigInt) falls back to structure-only.
+ */
+declare function redactEventData(data: JsonObject | undefined, config: HookRedactionConfig | undefined): RedactedPayload;
 
 /**
  * Hook registry — session-scoped hook registration and cleanup.
@@ -452,6 +495,6 @@ declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
 "
 `;
