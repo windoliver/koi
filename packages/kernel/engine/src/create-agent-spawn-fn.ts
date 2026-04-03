@@ -102,12 +102,13 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
       const definition = resolveResult.value;
 
-      // 2. Build manifest: template + definition overrides
+      // 2. Build manifest: template provides infrastructure defaults (channels, middleware stack),
+      //    definition.manifest overrides with agent-specific controls (permissions, delegation,
+      //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
+      //    dropped security and isolation fields defined on the resolved agent.
       manifest = {
         ...manifestTemplate,
-        name: definition.name,
-        description: definition.description,
-        ...(definition.manifest.model !== undefined ? { model: definition.manifest.model } : {}),
+        ...definition.manifest,
       };
 
       // 3. Use definition's systemPrompt if request didn't provide one
@@ -238,7 +239,14 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
             await spawnResult.runtime.dispose();
           }
         })();
-        return { ok: true, output: "" };
+        // Return the child ID so callers can retrieve on_demand reports.
+        // on_demand stores reports under sessionId("delivery-<childId>") —
+        // callers can reconstruct the lookup key from this ID.
+        // deferred callers receive the result via inbox; output is intentionally empty.
+        const childId = spawnResult.childPid.id;
+        const output =
+          policy.kind === "on_demand" ? JSON.stringify({ delivery: "on_demand", childId }) : "";
+        return { ok: true, output };
       });
     }
 
