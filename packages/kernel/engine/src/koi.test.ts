@@ -6,6 +6,7 @@ import type {
   EngineEvent,
   EngineInput,
   EngineOutput,
+  InboundMessage,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -16,7 +17,12 @@ import type {
   ToolRequest,
   TurnContext,
 } from "@koi/core";
-import { brickId, DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
+import {
+  brickId,
+  DEFAULT_MAX_STOP_RETRIES,
+  DEFAULT_UNSANDBOXED_POLICY,
+  toolToken,
+} from "@koi/core";
 import { createKoi } from "./koi.js";
 import type { ForgeRuntime } from "./types.js";
 
@@ -3535,5 +3541,337 @@ describe("createKoi forged middleware scope", () => {
     // forged middleware's lifecycle hooks were NOT called
     // (lifecycle hooks only run on static allMiddleware, not forged)
     expect(forgedLifecycle).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stop gate
+// ---------------------------------------------------------------------------
+
+function multiCallAdapter(
+  calls: readonly (readonly EngineEvent[])[],
+  options?: { readonly inject?: boolean },
+): {
+  readonly adapter: EngineAdapter;
+  readonly streamCalls: EngineInput[];
+  readonly injectedMessages: InboundMessage[];
+} {
+  const streamCalls: EngineInput[] = [];
+  const injectedMessages: InboundMessage[] = [];
+  // let justified: mutable call counter for multi-stream sequencing
+  let callIndex = 0;
+
+  const adapter: EngineAdapter = {
+    engineId: "multi-call-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      streamCalls.push(input);
+      const events = calls[callIndex] ?? [];
+      callIndex++;
+      // let justified: mutable index for async iteration
+      let eventIndex = 0;
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              if (eventIndex >= events.length) return { done: true, value: undefined };
+              const event = events[eventIndex];
+              if (event === undefined) return { done: true, value: undefined };
+              eventIndex++;
+              return { done: false, value: event };
+            },
+            async return(): Promise<IteratorResult<EngineEvent>> {
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
+    },
+    ...(options?.inject !== false
+      ? {
+          inject(message: InboundMessage): void {
+            injectedMessages.push(message);
+          },
+        }
+      : {}),
+  };
+
+  return { adapter, streamCalls, injectedMessages };
+}
+
+function blockingStopMiddleware(blockUntilCall: number): {
+  readonly middleware: KoiMiddleware;
+  readonly onAfterTurnCalls: Array<{ readonly turnIndex: number; readonly stopBlocked: boolean }>;
+} {
+  // let justified: mutable call counter for blocking logic
+  let callCount = 0;
+  const onAfterTurnCalls: Array<{ readonly turnIndex: number; readonly stopBlocked: boolean }> = [];
+
+  const middleware: KoiMiddleware = {
+    name: "stop-blocker",
+    describeCapabilities: () => undefined,
+    onBeforeStop: async () => {
+      callCount++;
+      if (callCount <= blockUntilCall) {
+        return { kind: "block", reason: `blocked attempt ${callCount}` };
+      }
+      return { kind: "continue" };
+    },
+    onAfterTurn: async (ctx: TurnContext) => {
+      onAfterTurnCalls.push({
+        turnIndex: ctx.turnIndex,
+        stopBlocked: ctx.stopBlocked === true,
+      });
+    },
+  };
+
+  return { middleware, onAfterTurnCalls };
+}
+
+describe("createKoi stop gate", () => {
+  test("block emits turn_end for blocked turn then turn_start for retry", async () => {
+    const { middleware, onAfterTurnCalls } = blockingStopMiddleware(1);
+    const { adapter, streamCalls, injectedMessages } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+    const kinds = events.map((e) => e.kind);
+
+    // Expected: turn_start(0) → turn_end(0, stopBlocked) → turn_start(1) → done
+    expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
+
+    const turnStart0 = events[0]!;
+    const turnEnd0 = events[1]!;
+    const turnStart1 = events[2]!;
+    expect(turnStart0.kind === "turn_start" && turnStart0.turnIndex).toBe(0);
+    expect(turnEnd0.kind === "turn_end" && turnEnd0.turnIndex).toBe(0);
+    expect(turnStart1.kind === "turn_start" && turnStart1.turnIndex).toBe(1);
+
+    // Blocked turn_end is marked with stopBlocked flag
+    if (turnEnd0.kind === "turn_end") {
+      expect(turnEnd0.stopBlocked).toBe(true);
+    }
+
+    expect(injectedMessages.length).toBe(1);
+    expect(streamCalls.length).toBe(2);
+
+    // Done metrics include the retry turn
+    const doneEvent = events[3]!;
+    if (doneEvent.kind === "done") {
+      expect(doneEvent.output.metrics.turns).toBe(2);
+    }
+  });
+
+  test("block without inject adapter uses stopInput for retry stream", async () => {
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter, streamCalls } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: false },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
+
+    expect(streamCalls.length).toBe(2);
+    const retryInput = streamCalls[1]!;
+    expect(retryInput.kind).toBe("messages");
+    if (retryInput.kind === "messages") {
+      const firstContent = retryInput.messages[0]?.content[0];
+      expect(firstContent).toMatchObject({
+        kind: "text",
+        text: expect.stringContaining("[Completion blocked]"),
+      });
+    }
+  });
+
+  test("respects maxStopRetries and yields done after exhaustion", async () => {
+    const { middleware } = blockingStopMiddleware(999);
+    const calls = Array.from({ length: DEFAULT_MAX_STOP_RETRIES + 1 }, () => [
+      { kind: "done" as const, output: doneOutput() },
+    ]);
+    const { adapter } = multiCallAdapter(calls, { inject: true });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    const doneEvent = events.find((e) => e.kind === "done");
+    expect(doneEvent).toBeDefined();
+
+    const turnEnds = events.filter((e) => e.kind === "turn_end");
+    expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
+  });
+
+  test("onAfterTurn fires for stop-blocked turns", async () => {
+    const { middleware, onAfterTurnCalls } = blockingStopMiddleware(1);
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // onAfterTurn for turn 0 was called with stopBlocked flag
+    expect(onAfterTurnCalls).toContainEqual({ turnIndex: 0, stopBlocked: true });
+  });
+
+  test("retry adapter stream is created after turn boundary (not before)", async () => {
+    const streamCreationOrder: string[] = [];
+    const { middleware } = blockingStopMiddleware(1);
+
+    // Wrap middleware to observe ordering: onBeforeTurn should fire AFTER
+    // adapter.stream() for the retry turn (both happen in turnLoop)
+    const orderMiddleware: KoiMiddleware = {
+      name: "order-tracker",
+      describeCapabilities: () => undefined,
+      onBeforeTurn: async () => {
+        streamCreationOrder.push("onBeforeTurn");
+      },
+    };
+
+    // let justified: mutable call counter for stream ordering
+    let streamCallCount = 0;
+    const calls: readonly EngineEvent[][] = [
+      [{ kind: "done", output: doneOutput() }],
+      [{ kind: "done", output: doneOutput() }],
+    ];
+
+    const adapter: EngineAdapter = {
+      engineId: "order-test-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        streamCreationOrder.push(`stream(${streamCallCount})`);
+        const events = calls[streamCallCount] ?? [];
+        streamCallCount++;
+        // let justified: mutable index for async iteration
+        let eventIndex = 0;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next(): Promise<IteratorResult<EngineEvent>> {
+                if (eventIndex >= events.length) return { done: true, value: undefined };
+                const event = events[eventIndex];
+                if (event === undefined) return { done: true, value: undefined };
+                eventIndex++;
+                return { done: false, value: event };
+              },
+              async return(): Promise<IteratorResult<EngineEvent>> {
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        };
+      },
+      inject(): void {
+        /* no-op */
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [orderMiddleware, middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // Retry stream(1) must be created BEFORE onBeforeTurn for the retry turn,
+    // but AFTER the blocked turn's turn_end (which is after stream(0))
+    // Expected order: stream(0), onBeforeTurn, stream(1), onBeforeTurn
+    expect(streamCreationOrder).toEqual(["stream(0)", "onBeforeTurn", "stream(1)", "onBeforeTurn"]);
+  });
+
+  test("non-inject adapter retry turn receives block reason in ctx.messages", async () => {
+    const capturedMessages: unknown[][] = [];
+    const { middleware } = blockingStopMiddleware(1);
+
+    const messageCapture: KoiMiddleware = {
+      name: "message-capture",
+      describeCapabilities: () => undefined,
+      onBeforeTurn: async (ctx: TurnContext) => {
+        capturedMessages.push([...ctx.messages]);
+      },
+    };
+
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: false },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [messageCapture, middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // First turn: empty messages (text input, not messages input)
+    expect(capturedMessages[0]).toEqual([]);
+
+    // Retry turn: ctx.messages contains block reason (only delivery path)
+    const retryMessages = capturedMessages[1] as ReadonlyArray<{
+      readonly content: ReadonlyArray<{ readonly text?: string }>;
+    }>;
+    expect(retryMessages?.length).toBe(1);
+    expect(retryMessages?.[0]?.content[0]?.text).toContain("[Completion blocked]");
+  });
+
+  test("inject adapter retry delivers block via both inject and stream input", async () => {
+    const capturedMessages: unknown[][] = [];
+    const { middleware } = blockingStopMiddleware(1);
+
+    const messageCapture: KoiMiddleware = {
+      name: "message-capture",
+      describeCapabilities: () => undefined,
+      onBeforeTurn: async (ctx: TurnContext) => {
+        capturedMessages.push([...ctx.messages]);
+      },
+    };
+
+    const { adapter, injectedMessages } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [messageCapture, middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // inject() called as best-effort hint
+    expect(injectedMessages.length).toBe(1);
+
+    // Block reason also in stream input (guaranteed delivery path)
+    expect(capturedMessages[1]?.length).toBe(1);
+    expect(JSON.stringify(capturedMessages[1])).toContain("[Completion blocked]");
   });
 });

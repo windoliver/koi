@@ -17,6 +17,7 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   SessionContext,
+  StopGateResult,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -485,6 +486,26 @@ export async function runTurnHooks(
       await hook(ctx);
     }
   }
+}
+
+/**
+ * Run the stop gate across all middleware that implements `onBeforeStop`.
+ * First `block` wins — short-circuits without calling remaining middleware.
+ * Returns `{ kind: "continue" }` when no middleware blocks.
+ */
+export async function runStopGate(
+  middleware: readonly KoiMiddleware[],
+  ctx: TurnContext,
+): Promise<StopGateResult> {
+  for (const mw of middleware) {
+    if (mw.onBeforeStop !== undefined) {
+      const result = await mw.onBeforeStop(ctx);
+      if (result.kind === "block") {
+        return result;
+      }
+    }
+  }
+  return { kind: "continue" };
 }
 
 // ---------------------------------------------------------------------------

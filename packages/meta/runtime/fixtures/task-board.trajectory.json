@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:04.587Z",
+      "timestamp": "2026-04-03T07:38:04.657Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -34,7 +34,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:04.587Z",
+      "timestamp": "2026-04-03T07:38:04.657Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -48,7 +48,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-03T07:40:04.588Z",
+      "timestamp": "2026-04-03T07:38:04.657Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
       "observation": {
@@ -62,7 +62,7 @@
         "prompt_tokens": 127,
         "completion_tokens": 12
       },
-      "duration_ms": 641,
+      "duration_ms": 884,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -84,10 +84,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.231Z",
+      "timestamp": "2026-04-03T07:38:05.543Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 642.9354579999999,
+      "duration_ms": 886.0467919999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -101,10 +101,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.232Z",
+      "timestamp": "2026-04-03T07:38:05.545Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 643.9188749999994,
+      "duration_ms": 887.3502079999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -118,10 +118,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.233Z",
+      "timestamp": "2026-04-03T07:38:05.552Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:task_create → on-tool-exec",
-      "duration_ms": 2.1073750000014115,
+      "duration_ms": 8.058584000000337,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -132,7 +132,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.233Z",
+      "timestamp": "2026-04-03T07:38:05.552Z",
       "model_name": "middleware:hook-dispatch",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -142,7 +142,7 @@
           }
         ]
       },
-      "duration_ms": 3.1268749999999272,
+      "duration_ms": 9.460458000001381,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -156,7 +156,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-03T07:40:05.230Z",
+      "timestamp": "2026-04-03T07:38:05.542Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_create_7",
@@ -174,13 +174,13 @@
           }
         ]
       },
-      "duration_ms": 3,
+      "duration_ms": 10,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.234Z",
+      "timestamp": "2026-04-03T07:38:05.553Z",
       "model_name": "middleware:hooks",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -190,7 +190,7 @@
           }
         ]
       },
-      "duration_ms": 4.695292000000336,
+      "duration_ms": 10.829499999999825,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -204,7 +204,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.235Z",
+      "timestamp": "2026-04-03T07:38:05.553Z",
       "model_name": "middleware:permissions",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -214,7 +214,7 @@
           }
         ]
       },
-      "duration_ms": 4.889208999999028,
+      "duration_ms": 11.638458000001265,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -228,10 +228,10 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.236Z",
+      "timestamp": "2026-04-03T07:38:05.554Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:task_list → on-tool-exec",
-      "duration_ms": 1.045083999999406,
+      "duration_ms": 0.7961249999989377,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -242,7 +242,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.236Z",
+      "timestamp": "2026-04-03T07:38:05.554Z",
       "model_name": "middleware:hook-dispatch",
       "message": "task_list({})",
       "observation": {
@@ -252,7 +252,7 @@
           }
         ]
       },
-      "duration_ms": 1.4723340000000462,
+      "duration_ms": 1.1608329999999114,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -266,7 +266,7 @@
     {
       "step_id": 12,
       "source": "tool",
-      "timestamp": "2026-04-03T07:40:05.235Z",
+      "timestamp": "2026-04-03T07:38:05.553Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_list_12",
@@ -288,7 +288,7 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.237Z",
+      "timestamp": "2026-04-03T07:38:05.555Z",
       "model_name": "middleware:hooks",
       "message": "task_list({})",
       "observation": {
@@ -298,7 +298,7 @@
           }
         ]
       },
-      "duration_ms": 2.5085419999995793,
+      "duration_ms": 1.908832999999504,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -312,7 +312,7 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:05.237Z",
+      "timestamp": "2026-04-03T07:38:05.555Z",
       "model_name": "middleware:permissions",
       "message": "task_list({})",
       "observation": {
@@ -322,7 +322,7 @@
           }
         ]
       },
-      "duration_ms": 2.5917499999995925,
+      "duration_ms": 1.948500000000422,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -336,21 +336,21 @@
     {
       "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-03T07:40:05.237Z",
+      "timestamp": "2026-04-03T07:38:05.555Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}",
       "observation": {
         "results": [
           {
-            "content": "OK. I have created a task with description \"Review the README for typos\" and the task list is: [{'description': 'Review the README for typos', 'id': 'task_1', 'status': 'pending'}].\n"
+            "content": "OK. I have created a task with description \"Review the README for typos\", and then listed all tasks. The task \"Review the README for typos\" is on the list.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 193,
-        "completion_tokens": 48
+        "prompt_tokens": 196,
+        "completion_tokens": 37
       },
-      "duration_ms": 785,
+      "duration_ms": 781,
       "outcome": "success",
       "extra": {
         "totalMessages": 6,
@@ -372,10 +372,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:06.023Z",
+      "timestamp": "2026-04-03T07:38:06.337Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.\n\n{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}\n\n{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Revie…",
-      "duration_ms": 785.2690840000014,
+      "duration_ms": 781.5317080000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -389,10 +389,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-03T07:40:06.023Z",
+      "timestamp": "2026-04-03T07:38:06.337Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.\n\n{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}\n\n{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Revie…",
-      "duration_ms": 785.3977499999983,
+      "duration_ms": 781.6348330000019,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
