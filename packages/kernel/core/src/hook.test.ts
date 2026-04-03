@@ -28,11 +28,11 @@ describe("HookConfig discriminated union", () => {
     const config: HookConfig = {
       kind: "command",
       name: "lint-check",
-      command: "bun run lint",
+      cmd: ["bun", "run", "lint"],
     };
     expect(config.kind).toBe("command");
     if (config.kind === "command") {
-      expect(config.command).toBe("bun run lint");
+      expect(config.cmd).toEqual(["bun", "run", "lint"]);
     }
   });
 
@@ -74,7 +74,7 @@ describe("HookConfig discriminated union", () => {
 
   test("switch exhaustiveness covers all kinds", () => {
     const configs: readonly HookConfig[] = [
-      { kind: "command", name: "a", command: "echo" },
+      { kind: "command", name: "a", cmd: ["echo"] },
       { kind: "http", name: "b", url: "https://x.com" },
       { kind: "prompt", name: "c", prompt: "check" },
       { kind: "agent", name: "d", prompt: "review" },
