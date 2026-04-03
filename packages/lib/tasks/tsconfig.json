@@ -8,6 +8,12 @@
   "references": [
     {
       "path": "../../kernel/core"
+    },
+    {
+      "path": "../task-board"
+    },
+    {
+      "path": "../validation"
     }
   ]
 }

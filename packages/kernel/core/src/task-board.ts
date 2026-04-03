@@ -117,6 +117,8 @@ export interface Task {
   readonly assignedTo?: AgentId | undefined;
   /** Board-managed retry count. Incremented by the board on retryable failure. */
   readonly retries: number;
+  /** Board-managed version. Incremented on every mutation for optimistic concurrency. */
+  readonly version: number;
   readonly error?: KoiError | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;
@@ -190,7 +192,15 @@ export interface TaskBoardSnapshot {
 
 export interface TaskBoardConfig {
   readonly maxRetries?: number | undefined;
+  /**
+   * Max in-progress tasks per assignee. undefined = unlimited.
+   * Enforced per board instance — multiple boards sharing a store
+   * do not coordinate on this limit.
+   */
+  readonly maxInProgressPerOwner?: number | undefined;
   readonly onEvent?: ((event: TaskBoardEvent) => void) | undefined;
+  /** Called when onEvent throws. Errors still swallowed — mutations never fail from handlers. */
+  readonly onEventError?: ((error: unknown, event: TaskBoardEvent) => void) | undefined;
 }
 
 export const DEFAULT_TASK_BOARD_CONFIG: TaskBoardConfig = Object.freeze({
@@ -263,6 +273,10 @@ export type TaskBoardStoreNotifier = ChangeNotifier<TaskBoardStoreEvent>;
 /**
  * Pluggable persistence backend for task board items.
  *
+ * **Single-writer**: each store instance is designed for use by one writer
+ * (typically one `ManagedTaskBoard`). Multi-process coordination requires
+ * an external lock or a store with atomic conditional writes (e.g., Nexus).
+ *
  * Implementations may be sync (in-memory) or async (file-based, network).
  * Callers must always `await` the result — `await` on a non-Promise is a no-op.
  *
@@ -272,7 +286,11 @@ export type TaskBoardStoreNotifier = ChangeNotifier<TaskBoardStoreEvent>;
 export interface TaskBoardStore extends AsyncDisposable {
   /** Retrieve a task by ID. Returns undefined if not found. */
   readonly get: (id: TaskItemId) => Task | undefined | Promise<Task | undefined>;
-  /** Persist a task. Overwrites if ID already exists. */
+  /**
+   * Persist a task. Throws if `item.version` is ≤ the stored task's version
+   * (stale-write guard). New tasks (no existing entry) are always accepted.
+   * This is a single-writer safety net, not multi-process CAS.
+   */
   readonly put: (item: Task) => void | Promise<void>;
   /** Delete a task by ID. No-op if not found. */
   readonly delete: (id: TaskItemId) => void | Promise<void>;

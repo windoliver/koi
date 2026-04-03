@@ -790,4 +790,341 @@ describe("createTaskBoard", () => {
       expect(r3.ok).toBe(false);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue 9A: update() dedicated tests
+  // ---------------------------------------------------------------------------
+
+  describe("update", () => {
+    test("updates subject on a pending task", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.update(taskItemId("a"), { subject: "New Subject" });
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const task = r2.value.get(taskItemId("a"));
+      expect(task?.subject).toBe("New Subject");
+      expect(task?.description).toBe("Description for a");
+    });
+
+    test("updates description on an in_progress task", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.update(taskItemId("a"), { description: "Updated desc" });
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.get(taskItemId("a"))?.description).toBe("Updated desc");
+    });
+
+    test("rejects update on non-existent task", () => {
+      const board = createTaskBoard();
+      const r = board.update(taskItemId("nope"), { subject: "x" });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe("NOT_FOUND");
+    });
+
+    test("empty patch succeeds as no-op (updatedAt still advances)", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const before = r1.value.get(taskItemId("a"));
+      const r2 = r1.value.update(taskItemId("a"), {});
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const after = r2.value.get(taskItemId("a"));
+      expect(after?.subject).toBe(before?.subject);
+      expect(after?.description).toBe(before?.description);
+      expect(after?.version).toBe((before?.version ?? 0) + 1);
+    });
+
+    test("preserves status and retries on update", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.update(taskItemId("a"), { subject: "Updated" });
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const task = r2.value.get(taskItemId("a"));
+      expect(task?.status).toBe("pending");
+      expect(task?.retries).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue 10A: complete event coverage
+  // ---------------------------------------------------------------------------
+
+  describe("events — complete coverage", () => {
+    test("emits task:assigned event", () => {
+      const events: TaskBoardEvent[] = [];
+      const board = createTaskBoard({ onEvent: (e) => events.push(e) });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      events.length = 0;
+      r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("task:assigned");
+    });
+
+    test("emits task:completed event", () => {
+      const events: TaskBoardEvent[] = [];
+      const board = createTaskBoard({ onEvent: (e) => events.push(e) });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      events.length = 0;
+      r2.value.complete(taskItemId("a"), result("a"));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("task:completed");
+    });
+
+    test("emits task:failed event on terminal failure", () => {
+      const events: TaskBoardEvent[] = [];
+      const board = createTaskBoard({ maxRetries: 0, onEvent: (e) => events.push(e) });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      events.length = 0;
+      const err: KoiError = { code: "EXTERNAL", message: "crash", retryable: false };
+      r2.value.fail(taskItemId("a"), err);
+      expect(events.some((e) => e.kind === "task:failed")).toBe(true);
+    });
+
+    test("events fire in order: task:failed then task:unreachable", () => {
+      const events: TaskBoardEvent[] = [];
+      const board = createTaskBoard({ maxRetries: 0, onEvent: (e) => events.push(e) });
+      const r1 = board.addAll([input("a"), input("b", ["a"])]);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      events.length = 0;
+      const err: KoiError = { code: "EXTERNAL", message: "crash", retryable: false };
+      r2.value.fail(taskItemId("a"), err);
+      // task:failed must come before task:unreachable
+      const failIdx = events.findIndex((e) => e.kind === "task:failed");
+      const unreachIdx = events.findIndex((e) => e.kind === "task:unreachable");
+      expect(failIdx).toBeGreaterThanOrEqual(0);
+      expect(unreachIdx).toBeGreaterThanOrEqual(0);
+      expect(failIdx).toBeLessThan(unreachIdx);
+    });
+
+    test("onEventError is called when onEvent throws", () => {
+      const errors: unknown[] = [];
+      const board = createTaskBoard({
+        onEvent: () => {
+          throw new Error("handler bug");
+        },
+        onEventError: (err) => {
+          errors.push(err);
+        },
+      });
+      const r = board.add(input("a"));
+      expect(r.ok).toBe(true);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(Error);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue 11A: addAll batch edge cases
+  // ---------------------------------------------------------------------------
+
+  describe("addAll — batch edge cases", () => {
+    test("rejects duplicate IDs within a batch", () => {
+      const board = createTaskBoard();
+      const r = board.addAll([input("a"), input("a")]);
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe("CONFLICT");
+    });
+
+    test("empty batch returns ok with unchanged board", () => {
+      const board = createTaskBoard();
+      const r = board.addAll([]);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.size()).toBe(0);
+    });
+
+    test("batch with dead deps emits unreachable events", () => {
+      const events: TaskBoardEvent[] = [];
+      const board = createTaskBoard({ maxRetries: 0, onEvent: (e) => events.push(e) });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.kill(taskItemId("a"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      events.length = 0;
+      // Add tasks that depend on the killed task
+      const r3 = r2.value.addAll([input("b", ["a"]), input("c", ["a"])]);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.unreachable()).toHaveLength(2);
+      // Verify task:unreachable events were emitted for both
+      const unreachableEvents = events.filter((e) => e.kind === "task:unreachable");
+      expect(unreachableEvents).toHaveLength(2);
+      const unreachableIds = unreachableEvents.map(
+        (e) => (e as { readonly taskId: string }).taskId,
+      );
+      expect(unreachableIds).toContain(taskItemId("b"));
+      expect(unreachableIds).toContain(taskItemId("c"));
+    });
+
+    test("batch with mixed internal and external deps", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("ext"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      // Batch: "a" depends on existing "ext", "b" depends on batch-internal "a"
+      const r2 = r1.value.addAll([input("a", ["ext"]), input("b", ["a"])]);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.size()).toBe(3);
+      expect(r2.value.blocked()).toHaveLength(2);
+      expect(r2.value.ready()).toHaveLength(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue 1A: maxInProgressPerOwner
+  // ---------------------------------------------------------------------------
+
+  describe("maxInProgressPerOwner", () => {
+    test("allows assignment when under limit", () => {
+      const board = createTaskBoard({ maxInProgressPerOwner: 2 });
+      const r1 = board.addAll([input("a"), input("b")]);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+    });
+
+    test("rejects assignment when at limit", () => {
+      const board = createTaskBoard({ maxInProgressPerOwner: 1 });
+      const r1 = board.addAll([input("a"), input("b")]);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.assign(taskItemId("b"), agentId("w1"));
+      expect(r3.ok).toBe(false);
+      if (r3.ok) return;
+      expect(r3.error.code).toBe("VALIDATION");
+      expect(r3.error.message).toContain("max: 1");
+    });
+
+    test("different agents have independent limits", () => {
+      const board = createTaskBoard({ maxInProgressPerOwner: 1 });
+      const r1 = board.addAll([input("a"), input("b")]);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      // Different agent — should be allowed
+      const r3 = r2.value.assign(taskItemId("b"), agentId("w2"));
+      expect(r3.ok).toBe(true);
+    });
+
+    test("unlimited when config is undefined", () => {
+      const board = createTaskBoard();
+      const r1 = board.addAll([input("a"), input("b"), input("c")]);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.assign(taskItemId("b"), agentId("w1"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const r4 = r3.value.assign(taskItemId("c"), agentId("w1"));
+      expect(r4.ok).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue 2A: version field
+  // ---------------------------------------------------------------------------
+
+  describe("version tracking", () => {
+    test("new task starts at version 0", () => {
+      const board = createTaskBoard();
+      const r = board.add(input("a"));
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.get(taskItemId("a"))?.version).toBe(0);
+    });
+
+    test("assign increments version", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.get(taskItemId("a"))?.version).toBe(1);
+    });
+
+    test("complete increments version", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.complete(taskItemId("a"), result("a"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.get(taskItemId("a"))?.version).toBe(2);
+    });
+
+    test("retry increments version", () => {
+      const board = createTaskBoard({ maxRetries: 3 });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const err: KoiError = { code: "EXTERNAL", message: "timeout", retryable: true };
+      const r3 = r2.value.fail(taskItemId("a"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      expect(r3.value.get(taskItemId("a"))?.version).toBe(2);
+    });
+
+    test("update increments version", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.update(taskItemId("a"), { subject: "new" });
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.get(taskItemId("a"))?.version).toBe(1);
+    });
+  });
 });

@@ -20,6 +20,7 @@ function createTestTask(overrides: Partial<Task> & { readonly id: TaskItemId }):
     description: `Task ${overrides.id}`,
     dependencies: [],
     retries: 0,
+    version: 0,
     status: "pending",
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -59,12 +60,12 @@ export function runTaskBoardStoreContract(
       expect(result).toBeUndefined();
     });
 
-    it("put overwrites existing item with same ID", async () => {
+    it("put overwrites existing item when version is incremented", async () => {
       const store = await factory();
       const id = await store.nextId();
 
-      await store.put(createTestTask({ id, description: "v1" }));
-      await store.put(createTestTask({ id, description: "v2" }));
+      await store.put(createTestTask({ id, description: "v1", version: 0 }));
+      await store.put(createTestTask({ id, description: "v2", version: 1 }));
 
       const loaded = await store.get(id);
       expect(loaded?.description).toBe("v2");
@@ -115,6 +116,7 @@ export function runTaskBoardStoreContract(
         description: "full task test with all fields",
         dependencies: [taskItemId("task_dep_1"), taskItemId("task_dep_2")],
         retries: 2,
+        version: 0,
         status: "in_progress",
         assignedTo: agentId("agent_1"),
         metadata: { key: "value" },
@@ -346,6 +348,94 @@ export function runTaskBoardStoreContract(
       expect(await store.list()).toEqual([]);
       expect(await store.get(id1)).toBeUndefined();
       expect(await store.get(id2)).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Dispose
+  // -------------------------------------------------------------------------
+
+  describe(`${suiteName} — dispose`, () => {
+    it("get returns undefined after dispose", async () => {
+      const store = await factory();
+      const id = await store.nextId();
+      await store.put(createTestTask({ id }));
+
+      await store[Symbol.asyncDispose]();
+
+      expect(await store.get(id)).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Version-based CAS
+  // -------------------------------------------------------------------------
+
+  describe(`${suiteName} — version CAS`, () => {
+    it("rejects put with older version than stored", async () => {
+      const store = await factory();
+      const id = await store.nextId();
+
+      // Write version 1
+      await store.put(createTestTask({ id, version: 1 }));
+
+      // Attempt to write version 0 (older) — should throw
+      let threw = false;
+      try {
+        await store.put(createTestTask({ id, version: 0 }));
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+
+      // Stored item should still be version 1
+      const stored = await store.get(id);
+      expect(stored?.version).toBe(1);
+    });
+
+    it("accepts put with higher version", async () => {
+      const store = await factory();
+      const id = await store.nextId();
+
+      await store.put(createTestTask({ id, version: 0 }));
+      await store.put(createTestTask({ id, version: 1, description: "updated" }));
+
+      const stored = await store.get(id);
+      expect(stored?.version).toBe(1);
+      expect(stored?.description).toBe("updated");
+    });
+
+    it("rejects put with same version as stored (prevents concurrent overwrites)", async () => {
+      const store = await factory();
+      const id = await store.nextId();
+
+      await store.put(createTestTask({ id, version: 1 }));
+
+      // Same version = stale write from a concurrent writer
+      let threw = false;
+      try {
+        await store.put(createTestTask({ id, version: 1, description: "stale" }));
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+
+      // Stored item should be unchanged
+      const stored = await store.get(id);
+      expect(stored?.description).toBe(`Task ${id}`);
+    });
+
+    it("sequential version increments succeed", async () => {
+      const store = await factory();
+      const id = await store.nextId();
+
+      await store.put(createTestTask({ id, version: 0 }));
+      await store.put(createTestTask({ id, version: 1, description: "v1" }));
+      await store.put(createTestTask({ id, version: 2, description: "v2" }));
+
+      const stored = await store.get(id);
+      expect(stored?.version).toBe(2);
+      expect(stored?.description).toBe("v2");
     });
   });
 }
