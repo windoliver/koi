@@ -370,9 +370,17 @@ function checkPermissionSubset(
 ):
   | { readonly code: "PERMISSION"; readonly message: string; readonly retryable: false }
   | undefined {
-  if (childPerms === undefined) return undefined; // no restrictions, always safe
+  // Normalize both sides to {} so we apply canonical rules regardless of whether
+  // the child omits `permissions` entirely — an omitted child permissions block
+  // must NOT erase parent deny-list entries.
+  const normalizedParent = parentPerms ?? {};
+  const normalizedChild = childPerms ?? {};
 
-  if (parentPerms === undefined) {
+  // If parent has no restrictions at all, child cannot be broader — nothing to check.
+  if (parentPerms === undefined && childPerms === undefined) return undefined;
+
+  // Parent has no permissions, child has some — parent cannot confer what it lacks.
+  if (parentPerms === undefined && childPerms !== undefined) {
     return {
       code: "PERMISSION",
       message: `Cannot spawn "${childName}": child declares permissions but parent has none — parent cannot confer capabilities it does not possess.`,
@@ -380,12 +388,27 @@ function checkPermissionSubset(
     };
   }
 
+  // Check deny-list first: parent denies must be monotonically preserved in child.
+  // An omitted child deny (normalizedChild.deny === undefined) means no denies, which
+  // removes all parent denies — that is a violation.
+  if (normalizedParent.deny !== undefined && normalizedParent.deny.length > 0) {
+    const childDenied = new Set(normalizedChild.deny ?? []);
+    const removedDenies = normalizedParent.deny.filter((t) => !childDenied.has(t));
+    if (removedDenies.length > 0) {
+      return {
+        code: "PERMISSION",
+        message: `Cannot spawn "${childName}": child removes deny-list entries that parent enforces: ${removedDenies.join(", ")}`,
+        retryable: false,
+      };
+    }
+  }
+
   // Check allow-list: child must not allow tools the parent doesn't allow.
   // Honor wildcard: a parent with allow: ["*"] permits any child allow-list.
-  if (childPerms.allow !== undefined && childPerms.allow.length > 0) {
-    const parentAllowed = new Set(parentPerms.allow ?? []);
+  if (normalizedChild.allow !== undefined && normalizedChild.allow.length > 0) {
+    const parentAllowed = new Set(normalizedParent.allow ?? []);
     if (!parentAllowed.has("*")) {
-      const extraAllowed = childPerms.allow.filter((t) => !parentAllowed.has(t) && t !== "*");
+      const extraAllowed = normalizedChild.allow.filter((t) => !parentAllowed.has(t) && t !== "*");
       if (extraAllowed.length > 0) {
         return {
           code: "PERMISSION",
@@ -393,19 +416,6 @@ function checkPermissionSubset(
           retryable: false,
         };
       }
-    }
-  }
-
-  // Check deny-list: child must not remove denies the parent has
-  if (parentPerms.deny !== undefined && parentPerms.deny.length > 0) {
-    const childDenied = new Set(childPerms.deny ?? []);
-    const removedDenies = parentPerms.deny.filter((t) => !childDenied.has(t));
-    if (removedDenies.length > 0) {
-      return {
-        code: "PERMISSION",
-        message: `Cannot spawn "${childName}": child removes deny-list entries that parent enforces: ${removedDenies.join(", ")}`,
-        retryable: false,
-      };
     }
   }
 

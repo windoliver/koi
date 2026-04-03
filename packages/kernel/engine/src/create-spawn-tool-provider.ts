@@ -151,8 +151,12 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
             description: String(args.description ?? ""),
             signal: options?.signal ?? AbortSignal.timeout(300_000), // 5 min default
             ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
-            ...(args.maxTurns !== undefined ? { maxTurns: Number(args.maxTurns) } : {}),
-            ...(args.maxTokens !== undefined ? { maxTokens: Number(args.maxTokens) } : {}),
+            ...(args.maxTurns !== undefined
+              ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
+              : {}),
+            ...(args.maxTokens !== undefined
+              ? { maxTokens: parsePositiveInt(args.maxTokens, "maxTokens") }
+              : {}),
             ...(args.nonInteractive !== undefined
               ? { nonInteractive: Boolean(args.nonInteractive) }
               : {}),
@@ -174,4 +178,24 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
       return new Map([["tool:Spawn", tool]]);
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a tool argument as a positive integer, throwing KoiRuntimeError on invalid input.
+ * Prevents NaN/Infinity from disabling iteration guards (comparison against NaN never fires).
+ */
+function parsePositiveInt(value: unknown, field: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `Spawn tool argument "${field}" must be a positive integer, got: ${String(value)}`,
+      { retryable: false },
+    );
+  }
+  return n;
 }

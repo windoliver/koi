@@ -109,13 +109,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
 
   // Create spawn provider when a resolver is provided. Callers pass the provider
   // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
-  // Use the caller-supplied ledger (for shared/distributed accounting) or fall back
-  // to a local default — never silently create a private ledger that bypasses policy.
+  // Resolve effective policy first so the fallback ledger uses the same capacity as
+  // the policy — a custom spawnPolicy.maxTotalProcesses without an explicit ledger
+  // would otherwise be silently ignored by the process-wide default ledger.
+  const effectiveSpawnPolicy = config.spawnPolicy ?? DEFAULT_SPAWN_POLICY;
+  const effectiveSpawnLedger =
+    config.spawnLedger ??
+    // Only reuse the shared default when the policy cap matches; otherwise allocate
+    // a fresh ledger with the correct capacity so the configured limit is honoured.
+    (effectiveSpawnPolicy.maxTotalProcesses === DEFAULT_SPAWN_POLICY.maxTotalProcesses
+      ? DEFAULT_PROCESS_SPAWN_LEDGER
+      : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
+
   const spawnProvider =
     config.resolver !== undefined
       ? createSpawnToolProvider({
           resolver: config.resolver,
-          spawnLedger: config.spawnLedger ?? DEFAULT_PROCESS_SPAWN_LEDGER,
+          spawnLedger: effectiveSpawnLedger,
           adapter,
           manifestTemplate: {
             name: "spawned-agent",
@@ -123,7 +133,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             description: "Spawned sub-agent",
             model: { name: "sonnet" },
           },
-          ...(config.spawnPolicy !== undefined ? { spawnPolicy: config.spawnPolicy } : {}),
+          spawnPolicy: effectiveSpawnPolicy,
           ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
         })
       : undefined;
