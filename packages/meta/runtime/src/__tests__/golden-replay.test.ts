@@ -1263,7 +1263,7 @@ describe("Golden: @koi/hooks once + toolAllowlist", () => {
 // ---------------------------------------------------------------------------
 
 describe("hook-once ATIF trajectory (golden file)", () => {
-  test("trajectory contains hook steps showing once-hook firing pattern", async () => {
+  test("trajectory shows once-hook fires on first tool call only, always-hook fires on both", async () => {
     const trajPath = `${FIXTURES}/hook-once.trajectory.json`;
     const file = Bun.file(trajPath);
     if (!(await file.exists())) {
@@ -1283,7 +1283,7 @@ describe("hook-once ATIF trajectory (golden file)", () => {
     // Trajectory should have steps
     expect(traj.steps.length).toBeGreaterThan(0);
 
-    // Should have at least one model step and one tool step
+    // Should have model and tool steps
     const modelSteps = traj.steps.filter((s) => s.source === "agent");
     const toolSteps = traj.steps.filter((s) => s.source === "tool");
     expect(modelSteps.length).toBeGreaterThan(0);
@@ -1292,6 +1292,17 @@ describe("hook-once ATIF trajectory (golden file)", () => {
     // add_numbers should be in tool definitions
     const toolNames = traj.agent?.tool_definitions?.map((t) => t.name) ?? [];
     expect(toolNames).toContain("add_numbers");
+
+    // Extract hook execution steps by name
+    const hookSteps = traj.steps.filter((s) => s.extra?.type === "hook_execution");
+    const onceHookSteps = hookSteps.filter((s) => s.extra?.hookName === "first-tool-guard");
+    const alwaysHookSteps = hookSteps.filter((s) => s.extra?.hookName === "always-hook");
+
+    // Once-hook should fire exactly once (first tool call only)
+    expect(onceHookSteps).toHaveLength(1);
+
+    // Always-hook should fire on both tool calls (tool.succeeded fires twice)
+    expect(alwaysHookSteps.length).toBeGreaterThanOrEqual(2);
   });
 });
 
