@@ -16,6 +16,7 @@ import type {
   CapabilityFragment,
   EngineAdapter,
   EngineEvent,
+  KoiErrorCode,
   KoiMiddleware,
   SpawnFn,
   SpawnRequest,
@@ -48,6 +49,7 @@ export interface CreateHookSpawnFnOptions {
     SpawnChildOptions,
     | "manifest"
     | "toolDenylist"
+    | "toolAllowlist"
     | "additionalTools"
     | "nonInteractive"
     | "requiredOutputTool"
@@ -83,7 +85,7 @@ export interface CreateHookSpawnFnOptions {
  * Creates a SpawnFn that spawns hook-agent sub-agents via spawnChildAgent.
  *
  * Maps SpawnRequest sub-agent constraint fields to SpawnChildOptions:
- * - `toolDenylist` → filters inherited tools
+ * - `toolDenylist` / `toolAllowlist` → filters inherited tools
  * - `additionalTools` → injected via component provider
  * - `maxTurns` → mapped to `limits.maxTurns`
  * - `maxTokens` → mapped to `limits.maxTokens`
@@ -122,6 +124,7 @@ export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
         manifest,
         adapter,
         ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
+        ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
         ...(request.additionalTools !== undefined
           ? { additionalTools: request.additionalTools }
           : {}),
@@ -143,6 +146,8 @@ export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
       // Run the child agent to completion.
       // Identity: manifest.name = "hook-agent:<hookName>" — tracing middleware
       // reads this from the agent entity to distinguish hook agents from regular agents.
+      // let justified: mutable — captures execution result before teardown
+      let executionResult: SpawnResult | undefined;
       try {
         const collector = createVerdictCollector(requiredOutputTool);
         const input = {
@@ -154,23 +159,43 @@ export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
           collector.observe(event);
         }
 
-        return { ok: true, output: collector.output() };
+        executionResult = { ok: true, output: collector.output() };
       } finally {
         hookAgentMarker?.unmarkHookAgent(childSessionId);
-        // Terminate via handle first (releases ledger + revokes delegation
-        // in registry-backed spawns), then dispose the runtime.
-        handle.terminate();
-        await handle.waitForCompletion();
-        await runtime.dispose();
+        // Best-effort teardown: terminate + dispose. Errors are logged but
+        // cannot override a successful verdict already captured above.
+        try {
+          handle.terminate();
+          // Bound teardown wait to prevent indefinite hangs if terminate fails
+          await Promise.race([
+            handle.waitForCompletion(),
+            new Promise<void>((resolve) => {
+              setTimeout(resolve, 5_000);
+            }),
+          ]);
+          await runtime.dispose();
+        } catch (teardownErr: unknown) {
+          console.error(`[hook-spawn] teardown error for "${request.agentName}"`, teardownErr);
+        }
       }
+      // Return the captured result. If execution itself threw (executionResult
+      // still undefined), the outer catch handles it.
+      if (executionResult !== undefined) {
+        return executionResult;
+      }
+      // Unreachable in normal flow — execution throw propagates via finally
+      throw new Error("Hook agent execution completed without result");
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
+      // Classify retryable: KoiError carries its own flag, abort/timeout
+      // errors are transient by nature, everything else is non-retryable.
+      const isRetryable = isKoiErrorLike(e) ? e.retryable : isAbortOrTimeoutError(e);
       return {
         ok: false,
         error: {
-          code: "INTERNAL",
+          code: isKoiErrorLike(e) ? e.code : "INTERNAL",
           message: `Hook agent spawn failed: ${message}`,
-          retryable: false,
+          retryable: isRetryable,
         },
       };
     }
@@ -282,4 +307,25 @@ function createVerdictCollector(requiredToolName: string | undefined): {
       return verdictOutput.length > 0 ? verdictOutput : textBuffer;
     },
   };
+}
+
+/** Detect abort/timeout errors that are transient by nature. */
+function isAbortOrTimeoutError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  // DOMException with name "AbortError" or "TimeoutError" (from AbortSignal.timeout)
+  return e.name === "AbortError" || e.name === "TimeoutError";
+}
+
+/** Type guard for objects that carry KoiError-like code + retryable fields. */
+function isKoiErrorLike(
+  e: unknown,
+): e is { readonly code: KoiErrorCode; readonly retryable: boolean } {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "code" in e &&
+    typeof (e as Record<string, unknown>).code === "string" &&
+    "retryable" in e &&
+    typeof (e as Record<string, unknown>).retryable === "boolean"
+  );
 }

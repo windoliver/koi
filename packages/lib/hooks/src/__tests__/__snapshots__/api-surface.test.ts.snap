@@ -68,6 +68,8 @@ declare class AgentHookExecutor implements HookExecutor {
     readonly name = "agent";
     /** Per-session cumulative token usage from agent hook invocations. */
     private readonly sessionTokens;
+    /** Per-session count of in-flight (refundable) token reservations. */
+    private readonly inFlightReservations;
     private readonly spawnFn;
     constructor(spawnFn: SpawnFn);
     canHandle(hook: HookConfig): boolean;
@@ -77,21 +79,30 @@ declare class AgentHookExecutor implements HookExecutor {
      * Uses estimated tokens: (maxTokens per call) * 1 invocation.
      */
     private recordTokens;
+    /**
+     * Refund reserved tokens for a failed attempt that never ran to completion.
+     * Prevents transient retries from permanently burning the session budget.
+     */
+    private refundTokens;
+    /** Increment in-flight reservation counter. */
+    private addInFlight;
+    /** Decrement in-flight reservation counter. */
+    private removeInFlight;
     /** Get cumulative tokens used in a session. */
     getSessionTokens(sessionId: string): number;
     /** Clean up session token tracking. Call on session end. */
     cleanupSession(sessionId: string): void;
     private executeAgent;
     /**
-     * Handle a failure according to the hook's failClosed flag.
-     *
-     * - true (default) → block with error reason
-     * - false → continue (swallow the error)
-     *
-     * This is handled inside the executor rather than in aggregateDecisions()
-     * to keep the aggregation logic unchanged.
+     * Handle a transient failure (abort, timeout, spawn crash).
+     * Sets executionFailed so the registry retries once-hooks.
      */
-    private handleFailure;
+    private handleTransientFailure;
+    /**
+     * Handle a permanent/deterministic failure (invalid config, missing verdict).
+     * Does NOT set executionFailed — once-hooks are consumed permanently.
+     */
+    private handlePermanentFailure;
 }
 /**
  * Merge default + user-specified tool denylists.

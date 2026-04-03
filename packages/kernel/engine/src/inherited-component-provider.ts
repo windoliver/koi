@@ -34,6 +34,12 @@ export interface InheritedComponentProviderConfig {
    * Applied after scope filtering. Used by hook agents to prevent recursion.
    */
   readonly toolDenylist?: ReadonlySet<string> | undefined;
+  /**
+   * Optional tool allowlist — only inherited parent tools in this set pass through.
+   * Mutually exclusive with toolDenylist. Applied after scope filtering.
+   * Does not affect additionalTools injected via separate providers.
+   */
+  readonly toolAllowlist?: ReadonlySet<string> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +74,11 @@ export function createInheritedComponentProvider(
 
         // Exclude denylisted tools (e.g., spawn/agent for hook agents)
         if (config.toolDenylist?.has(toolName)) {
+          continue;
+        }
+
+        // Exclude tools not in allowlist (when allowlist mode is active)
+        if (config.toolAllowlist !== undefined && !config.toolAllowlist.has(toolName)) {
           continue;
         }
 

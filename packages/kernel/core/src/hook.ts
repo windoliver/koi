@@ -131,6 +131,15 @@ export interface CommandHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +189,15 @@ export interface HttpHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +295,12 @@ export interface AgentHookConfig {
   /** Tools to exclude from the sub-agent (in addition to default denylist). */
   readonly toolDenylist?: readonly string[] | undefined;
   /**
+   * Tools to exclusively allow for the sub-agent. Mutually exclusive with toolDenylist.
+   * When set, only these tools (plus HookVerdict) are available via inheritance.
+   * When neither list is specified, the default denylist is used for backward compatibility.
+   */
+  readonly toolAllowlist?: readonly string[] | undefined;
+  /**
    * Controls how event.data is forwarded to the hook agent prompt.
    *
    * - `true` (default): forward the full payload with secret redaction applied.
@@ -314,6 +338,15 @@ export interface AgentHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +409,13 @@ export type HookExecutionResult =
       readonly hookName: string;
       readonly durationMs: number;
       readonly decision: HookDecision;
+      /**
+       * When true, the hook actually failed but the failure was swallowed
+       * by fail-open policy (failClosed: false). The decision is "continue"
+       * but the hook did not genuinely execute successfully.
+       * Used by the registry to avoid consuming once-hooks on swallowed failures.
+       */
+      readonly executionFailed?: boolean | undefined;
     }
   | {
       readonly ok: false;
