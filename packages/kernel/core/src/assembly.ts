@@ -7,9 +7,9 @@ import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
 import type { DeliveryPolicy } from "./delivery.js";
+import type { HookConfig } from "./hook.js";
 import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
-import type { HookConfig } from "./hook.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
 
 export interface ModelConfig {

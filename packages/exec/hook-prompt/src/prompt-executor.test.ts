@@ -5,8 +5,9 @@ import { createPromptExecutor } from "./prompt-executor.js";
 
 function makeEvent(overrides?: Partial<HookEvent>): HookEvent {
   return {
-    kind: "beforeToolCall",
-    timestamp: Date.now(),
+    event: "tool.before",
+    agentId: "test-agent",
+    sessionId: "test-session",
     ...overrides,
   };
 }

@@ -2,7 +2,7 @@
  * Verdict parsing utilities — extract structured decisions from model output.
  */
 
-import type { HookVerdict } from "@koi/core";
+import type { HookDecision } from "@koi/core";
 
 /** Parsed verdict from model output. */
 export interface ParsedVerdict {
@@ -331,9 +331,9 @@ export function parseVerdictOutput(raw: string): ParsedVerdict {
 }
 
 /**
- * Map a parsed verdict to a HookVerdict discriminated union.
+ * Map a parsed verdict to a HookDecision discriminated union.
  */
-export function mapVerdictToDecision(verdict: ParsedVerdict): HookVerdict {
+export function mapVerdictToDecision(verdict: ParsedVerdict): HookDecision {
   if (verdict.ok) {
     return { kind: "continue" };
   }

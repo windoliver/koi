@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HOOK_EVENT_KINDS } from "./hook.js";
 import type { HookConfig, HookEventKind } from "./hook.js";
+import { HOOK_EVENT_KINDS } from "./hook.js";
 
 describe("HOOK_EVENT_KINDS", () => {
   test("contains expected event kinds", () => {

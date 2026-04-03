@@ -4,7 +4,7 @@
  * Injects a PromptModelCaller to decouple from any specific LLM SDK.
  */
 
-import type { HookEvent, HookExecutor, HookVerdict, PromptHookConfig } from "@koi/core";
+import type { HookDecision, HookEvent, PromptHookConfig } from "@koi/core";
 import { mapVerdictToDecision, parseVerdictOutput } from "./verdict.js";
 
 // ---------------------------------------------------------------------------
@@ -49,11 +49,17 @@ const SYSTEM_PROMPT_SUFFIX = [
 /**
  * Create a prompt hook executor backed by the given model caller.
  */
-export function createPromptExecutor(caller: PromptModelCaller): HookExecutor<PromptHookConfig> {
+/** Prompt hook executor interface. */
+export interface PromptHookExecutor {
+  readonly kind: "prompt";
+  readonly execute: (config: PromptHookConfig, event: HookEvent) => Promise<HookDecision>;
+}
+
+export function createPromptExecutor(caller: PromptModelCaller): PromptHookExecutor {
   return {
     kind: "prompt",
 
-    async execute(config: PromptHookConfig, event: HookEvent): Promise<HookVerdict> {
+    async execute(config: PromptHookConfig, event: HookEvent): Promise<HookDecision> {
       const failMode = config.failMode ?? "closed";
 
       try {
@@ -90,7 +96,7 @@ export function createPromptExecutor(caller: PromptModelCaller): HookExecutor<Pr
 
 function formatEvent(event: HookEvent): string {
   const parts: readonly string[] = [
-    `Event: ${event.kind}`,
+    `Event: ${event.event}`,
     ...(event.toolName !== undefined ? [`Tool: ${event.toolName}`] : []),
     ...(event.data !== undefined ? [`Data: ${JSON.stringify(event.data)}`] : []),
   ];
