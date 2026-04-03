@@ -2,6 +2,7 @@
  * Pattern registry — all 13 built-in secret detectors + default sensitive field names.
  */
 
+import { markTrusted } from "../trusted.js";
 import type { SecretPattern } from "../types.js";
 import { createAnthropicDetector } from "./anthropic.js";
 import { createAWSDetector } from "./aws.js";
@@ -20,19 +21,19 @@ import { createStripeDetector } from "./stripe.js";
 /** Create all 13 built-in secret pattern detectors. */
 export function createAllSecretPatterns(): readonly SecretPattern[] {
   return [
-    createJWTDetector(),
-    createAWSDetector(),
-    createOpenAIDetector(),
-    createAnthropicDetector(),
-    createGoogleDetector(),
-    createGitHubDetector(),
-    createSlackDetector(),
-    createStripeDetector(),
-    createPEMDetector(),
-    createBearerDetector(),
-    createBasicAuthDetector(),
-    createCredentialURIDetector(),
-    createGenericSecretDetector(),
+    markTrusted(createJWTDetector()),
+    markTrusted(createAWSDetector()),
+    markTrusted(createOpenAIDetector()),
+    markTrusted(createAnthropicDetector()),
+    markTrusted(createGoogleDetector()),
+    markTrusted(createGitHubDetector()),
+    markTrusted(createSlackDetector()),
+    markTrusted(createStripeDetector()),
+    markTrusted(createPEMDetector()),
+    markTrusted(createBearerDetector()),
+    markTrusted(createBasicAuthDetector()),
+    markTrusted(createCredentialURIDetector()),
+    markTrusted(createGenericSecretDetector()),
   ];
 }
 

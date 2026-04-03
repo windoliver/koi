@@ -4,6 +4,7 @@
 
 import type { KoiError, Result } from "@koi/core";
 import { createAllSecretPatterns, DEFAULT_SENSITIVE_FIELDS } from "./patterns/index.js";
+import { isTrustedPattern } from "./trusted.js";
 import type { RedactionConfig, SecretPattern } from "./types.js";
 
 /** Default configuration for createRedactor(). */
@@ -113,7 +114,7 @@ export function validateRedactionConfig(
     ? [...merged.patterns, ...merged.customPatterns]
     : merged.customPatterns;
 
-  for (const pattern of userSuppliedPatterns) {
+  for (const pattern of userSuppliedPatterns.filter((p) => !isTrustedPattern(p))) {
     for (const adversarial of ADVERSARIAL_INPUTS) {
       const start = performance.now();
       pattern.detect(adversarial);

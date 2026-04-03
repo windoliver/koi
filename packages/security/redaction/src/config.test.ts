@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_REDACTION_CONFIG, validateRedactionConfig } from "./config.js";
+import { createAllSecretPatterns } from "./patterns/index.js";
 import type { RedactionConfig } from "./types.js";
 
 describe("validateRedactionConfig", () => {
@@ -116,6 +117,24 @@ describe("validateRedactionConfig", () => {
   test("skips ReDoS check on default patterns (trusted)", () => {
     // Default patterns should always pass — they are curated built-ins
     const result = validateRedactionConfig({});
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts factory-created patterns passed as patterns override", () => {
+    // Callers who rebuild/subset built-ins via createAllSecretPatterns()
+    // should not be rejected by the timing check
+    const builtins = createAllSecretPatterns();
+    const result = validateRedactionConfig({
+      patterns: builtins,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts subset of factory-created patterns as override", () => {
+    const builtins = createAllSecretPatterns();
+    const result = validateRedactionConfig({
+      patterns: [builtins[0]!, builtins[1]!],
+    });
     expect(result.ok).toBe(true);
   });
 
