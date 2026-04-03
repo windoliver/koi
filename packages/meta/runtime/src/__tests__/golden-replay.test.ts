@@ -796,6 +796,191 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// denial-escalation trajectory: repeated execution-time denials trigger auto-deny
+// ---------------------------------------------------------------------------
+
+describe("denial-escalation ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with session_id=denial-escalation", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("denial-escalation");
+  });
+
+  test("add_numbers in tool_definitions (tool visible to model)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "add_numbers")).toBe(true);
+  });
+
+  test("multiple model_call steps (model retries after denial)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+      }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // At least 2 model calls: initial + retry after denied tool call
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("wrapToolCall denial proves execution-time interception (not just filter-time)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome?: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly nextCalled?: boolean;
+        };
+      }[];
+    };
+    // Unlike permission-deny (filter-time only), escalation requires execution-time denial
+    // The MW:permissions wrapToolCall span with nextCalled=false proves the tool was attempted
+    // and intercepted at execution time, not merely filtered from the model's view
+    const execDenials = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.outcome === "failure" &&
+        s.extra?.nextCalled === false,
+    );
+    expect(execDenials.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("MW:permissions spans include wrapToolCall hook (execution-time path)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+    const permSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
+    );
+    expect(permSpans.length).toBeGreaterThan(0);
+    // wrapToolCall is where execution-time denial happens (unlike permission-deny which only has wrapModelStream)
+    expect(permSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+  });
+
+  test("exactly 1 add_numbers wrapToolCall denial before escalation removes the tool", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly model_name?: string;
+        readonly message?: string;
+        readonly outcome?: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly nextCalled?: boolean;
+          readonly toolCount?: number;
+          readonly tools?: readonly { readonly name: string }[];
+        };
+      }[];
+    };
+
+    // 1. Exactly 1 add_numbers policy denial at execution time (threshold=1)
+    const addNumbersDenials = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.extra?.nextCalled === false &&
+        (s.message ?? "").includes("add_numbers"),
+    );
+    expect(addNumbersDenials).toHaveLength(1);
+
+    // 2. Find the transition: first model step where add_numbers disappears
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    const transitionIdx = modelSteps.findIndex(
+      (s) => !(s.extra?.tools ?? []).some((t) => t.name === "add_numbers"),
+    );
+    expect(transitionIdx).toBeGreaterThan(0); // not the first step
+
+    // 3. Every model step before transition has add_numbers visible
+    for (let i = 0; i < transitionIdx; i++) {
+      const tools = modelSteps[i]?.extra?.tools ?? [];
+      expect(tools.some((t) => t.name === "add_numbers")).toBe(true);
+    }
+
+    // 4. Transition step and all after it do NOT have add_numbers
+    for (let i = transitionIdx; i < modelSteps.length; i++) {
+      const tools = modelSteps[i]?.extra?.tools ?? [];
+      expect(tools.some((t) => t.name === "add_numbers")).toBe(false);
+    }
+
+    // 5. Both denials occurred before the transition model step
+    const transitionStepId = modelSteps[transitionIdx]?.step_id ?? 0;
+    for (const denial of addNumbersDenials) {
+      expect(denial.step_id).toBeLessThan(transitionStepId);
+    }
+
+    // 6. toolCount drops at the transition (4 → 3)
+    const preToolCount = modelSteps[transitionIdx - 1]?.extra?.toolCount ?? 0;
+    const postToolCount = modelSteps[transitionIdx]?.extra?.toolCount ?? 0;
+    expect(preToolCount).toBe(4);
+    expect(postToolCount).toBe(3);
+  });
+
+  test("no tool calls use unadvertised names or occur after escalation removes the tool", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly model_name?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+        readonly extra?: {
+          readonly tools?: readonly { readonly name: string }[];
+        };
+      }[];
+    };
+    // 1. All tool calls must use globally advertised names (no hallucinated tools)
+    const advertised = new Set((doc.agent.tool_definitions ?? []).map((t) => t.name));
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    for (const step of toolSteps) {
+      for (const tc of step.tool_calls ?? []) {
+        expect(advertised.has(tc.function_name ?? "")).toBe(true);
+      }
+    }
+    // 2. No add_numbers tool call after escalation removes it from the per-turn tool set
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    const transitionIdx = modelSteps.findIndex(
+      (s) => !(s.extra?.tools ?? []).some((t) => t.name === "add_numbers"),
+    );
+    if (transitionIdx > 0) {
+      const transitionStepId = modelSteps[transitionIdx]?.step_id ?? 0;
+      const postEscalationToolCalls = doc.steps.filter(
+        (s) =>
+          s.source === "tool" &&
+          s.step_id >= transitionStepId &&
+          (s.tool_calls ?? []).some((tc) => tc.function_name === "add_numbers"),
+      );
+      expect(postEscalationToolCalls).toHaveLength(0);
+    }
+  });
+
+  test("step count reflects multi-turn escalation pattern", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    // MCP lifecycle + model calls + tool denials + MW spans = substantial step count
+    expect(doc.steps.length).toBeGreaterThanOrEqual(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // turn-stop trajectory: stop-gate hook blocks completion, engine re-prompts
 // ---------------------------------------------------------------------------
 
@@ -851,6 +1036,25 @@ describe("turn-stop ATIF trajectory (golden file)", () => {
       (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
     );
     expect(permSpans.length).toBeGreaterThan(0);
+  });
+
+  // TODO(#1453): turn-stop retry responses leak [Active Capabilities] banner — pre-existing on main.
+  // The hooks middleware injects capability text into system prompt, and the model parrots it
+  // on retries instead of answering the user's question. Fix the retry path, then enable this test.
+  test.skip("retry responses stay on-task and do not discuss internal capabilities", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content?: string }[] };
+      }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    for (let i = 1; i < modelSteps.length; i++) {
+      const content = (modelSteps[i]?.observation?.results?.[0]?.content ?? "").toLowerCase();
+      expect(content).not.toContain("active capabilities");
+      expect(content).not.toContain("middleware");
+    }
   });
 
   test("step count >= 10 (MCP + multiple MODEL + MW spans per model call)", async () => {
