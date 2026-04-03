@@ -21,7 +21,5 @@
     "@koi/validation": "workspace:*"
   },
   "devDependencies": {},
-  "koi": {
-    "optional": true
-  }
+  "koi": {}
 }

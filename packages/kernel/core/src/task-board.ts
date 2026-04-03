@@ -277,9 +277,7 @@ export interface TaskBoardStore extends AsyncDisposable {
   /** Delete a task by ID. No-op if not found. */
   readonly delete: (id: TaskItemId) => void | Promise<void>;
   /** List tasks, optionally filtered by status or assignee. */
-  readonly list: (
-    filter?: TaskBoardStoreFilter,
-  ) => readonly Task[] | Promise<readonly Task[]>;
+  readonly list: (filter?: TaskBoardStoreFilter) => readonly Task[] | Promise<readonly Task[]>;
   /** Generate the next unique task item ID. Monotonic, never reuses after deletion. */
   readonly nextId: () => TaskItemId | Promise<TaskItemId>;
   /** Subscribe to store mutation events. Returns unsubscribe function. */
