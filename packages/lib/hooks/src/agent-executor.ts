@@ -42,14 +42,18 @@ import { extractStructure, redactEventData } from "./payload-redaction.js";
 // Default tool denylist — prevents recursion (Decision 2A)
 // ---------------------------------------------------------------------------
 
-// Default denylist: recursion prevention + read-only-by-default safety.
+/**
+ * Hard safety denylist — these tools are NEVER available to hook agents,
+ * regardless of toolAllowlist or toolDenylist config. Non-overridable.
+ * Prevents recursive agent spawning from within verification hooks.
+ */
+const HARD_SAFETY_DENYLIST: ReadonlySet<string> = new Set(["spawn", "agent", "Agent"]);
+
+// Default denylist: hard safety + read-only-by-default safety.
 // Hook agents get read-only tools unless explicitly opted in via hook config.
 // HookVerdict denylisted to prevent parent tools from shadowing the synthetic verdict tool.
 const DEFAULT_TOOL_DENYLIST: ReadonlySet<string> = new Set([
-  // Recursion prevention
-  "spawn",
-  "agent",
-  "Agent",
+  ...HARD_SAFETY_DENYLIST,
   // Write/execute tools denied by default — hook agents should verify, not mutate
   "Bash",
   "Write",
@@ -93,6 +97,8 @@ export class AgentHookExecutor implements HookExecutor {
 
   /** Per-session cumulative token usage from agent hook invocations. */
   private readonly sessionTokens = new Map<string, number>();
+  /** Per-session count of in-flight (refundable) token reservations. */
+  private readonly inFlightReservations = new Map<string, number>();
 
   private readonly spawnFn: SpawnFn;
 
@@ -124,6 +130,30 @@ export class AgentHookExecutor implements HookExecutor {
     this.sessionTokens.set(sessionId, current + tokens);
   }
 
+  /**
+   * Refund reserved tokens for a failed attempt that never ran to completion.
+   * Prevents transient retries from permanently burning the session budget.
+   */
+  private refundTokens(sessionId: string, tokens: number): void {
+    const current = this.sessionTokens.get(sessionId) ?? 0;
+    this.sessionTokens.set(sessionId, Math.max(0, current - tokens));
+  }
+
+  /** Increment in-flight reservation counter. */
+  private addInFlight(sessionId: string): void {
+    this.inFlightReservations.set(sessionId, (this.inFlightReservations.get(sessionId) ?? 0) + 1);
+  }
+
+  /** Decrement in-flight reservation counter. */
+  private removeInFlight(sessionId: string): void {
+    const current = this.inFlightReservations.get(sessionId) ?? 0;
+    if (current <= 1) {
+      this.inFlightReservations.delete(sessionId);
+    } else {
+      this.inFlightReservations.set(sessionId, current - 1);
+    }
+  }
+
   /** Get cumulative tokens used in a session. */
   getSessionTokens(sessionId: string): number {
     return this.sessionTokens.get(sessionId) ?? 0;
@@ -132,6 +162,7 @@ export class AgentHookExecutor implements HookExecutor {
   /** Clean up session token tracking. Call on session end. */
   cleanupSession(sessionId: string): void {
     this.sessionTokens.delete(sessionId);
+    this.inFlightReservations.delete(sessionId);
   }
 
   private async executeAgent(
@@ -153,6 +184,11 @@ export class AgentHookExecutor implements HookExecutor {
     const currentTokens = this.getSessionTokens(event.sessionId);
     if (currentTokens + worstCaseTokens > maxSessionTokens) {
       const durationMs = performance.now() - start;
+      // If there are in-flight reservations that might be refunded, treat
+      // budget exhaustion as transient so once-hooks get another chance
+      // after concurrent hooks complete and free budget.
+      const inFlight = this.inFlightReservations.get(event.sessionId) ?? 0;
+      const isTransient = inFlight > 0;
       if (failClosed) {
         return {
           ok: true,
@@ -162,83 +198,154 @@ export class AgentHookExecutor implements HookExecutor {
             kind: "block",
             reason: `Agent hook token budget exhausted (${currentTokens}/${maxSessionTokens})`,
           },
+          ...(isTransient ? { executionFailed: true } : {}),
         };
       }
-      return { ok: true, hookName: hook.name, durationMs, decision: { kind: "continue" } };
+      return {
+        ok: true,
+        hookName: hook.name,
+        durationMs,
+        decision: { kind: "continue" },
+        ...(isTransient ? { executionFailed: true } : {}),
+      };
+    }
+
+    // Run synchronous validation BEFORE reserving tokens so config
+    // errors (e.g., conflicting toolAllowlist/toolDenylist) don't
+    // consume budget without ever spawning a child.
+    // let justified: mutable — set once from synchronous validation
+    let toolConstraints: ReturnType<typeof buildToolConstraints>;
+    try {
+      toolConstraints = buildToolConstraints(hook);
+    } catch (e: unknown) {
+      // Deterministic config error — permanent failure, no retry
+      const durationMs = performance.now() - start;
+      const message = e instanceof Error ? e.message : String(e);
+      return this.handlePermanentFailure(hook.name, message, durationMs, failClosed);
     }
 
     // Reserve tokens BEFORE spawn — atomic with the budget check above.
     // This prevents parallel agent hooks from both passing the check
     // and overspending the budget.
     this.recordTokens(event.sessionId, worstCaseTokens);
+    this.addInFlight(event.sessionId);
 
     try {
-      signal.throwIfAborted();
+      // outer try/finally for in-flight cleanup
+      try {
+        signal.throwIfAborted();
 
-      const { systemPrompt: hookSystemPrompt, userInput } = buildHookPrompts(hook, event);
-      const timeoutMs = hook.timeoutMs ?? DEFAULT_AGENT_HOOK_TIMEOUT_MS;
+        const { systemPrompt: hookSystemPrompt, userInput } = buildHookPrompts(hook, event);
+        const timeoutMs = hook.timeoutMs ?? DEFAULT_AGENT_HOOK_TIMEOUT_MS;
 
-      // Budget-aware timeout: use the shorter of hook timeout and signal
-      const hookSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+        // Budget-aware timeout: use the shorter of hook timeout and signal
+        const hookSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 
-      // Build the HookVerdict tool descriptor for injection
-      const verdictTool: ToolDescriptor = {
-        name: HOOK_VERDICT_TOOL_NAME,
-        description: "Return your verification verdict. You MUST call this tool exactly once.",
-        inputSchema: HOOK_VERDICT_INPUT_SCHEMA,
-      };
+        // Build the HookVerdict tool descriptor for injection
+        const verdictTool: ToolDescriptor = {
+          name: HOOK_VERDICT_TOOL_NAME,
+          description: "Return your verification verdict. You MUST call this tool exactly once.",
+          inputSchema: HOOK_VERDICT_INPUT_SCHEMA,
+        };
 
-      const result = await this.spawnFn({
-        description: userInput,
-        agentName: `hook-agent:${hook.name}`,
-        signal: hookSignal,
-        systemPrompt: hookSystemPrompt,
-        additionalTools: [verdictTool],
-        toolDenylist: [...mergeToolDenylist(hook.toolDenylist)],
-        maxTurns,
-        maxTokens,
-        nonInteractive: true,
-        outputSchema: HOOK_VERDICT_INPUT_SCHEMA,
-        requiredOutputToolName: HOOK_VERDICT_TOOL_NAME,
-      });
+        const result = await this.spawnFn({
+          description: userInput,
+          agentName: `hook-agent:${hook.name}`,
+          signal: hookSignal,
+          systemPrompt: hookSystemPrompt,
+          additionalTools: [verdictTool],
+          ...toolConstraints,
+          maxTurns,
+          maxTokens,
+          nonInteractive: true,
+          outputSchema: HOOK_VERDICT_INPUT_SCHEMA,
+          requiredOutputToolName: HOOK_VERDICT_TOOL_NAME,
+        });
 
-      const durationMs = performance.now() - start;
+        const durationMs = performance.now() - start;
 
-      if (!result.ok) {
-        return this.handleFailure(hook.name, result.error.message, durationMs, failClosed);
+        if (!result.ok) {
+          const durationMs = performance.now() - start;
+          // Use the spawn result's retryable flag to classify the failure.
+          // Non-retryable: assembly error, permission denied, config invalid.
+          // Retryable: network timeout, transient infra, model overload.
+          if (result.error.retryable) {
+            this.refundTokens(event.sessionId, worstCaseTokens);
+            return this.handleTransientFailure(
+              hook.name,
+              result.error.message,
+              durationMs,
+              failClosed,
+            );
+          }
+          return this.handlePermanentFailure(
+            hook.name,
+            result.error.message,
+            durationMs,
+            failClosed,
+          );
+        }
+
+        // Parse the verdict from spawn output
+        const verdict = parseVerdictOutput(result.output);
+        if (verdict === undefined) {
+          // Agent ran but produced invalid output — transient (LLM output
+          // is inherently non-deterministic, may produce valid verdict on retry).
+          // No token refund: the agent actually ran and consumed model budget.
+          return this.handleTransientFailure(
+            hook.name,
+            "Agent did not produce a valid HookVerdict",
+            durationMs,
+            failClosed,
+          );
+        }
+
+        return { ok: true, hookName: hook.name, durationMs, decision: verdictToDecision(verdict) };
+      } catch (e: unknown) {
+        const durationMs = performance.now() - start;
+        const message = e instanceof Error ? e.message : String(e);
+        // Abort/timeout — transient, refund reserved tokens
+        this.refundTokens(event.sessionId, worstCaseTokens);
+        return this.handleTransientFailure(hook.name, message, durationMs, failClosed);
       }
-
-      // Parse the verdict from spawn output
-      const verdict = parseVerdictOutput(result.output);
-      if (verdict === undefined) {
-        // Agent completed but didn't produce a valid verdict
-        return this.handleFailure(
-          hook.name,
-          "Agent did not produce a valid HookVerdict",
-          durationMs,
-          failClosed,
-        );
-      }
-
-      return { ok: true, hookName: hook.name, durationMs, decision: verdictToDecision(verdict) };
-    } catch (e: unknown) {
-      const durationMs = performance.now() - start;
-      const message = e instanceof Error ? e.message : String(e);
-      // Tokens already reserved before try — no double-recording needed
-      return this.handleFailure(hook.name, message, durationMs, failClosed);
+    } finally {
+      this.removeInFlight(event.sessionId);
     }
   }
 
   /**
-   * Handle a failure according to the hook's failClosed flag.
-   *
-   * - true (default) → block with error reason
-   * - false → continue (swallow the error)
-   *
-   * This is handled inside the executor rather than in aggregateDecisions()
-   * to keep the aggregation logic unchanged.
+   * Handle a transient failure (abort, timeout, spawn crash).
+   * Sets executionFailed so the registry retries once-hooks.
    */
-  private handleFailure(
+  private handleTransientFailure(
+    hookName: string,
+    error: string,
+    durationMs: number,
+    failClosed: boolean,
+  ): HookExecutionResult {
+    if (failClosed) {
+      return {
+        ok: true,
+        hookName,
+        durationMs,
+        decision: { kind: "block", reason: `Agent hook failed: ${error}` },
+        executionFailed: true,
+      };
+    }
+    return {
+      ok: true,
+      hookName,
+      durationMs,
+      decision: { kind: "continue" },
+      executionFailed: true,
+    };
+  }
+
+  /**
+   * Handle a permanent/deterministic failure (invalid config, missing verdict).
+   * Does NOT set executionFailed — once-hooks are consumed permanently.
+   */
+  private handlePermanentFailure(
     hookName: string,
     error: string,
     durationMs: number,
@@ -252,7 +359,6 @@ export class AgentHookExecutor implements HookExecutor {
         decision: { kind: "block", reason: `Agent hook failed: ${error}` },
       };
     }
-    // Fail-open: report as ok with continue decision
     return { ok: true, hookName, durationMs, decision: { kind: "continue" } };
   }
 }
@@ -260,6 +366,40 @@ export class AgentHookExecutor implements HookExecutor {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Build tool constraint fields for the SpawnRequest.
+ *
+ * Priority: toolAllowlist > toolDenylist > default denylist.
+ * When allowlist mode is active, HookVerdict is always included.
+ * HARD_SAFETY_DENYLIST is always enforced — allowlists cannot re-enable
+ * recursion tools (spawn/agent/Agent).
+ *
+ * Default (neither list specified) preserves the existing denylist behavior
+ * for backward compatibility. Users opt into the safer allowlist explicitly.
+ */
+function buildToolConstraints(
+  hook: AgentHookConfig,
+): { readonly toolAllowlist: readonly string[] } | { readonly toolDenylist: readonly string[] } {
+  // Runtime guard: reject conflicting lists even if schema validation was bypassed
+  if (hook.toolAllowlist !== undefined && hook.toolDenylist !== undefined) {
+    throw new Error(
+      `Agent hook "${hook.name}": toolAllowlist and toolDenylist are mutually exclusive`,
+    );
+  }
+  if (hook.toolAllowlist !== undefined) {
+    // Filter out hard-blocked tools and HookVerdict from inheritance.
+    // Recursion tools (spawn/agent/Agent) are never available.
+    // HookVerdict is excluded from inheritance to prevent parent tools from
+    // shadowing the synthetic verdict tool injected via additionalTools.
+    const safeList = hook.toolAllowlist.filter(
+      (t) => !HARD_SAFETY_DENYLIST.has(t) && t !== HOOK_VERDICT_TOOL_NAME,
+    );
+    return { toolAllowlist: safeList };
+  }
+  // Default: denylist mode (backward compatible — existing hooks keep their tool access)
+  return { toolDenylist: [...mergeToolDenylist(hook.toolDenylist)] };
+}
 
 /**
  * Build system prompt and user input for the hook agent.

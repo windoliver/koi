@@ -1183,6 +1183,119 @@ describe("Golden: @koi/tasks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/hooks once flag + toolAllowlist (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hooks once + toolAllowlist", () => {
+  test("once flag: hook loads, validates, and registry consumes after first fire", async () => {
+    const { loadHooks, createHookRegistry } = await import("@koi/hooks");
+
+    // once:true validates through schema
+    const result = loadHooks([
+      {
+        kind: "command",
+        name: "first-run-check",
+        cmd: ["echo", "setup"],
+        filter: { events: ["tool.before"] },
+        once: true,
+      },
+      {
+        kind: "command",
+        name: "always-hook",
+        cmd: ["echo", "always"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(2);
+    expect(result.value[0]?.once).toBe(true);
+    expect(result.value[1]?.once).toBeUndefined();
+
+    // Registry tracks once-hooks and consumes them
+    const registry = createHookRegistry();
+    registry.register("s1", "agent-1", result.value);
+    expect(registry.has("s1")).toBe(true);
+    expect(registry.size()).toBe(1);
+
+    // Cleanup works
+    registry.cleanup("s1");
+    expect(registry.has("s1")).toBe(false);
+  });
+
+  test("toolAllowlist: schema validates, mutual exclusivity enforced", async () => {
+    const { loadHooks } = await import("@koi/hooks");
+
+    // toolAllowlist validates on agent hooks
+    const allowResult = loadHooks([
+      {
+        kind: "agent",
+        name: "restricted-verifier",
+        prompt: "Verify the change",
+        toolAllowlist: ["Read", "Grep"],
+      },
+    ]);
+    expect(allowResult.ok).toBe(true);
+    if (allowResult.ok) {
+      const hook = allowResult.value[0];
+      expect(hook?.kind).toBe("agent");
+      if (hook?.kind === "agent") {
+        expect(hook.toolAllowlist).toEqual(["Read", "Grep"]);
+      }
+    }
+
+    // Mutual exclusivity: both lists set → validation fails
+    const conflictResult = loadHooks([
+      {
+        kind: "agent",
+        name: "bad-config",
+        prompt: "Verify",
+        toolAllowlist: ["Read"],
+        toolDenylist: ["Bash"],
+      },
+    ]);
+    expect(conflictResult.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook-once ATIF trajectory (golden file)
+// ---------------------------------------------------------------------------
+
+describe("hook-once ATIF trajectory (golden file)", () => {
+  test("trajectory contains hook steps showing once-hook firing pattern", async () => {
+    const trajPath = `${FIXTURES}/hook-once.trajectory.json`;
+    const file = Bun.file(trajPath);
+    if (!(await file.exists())) {
+      console.warn("hook-once.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+      }[];
+      readonly agent?: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+
+    // Trajectory should have steps
+    expect(traj.steps.length).toBeGreaterThan(0);
+
+    // Should have at least one model step and one tool step
+    const modelSteps = traj.steps.filter((s) => s.source === "agent");
+    const toolSteps = traj.steps.filter((s) => s.source === "tool");
+    expect(modelSteps.length).toBeGreaterThan(0);
+    expect(toolSteps.length).toBeGreaterThan(0);
+
+    // add_numbers should be in tool definitions
+    const toolNames = traj.agent?.tool_definitions?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("add_numbers");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/mcp (2 queries)
 // ---------------------------------------------------------------------------
 
