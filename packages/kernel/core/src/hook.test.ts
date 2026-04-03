@@ -9,7 +9,7 @@ describe("HOOK_EVENT_KINDS", () => {
     expect(HOOK_EVENT_KINDS).toContain("tool.before");
     expect(HOOK_EVENT_KINDS).toContain("tool.succeeded");
     expect(HOOK_EVENT_KINDS).toContain("tool.failed");
-    expect(HOOK_EVENT_KINDS).toHaveLength(15);
+    expect(HOOK_EVENT_KINDS).toHaveLength(16);
   });
 
   test("HookEventKind type matches const array members", () => {
