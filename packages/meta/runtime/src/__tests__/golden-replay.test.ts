@@ -1964,7 +1964,7 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
 
-  test("memory_store tool executed with frontmatter in output", async () => {
+  test("memory_store tool output contains full serialized frontmatter and multiline body", async () => {
     const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -1977,18 +1977,33 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     );
     expect(toolSteps.length).toBeGreaterThanOrEqual(2); // memory_store + memory_list
 
-    // memory_store output contains serialized frontmatter
+    // memory_store output contains serialized frontmatter with all fields
     const storeStep = toolSteps.find((s) => {
       const content = s.observation?.results?.[0]?.content ?? "";
       return content.includes("filePath") && content.includes("serialized");
     });
     expect(storeStep).toBeDefined();
     const storeContent = storeStep?.observation?.results?.[0]?.content ?? "";
+
+    // Validate file path
     expect(storeContent).toContain("testing_approach.md");
+    // Validate ok: true (successful store)
+    expect(storeContent).toContain('"ok":true');
+
+    // Validate full frontmatter fields in serialized output
+    expect(storeContent).toContain("name: testing approach");
+    expect(storeContent).toContain("description: always write failing tests first");
+    expect(storeContent).toContain("type: feedback");
+    // Validate frontmatter delimiters
     expect(storeContent).toContain("---");
+
+    // Validate multiline body content survived serialization
+    expect(storeContent).toContain("Rule: write failing tests before implementation.");
+    expect(storeContent).toContain("**Why:**");
+    expect(storeContent).toContain("**How to apply:**");
   });
 
-  test("memory_list tool returns stored memory records", async () => {
+  test("memory_list tool returns stored records with correct metadata", async () => {
     const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -2005,7 +2020,10 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     });
     expect(listStep).toBeDefined();
     const listContent = listStep?.observation?.results?.[0]?.content ?? "";
+
+    // Validate file path, name, and type all present in list output
     expect(listContent).toContain("testing_approach.md");
+    expect(listContent).toContain("testing approach");
     expect(listContent).toContain("feedback");
   });
 
@@ -2045,4 +2063,345 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     // 18 steps recorded: 2 MCP + 3 MODEL + 2 TOOL + 2 HOOK + 4 MW:hooks + 4 MW:permissions + MW:hook-dispatch
     expect(doc.steps.length).toBeGreaterThanOrEqual(12);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Full-loop replay: memory-store cassette → createKoi → live ATIF
+// ---------------------------------------------------------------------------
+
+describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", () => {
+  test("produces live ATIF with memory_store + memory_list tool calls and correct output", async () => {
+    const { serializeMemoryFrontmatter, validateMemoryRecordInput } = await import("@koi/core");
+
+    // Build memory tools (same as record-cassettes.ts)
+    const replayMemoryStore = new Map<string, string>();
+
+    const memStoreResult = buildTool({
+      name: "memory_store",
+      description: "Store a memory record.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          type: { type: "string", enum: ["user", "feedback", "project", "reference"] },
+          content: { type: "string" },
+        },
+        required: ["name", "description", "type", "content"],
+      },
+      origin: "primordial",
+      execute: async (args: JsonObject): Promise<unknown> => {
+        const input = {
+          name: String(args.name),
+          description: String(args.description),
+          type: String(args.type),
+          content: String(args.content),
+          filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
+        };
+        const errors = validateMemoryRecordInput(input);
+        if (errors.length > 0) {
+          return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
+        }
+        const frontmatter = {
+          name: input.name,
+          description: input.description,
+          type: input.type as "user" | "feedback" | "project" | "reference",
+        };
+        const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
+        if (serialized === undefined) {
+          return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
+        }
+        replayMemoryStore.set(input.filePath, serialized);
+        return { ok: true, filePath: input.filePath, serialized };
+      },
+    });
+    if (!memStoreResult.ok) throw new Error(`buildTool failed: ${memStoreResult.error.message}`);
+    const memStoreTool = memStoreResult.value;
+
+    const memListResult = buildTool({
+      name: "memory_list",
+      description: "List all stored memory records.",
+      inputSchema: { type: "object", properties: {} },
+      origin: "primordial",
+      execute: async (): Promise<unknown> => {
+        const records = [...replayMemoryStore.entries()].map(([filePath, raw]) => {
+          const typeMatch = raw.match(/^type:\s*(.+)$/m);
+          const nameMatch = raw.match(/^name:\s*(.+)$/m);
+          return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
+        });
+        return { memories: records };
+      },
+    });
+    if (!memListResult.ok) throw new Error(`buildTool failed: ${memListResult.error.message}`);
+    const memListTool = memListResult.value;
+
+    // Tool dispatch map
+    const toolMap: Record<string, (args: JsonObject) => Promise<unknown>> = {
+      memory_store: memStoreTool.execute,
+      memory_list: memListTool.execute,
+    };
+
+    // Load cassette
+    const cassette = await loadCassette(`${FIXTURES}/memory-store.cassette.json`);
+    const trajDir = `/tmp/koi-replay-memory-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-memory-store";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-memory-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-memory-test",
+    });
+
+    const hookResult = loadHooks([
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "hook"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ]);
+    const hookMw = createHookDispatchMiddleware({
+      hooks: hookResult.ok ? hookResult.value : [],
+      store,
+      docId,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permMiddleware = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "replay test (bypass)",
+    });
+
+    const mcpSm = createTransportStateMachine();
+    const unsubMcp = recordMcpLifecycle({
+      stateMachine: mcpSm,
+      store,
+      docId,
+      serverName: "test-mcp",
+    });
+    mcpSm.transition({ kind: "connecting", attempt: 1 });
+    mcpSm.transition({ kind: "connected" });
+
+    // Multi-tool cassette adapter
+    // let: mutable call counter
+    let callCount = 0;
+    const adapter: EngineAdapter = {
+      engineId: "cassette-replay-memory",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async (_request: ModelRequest): Promise<ModelResponse> => ({
+          content: "fallback",
+          model: MODEL,
+        }),
+        modelStream: (_request: ModelRequest): AsyncIterable<ModelChunk> => {
+          const currentCall = callCount;
+          callCount++;
+          if (currentCall === 0) {
+            return toAsyncIterable(cassette.chunks);
+          }
+          return toAsyncIterable([
+            { kind: "text_delta" as const, delta: "Memory stored and listed." },
+            {
+              kind: "done" as const,
+              response: {
+                content: "Memory stored and listed.",
+                model: MODEL,
+                usage: { inputTokens: 10, outputTokens: 5 },
+              },
+            },
+          ]);
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          const fn = toolMap[request.toolId];
+          if (!fn) throw new Error(`Unknown tool: ${request.toolId}`);
+          const output = await fn(request.input);
+          return { output };
+        },
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        const h = input.callHandlers;
+        if (!h) {
+          return (async function* () {
+            yield {
+              kind: "done" as const,
+              output: {
+                content: [],
+                stopReason: "error" as const,
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 0,
+                  durationMs: 0,
+                },
+                metadata: { error: "No callHandlers" },
+              },
+            };
+          })();
+        }
+        const text = input.kind === "text" ? input.text : "";
+        const msgs: {
+          readonly senderId: string;
+          readonly timestamp: number;
+          readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+          readonly metadata?: JsonObject;
+        }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
+        return (async function* () {
+          // let: mutable
+          let turn = 0;
+          while (turn < 3) {
+            const evts: EngineEvent[] = [];
+            // let: mutable
+            let done: EngineEvent | undefined;
+            for await (const e of consumeModelStream(
+              h.modelStream
+                ? h.modelStream({ messages: msgs, model: MODEL })
+                : (async function* (): AsyncIterable<ModelChunk> {
+                    const r = await h.modelCall({ messages: msgs, model: MODEL });
+                    yield { kind: "done" as const, response: { content: r.content, model: MODEL } };
+                  })(),
+              input.signal,
+            )) {
+              if (e.kind === "done") done = e;
+              else {
+                evts.push(e);
+                yield e;
+              }
+            }
+            const tcs = evts.filter((e) => e.kind === "tool_call_end");
+            if (tcs.length === 0) {
+              if (done) yield done;
+              break;
+            }
+            for (const tc of tcs) {
+              if (tc.kind !== "tool_call_end") continue;
+              const r = tc.result as {
+                readonly toolName: string;
+                readonly parsedArgs?: JsonObject;
+              };
+              if (!r.parsedArgs) continue;
+              const realCallId = tc.callId as string;
+              msgs.push({
+                senderId: "assistant",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: "" }],
+                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+              });
+              const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
+              const out =
+                typeof resp.output === "string" ? resp.output : JSON.stringify(resp.output);
+              msgs.push({
+                senderId: "tool",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: out }],
+                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+              });
+            }
+            turn++;
+          }
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "max_turns" as const,
+              metrics: {
+                totalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                turns: 0,
+                durationMs: 0,
+              },
+            },
+          };
+        })();
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "memory-store",
+          toolName: "memory_store",
+          createTool: () => memStoreTool,
+        }),
+        createSingleToolProvider({
+          name: "memory-list",
+          toolName: "memory_list",
+          createTool: () => memListTool,
+        }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: 'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.". Then use the memory_list tool to show all stored memories.',
+    })) {
+      /* drain */
+    }
+
+    unsubMcp();
+    mcpSm.transition({ kind: "closed" });
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate live ATIF from cassette replay
+    const steps = await store.getDocument(docId);
+
+    // MCP lifecycle
+    const mcpSteps = steps.filter((s) => s.metadata?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(2);
+
+    // Tool call steps — memory_store executed with correct output
+    const memoryStoreSteps = steps.filter(
+      (s) => s.kind === "tool_call" && s.identifier === "memory_store",
+    );
+    expect(memoryStoreSteps.length).toBeGreaterThan(0);
+    expect(memoryStoreSteps[0]?.outcome).toBe("success");
+    const storeOutput = memoryStoreSteps[0]?.response?.text ?? "";
+    expect(storeOutput).toContain("testing_approach.md");
+    expect(storeOutput).toContain('"ok":true');
+    // Validate frontmatter fields in serialized output
+    expect(storeOutput).toContain("name: testing approach");
+    expect(storeOutput).toContain("description: always write failing tests first");
+    expect(storeOutput).toContain("type: feedback");
+
+    // memory_list executed
+    const memoryListSteps = steps.filter(
+      (s) => s.kind === "tool_call" && s.identifier === "memory_list",
+    );
+    expect(memoryListSteps.length).toBeGreaterThan(0);
+    expect(memoryListSteps[0]?.outcome).toBe("success");
+    const listOutput = memoryListSteps[0]?.response?.text ?? "";
+    expect(listOutput).toContain("testing_approach.md");
+    expect(listOutput).toContain("feedback");
+
+    // In-memory store correctly populated
+    expect(replayMemoryStore.has("testing_approach.md")).toBe(true);
+    const storedContent = replayMemoryStore.get("testing_approach.md") ?? "";
+    expect(storedContent).toContain("name: testing approach");
+    expect(storedContent).toContain("type: feedback");
+
+    // Hook + MW spans present
+    const hookSteps = steps.filter((s) => s.metadata?.type === "hook_execution");
+    expect(hookSteps.length).toBeGreaterThan(0);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("permissions")).toBe(true);
+    expect(mwNames.has("hook-dispatch")).toBe(true);
+  }, 15000);
 });

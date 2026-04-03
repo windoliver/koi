@@ -84,6 +84,13 @@ const modelAdapter = createOpenAICompatAdapter({
 });
 
 // ---------------------------------------------------------------------------
+// Shared prompts (reused for both cassette + trajectory recording)
+// ---------------------------------------------------------------------------
+
+const MEMORY_STORE_PROMPT =
+  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.';
+
+// ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
 // ---------------------------------------------------------------------------
 
@@ -927,8 +934,7 @@ const queries: readonly QueryConfig[] = [
   // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
   {
     name: "memory-store",
-    prompt:
-      'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.',
+    prompt: MEMORY_STORE_PROMPT,
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
@@ -1030,7 +1036,7 @@ await recordCassette("memory-store", () =>
         content: [
           {
             kind: "text",
-            text: 'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.". Then use the memory_list tool to show all stored memories.',
+            text: MEMORY_STORE_PROMPT,
           },
         ],
       },
