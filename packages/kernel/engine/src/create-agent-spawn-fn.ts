@@ -104,7 +104,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     let systemPrompt: string | undefined = request.systemPrompt;
 
     if (request.manifest !== undefined) {
-      // Inline manifest provided — skip resolution
+      // Inline manifest provided — skip resolution but still apply permission guard below
       manifest = request.manifest;
     } else {
       const resolveResult = await resolver.resolve(request.agentName);
@@ -122,27 +122,22 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         ...definition.manifest,
       };
 
-      // 2b. Capability attenuation guard: prevent privilege escalation via Spawn.
-      //     A parent cannot confer permissions it doesn't hold. If the resolved child
-      //     manifest declares permissions and the parent manifest does not, fail fast
-      //     rather than silently assembling a child with broader access.
-      const parentPermissions = base.parentAgent.manifest.permissions;
-      const childPermissions = manifest.permissions;
-      if (childPermissions !== undefined && parentPermissions === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Cannot spawn "${manifest.name}": child manifest declares permissions that the parent agent does not possess. Ensure the parent manifest includes equivalent permissions or configure delegation.`,
-            retryable: false,
-          },
-        };
-      }
-
       // 3. Use definition's systemPrompt if request didn't provide one
       if (systemPrompt === undefined) {
         systemPrompt = extractSystemPrompt(definition);
       }
+    }
+
+    // 2b. Capability attenuation guard — applied to ALL paths (resolver + inline).
+    //     A parent cannot confer permissions it doesn't hold. Validate that the child
+    //     manifest's permission set is not broader than the parent's effective permissions.
+    const permissionError = checkPermissionSubset(
+      base.parentAgent.manifest.permissions,
+      manifest.permissions,
+      manifest.name,
+    );
+    if (permissionError !== undefined) {
+      return { ok: false, error: permissionError };
     }
 
     // 4. Build middleware: inherited + system prompt injection
@@ -271,7 +266,15 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
                 priority: 0,
                 createdAt: Date.now(),
               };
-              parentInbox.push(errorItem);
+              const errorAccepted = parentInbox.push(errorItem);
+              if (!errorAccepted) {
+                // The inbox is saturated — both the child output AND the error notification
+                // were lost. Log at error level so this shows up in monitoring even without
+                // an inbox observer. There is no other durable channel to write to here.
+                console.error(
+                  `[agent-spawn] UNRECOVERABLE: parent inbox full — child output AND error notification lost for agent "${manifest.name}" (child: ${spawnResult.childPid.id}). Original error: ${errorMessage}`,
+                );
+              }
             }
             // For on_demand: write a minimal error RunReport under the same session key
             // so callers querying reportStore.getBySession(sessionId("delivery-<childId>"))
@@ -349,4 +352,59 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
  */
 function extractSystemPrompt(agent: TaskableAgent): string | undefined {
   return (agent as { readonly systemPrompt?: string }).systemPrompt;
+}
+
+/**
+ * Validate that the child's permission set is not broader than the parent's.
+ * Returns a KoiError if the child would have broader permissions, undefined if safe.
+ *
+ * Rules:
+ * - Child has permissions, parent has none → reject (parent cannot confer what it lacks)
+ * - Child's allow-list contains entries not in parent's allow-list → reject
+ * - Child's deny-list is a proper subset of parent's deny-list (removing denies) → reject
+ */
+function checkPermissionSubset(
+  parentPerms: AgentManifest["permissions"],
+  childPerms: AgentManifest["permissions"],
+  childName: string,
+):
+  | { readonly code: "PERMISSION"; readonly message: string; readonly retryable: false }
+  | undefined {
+  if (childPerms === undefined) return undefined; // no restrictions, always safe
+
+  if (parentPerms === undefined) {
+    return {
+      code: "PERMISSION",
+      message: `Cannot spawn "${childName}": child declares permissions but parent has none — parent cannot confer capabilities it does not possess.`,
+      retryable: false,
+    };
+  }
+
+  // Check allow-list: child must not allow tools the parent doesn't allow
+  if (childPerms.allow !== undefined && childPerms.allow.length > 0) {
+    const parentAllowed = new Set(parentPerms.allow ?? []);
+    const extraAllowed = childPerms.allow.filter((t) => !parentAllowed.has(t));
+    if (extraAllowed.length > 0) {
+      return {
+        code: "PERMISSION",
+        message: `Cannot spawn "${childName}": child allow-list contains tools not permitted by parent: ${extraAllowed.join(", ")}`,
+        retryable: false,
+      };
+    }
+  }
+
+  // Check deny-list: child must not remove denies the parent has
+  if (parentPerms.deny !== undefined && parentPerms.deny.length > 0) {
+    const childDenied = new Set(childPerms.deny ?? []);
+    const removedDenies = parentPerms.deny.filter((t) => !childDenied.has(t));
+    if (removedDenies.length > 0) {
+      return {
+        code: "PERMISSION",
+        message: `Cannot spawn "${childName}": child removes deny-list entries that parent enforces: ${removedDenies.join(", ")}`,
+        retryable: false,
+      };
+    }
+  }
+
+  return undefined;
 }
