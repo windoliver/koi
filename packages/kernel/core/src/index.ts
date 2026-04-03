@@ -5,6 +5,12 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent definition — declarative agent template for discovery and loading
+export type {
+  AgentDefinition,
+  AgentDefinitionSource,
+} from "./agent-definition.js";
+export { AGENT_DEFINITION_PRIORITY } from "./agent-definition.js";
 // agent resolver — dynamic agent discovery for delegation tools
 export type {
   AgentResolver,
