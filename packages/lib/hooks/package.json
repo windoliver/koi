@@ -1,6 +1,6 @@
 {
   "name": "@koi/hooks",
-  "description": "Hook loader, schema validation, and session-scoped hook lifecycle management",
+  "description": "Hook loader, schema validation, session-scoped hook lifecycle management, and stop-gate coordination",
   "version": "0.0.0",
   "private": true,
   "type": "module",

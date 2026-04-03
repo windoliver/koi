@@ -941,4 +941,154 @@ describe("runTurn", () => {
       expect(done.output.metrics.totalTokens).toBe(23);
     }
   });
+
+  // -----------------------------------------------------------------------
+  // Stop gate (turn.stop)
+  // -----------------------------------------------------------------------
+
+  describe("stop gate", () => {
+    test("blocks completion and re-prompts when stopGate returns block", async () => {
+      // let justified: mutable gate call counter
+      let gateCallCount = 0;
+      const handlers = createMockHandlers({
+        // First call: model completes (blocked by gate)
+        // Second call: model completes (gate allows)
+        modelStreams: [createTextStream("first attempt"), createTextStream("second attempt")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          stopGate: async (_turnIndex: number) => {
+            gateCallCount++;
+            if (gateCallCount === 1) {
+              return { kind: "block", reason: "tests not passing" };
+            }
+            return { kind: "continue" };
+          },
+        }),
+      );
+
+      // Gate was called twice (once blocked, once allowed)
+      expect(gateCallCount).toBe(2);
+
+      // Should have two turn cycles + final done
+      const kinds = events.map((e) => e.kind);
+      expect(kinds).toContain("turn_start");
+      expect(kinds).toContain("turn_end");
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+        expect(done.output.metadata?.stopRetryCount).toBe(1);
+      }
+    });
+
+    test("respects maxStopRetries limit", async () => {
+      // let justified: mutable gate call counter
+      let gateCallCount = 0;
+      const handlers = createMockHandlers({
+        // 3 model calls: initial + 2 retries, then forced completion
+        modelStreams: [
+          createTextStream("attempt 1"),
+          createTextStream("attempt 2"),
+          createTextStream("attempt 3"),
+        ],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          maxStopRetries: 2,
+          stopGate: async (_turnIndex: number) => {
+            gateCallCount++;
+            return { kind: "block", reason: "always block" };
+          },
+        }),
+      );
+
+      // Gate called exactly maxStopRetries times (2), then completion forced
+      expect(gateCallCount).toBe(2);
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+        expect(done.output.metadata?.stopRetryCount).toBe(2);
+      }
+    });
+
+    test("does not call stopGate when no gate is provided", async () => {
+      const handlers = createMockHandlers({
+        modelStreams: [createTextStream("hello")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+        expect(done.output.metadata).toBeUndefined();
+      }
+    });
+
+    test("does not call stopGate on error completion", async () => {
+      // let justified: mutable flag to track gate calls
+      let gateCalled = false;
+
+      // Stream that ends without a terminal done/error chunk (truncated)
+      async function* truncatedStream(): AsyncIterable<ModelChunk> {
+        yield { kind: "text_delta", delta: "partial" };
+        // No done event — simulates truncated stream
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => truncatedStream()],
+      });
+
+      await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          stopGate: async (_turnIndex: number) => {
+            gateCalled = true;
+            return { kind: "block", reason: "should not be called" };
+          },
+        }),
+      );
+
+      expect(gateCalled).toBe(false);
+    });
+
+    test("stopGate continue allows normal completion", async () => {
+      // let justified: mutable gate call counter
+      let gateCallCount = 0;
+      const handlers = createMockHandlers({
+        modelStreams: [createTextStream("done")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          stopGate: async (_turnIndex: number) => {
+            gateCallCount++;
+            return { kind: "continue" };
+          },
+        }),
+      );
+
+      expect(gateCallCount).toBe(1);
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+  });
 });

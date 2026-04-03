@@ -12,7 +12,9 @@ import type {
   InboundMessage,
   JsonObject,
   ModelRequest,
+  StopGateResult,
 } from "@koi/core";
+import { DEFAULT_MAX_STOP_RETRIES } from "@koi/core";
 import { consumeModelStream } from "./consume-stream.js";
 import type { TurnState } from "./turn-machine.js";
 import { createTurnState, transitionTurn } from "./turn-machine.js";
@@ -28,6 +30,14 @@ export interface TurnRunnerConfig {
   readonly messages: readonly InboundMessage[];
   readonly signal?: AbortSignal | undefined;
   readonly maxTurns?: number | undefined;
+  /**
+   * Optional stop gate callback. Called when the model completes without tool calls.
+   * If it returns `{ kind: "block", reason }`, the reason is injected into the
+   * transcript and the model is re-prompted instead of completing.
+   */
+  readonly stopGate?: (turnIndex: number) => Promise<StopGateResult>;
+  /** Maximum stop-gate re-prompts per session. Default: DEFAULT_MAX_STOP_RETRIES (3). */
+  readonly maxStopRetries?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,7 +45,14 @@ export interface TurnRunnerConfig {
 // ---------------------------------------------------------------------------
 
 export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineEvent> {
-  const { callHandlers, messages, signal, maxTurns } = config;
+  const {
+    callHandlers,
+    messages,
+    signal,
+    maxTurns,
+    stopGate,
+    maxStopRetries = DEFAULT_MAX_STOP_RETRIES,
+  } = config;
 
   // let justified: mutable state driven by pure transition function
   let state: TurnState = createTurnState(0);
@@ -48,6 +65,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let lastTurnText: readonly string[] = [];
   // let justified: mutable error metadata for structured error reporting in done event
   let errorMetadata: JsonObject | undefined;
+  // let justified: mutable counter for stop-gate re-prompts
+  let stopRetryCount = 0;
   const startTime = performance.now();
 
   // Pre-flight: handle already-aborted signal before entering the state machine.
@@ -276,6 +295,39 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       hasToolCalls: validToolCalls.length > 0,
     });
 
+    // Stop gate: when model completes (no tool calls), check if any hook
+    // blocks completion. If blocked, inject reason and re-prompt the model.
+    if (
+      state.phase === "complete" &&
+      state.stopReason === "completed" &&
+      stopGate !== undefined &&
+      stopRetryCount < maxStopRetries
+    ) {
+      const gateResult = await stopGate(state.turnIndex);
+      if (gateResult.kind === "block") {
+        // Append the assistant's text so it's visible in context
+        if (turnText.length > 0) {
+          appendAssistantTurn(transcript, turnText, []);
+        }
+        // Inject block reason as a system message for the next model call
+        transcript.push({
+          senderId: "system",
+          content: [
+            {
+              kind: "text",
+              text: `[Completion blocked]: ${gateResult.reason}. Address this before completing.`,
+            },
+          ],
+          timestamp: Date.now(),
+        });
+        stopRetryCount++;
+        // Transition back to continue phase for re-prompting
+        state = transitionTurn(state, { kind: "stop_blocked" });
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        continue;
+      }
+    }
+
     if (state.phase === "tool_execution") {
       // Append assistant message (text + tool call intents) to transcript
       appendAssistantTurn(transcript, turnText, validToolCalls);
@@ -348,7 +400,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         turns: state.modelCalls,
         durationMs,
       },
-      ...(errorMetadata !== undefined ? { metadata: errorMetadata } : {}),
+      ...(errorMetadata !== undefined || stopRetryCount > 0
+        ? {
+            metadata: {
+              ...(errorMetadata ?? {}),
+              ...(stopRetryCount > 0 ? { stopRetryCount } : {}),
+            },
+          }
+        : {}),
     },
   };
 }

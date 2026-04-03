@@ -802,7 +802,26 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
-  // 7. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
+  // 10. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
+  {
+    name: "turn-stop",
+    prompt: "What is the capital of France? Answer concisely.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "completion-gate",
+        cmd: ["sh", "-c", 'echo \'{"decision":"block","reason":"verification failed"}\''],
+        filter: { events: ["turn.stop"] },
+      },
+    ],
+    providers: [],
+    maxTurns: 0,
+  },
+
+  // 11. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
   ...(nexusFsProvider !== undefined
     ? [
         {

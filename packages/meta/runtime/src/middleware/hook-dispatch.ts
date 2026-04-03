@@ -172,6 +172,9 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     // wrapModelStream fire per model invocation, but turn.ended should fire
     // exactly once per user turn.
     async onAfterTurn(ctx: TurnContext): Promise<void> {
+      // Skip turn.ended dispatch for stop-gate vetoes — the turn was blocked,
+      // not completed. Avoids duplicate external side effects on retry.
+      if (ctx.stopBlocked === true) return;
       try {
         const event: HookEvent = {
           event: "turn.ended",

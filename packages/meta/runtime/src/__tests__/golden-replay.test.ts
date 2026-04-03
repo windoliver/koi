@@ -796,6 +796,73 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// turn-stop trajectory: stop-gate hook blocks completion, engine re-prompts
+// ---------------------------------------------------------------------------
+
+describe("turn-stop ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with session_id=turn-stop", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("turn-stop");
+  });
+
+  test("multiple model_call steps from stop-gate retries", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // At least 2 model calls: initial + retries from stop-gate blocking
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("NO tool_call steps (text-only query)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
+  });
+
+  test("MW:hooks span present on each model call (stop-gate fires through hooks MW)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const hooksMwSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
+    );
+    // One hooks MW span per model call
+    expect(hooksMwSpans.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("MW:permissions span present", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const permSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
+    );
+    expect(permSpans.length).toBeGreaterThan(0);
+  });
+
+  test("step count >= 10 (MCP + multiple MODEL + MW spans per model call)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    // 2 MCP + 4 model calls + 8 MW spans = 14 minimum
+    expect(doc.steps.length).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // web-fetch trajectory: @koi/tools-web exercised with real HTTP
 // ---------------------------------------------------------------------------
 
