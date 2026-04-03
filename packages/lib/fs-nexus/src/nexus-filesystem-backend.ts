@@ -38,6 +38,8 @@ import { validateNexusFileSystemConfig } from "./validate-config.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MOUNT_POINT = "fs";
+/** Explicit search cap — sent to transport so we can detect truncation. */
+const SEARCH_DEFAULT_MAX_RESULTS = 1000;
 
 // ---------------------------------------------------------------------------
 // Nexus response types (match JSON-RPC shapes from Nexus server)
@@ -256,9 +258,27 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
   async function write(
     path: string,
     content: string,
-    _options?: FileWriteOptions,
+    options?: FileWriteOptions,
   ): Promise<Result<FileWriteResult, KoiError>> {
     return withSafePath(basePath, path, async (fullPath) => {
+      // Honor overwrite: false — check if file exists first, fail if it does
+      if (options?.overwrite === false) {
+        const statResult = await transport.call<{ readonly metadata: unknown } | null>("stat", {
+          path: fullPath,
+        });
+        if (statResult.ok && statResult.value !== null) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `File already exists and overwrite is false: ${path}`,
+              retryable: false,
+              context: { path },
+            },
+          };
+        }
+      }
+
       const result = await transport.call<NexusWriteResponse>("write", {
         path: fullPath,
         content,
@@ -355,12 +375,16 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
       filePattern = `${searchBase}${userGlob}`;
     }
 
+    // Always send explicit max_results so we know the cap for truncation detection.
+    // Bridge/Nexus defaults to 100 if omitted — we'd report truncated:false incorrectly.
+    const effectiveMaxResults = options?.maxResults ?? SEARCH_DEFAULT_MAX_RESULTS;
+
     const result = await transport.call<NexusGrepResponse>("grep", {
       pattern,
       path: searchBase,
       ...(filePattern !== undefined ? { file_pattern: filePattern } : {}),
       ...(options?.caseSensitive === false ? { ignore_case: true } : {}),
-      ...(options?.maxResults !== undefined ? { max_results: options.maxResults } : {}),
+      max_results: effectiveMaxResults,
     });
 
     if (!result.ok) {
@@ -386,7 +410,7 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
       ok: true,
       value: {
         matches,
-        truncated: options?.maxResults !== undefined && matches.length >= options.maxResults,
+        truncated: matches.length >= effectiveMaxResults,
       },
     };
   }
