@@ -3,10 +3,11 @@
  */
 
 export type {
+  PromptHookExecutor,
   PromptModelCaller,
   PromptModelRequest,
   PromptModelResponse,
 } from "./prompt-executor.js";
 export { createPromptExecutor } from "./prompt-executor.js";
 export type { ParsedVerdict } from "./verdict.js";
-export { mapVerdictToDecision, parseVerdictOutput } from "./verdict.js";
+export { VerdictParseError, mapVerdictToDecision, parseVerdictOutput } from "./verdict.js";

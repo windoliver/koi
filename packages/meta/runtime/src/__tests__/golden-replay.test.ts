@@ -1538,3 +1538,47 @@ describe("Golden: @koi/fs-nexus", () => {
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/hook-prompt
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hook-prompt", () => {
+  test("createPromptExecutor produces valid executor and handles structured JSON verdict", async () => {
+    const { createPromptExecutor } = await import("@koi/hook-prompt");
+
+    const mockCaller = {
+      complete: async () => ({ text: '{ "ok": true, "reason": "safe action" }' }),
+    };
+
+    const executor = createPromptExecutor(mockCaller);
+    expect(executor.kind).toBe("prompt");
+
+    const decision = await executor.execute(
+      { kind: "prompt", name: "test-hook", prompt: "Is this safe?" },
+      { event: "tool.before", agentId: "test-agent", sessionId: "test-session" },
+    );
+
+    expect(decision.kind).toBe("continue");
+  });
+
+  test("parseVerdictOutput handles JSON, denial language, and ambiguous text", async () => {
+    const { parseVerdictOutput, VerdictParseError } = await import("@koi/hook-prompt");
+
+    // Structured JSON → parsed verdict
+    const jsonResult = parseVerdictOutput('{ "ok": false, "reason": "dangerous" }');
+    expect(jsonResult.ok).toBe(false);
+    expect(jsonResult.reason).toBe("dangerous");
+
+    // String boolean coercion → preserves model intent
+    const coerced = parseVerdictOutput('{ "ok": "true" }');
+    expect(coerced.ok).toBe(true);
+
+    // Plain-text denial → blocks (fail-safe)
+    const denial = parseVerdictOutput("This operation is unsafe and should be blocked");
+    expect(denial.ok).toBe(false);
+
+    // Ambiguous text → throws VerdictParseError (routed through failClosed)
+    expect(() => parseVerdictOutput("I think this is fine")).toThrow(VerdictParseError);
+  });
+});

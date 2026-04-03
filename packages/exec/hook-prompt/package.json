@@ -13,9 +13,6 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "koi": {
-    "optional": true
-  },
   "devDependencies": {},
   "scripts": {
     "build": "tsup",
