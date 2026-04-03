@@ -12,6 +12,18 @@
     "./state": {
       "types": "./dist/state/index.d.ts",
       "import": "./dist/state/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge/permission-bridge.d.ts",
+      "import": "./dist/bridge/permission-bridge.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/slash-detection.d.ts",
+      "import": "./dist/commands/slash-detection.js"
+    },
+    "./components": {
+      "types": "./dist/components/index.d.ts",
+      "import": "./dist/components/index.js"
     }
   },
   "dependencies": {
