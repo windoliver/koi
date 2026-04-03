@@ -16,6 +16,7 @@
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",
+    "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
@@ -27,7 +28,8 @@
     "@koi/query-engine": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tools-core": "workspace:*",
-    "@koi/tools-web": "workspace:*"
+    "@koi/tools-web": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.12.1"

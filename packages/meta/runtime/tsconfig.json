@@ -10,6 +10,8 @@
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
     { "path": "../../lib/channel-cli" },
+    { "path": "../../lib/fs-local" },
+    { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/query-engine" },
