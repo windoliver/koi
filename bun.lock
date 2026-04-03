@@ -207,6 +207,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/tasks": {
+      "name": "@koi/tasks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/lib/tools-builtin": {
       "name": "@koi/tools-builtin",
       "version": "0.0.0",
@@ -609,6 +617,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
+
+    "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 
