@@ -4,8 +4,14 @@
 export { loadCassette } from "./cassette/load-cassette.js";
 export { createReplayAdapter } from "./cassette/replay-adapter.js";
 export type { Cassette } from "./cassette/types.js";
+export type { FileSystemTools } from "./create-filesystem-provider.js";
+// Filesystem dispatch + provider
+export {
+  createFileSystemProvider,
+  createFileSystemTools,
+  createToolDispatcher,
+} from "./create-filesystem-provider.js";
 export { createRuntime } from "./create-runtime.js";
-
 // Debug
 export { collectDebugInfo, formatDebugInfo } from "./debug/collect-debug-info.js";
 export type { HookDispatchConfig } from "./middleware/hook-dispatch.js";
@@ -15,6 +21,7 @@ export type { McpLifecycleConfig } from "./middleware/mcp-lifecycle.js";
 export { recordMcpLifecycle } from "./middleware/mcp-lifecycle.js";
 export type { TraceWrapperConfig } from "./middleware/trace-wrapper.js";
 export { wrapMiddlewareWithTrace } from "./middleware/trace-wrapper.js";
+export { resolveFileSystem, validateFileSystemConfig } from "./resolve-filesystem.js";
 
 // Stubs (for direct use in tests)
 export { createStubAdapter } from "./stubs/stub-adapter.js";
