@@ -239,11 +239,19 @@ describe("hookConfigSchema (discriminated union)", () => {
     }
   });
 
-  it("rejects unsupported hook kind", () => {
+  it("accepts prompt hook kind", () => {
     const result = hookConfigSchema.safeParse({
       kind: "prompt",
       name: "test",
       prompt: "hello",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects prompt hook without prompt field", () => {
+    const result = hookConfigSchema.safeParse({
+      kind: "prompt",
+      name: "test",
     });
     expect(result.success).toBe(false);
   });
