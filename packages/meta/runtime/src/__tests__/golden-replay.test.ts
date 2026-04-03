@@ -1649,3 +1649,111 @@ describe("Golden: @koi/hook-prompt", () => {
     expect(() => parseVerdictOutput("I think this is fine")).toThrow(VerdictParseError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ATIF trajectory: hook-redaction (agent hook on tool.succeeded)
+// ---------------------------------------------------------------------------
+
+describe("Golden: hook-redaction trajectory", () => {
+  test("ATIF trajectory: get_credentials tool call + hook execution captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/hook-redaction.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "hook-redaction.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with get_credentials
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const hasCredentialsTool = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "get_credentials"),
+    );
+    expect(hasCredentialsTool).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+
+    // Should have a hook execution step for the secret-scanner agent hook
+    const hookSteps = steps.filter((s) => s.extra?.type === "hook_execution");
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // CRITICAL: verify secrets are NOT present anywhere in the trajectory.
+    // The whole point of redaction is that raw credentials never appear in
+    // observable output. If these substrings appear, redaction failed.
+    // CRITICAL: raw secrets must never appear anywhere in the recorded trajectory.
+    // If redaction works, the API key prefix and password are stripped before
+    // any data reaches observable output (hook agent prompts, ATIF steps).
+    const fullJson = readFileSync(trajectoryPath, "utf-8");
+    expect(fullJson).not.toContain("sk-ant-api03-");
+    expect(fullJson).not.toContain("super-secret-pw-123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/hooks payload redaction
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hooks payload redaction", () => {
+  test("redactEventData masks API keys and passwords", async () => {
+    const { redactEventData } = await import("@koi/hooks");
+    const result = redactEventData(
+      { apiKey: "sk-ant-api03-" + "A".repeat(85), password: "hunter2", safe: "hello" },
+      undefined, // default config = redaction enabled
+    );
+    expect(result.status).toBe("redacted");
+    expect(JSON.stringify(result.data)).not.toContain("sk-ant-api03");
+    expect(JSON.stringify(result.data)).not.toContain("hunter2");
+    expect(JSON.stringify(result.data)).toContain("hello");
+  });
+
+  test("redactEventData with mask strategy produces partial mask", async () => {
+    const { redactEventData } = await import("@koi/hooks");
+    // Use a non-sensitive field name so the secret is detected by pattern scanning
+    // (not field-name matching which always uses "redact" → [REDACTED])
+    const result = redactEventData(
+      { output: "token is sk-ant-api03-" + "A".repeat(85) },
+      { enabled: true, censor: "mask" },
+    );
+    expect(result.status).toBe("redacted");
+    const json = JSON.stringify(result.data);
+    // Mask strategy preserves first 4 chars + *** for pattern-detected secrets
+    expect(json).toContain("***");
+    expect(json).not.toContain("A".repeat(85));
+  });
+
+  test("extractStructure produces type placeholders without values", async () => {
+    const { extractStructure } = await import("@koi/hooks");
+    const structure = extractStructure({ name: "secret-agent", count: 42, active: true });
+    expect(structure).toBeDefined();
+    const json = JSON.stringify(structure);
+    expect(json).not.toContain("secret-agent");
+    expect(json).not.toContain("42");
+  });
+
+  test("redactEventData with custom sensitiveFields", async () => {
+    const { redactEventData } = await import("@koi/hooks");
+    const result = redactEventData(
+      { myCustomSecret: "very-sensitive-data", normal: "visible" },
+      { enabled: true, sensitiveFields: ["myCustomSecret"] },
+    );
+    expect(result.status).toBe("redacted");
+    expect(JSON.stringify(result.data)).not.toContain("very-sensitive-data");
+    expect(JSON.stringify(result.data)).toContain("visible");
+  });
+});

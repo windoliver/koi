@@ -10,6 +10,7 @@
  *   glob-use         — Glob builtin tool call, permissions bypass
  *   permission-deny  — permissions default mode denies add_numbers
  *   hook-blocked     — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
+ *   hook-redaction   — agent hook on tool.succeeded, forwardRawPayload + default redaction
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -30,6 +31,7 @@ import type {
   EngineInput,
   JsonObject,
   ModelChunk,
+  SpawnFn,
 } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
@@ -101,6 +103,27 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// ---------------------------------------------------------------------------
+// Credentials tool (for hook-redaction golden query)
+// ---------------------------------------------------------------------------
+
+const credentialsToolResult = buildTool({
+  name: "get_credentials",
+  description: "Retrieve database credentials for the current environment",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => ({
+    apiKey: "sk-ant-api03-" + "A".repeat(85),
+    dbPassword: "super-secret-pw-123",
+    host: "db.example.com",
+  }),
+});
+if (!credentialsToolResult.ok) {
+  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
+  process.exit(1);
+}
+const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -190,13 +213,29 @@ interface QueryConfig {
   readonly permissionMode: "bypass" | "default";
   readonly permissionRules: readonly SourcedRule[];
   readonly permissionDescription: string;
-  readonly hooks: readonly {
-    readonly kind: "command";
-    readonly name: string;
-    readonly cmd: readonly string[];
-    readonly filter: { readonly events: readonly string[] };
-    readonly once?: boolean;
-  }[];
+  readonly hooks: readonly (
+    | {
+        readonly kind: "command";
+        readonly name: string;
+        readonly cmd: readonly string[];
+        readonly filter: { readonly events: readonly string[] };
+        readonly once?: boolean;
+      }
+    | {
+        readonly kind: "agent";
+        readonly name: string;
+        readonly prompt: string;
+        readonly model?: string;
+        readonly filter: { readonly events: readonly string[] };
+        readonly forwardRawPayload?: boolean;
+        readonly redaction?: {
+          readonly enabled?: boolean;
+          readonly censor?: string;
+          readonly sensitiveFields?: readonly string[];
+        };
+        readonly once?: boolean;
+      }
+  )[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
@@ -229,7 +268,50 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
-  const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
+
+  // Provide a spawnFn for agent hooks — uses the same OpenRouter model adapter
+  const hasAgentHooks = config.hooks.some((h) => h.kind === "agent");
+  const spawnFn: SpawnFn | undefined = hasAgentHooks
+    ? async (request) => {
+        try {
+          const response = await modelAdapter.complete({
+            messages: [
+              {
+                senderId: "system",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: request.systemPrompt ?? "" }],
+              },
+              {
+                senderId: "user",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: request.description }],
+              },
+            ],
+            model: MODEL,
+          });
+          const textContent = response.content
+            .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
+            .map((c) => c.text)
+            .join("");
+          return { ok: true, output: textContent };
+        } catch (err: unknown) {
+          return {
+            ok: false,
+            error: {
+              code: "SPAWN_FAILED" as const,
+              message: err instanceof Error ? err.message : String(err),
+              retryable: false,
+              context: {},
+            },
+          };
+        }
+      }
+    : undefined;
+
+  const coreHookMw = createHookMiddleware({
+    hooks: loadedHooks,
+    ...(spawnFn !== undefined ? { spawnFn } : {}),
+  });
 
   // Optional registry for once-hook lifecycle tracking
   // let justified: mutable — created conditionally
@@ -843,6 +925,34 @@ const queries: readonly QueryConfig[] = [
         },
       ]
     : []),
+
+  // 12. hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction
+  {
+    name: "hook-redaction",
+    prompt:
+      "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "agent" as const,
+        name: "secret-scanner",
+        prompt:
+          "Verify the tool output does not contain any exposed secrets or credentials. If secrets are properly redacted, continue. If you see raw secrets, block.",
+        filter: { events: ["tool.succeeded"] },
+        forwardRawPayload: true,
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "credentials",
+        toolName: "get_credentials",
+        createTool: () => credentialsTool,
+      }),
+    ],
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================
@@ -910,6 +1020,24 @@ await recordCassette("hook-once", () =>
   }),
 );
 
+await recordCassette("hook-redaction", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+          },
+        ],
+      },
+    ],
+    tools: [credentialsTool.descriptor],
+  }),
+);
+
 // Inject MCP provider for the mcp-tool-use query (needs async setup)
 const mcpSetup = await createMcpProvider();
 const mcpQuery = queries.find((q) => q.name === "mcp-tool-use");
@@ -972,10 +1100,11 @@ for (const q of queries) {
 await mcpSetup.cleanup();
 nexusTransport?.close();
 
-console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
+console.log("  fixtures/hook-redaction.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }
