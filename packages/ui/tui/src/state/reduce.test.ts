@@ -600,7 +600,13 @@ describe("reduce — set_modal", () => {
       kind: "set_modal",
       modal: {
         kind: "permission-prompt",
-        prompt: { toolName: "bash", args: {}, message: "Allow?" },
+        prompt: {
+          requestId: "req-1",
+          toolId: "bash",
+          input: {},
+          reason: "Tool requires approval",
+          riskLevel: "medium",
+        },
       },
     });
     expect(next.modal?.kind).toBe("permission-prompt");
@@ -631,11 +637,129 @@ describe("reduce — set_modal", () => {
       kind: "set_modal",
       modal: {
         kind: "permission-prompt",
-        prompt: { toolName: "bash", args: {}, message: "Allow?" },
+        prompt: {
+          requestId: "req-1",
+          toolId: "bash",
+          input: {},
+          reason: "Tool requires approval",
+          riskLevel: "medium",
+        },
       },
     });
     expect(next.messages).toHaveLength(1);
     expect(next.modal?.kind).toBe("permission-prompt");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// permission_response
+// ---------------------------------------------------------------------------
+
+const TEST_PROMPT = {
+  requestId: "req-1",
+  toolId: "bash",
+  input: { cmd: "rm -rf" },
+  reason: "Tool requires approval",
+  riskLevel: "high" as const,
+};
+
+describe("reduce — permission_response", () => {
+  test("dismisses modal when requestId matches active prompt", () => {
+    const state = stateWith({
+      modal: { kind: "permission-prompt", prompt: TEST_PROMPT },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "allow" },
+    });
+    expect(next.modal).toBeNull();
+  });
+
+  test("dismiss preserves all other state fields", () => {
+    const state = stateWith({
+      messages: [userMsg("hello")],
+      activeView: "sessions",
+      connectionStatus: "connected",
+      layoutTier: "wide",
+      zoomLevel: 2,
+      modal: { kind: "permission-prompt", prompt: TEST_PROMPT },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "deny", reason: "not allowed" },
+    });
+    expect(next.modal).toBeNull();
+    expect(next.messages).toHaveLength(1);
+    expect(next.activeView).toBe("sessions");
+    expect(next.connectionStatus).toBe("connected");
+    expect(next.layoutTier).toBe("wide");
+    expect(next.zoomLevel).toBe(2);
+  });
+
+  test("always-allow decision dismisses modal", () => {
+    const state = stateWith({
+      modal: { kind: "permission-prompt", prompt: TEST_PROMPT },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "always-allow", scope: "session" },
+    });
+    expect(next.modal).toBeNull();
+  });
+
+  test("stale requestId is a no-op (returns same reference)", () => {
+    const state = stateWith({
+      modal: { kind: "permission-prompt", prompt: TEST_PROMPT },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-STALE",
+      decision: { kind: "allow" },
+    });
+    expect(next).toBe(state);
+  });
+
+  test("response without active permission modal is a no-op", () => {
+    const state = createInitialState();
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "allow" },
+    });
+    expect(next).toBe(state);
+  });
+
+  test("response when command-palette is active is a no-op", () => {
+    const state = stateWith({
+      modal: { kind: "command-palette", query: "test" },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "allow" },
+    });
+    expect(next).toBe(state);
+  });
+
+  test("response preserves streaming messages during permission flow", () => {
+    const state = stateWith({
+      messages: [assistantMsg("streaming...", { streaming: true })],
+      modal: { kind: "permission-prompt", prompt: TEST_PROMPT },
+    });
+    const next = reduce(state, {
+      kind: "permission_response",
+      requestId: "req-1",
+      decision: { kind: "allow" },
+    });
+    expect(next.modal).toBeNull();
+    expect(next.messages).toHaveLength(1);
+    const msg = messageAt(next, 0);
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(true);
+    }
   });
 });
 

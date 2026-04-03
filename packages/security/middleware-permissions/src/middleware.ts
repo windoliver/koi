@@ -231,7 +231,8 @@ function validateDecision(raw: unknown): PermissionDecision {
   return raw as PermissionDecision;
 }
 
-const VALID_APPROVAL_KINDS = new Set(["allow", "deny", "modify"]);
+const VALID_APPROVAL_KINDS = new Set(["allow", "always-allow", "deny", "modify"]);
+const VALID_ALWAYS_ALLOW_SCOPES = new Set(["session"]);
 
 /**
  * Validate an approval handler response at the trust boundary.
@@ -242,6 +243,7 @@ function validateApprovalDecision(
   raw: unknown,
 ):
   | { readonly kind: "allow" }
+  | { readonly kind: "always-allow"; readonly scope: "session" }
   | { readonly kind: "deny"; readonly reason: string }
   | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> }
   | undefined {
@@ -262,6 +264,11 @@ function validateApprovalDecision(
       return undefined;
     }
     return { kind: "modify", updatedInput: obj.updatedInput as Record<string, unknown> };
+  }
+  if (obj.kind === "always-allow") {
+    const scope = obj.scope as string;
+    if (!VALID_ALWAYS_ALLOW_SCOPES.has(scope)) return undefined;
+    return { kind: "always-allow", scope: scope as "session" };
   }
   return { kind: "allow" };
 }
@@ -390,6 +397,22 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         : { ttlMs: DEFAULT_APPROVAL_CACHE_TTL_MS, maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES }
       : undefined;
   const approvalCachesBySession = new Map<string, ReturnType<typeof createApprovalCache>>();
+
+  // Per-session always-allowed tool IDs (from "always-allow" approval decisions).
+  // When a tool is in this set, future calls skip the approval handler entirely.
+  //
+  // SECURITY NOTE: This is a per-tool bypass — approving "bash" once approves ALL
+  // future bash calls in the session regardless of arguments. This is intentional and
+  // matches Claude Code's "a" key behavior: the user explicitly opts into blanket
+  // tool approval. The tradeoff (convenience vs re-prompting on risky args) is
+  // accepted because:
+  //   1. The user made an explicit "always" decision (not a default)
+  //   2. Every bypass is audit-logged via the denial tracker
+  //   3. Session scope limits blast radius (cleared on session end)
+  //
+  // Future mitigation: a riskReclassifier callback that re-evaluates always-allowed
+  // calls and revokes the bypass when input risk exceeds a threshold.
+  const alwaysAllowedBySession = new Map<string, Set<string>>();
 
   function getApprovalCache(sessionId: string): ReturnType<typeof createApprovalCache> | undefined {
     if (approvalCacheConfig === undefined) return undefined;
@@ -791,6 +814,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       decisionCachesBySession.delete(sid);
       approvalCachesBySession.get(sid)?.clear();
       approvalCachesBySession.delete(sid);
+      alwaysAllowedBySession.delete(sid);
     },
 
     async wrapModelCall(
@@ -870,6 +894,25 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         message: `Tool "${request.toolId}" requires approval but no approval handler is configured`,
         retryable: false,
       });
+    }
+
+    // Check always-allowed set (from prior "always-allow" decisions).
+    // This is a per-tool session bypass — intentionally matches Claude Code's "a" key
+    // behavior where pressing "a" approves ALL future calls to that tool in the session.
+    // The user explicitly opted in by choosing "always-allow" over single "allow".
+    // Keyed by agentId+toolId so child/sub-agents cannot inherit a parent's approval.
+    const alwaysAllowKey = `${ctx.session.agentId}\0${request.toolId}`;
+    const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
+    if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
+      getTracker(ctx.session.sessionId as string).record({
+        toolId: request.toolId,
+        reason: `auto-approved (always-allow session rule, agent: ${ctx.session.agentId})`,
+        timestamp: clock(),
+        principal: ctx.session.agentId,
+        turnIndex: ctx.turnIndex,
+        source: "approval",
+      });
+      return next(request);
     }
 
     // Check approval cache (per-session)
@@ -990,6 +1033,33 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           message: `Tool "${request.toolId}" denied by approval handler: ${approvalResult.reason}`,
           retryable: false,
         });
+      }
+
+      // Handle "always-allow" — add tool to session's always-allowed set.
+      // Only scope: "session" is supported. Cross-session persistence ("tool" scope)
+      // was removed from the public API to avoid contract skew — it will be added
+      // when durable storage is implemented.
+      // Keyed by agentId+toolId so sub-agents cannot inherit a parent's approval.
+      if (approvalResult.kind === "always-allow") {
+        const sid = ctx.session.sessionId as string;
+        let allowed = alwaysAllowedBySession.get(sid);
+        if (allowed === undefined) {
+          allowed = new Set();
+          alwaysAllowedBySession.set(sid, allowed);
+        }
+        const grantKey = `${ctx.session.agentId}\0${request.toolId}`;
+        allowed.add(grantKey);
+
+        getTracker(sid).record({
+          toolId: request.toolId,
+          reason: `always-allow granted (scope: ${approvalResult.scope})`,
+          timestamp: clock(),
+          principal: ctx.session.agentId,
+          turnIndex: ctx.turnIndex,
+          source: "approval",
+        });
+
+        return next(request);
       }
 
       // Handle "modify" — use updated input

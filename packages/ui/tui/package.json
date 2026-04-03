@@ -1,6 +1,6 @@
 {
   "name": "@koi/tui",
-  "description": "Ink-based terminal UI for Koi agent conversations",
+  "description": "OpenTUI-based terminal UI for Koi agent conversations",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,10 +12,28 @@
     "./state": {
       "types": "./dist/state/index.d.ts",
       "import": "./dist/state/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge/permission-bridge.d.ts",
+      "import": "./dist/bridge/permission-bridge.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/slash-detection.d.ts",
+      "import": "./dist/commands/slash-detection.js"
+    },
+    "./components": {
+      "types": "./dist/components/index.d.ts",
+      "import": "./dist/components/index.js"
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@opentui/core": "0.1.87",
+    "@opentui/react": "0.1.87",
+    "react": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19"
   },
   "scripts": {
     "build": "tsup",

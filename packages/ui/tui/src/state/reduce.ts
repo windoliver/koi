@@ -286,6 +286,9 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     case "agent_spawned":
     case "agent_status_changed":
       return state;
+
+    default:
+      return state;
   }
 }
 
@@ -325,5 +328,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "clear_messages":
       return state.messages.length === 0 ? state : { ...state, messages: [] };
+
+    case "permission_response": {
+      // Dismiss the permission modal if the requestId matches the active prompt.
+      // The bridge (side-effect listener) handles resolving the Promise — the
+      // reducer only manages UI state.
+      if (
+        state.modal?.kind !== "permission-prompt" ||
+        state.modal.prompt.requestId !== action.requestId
+      ) {
+        return state;
+      }
+      return { ...state, modal: null };
+    }
   }
 }
