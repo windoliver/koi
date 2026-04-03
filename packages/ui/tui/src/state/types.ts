@@ -1,6 +1,6 @@
 /**
  * TUI state types — all type definitions, discriminated unions, and constants
- * for the Ink-based terminal UI.
+ * for the OpenTUI-based terminal UI.
  *
  * This is a rendering concern only — not a data store or persistence layer.
  */

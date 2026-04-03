@@ -29,8 +29,10 @@ describe("processPermissionKey", () => {
     expect(processPermissionKey("space")).toBeNull();
   });
 
-  test("'Y' (uppercase) is not recognized (case-sensitive)", () => {
-    expect(processPermissionKey("Y")).toBeNull();
+  test("uppercase Y/N/A are accepted (case-insensitive)", () => {
+    expect(processPermissionKey("Y")).toEqual({ kind: "allow" });
+    expect(processPermissionKey("N")).toEqual({ kind: "deny", reason: "User denied" });
+    expect(processPermissionKey("A")).toEqual({ kind: "always-allow", scope: "session" });
   });
 });
 
