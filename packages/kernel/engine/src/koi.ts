@@ -15,6 +15,7 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
+  InboundMessage,
   InboxComponent,
   InboxItem,
   KoiMiddleware,
@@ -31,7 +32,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { INBOX, runId, sessionId, toolToken } from "@koi/core";
+import { DEFAULT_MAX_STOP_RETRIES, INBOX, runId, sessionId, toolToken } from "@koi/core";
 import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
 import {
   composeExtensions,
@@ -41,6 +42,7 @@ import {
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
+  runStopGate,
   runTurnHooks,
 } from "@koi/engine-compose";
 import { createGovernanceExtension, createGovernanceProvider } from "@koi/engine-reconcile";
@@ -364,8 +366,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Wire terminals → middleware → callHandlers if adapter is cooperating
       // let justified: effectiveInput may be replaced with callHandlers-augmented input
       let effectiveInput: EngineInput = { ...input, signal: runSignal };
+      // let justified: mutable per-turn messages — updated on stop-gate retries
+      // so cooperating-adapter middleware sees the same messages as onBeforeTurn
+      let activeTurnMessages: readonly InboundMessage[] =
+        input.kind === "messages" ? input.messages : [];
+
       if (adapter.terminals) {
-        const inputMessages = input.kind === "messages" ? input.messages : [];
         // Cache turn context per turn index to avoid repeated allocations
         // let justified: mutable cache invalidated on turn index change
         let cachedTurnCtx: TurnContext | undefined;
@@ -378,7 +384,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           cachedTurnCtx = createTurnContext({
             session: sessionCtx,
             turnIndex: currentTurnIndex,
-            messages: inputMessages,
+            messages: activeTurnMessages,
             signal: runSignal,
             approvalHandler: options.approvalHandler,
             sendStatus: options.sendStatus,
@@ -543,6 +549,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // completion and waits for inbox messages before restarting.
       // let justified: mutable flag for idle-wake flow control
       let enterIdle = false;
+      // let justified: mutable counter for stop-gate re-prompts across the session
+      let stopRetryCount = 0;
+      const maxStopRetries = DEFAULT_MAX_STOP_RETRIES;
+      // let justified: mutable deferred input for stop-gate retry (created after turn boundary)
+      let pendingStopInput: EngineInput | undefined;
 
       while (true) {
         adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
@@ -665,11 +676,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
           }
 
-          // Emit turn_start event with onBeforeTurn hooks
+          // Deferred stop-gate retry: create adapter stream AFTER forge/middleware
+          // refresh so the retry turn sees updated tools and middleware state.
+          if (pendingStopInput !== undefined) {
+            adapterIterator = adapter.stream(pendingStopInput)[Symbol.asyncIterator]();
+          }
+
+          // Emit turn_start event with onBeforeTurn hooks.
+          // Update activeTurnMessages so cooperating-adapter middleware
+          // (getTurnContext) sees the same messages as onBeforeTurn hooks.
+          const turnMessages =
+            pendingStopInput?.kind === "messages"
+              ? pendingStopInput.messages
+              : input.kind === "messages"
+                ? input.messages
+                : [];
+          activeTurnMessages = turnMessages;
+          pendingStopInput = undefined;
           const turnCtx = createTurnContext({
             session: sessionCtx,
             turnIndex: currentTurnIndex,
-            messages: input.kind === "messages" ? input.messages : [],
+            messages: turnMessages,
             signal: runSignal,
             approvalHandler: options.approvalHandler,
             sendStatus: options.sendStatus,
@@ -720,19 +747,113 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
 
             if (event.kind === "done") {
+              // Stop gate: when model completes normally, check if any middleware
+              // blocks completion before yielding the done event.
+              if (event.output.stopReason === "completed" && stopRetryCount < maxStopRetries) {
+                const stopCtx = createTurnContext({
+                  session: sessionCtx,
+                  turnIndex: currentTurnIndex,
+                  messages: [],
+                  signal: runSignal,
+                  approvalHandler: options.approvalHandler,
+                  sendStatus: options.sendStatus,
+                });
+                const gateResult = await runStopGate(allMiddleware, stopCtx);
+                if (gateResult.kind === "block") {
+                  stopRetryCount++;
+                  const blockMessage: InboundMessage = {
+                    senderId: "system",
+                    content: [
+                      {
+                        kind: "text",
+                        text: `[Completion blocked]: ${gateResult.reason}. Address this before completing.`,
+                      },
+                    ],
+                    timestamp: Date.now(),
+                  };
+
+                  // Inject block reason via adapter.inject() if available
+                  // as a best-effort hint to the running adapter state.
+                  if (adapter.inject !== undefined) {
+                    await adapter.inject(blockMessage);
+                  }
+                  // Always include the block message in the retry stream input.
+                  // inject() state may not survive across stream() restarts,
+                  // so pendingStopInput is the guaranteed delivery path.
+                  pendingStopInput = {
+                    kind: "messages",
+                    messages: [blockMessage],
+                    ...(effectiveInput.callHandlers !== undefined
+                      ? { callHandlers: effectiveInput.callHandlers }
+                      : {}),
+                    signal: runSignal,
+                  };
+                  // Clean up previous adapter iterator before retry
+                  if (adapterIterator?.return !== undefined) {
+                    try {
+                      await adapterIterator.return();
+                    } catch (_cleanupError: unknown) {
+                      // Cleanup failure is non-fatal
+                    }
+                  }
+
+                  // Emit turn_end for the blocked turn (mirrors L2 turn-runner pattern).
+                  // stopBlocked flag lets middleware distinguish vetoes from real completions.
+                  const blockedTurnIndex = currentTurnIndex;
+                  const blockedTurnCtx = createTurnContext({
+                    session: sessionCtx,
+                    turnIndex: blockedTurnIndex,
+                    messages: [],
+                    signal: runSignal,
+                    approvalHandler: options.approvalHandler,
+                    sendStatus: options.sendStatus,
+                    stopBlocked: true,
+                  });
+                  await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
+                  debugInstrumentation?.onTurnEnd(blockedTurnIndex);
+                  yield {
+                    kind: "turn_end",
+                    turnIndex: blockedTurnIndex,
+                    stopBlocked: true,
+                  } as EngineEvent;
+
+                  // Advance turn index for the retry turn
+                  currentTurnIndex = blockedTurnIndex + 1;
+                  outerCurrentTurnIndex = currentTurnIndex;
+                  pendingForgeRefresh = true;
+
+                  // Continue the turn loop — don't yield done, don't return
+                  break; // breaks inner while(true), continues turnLoop
+                }
+              }
+
+              // Normalize done metrics to include stop-gate retry turns so the
+              // terminal record matches the emitted event stream.
+              const normalizedMetrics =
+                stopRetryCount > 0
+                  ? { ...event.output.metrics, turns: event.output.metrics.turns + stopRetryCount }
+                  : event.output.metrics;
+              const normalizedDone: EngineEvent = {
+                kind: "done",
+                output: { ...event.output, metrics: normalizedMetrics },
+              };
+
               // Idle on normal completion if reusable; errors/timeouts always terminate
               if (agent.manifest.reuse === true && event.output.stopReason === "completed") {
                 enterIdle = true;
-                yield event;
+                // Reset per-completion retry counter so subsequent idle-wake
+                // completions don't accumulate stale stop-gate retries.
+                stopRetryCount = 0;
+                yield normalizedDone;
                 break turnLoop;
               }
               pendingForgeRefresh = false;
               agent.transition({
                 kind: "complete",
                 stopReason: event.output.stopReason,
-                metrics: event.output.metrics,
+                metrics: normalizedMetrics,
               });
-              yield event;
+              yield normalizedDone;
               return;
             }
 

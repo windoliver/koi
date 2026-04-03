@@ -1,6 +1,6 @@
 {
   "name": "@koi/core",
-  "description": "Define interfaces-only kernel with 7 core contracts and ECS compositional layer",
+  "description": "Interfaces-only kernel with 7 core contracts, ECS compositional layer, and stop-gate lifecycle types",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agent-definition": {
+      "types": "./dist/agent-definition.d.ts",
+      "import": "./dist/agent-definition.js"
     },
     "./agent-resolver": {
       "types": "./dist/agent-resolver.d.ts",

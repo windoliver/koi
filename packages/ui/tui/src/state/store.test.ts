@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { createInitialState } from "./initial.js";
 import { createStore } from "./store.js";
 
@@ -155,6 +155,32 @@ describe("TuiStore — no-op guard", () => {
     store.dispatch({ kind: "set_view", view: "sessions" }); // real change
     await flushMicrotasks();
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Throwing listeners
+// ---------------------------------------------------------------------------
+
+describe("TuiStore — throwing listener", () => {
+  test("throwing listener does not prevent other listeners from firing", async () => {
+    const consoleSpy = spyOn(console, "error").mockImplementation(() => {});
+    const store = makeStore();
+    const before = mock(() => {});
+    const thrower = mock(() => {
+      throw new Error("boom");
+    });
+    const after = mock(() => {});
+    store.subscribe(before);
+    store.subscribe(thrower);
+    store.subscribe(after);
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    await flushMicrotasks();
+    expect(before).toHaveBeenCalledTimes(1);
+    expect(thrower).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
   });
 });
 

@@ -8,7 +8,9 @@
 
 import { describe, expect, test } from "bun:test";
 
+import type { AgentDefinition, TaskableAgent } from "../index.js";
 import {
+  AGENT_DEFINITION_PRIORITY,
   // ID factories
   agentId,
   brickId,
@@ -321,5 +323,44 @@ describe("TransitionReason idle variants backward compatibility", () => {
 
   test("inbox_wake maps to exit code 0", () => {
     expect(exitCodeForTransitionReason({ kind: "inbox_wake" })).toBe(0);
+  });
+});
+
+describe("TaskableAgent backward compatibility", () => {
+  test("TaskableAgent is constructible with only original 4 fields", () => {
+    // This is the critical source-compat test: code that constructs TaskableAgent
+    // with just the old shape must still compile and work.
+    const taskable: TaskableAgent = {
+      name: "test",
+      description: "test agent",
+      manifest: { name: "test", version: "1.0.0", model: { name: "test-model" } },
+    };
+    expect(taskable.name).toBe("test");
+    expect(taskable.description).toBe("test agent");
+    expect(taskable.manifest.name).toBe("test");
+    expect(taskable.brickId).toBeUndefined();
+  });
+
+  test("AgentDefinition is assignable to TaskableAgent", () => {
+    const def: AgentDefinition = {
+      agentType: "researcher",
+      whenToUse: "Research agent",
+      source: "built-in",
+      manifest: { name: "researcher", version: "1.0.0", model: { name: "sonnet" } },
+      name: "researcher",
+      description: "Research agent",
+    };
+    // AgentDefinition extends TaskableAgent — must be assignable
+    const taskable: TaskableAgent = def;
+    expect(taskable.name).toBe("researcher");
+    expect(taskable.description).toBe("Research agent");
+  });
+});
+
+describe("AGENT_DEFINITION_PRIORITY backward compatibility", () => {
+  test("contains all three source tiers", () => {
+    expect(AGENT_DEFINITION_PRIORITY["built-in"]).toBe(0);
+    expect(AGENT_DEFINITION_PRIORITY.user).toBe(1);
+    expect(AGENT_DEFINITION_PRIORITY.project).toBe(2);
   });
 });

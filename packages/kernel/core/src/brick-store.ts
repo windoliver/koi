@@ -8,6 +8,7 @@
 
 import type { BrickComposition } from "./brick-composition.js";
 import type { BrickId } from "./brick-snapshot.js";
+import type { ChangeNotifier } from "./change-notifier.js";
 import type { ToolOrigin, ToolPolicy } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
 import type {
@@ -535,18 +536,12 @@ export interface StoreChangeEvent {
 }
 
 /**
- * Pluggable notification interface for cross-agent cache invalidation.
+ * Brick-store-specific change notifier.
  *
- * Sync implementations (in-memory event bus) return void.
- * Async implementations (Nexus pub/sub, Redis) return Promise<void>.
- * Subscribers receive targeted change events for delta-based invalidation.
+ * Extends the generic `ChangeNotifier<StoreChangeEvent>` while preserving
+ * the exported interface symbol for declaration-merging compatibility.
  */
-export interface StoreChangeNotifier {
-  /** Emit a change event after a store mutation. */
-  readonly notify: (event: StoreChangeEvent) => void | Promise<void>;
-  /** Subscribe to change events. Returns unsubscribe function. */
-  readonly subscribe: (listener: (event: StoreChangeEvent) => void) => () => void;
-}
+export interface StoreChangeNotifier extends ChangeNotifier<StoreChangeEvent> {}
 
 // ---------------------------------------------------------------------------
 // Advisory lock — orthogonal to ForgeStore, for backends that support it

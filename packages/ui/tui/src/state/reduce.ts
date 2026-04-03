@@ -99,6 +99,54 @@ function capOutput(text: string): string {
 }
 
 /**
+ * Bound an unknown tool result to a safe string for storage.
+ * Serializes non-string values with a size-limited JSON.stringify,
+ * catching circular/non-serializable inputs gracefully.
+ */
+function capResult(result: unknown): string {
+  if (result === undefined || result === null) return "";
+  if (typeof result === "string") return capOutput(result);
+  try {
+    const json = JSON.stringify(result);
+    // JSON.stringify returns undefined for functions, symbols, etc.
+    if (json === undefined) return "[unserializable]";
+    return capOutput(json);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Append a streaming delta to the last block of the given kind,
+ * or create a new block if the last block is a different kind.
+ *
+ * No cap applied — assistant text/thinking is user-facing content
+ * that should not be truncated. Memory is bounded by the 1000-message
+ * compaction and by individual conversation turn length.
+ */
+function appendDelta(state: TuiState, delta: string, blockKind: "text" | "thinking"): TuiState {
+  if (delta === "") return state;
+
+  const { messages, found } = ensureAssistant(state.messages);
+  const lastBlock = found.msg.blocks.at(-1);
+
+  let updatedBlocks: readonly TuiAssistantBlock[];
+  if (lastBlock?.kind === blockKind) {
+    updatedBlocks = replaceAt(found.msg.blocks, found.msg.blocks.length - 1, {
+      kind: blockKind,
+      text: lastBlock.text + delta,
+    });
+  } else {
+    updatedBlocks = [...found.msg.blocks, { kind: blockKind, text: delta }];
+  }
+
+  return {
+    ...state,
+    messages: updateAssistant(messages, found, { blocks: updatedBlocks }),
+  };
+}
+
+/**
  * Ensure there is a streaming assistant message to write deltas into.
  * If none exists, creates an implicit one (handles orphan deltas).
  */
@@ -162,49 +210,11 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     // ----- Text accumulation -----
-    case "text_delta": {
-      if (event.delta === "") return state;
+    case "text_delta":
+      return appendDelta(state, event.delta, "text");
 
-      const { messages, found } = ensureAssistant(state.messages);
-      const lastBlock = found.msg.blocks.at(-1);
-
-      let updatedBlocks: readonly TuiAssistantBlock[];
-      if (lastBlock?.kind === "text") {
-        updatedBlocks = replaceAt(found.msg.blocks, found.msg.blocks.length - 1, {
-          kind: "text",
-          text: lastBlock.text + event.delta,
-        });
-      } else {
-        updatedBlocks = [...found.msg.blocks, { kind: "text", text: event.delta }];
-      }
-
-      return {
-        ...state,
-        messages: updateAssistant(messages, found, { blocks: updatedBlocks }),
-      };
-    }
-
-    case "thinking_delta": {
-      if (event.delta === "") return state;
-
-      const { messages, found } = ensureAssistant(state.messages);
-      const lastBlock = found.msg.blocks.at(-1);
-
-      let updatedBlocks: readonly TuiAssistantBlock[];
-      if (lastBlock?.kind === "thinking") {
-        updatedBlocks = replaceAt(found.msg.blocks, found.msg.blocks.length - 1, {
-          kind: "thinking",
-          text: lastBlock.text + event.delta,
-        });
-      } else {
-        updatedBlocks = [...found.msg.blocks, { kind: "thinking", text: event.delta }];
-      }
-
-      return {
-        ...state,
-        messages: updateAssistant(messages, found, { blocks: updatedBlocks }),
-      };
-    }
+    case "thinking_delta":
+      return appendDelta(state, event.delta, "thinking");
 
     // ----- Tool call lifecycle -----
     case "tool_call_start": {
@@ -212,7 +222,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const callId = event.callId as string;
       const existing = findToolBlock(found.msg.blocks, callId);
       // Capture initial args if present (some producers emit args on start, not via deltas)
-      const initialArgs = event.args !== undefined ? JSON.stringify(event.args) : undefined;
+      const initialArgs =
+        event.args !== undefined ? capOutput(JSON.stringify(event.args)) : undefined;
 
       const newBlock: TuiAssistantBlock = {
         kind: "tool_call",
@@ -270,7 +281,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
         ...tool.block,
         status: "complete",
-        result: event.result,
+        result: capResult(event.result),
       });
 
       return {
@@ -316,7 +327,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return action.view === state.activeView ? state : { ...state, activeView: action.view };
 
     case "set_modal":
-      return { ...state, modal: action.modal };
+      return action.modal === null && state.modal === null
+        ? state
+        : { ...state, modal: action.modal };
 
     case "set_connection_status":
       return action.status === state.connectionStatus
@@ -325,6 +338,41 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "set_layout":
       return action.tier === state.layoutTier ? state : { ...state, layoutTier: action.tier };
+
+    case "set_zoom":
+      return action.level === state.zoomLevel ? state : { ...state, zoomLevel: action.level };
+
+    case "add_error": {
+      const errorBlock: TuiAssistantBlock = {
+        kind: "error",
+        code: action.code,
+        message: action.message,
+      };
+      // Only append to the active (streaming) assistant turn.
+      // Check BEFORE finalization so completed turns are never mutated.
+      const active = findLastAssistant(state.messages);
+      if (active?.msg.streaming) {
+        const finalized = finalizeAssistant(state.messages);
+        const found = findLastAssistant(finalized);
+        if (found) {
+          return {
+            ...state,
+            messages: updateAssistant(finalized, found, {
+              blocks: [...found.msg.blocks, errorBlock],
+              streaming: false,
+            }),
+          };
+        }
+      }
+      // No active turn — create a standalone error message
+      const implicit: TuiMessage = {
+        kind: "assistant",
+        id: `assistant-error-${state.messages.length}`,
+        blocks: [errorBlock],
+        streaming: false,
+      };
+      return { ...state, messages: maybeCompact([...state.messages, implicit]) };
+    }
 
     case "clear_messages":
       return state.messages.length === 0 ? state : { ...state, messages: [] };

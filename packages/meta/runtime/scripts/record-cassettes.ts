@@ -34,7 +34,8 @@ import type {
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
+import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -47,7 +48,8 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
-import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+import { createMemoryTaskBoardStore } from "@koi/tasks";
+import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -100,6 +102,62 @@ if (!addToolResult.ok) {
 }
 const addTool = addToolResult.value;
 
+// ---------------------------------------------------------------------------
+// Task tools (backed by @koi/tasks in-memory store)
+// ---------------------------------------------------------------------------
+
+const taskStore = createMemoryTaskBoardStore();
+
+const taskCreateResult = buildTool({
+  name: "task_create",
+  description: "Create a new task on the task board. Returns the created task.",
+  inputSchema: {
+    type: "object",
+    properties: { description: { type: "string", description: "What the task is about" } },
+    required: ["description"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const id = await taskStore.nextId();
+    const now = Date.now();
+    const item = {
+      id,
+      subject: String(args.description),
+      description: String(args.description),
+      dependencies: [],
+      retries: 0,
+      status: "pending" as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await taskStore.put(item);
+    return { created: { id, description: item.description, status: item.status } };
+  },
+});
+if (!taskCreateResult.ok) {
+  console.error(`buildTool(task_create) failed: ${taskCreateResult.error.message}`);
+  process.exit(1);
+}
+const taskCreateTool = taskCreateResult.value;
+
+const taskListResult = buildTool({
+  name: "task_list",
+  description: "List all tasks on the task board.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const items = await taskStore.list();
+    return {
+      tasks: items.map((i) => ({ id: i.id, description: i.description, status: i.status })),
+    };
+  },
+});
+if (!taskListResult.ok) {
+  console.error(`buildTool(task_list) failed: ${taskListResult.error.message}`);
+  process.exit(1);
+}
+const taskListTool = taskListResult.value;
+
 // =========================================================================
 // Recording helpers
 // =========================================================================
@@ -137,10 +195,13 @@ interface QueryConfig {
     readonly name: string;
     readonly cmd: readonly string[];
     readonly filter: { readonly events: readonly string[] };
+    readonly once?: boolean;
   }[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
+  /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
+  readonly useRegistry?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,11 +230,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
   const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
+
+  // Optional registry for once-hook lifecycle tracking
+  // let justified: mutable — created conditionally
+  let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
+  if (config.useRegistry === true) {
+    hookRegistry = createHookRegistry();
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+  }
+
   // Runtime hook dispatch — tool hooks + trajectory recording
+  const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
     hooks: loadedHooks,
     store,
     docId,
+    ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
   });
 
   // @koi/permissions + @koi/middleware-permissions
@@ -319,6 +391,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
 
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
+  hookRegistry?.cleanup(`golden-${name}`);
   await runtime.dispose();
 
   // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
@@ -389,6 +462,50 @@ const webProvider = createWebProvider({
   executor: webExecutor,
   policy: { sandbox: false, capabilities: { network: { allow: true } } },
 });
+
+// ---------------------------------------------------------------------------
+// Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
+// ---------------------------------------------------------------------------
+
+let nexusTransport: { readonly close: () => void } | undefined;
+let nexusFsProvider: ComponentProvider | undefined;
+
+// Only set up nexus-fs if nexus-fs Python package is available
+const nexusFsCheck = Bun.spawnSync(["python3", "-c", "import nexus.fs"]);
+if (nexusFsCheck.exitCode === 0) {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
+  const transport = await createLocalTransport({
+    mountUri: `local://${nexusTmpDir}`,
+    startupTimeoutMs: 15_000,
+  });
+  nexusTransport = transport;
+
+  const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
+  const backend = createNexusFileSystem({
+    url: "local://unused",
+    mountPoint: nexusMountPoint,
+    transport,
+  });
+
+  // Pre-seed a file for the LLM to read
+  await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
+
+  const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
+
+  nexusFsProvider = createSingleToolProvider({
+    name: "nexus-fs",
+    toolName: "nexus_read",
+    createTool: () => readTool,
+  });
+
+  console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+} else {
+  console.log("nexus-fs not available — skipping nexus-fs golden query");
+}
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -583,7 +700,41 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 6. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 6. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  {
+    name: "hook-once",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "first-tool-guard",
+        cmd: ["echo", "once-hook-fired"],
+        filter: { events: ["tool.before"] },
+        once: true,
+      },
+      {
+        kind: "command",
+        name: "always-hook",
+        cmd: ["echo", "always-fired"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    maxTurns: 3,
+    useRegistry: true,
+  },
+
+  // 7. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
@@ -601,7 +752,38 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 6. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  // 7. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  {
+    name: "task-board",
+    prompt:
+      'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => taskCreateTool,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => taskListTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 8. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
   {
     name: "mcp-tool-use",
     prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
@@ -619,6 +801,48 @@ const queries: readonly QueryConfig[] = [
     providers: [], // MCP provider set dynamically below
     maxTurns: 2,
   },
+
+  // 10. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
+  {
+    name: "turn-stop",
+    prompt: "What is the capital of France? Answer concisely.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "completion-gate",
+        cmd: ["sh", "-c", 'echo \'{"decision":"block","reason":"verification failed"}\''],
+        filter: { events: ["turn.stop"] },
+      },
+    ],
+    providers: [],
+    maxTurns: 0,
+  },
+
+  // 11. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
+  ...(nexusFsProvider !== undefined
+    ? [
+        {
+          name: "nexus-fs-read",
+          prompt:
+            'Use the nexus_read tool to read the file at path "/golden-test.txt". Tell me what the file says.',
+          permissionMode: "bypass" as const,
+          permissionRules: BYPASS_RULES,
+          permissionDescription: "bypass (allow all)",
+          hooks: [
+            {
+              kind: "command" as const,
+              name: "on-fs-tool",
+              cmd: ["echo", "fs-tool-done"],
+              filter: { events: ["tool.succeeded"] },
+            },
+          ],
+          providers: [nexusFsProvider],
+        },
+      ]
+    : []),
 ];
 
 // =========================================================================
@@ -644,6 +868,42 @@ await recordCassette("tool-use", () =>
         senderId: "user",
         timestamp: Date.now(),
         content: [{ kind: "text", text: "Use the add_numbers tool to compute 7 + 5" }],
+      },
+    ],
+    tools: [addTool.descriptor],
+  }),
+);
+
+await recordCassette("task-board", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: 'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+          },
+        ],
+      },
+    ],
+    tools: [taskCreateTool.descriptor, taskListTool.descriptor],
+  }),
+);
+
+await recordCassette("hook-once", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+          },
+        ],
       },
     ],
     tools: [addTool.descriptor],
@@ -708,8 +968,9 @@ for (const q of queries) {
   await recordTrajectory(q);
 }
 
-// Cleanup MCP server
+// Cleanup MCP server + nexus transport
 await mcpSetup.cleanup();
+nexusTransport?.close();
 
 console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");

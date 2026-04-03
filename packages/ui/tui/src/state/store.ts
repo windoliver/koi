@@ -29,7 +29,11 @@ export function createStore(initialState: TuiState): TuiStore {
 
   function notifySubscribers(): void {
     for (const listener of listeners) {
-      listener();
+      try {
+        listener();
+      } catch (e: unknown) {
+        console.error("TuiStore listener threw:", e);
+      }
     }
   }
 

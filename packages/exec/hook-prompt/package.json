@@ -1,6 +1,6 @@
 {
-  "name": "@koi/fs-nexus",
-  "description": "Nexus-backed FileSystemBackend — delegates file operations to Nexus via JSON-RPC",
+  "name": "@koi/hook-prompt",
+  "description": "Prompt hook executor — single-shot LLM verification for agent hooks",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,12 +11,9 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/core": "workspace:*"
   },
-  "koi": {
-    "optional": true
-  },
+  "devDependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

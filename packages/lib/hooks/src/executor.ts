@@ -337,6 +337,18 @@ function executeSingleHook(
       }
       return agentExecutor.execute(hook, event, composedSignal);
     }
+    case "prompt": {
+      // Prompt hooks are executed by the @koi/hook-prompt package, not by this
+      // generic executor. If one reaches here, it means no prompt executor was
+      // wired. Return a fail-closed error so the hook is not silently skipped.
+      return Promise.resolve({
+        ok: false as const,
+        hookName: hook.name,
+        error: "Prompt hooks require a dedicated executor — wire @koi/hook-prompt",
+        durationMs: 0,
+        failClosed: hook.failClosed,
+      });
+    }
     default: {
       const _exhaustive: never = hook;
       throw new Error(`Unknown hook kind: ${(_exhaustive as HookConfig).kind}`);

@@ -1,0 +1,83 @@
+{
+  "name": "hook-once",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775202705536,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "add_numbers",
+      "callId": "tool_add_numbers_rR6kBmH8AIQF9K41bvLT"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_rR6kBmH8AIQF9K41bvLT",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_rR6kBmH8AIQF9K41bvLT",
+      "delta": "{\"b\":4,\"a\":3}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "add_numbers",
+      "callId": "tool_add_numbers_W0N1Wia8pKXrj81TWNXl"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_W0N1Wia8pKXrj81TWNXl",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_W0N1Wia8pKXrj81TWNXl",
+      "delta": "{\"b\":20,\"a\":10}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 46,
+      "outputTokens": 14
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_add_numbers_rR6kBmH8AIQF9K41bvLT"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_add_numbers_W0N1Wia8pKXrj81TWNXl"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775202704-J209q3nRBSSIswOjDiuN",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_add_numbers_rR6kBmH8AIQF9K41bvLT",
+            "name": "add_numbers",
+            "arguments": {
+              "b": 4,
+              "a": 3
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_add_numbers_W0N1Wia8pKXrj81TWNXl",
+            "name": "add_numbers",
+            "arguments": {
+              "b": 20,
+              "a": 10
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 46,
+          "outputTokens": 14
+        }
+      }
+    }
+  ]
+}

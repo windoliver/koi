@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: [
     "src/index.ts",
+    "src/agent-definition.ts",
     "src/agent-resolver.ts",
     "src/assembly.ts",
     "src/config.ts",
@@ -16,6 +17,7 @@ export default defineConfig({
     "src/event-backend.ts",
     "src/errors.ts",
     "src/governance-backend.ts",
+    "src/hook.ts",
     "src/eviction.ts",
     "src/health.ts",
     "src/hook.ts",

@@ -85,6 +85,11 @@ export type TuiAssistantBlock =
       readonly args?: string | undefined;
       /** Tool execution result from tool_call_end (the actual tool response). */
       readonly result?: unknown;
+    }
+  | {
+      readonly kind: "error";
+      readonly code: string;
+      readonly message: string;
     };
 
 /** Materialized message — reducer accumulates streaming deltas into these. */
@@ -136,6 +141,12 @@ export type TuiAction =
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }
   | { readonly kind: "set_connection_status"; readonly status: ConnectionStatus }
   | { readonly kind: "set_layout"; readonly tier: LayoutTier }
+  | { readonly kind: "set_zoom"; readonly level: number }
+  | {
+      readonly kind: "add_error";
+      readonly code: string;
+      readonly message: string;
+    }
   | { readonly kind: "clear_messages" }
   | {
       readonly kind: "permission_response";

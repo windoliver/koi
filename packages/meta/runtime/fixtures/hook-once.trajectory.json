@@ -1,0 +1,413 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "hook-once",
+  "agent": {
+    "name": "golden-hook-once",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.095Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.095Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-03T07:51:53.096Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 108,
+        "completion_tokens": 14
+      },
+      "duration_ms": 840,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.937Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+      "duration_ms": 841.3557919999985,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.938Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+      "duration_ms": 841.5063339999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.940Z",
+      "model_name": "hook:first-tool-guard",
+      "message": "tool.before:add_numbers → first-tool-guard",
+      "duration_ms": 1.065415999999459,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.before:add_numbers",
+        "hookName": "first-tool-guard"
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.941Z",
+      "model_name": "hook:always-hook",
+      "message": "tool.succeeded:add_numbers → always-hook",
+      "duration_ms": 0.784458000000086,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "always-hook"
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.941Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"a\":3,\"b\":4})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 2.372624999999971,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "tool",
+      "timestamp": "2026-04-03T07:51:53.939Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_8",
+          "function_name": "add_numbers",
+          "arguments": {
+            "a": 3,
+            "b": 4
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_8",
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.942Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"a\":3,\"b\":4})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 5.180833000000348,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.942Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"a\":3,\"b\":4})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 5.266332999999577,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.943Z",
+      "model_name": "hook:always-hook",
+      "message": "tool.succeeded:add_numbers → always-hook",
+      "duration_ms": 0.8306670000001759,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "always-hook"
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.943Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 1.0638749999998254,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "tool",
+      "timestamp": "2026-04-03T07:51:53.942Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_13",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 20,
+            "a": 10
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_13",
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.945Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 2.8991659999992407,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:53.945Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 2.944374999999127,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "timestamp": "2026-04-03T07:51:53.945Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"result\":30}",
+      "observation": {
+        "results": [
+          {
+            "content": "The result of 3 + 4 is 7, and the result of 10 + 20 is 30.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 154,
+        "completion_tokens": 29
+      },
+      "duration_ms": 657,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 6,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:54.602Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.\n\n{\"result\":7}\n\n{\"result\":30}",
+      "duration_ms": 656.9685840000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-03T07:51:54.602Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.\n\n{\"result\":7}\n\n{\"result\":30}",
+      "duration_ms": 657.0582920000015,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    }
+  ]
+}

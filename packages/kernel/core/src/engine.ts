@@ -117,7 +117,7 @@ export type EngineEvent =
       readonly result: unknown;
     }
   | { readonly kind: "turn_start"; readonly turnIndex: number }
-  | { readonly kind: "turn_end"; readonly turnIndex: number }
+  | { readonly kind: "turn_end"; readonly turnIndex: number; readonly stopBlocked?: true }
   | { readonly kind: "done"; readonly output: EngineOutput }
   | { readonly kind: "custom"; readonly type: string; readonly data: unknown }
   | {

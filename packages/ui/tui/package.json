@@ -28,12 +28,12 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@opentui/core": "0.1.87",
-    "@opentui/react": "0.1.87",
+    "@opentui/core": "0.1.96",
+    "@opentui/react": "0.1.96",
     "react": "19.1.0"
   },
   "devDependencies": {
-    "@types/react": "19"
+    "@types/react": "19.1.2"
   },
   "scripts": {
     "build": "tsup",

@@ -20,3 +20,5 @@ export type { InputKeyResult } from "./components/input-keys.js";
 export { processInputKey } from "./components/input-keys.js";
 // State management
 export * from "./state/index.js";
+// Store context (React hook — requires @opentui/react at runtime)
+export { StoreContext, useTuiStore } from "./store-context.js";

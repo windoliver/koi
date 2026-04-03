@@ -26,6 +26,7 @@ export const HOOK_EVENT_KINDS = [
   "session.ended",
   "turn.started",
   "turn.ended",
+  "turn.stop",
   "tool.before",
   "tool.succeeded",
   "tool.failed",
@@ -131,6 +132,15 @@ export interface CommandHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +190,59 @@ export interface HttpHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt hook config
+// ---------------------------------------------------------------------------
+
+/**
+ * A hook that makes a single-shot LLM call (~100-200 tokens) for pass/fail
+ * verification. Fills the gap between static hooks (command/http) and expensive
+ * agent hooks (4000+ tokens).
+ *
+ * The model receives a verification prompt and must respond with structured
+ * JSON: `{ "ok": true/false, "reason": "..." }`.
+ */
+export interface PromptHookConfig {
+  readonly kind: "prompt";
+  /** Human-readable hook name (unique within a manifest). */
+  readonly name: string;
+  /** Verification prompt sent to the model. */
+  readonly prompt: string;
+  /** Override model for the verification call (default: cheap/fast model). */
+  readonly model?: string | undefined;
+  /** Timeout in milliseconds. Default: 10_000. */
+  readonly timeoutMs?: number | undefined;
+  /** Max tokens for the verification response. Default: 256. */
+  readonly maxTokens?: number | undefined;
+  /** Filter conditions — when absent, fires on all events. */
+  readonly filter?: HookFilter | undefined;
+  /** Whether this hook is active. Default: true. */
+  readonly enabled?: boolean | undefined;
+  /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+  readonly serial?: boolean | undefined;
+  /**
+   * Post-execution failure behavior. Default: true (fail-closed).
+   *
+   * When true: if the model response cannot be parsed, the action is blocked.
+   * When false: if parsing fails, the action is allowed through (fail-open).
+   */
+  readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +301,12 @@ export interface AgentHookConfig {
   /** Tools to exclude from the sub-agent (in addition to default denylist). */
   readonly toolDenylist?: readonly string[] | undefined;
   /**
+   * Tools to exclusively allow for the sub-agent. Mutually exclusive with toolDenylist.
+   * When set, only these tools (plus HookVerdict) are available via inheritance.
+   * When neither list is specified, the default denylist is used for backward compatibility.
+   */
+  readonly toolAllowlist?: readonly string[] | undefined;
+  /**
    * Controls how event.data is forwarded to the hook agent prompt.
    *
    * - `true` (default): forward the full payload with secret redaction applied.
@@ -275,6 +344,15 @@ export interface AgentHookConfig {
    * where suppressing committed output would cause retry risk.
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). The hook is consumed regardless of its decision
+   * (continue, block, modify). It is only retried on transient transport/execution
+   * failures (e.g., spawn crash, timeout), not on blocking verdicts.
+   * For "block until condition passes" behavior, use a turn.stop hook instead.
+   * Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +360,7 @@ export interface AgentHookConfig {
 // ---------------------------------------------------------------------------
 
 /** Discriminated union of all hook config types. */
-export type HookConfig = CommandHookConfig | HttpHookConfig | AgentHookConfig;
+export type HookConfig = CommandHookConfig | HttpHookConfig | PromptHookConfig | AgentHookConfig;
 
 // ---------------------------------------------------------------------------
 // Env-var policy — system-wide allowlist for hook env-var expansion
@@ -337,6 +415,13 @@ export type HookExecutionResult =
       readonly hookName: string;
       readonly durationMs: number;
       readonly decision: HookDecision;
+      /**
+       * When true, the hook actually failed but the failure was swallowed
+       * by fail-open policy (failClosed: false). The decision is "continue"
+       * but the hook did not genuinely execute successfully.
+       * Used by the registry to avoid consuming once-hooks on swallowed failures.
+       */
+      readonly executionFailed?: boolean | undefined;
     }
   | {
       readonly ok: false;
@@ -350,6 +435,15 @@ export type HookExecutionResult =
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/**
+ * Default maximum stop-gate re-prompts per session.
+ *
+ * When a `turn.stop` hook blocks completion, the engine re-prompts the model
+ * with the block reason. This limit prevents infinite loops when the model
+ * can never satisfy the stop condition.
+ */
+export const DEFAULT_MAX_STOP_RETRIES = 3 as const;
 
 /** Default hook timeout in milliseconds (command + http). */
 export const DEFAULT_HOOK_TIMEOUT_MS = 30_000 as const;

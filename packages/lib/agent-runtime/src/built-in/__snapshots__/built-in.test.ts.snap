@@ -1,0 +1,24 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`getBuiltInAgents structural snapshot: agentType, tools, model 1`] = `
+[
+  {
+    "agentType": "researcher",
+    "model": "sonnet",
+    "source": "built-in",
+    "tools": [],
+  },
+  {
+    "agentType": "coder",
+    "model": "sonnet",
+    "source": "built-in",
+    "tools": [],
+  },
+  {
+    "agentType": "reviewer",
+    "model": "sonnet",
+    "source": "built-in",
+    "tools": [],
+  },
+]
+`;

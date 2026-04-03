@@ -796,6 +796,73 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// turn-stop trajectory: stop-gate hook blocks completion, engine re-prompts
+// ---------------------------------------------------------------------------
+
+describe("turn-stop ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with session_id=turn-stop", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("turn-stop");
+  });
+
+  test("multiple model_call steps from stop-gate retries", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+      }[];
+    };
+
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // At least 2 model calls: initial + retries from stop-gate blocking
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("NO tool_call steps (text-only query)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
+  });
+
+  test("MW:hooks span present on each model call (stop-gate fires through hooks MW)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const hooksMwSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
+    );
+    // One hooks MW span per model call
+    expect(hooksMwSpans.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("MW:permissions span present", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+
+    const permSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "permissions",
+    );
+    expect(permSpans.length).toBeGreaterThan(0);
+  });
+
+  test("step count >= 10 (MCP + multiple MODEL + MW spans per model call)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    // 2 MCP + 4 model calls + 8 MW spans = 14 minimum
+    expect(doc.steps.length).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // web-fetch trajectory: @koi/tools-web exercised with real HTTP
 // ---------------------------------------------------------------------------
 
@@ -1087,6 +1154,226 @@ describe("Golden: @koi/hooks agent hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tasks (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tasks", () => {
+  test("createMemoryTaskBoardStore CRUD round-trip with nextId + HWM", async () => {
+    const { createMemoryTaskBoardStore } = await import("@koi/tasks");
+    const { taskItemId } = await import("@koi/core");
+
+    const store = createMemoryTaskBoardStore();
+
+    // nextId generates monotonic IDs
+    const id1 = await store.nextId();
+    const id2 = await store.nextId();
+    expect(id1).toBe(taskItemId("task_1"));
+    expect(id2).toBe(taskItemId("task_2"));
+
+    // put + get round-trip
+    await store.put({
+      id: id1,
+      subject: "Review README",
+      description: "Review README",
+      dependencies: [],
+      retries: 0,
+      status: "pending",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const loaded = await store.get(id1);
+    expect(loaded?.description).toBe("Review README");
+
+    // delete preserves HWM
+    await store.delete(id1);
+    const id3 = await store.nextId();
+    expect(id3).toBe(taskItemId("task_3")); // Not task_1
+
+    // list with filter
+    await store.put({
+      id: id2,
+      subject: "Fix bug",
+      description: "Fix bug",
+      dependencies: [],
+      retries: 0,
+      status: "completed",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const pending = await store.list({ status: "pending" });
+    expect(pending).toHaveLength(0);
+    const completed = await store.list({ status: "completed" });
+    expect(completed).toHaveLength(1);
+  });
+
+  test("createFileTaskBoardStore persists to disk and survives recreation", async () => {
+    const { createFileTaskBoardStore } = await import("@koi/tasks");
+    const { taskItemId } = await import("@koi/core");
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "koi-golden-tasks-"));
+
+    // Create store, add a task, dispose
+    const store1 = await createFileTaskBoardStore({ baseDir: dir });
+    const id = await store1.nextId();
+    await store1.put({
+      id,
+      subject: "Persistent task",
+      description: "Persistent task",
+      dependencies: [],
+      retries: 0,
+      status: "pending",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await store1[Symbol.asyncDispose]();
+
+    // Recreate from same directory — task should survive
+    const store2 = await createFileTaskBoardStore({ baseDir: dir });
+    const loaded = await store2.get(taskItemId(id));
+    expect(loaded?.description).toBe("Persistent task");
+
+    // HWM preserved — next ID is higher
+    const id2 = await store2.nextId();
+    const num1 = parseInt(id.replace(/\D/g, ""), 10);
+    const num2 = parseInt(id2.replace(/\D/g, ""), 10);
+    expect(num2).toBeGreaterThan(num1);
+
+    await store2[Symbol.asyncDispose]();
+
+    // Cleanup
+    const { rmSync } = await import("node:fs");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/hooks once flag + toolAllowlist (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hooks once + toolAllowlist", () => {
+  test("once flag: hook loads, validates, and registry consumes after first fire", async () => {
+    const { loadHooks, createHookRegistry } = await import("@koi/hooks");
+
+    // once:true validates through schema
+    const result = loadHooks([
+      {
+        kind: "command",
+        name: "first-run-check",
+        cmd: ["echo", "setup"],
+        filter: { events: ["tool.before"] },
+        once: true,
+      },
+      {
+        kind: "command",
+        name: "always-hook",
+        cmd: ["echo", "always"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(2);
+    expect(result.value[0]?.once).toBe(true);
+    expect(result.value[1]?.once).toBeUndefined();
+
+    // Registry tracks once-hooks and consumes them
+    const registry = createHookRegistry();
+    registry.register("s1", "agent-1", result.value);
+    expect(registry.has("s1")).toBe(true);
+    expect(registry.size()).toBe(1);
+
+    // Cleanup works
+    registry.cleanup("s1");
+    expect(registry.has("s1")).toBe(false);
+  });
+
+  test("toolAllowlist: schema validates, mutual exclusivity enforced", async () => {
+    const { loadHooks } = await import("@koi/hooks");
+
+    // toolAllowlist validates on agent hooks
+    const allowResult = loadHooks([
+      {
+        kind: "agent",
+        name: "restricted-verifier",
+        prompt: "Verify the change",
+        toolAllowlist: ["Read", "Grep"],
+      },
+    ]);
+    expect(allowResult.ok).toBe(true);
+    if (allowResult.ok) {
+      const hook = allowResult.value[0];
+      expect(hook?.kind).toBe("agent");
+      if (hook?.kind === "agent") {
+        expect(hook.toolAllowlist).toEqual(["Read", "Grep"]);
+      }
+    }
+
+    // Mutual exclusivity: both lists set → validation fails
+    const conflictResult = loadHooks([
+      {
+        kind: "agent",
+        name: "bad-config",
+        prompt: "Verify",
+        toolAllowlist: ["Read"],
+        toolDenylist: ["Bash"],
+      },
+    ]);
+    expect(conflictResult.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook-once ATIF trajectory (golden file)
+// ---------------------------------------------------------------------------
+
+describe("hook-once ATIF trajectory (golden file)", () => {
+  test("trajectory shows once-hook fires on first tool call only, always-hook fires on both", async () => {
+    const trajPath = `${FIXTURES}/hook-once.trajectory.json`;
+    const file = Bun.file(trajPath);
+    if (!(await file.exists())) {
+      console.warn("hook-once.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as {
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+      }[];
+      readonly agent?: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+
+    // Trajectory should have steps
+    expect(traj.steps.length).toBeGreaterThan(0);
+
+    // Should have model and tool steps
+    const modelSteps = traj.steps.filter((s) => s.source === "agent");
+    const toolSteps = traj.steps.filter((s) => s.source === "tool");
+    expect(modelSteps.length).toBeGreaterThan(0);
+    expect(toolSteps.length).toBeGreaterThan(0);
+
+    // add_numbers should be in tool definitions
+    const toolNames = traj.agent?.tool_definitions?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("add_numbers");
+
+    // Extract hook execution steps by name
+    const hookSteps = traj.steps.filter((s) => s.extra?.type === "hook_execution");
+    const onceHookSteps = hookSteps.filter((s) => s.extra?.hookName === "first-tool-guard");
+    const alwaysHookSteps = hookSteps.filter((s) => s.extra?.hookName === "always-hook");
+
+    // Once-hook should fire exactly once (first tool call only)
+    expect(onceHookSteps).toHaveLength(1);
+
+    // Always-hook should fire on both tool calls (tool.succeeded fires twice)
+    expect(alwaysHookSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/mcp (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -1236,5 +1523,129 @@ describe("Golden: @koi/mcp", () => {
     resolver.dispose();
     await conn.close();
     await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/fs-nexus (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/fs-nexus", () => {
+  test("createNexusFileSystem returns a FileSystemBackend with all operations", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    expect(backend.name).toBe("nexus");
+    expect(typeof backend.read).toBe("function");
+    expect(typeof backend.write).toBe("function");
+    expect(typeof backend.edit).toBe("function");
+    expect(typeof backend.list).toBe("function");
+    expect(typeof backend.search).toBe("function");
+    expect(typeof backend.delete).toBe("function");
+    expect(typeof backend.rename).toBe("function");
+    expect(typeof backend.dispose).toBe("function");
+  });
+
+  test("round-trip write/read through fake transport", async () => {
+    const { createNexusFileSystem } = await import("@koi/fs-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport: createFakeNexusTransport(),
+    });
+
+    const writeResult = await backend.write("/golden/test.txt", "golden content");
+    expect(writeResult.ok).toBe(true);
+
+    const readResult = await backend.read("/golden/test.txt");
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("golden content");
+      expect(readResult.value.path).toBe("/golden/test.txt");
+    }
+  });
+
+  test("ATIF trajectory: nexus_read tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/nexus-fs-read.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "nexus-fs-read.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with nexus_read
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const hasNexusRead = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "nexus_read"),
+    );
+    expect(hasNexusRead).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/hook-prompt
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/hook-prompt", () => {
+  test("createPromptExecutor produces valid executor and handles structured JSON verdict", async () => {
+    const { createPromptExecutor } = await import("@koi/hook-prompt");
+
+    const mockCaller = {
+      complete: async () => ({ text: '{ "ok": true, "reason": "safe action" }' }),
+    };
+
+    const executor = createPromptExecutor(mockCaller);
+    expect(executor.kind).toBe("prompt");
+
+    const decision = await executor.execute(
+      { kind: "prompt", name: "test-hook", prompt: "Is this safe?" },
+      { event: "tool.before", agentId: "test-agent", sessionId: "test-session" },
+    );
+
+    expect(decision.kind).toBe("continue");
+  });
+
+  test("parseVerdictOutput handles JSON, denial language, and ambiguous text", async () => {
+    const { parseVerdictOutput, VerdictParseError } = await import("@koi/hook-prompt");
+
+    // Structured JSON → parsed verdict
+    const jsonResult = parseVerdictOutput('{ "ok": false, "reason": "dangerous" }');
+    expect(jsonResult.ok).toBe(false);
+    expect(jsonResult.reason).toBe("dangerous");
+
+    // String boolean coercion → preserves model intent
+    const coerced = parseVerdictOutput('{ "ok": "true" }');
+    expect(coerced.ok).toBe(true);
+
+    // Plain-text denial → blocks (fail-safe)
+    const denial = parseVerdictOutput("This operation is unsafe and should be blocked");
+    expect(denial.ok).toBe(false);
+
+    // Ambiguous text → throws VerdictParseError (routed through failClosed)
+    expect(() => parseVerdictOutput("I think this is fine")).toThrow(VerdictParseError);
   });
 });

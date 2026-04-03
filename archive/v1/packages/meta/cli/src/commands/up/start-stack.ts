@@ -48,7 +48,9 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         onProgress("Reading koi.yaml");
         const { loadManifest } = await import("@koi/manifest");
-        const result = await loadManifest(ctx.manifestPath);
+        const result = await loadManifest(ctx.manifestPath, undefined, {
+          rejectUnsupportedHooks: true,
+        });
         if (!result.ok) {
           throw new Error(`Failed to load manifest: ${result.error.message}`);
         }
@@ -126,7 +128,9 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         onProgress("Checking environment");
         const { loadManifest } = await import("@koi/manifest");
-        const loadResult = await loadManifest(ctx.manifestPath);
+        const loadResult = await loadManifest(ctx.manifestPath, undefined, {
+          rejectUnsupportedHooks: true,
+        });
         if (!loadResult.ok) throw new Error("Manifest not loaded");
         const { createCliOutput } = await import("@koi/cli-render");
         const output = createCliOutput({ verbose: ctx.verbose });
@@ -148,7 +152,9 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         onProgress(`Agent: ${ctx.wizardState.name}`);
         const { loadManifest } = await import("@koi/manifest");
-        const loadResult = await loadManifest(ctx.manifestPath);
+        const loadResult = await loadManifest(ctx.manifestPath, undefined, {
+          rejectUnsupportedHooks: true,
+        });
         if (!loadResult.ok) throw new Error("Manifest not loaded");
         const { resolveAgent } = await import("../../resolve-agent.js");
         const resolved = await resolveAgent({

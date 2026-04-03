@@ -5,6 +5,12 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent definition — declarative agent template for discovery and loading
+export type {
+  AgentDefinition,
+  AgentDefinitionSource,
+} from "./agent-definition.js";
+export { AGENT_DEFINITION_PRIORITY } from "./agent-definition.js";
 // agent resolver — dynamic agent discovery for delegation tools
 export type {
   AgentResolver,
@@ -201,6 +207,8 @@ export type {
   CatalogSourceError,
 } from "./catalog.js";
 export { ALL_CATALOG_SOURCES, DEFAULT_CATALOG_SEARCH_LIMIT } from "./catalog.js";
+// change notifier — generic pub/sub for store mutation observation
+export type { ChangeNotifier } from "./change-notifier.js";
 // channel
 export type {
   ChannelAdapter,
@@ -605,6 +613,7 @@ export type {
   HookRedactionConfig,
   HookType,
   HttpHookConfig,
+  PromptHookConfig,
 } from "./hook.js";
 export {
   DEFAULT_AGENT_HOOK_TIMEOUT_MS,
@@ -612,6 +621,7 @@ export {
   DEFAULT_AGENT_MAX_TURNS,
   DEFAULT_AGENT_SESSION_TOKEN_BUDGET,
   DEFAULT_HOOK_TIMEOUT_MS,
+  DEFAULT_MAX_STOP_RETRIES,
   HOOK_EVENT_KINDS,
 } from "./hook.js";
 // inbox — message steering queue for autonomous agents
@@ -713,6 +723,7 @@ export type {
   ModelResponse,
   ModelStreamHandler,
   SessionContext,
+  StopGateResult,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -992,6 +1003,10 @@ export type {
   TaskBoardConfig,
   TaskBoardEvent,
   TaskBoardSnapshot,
+  TaskBoardStore,
+  TaskBoardStoreEvent,
+  TaskBoardStoreFilter,
+  TaskBoardStoreNotifier,
   TaskInput,
   TaskItem,
   TaskItemId,
