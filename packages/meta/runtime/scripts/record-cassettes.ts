@@ -34,6 +34,7 @@ import type {
 import {
   createSingleToolProvider,
   serializeMemoryFrontmatter,
+  validateMemoryFilePath,
   validateMemoryRecordInput,
 } from "@koi/core";
 import { createKoi } from "@koi/engine";
@@ -202,6 +203,10 @@ const memoryStoreResult = buildTool({
       content: String(args.content),
       filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
     };
+    const pathError = validateMemoryFilePath(input.filePath);
+    if (pathError !== undefined) {
+      return { ok: false, errors: [{ field: "filePath", message: pathError }] };
+    }
     const errors = validateMemoryRecordInput(input);
     if (errors.length > 0) {
       return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };

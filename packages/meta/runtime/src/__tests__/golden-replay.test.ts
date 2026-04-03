@@ -1921,6 +1921,62 @@ describe("Golden: @koi/memory", () => {
     // Active entries survive
     expect(compacted.entries.some((e) => e.id === "c1")).toBe(true);
   });
+
+  test("memory_store rejects adversarial file paths end-to-end", async () => {
+    const { serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } =
+      await import("@koi/core");
+
+    // Replicate memory_store execute logic (same as record-cassettes.ts)
+    const executeMemoryStore = (args: {
+      readonly name: string;
+      readonly description: string;
+      readonly type: string;
+      readonly content: string;
+    }): {
+      readonly ok: boolean;
+      readonly errors?: readonly { readonly field: string; readonly message: string }[];
+    } => {
+      const input = {
+        name: args.name,
+        description: args.description,
+        type: args.type,
+        content: args.content,
+        filePath: `${args.name.toLowerCase().replace(/\s+/g, "_")}.md`,
+      };
+      const pathError = validateMemoryFilePath(input.filePath);
+      if (pathError !== undefined) {
+        return { ok: false, errors: [{ field: "filePath", message: pathError }] };
+      }
+      const errors = validateMemoryRecordInput(input);
+      if (errors.length > 0) {
+        return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
+      }
+      const frontmatter = {
+        name: input.name,
+        description: input.description,
+        type: input.type as "user" | "feedback" | "project" | "reference",
+      };
+      const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
+      if (serialized === undefined) {
+        return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
+      }
+      return { ok: true };
+    };
+
+    const base = { description: "test", type: "feedback", content: "body" };
+
+    // Path traversal: ../secrets → ../secrets.md → rejected
+    const traversal = executeMemoryStore({ ...base, name: "../secrets" });
+    expect(traversal.ok).toBe(false);
+
+    // Absolute path: /etc/passwd → /etc/passwd.md → rejected
+    const absolute = executeMemoryStore({ ...base, name: "/etc/passwd" });
+    expect(absolute.ok).toBe(false);
+
+    // Valid name works
+    const valid = executeMemoryStore({ ...base, name: "testing approach" });
+    expect(valid.ok).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2071,7 +2127,8 @@ describe("memory-store ATIF trajectory (golden file)", () => {
 
 describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", () => {
   test("produces live ATIF with memory_store + memory_list tool calls and correct output", async () => {
-    const { serializeMemoryFrontmatter, validateMemoryRecordInput } = await import("@koi/core");
+    const { serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } =
+      await import("@koi/core");
 
     // Build memory tools (same as record-cassettes.ts)
     const replayMemoryStore = new Map<string, string>();
@@ -2098,6 +2155,10 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
           content: String(args.content),
           filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
         };
+        const pathError = validateMemoryFilePath(input.filePath);
+        if (pathError !== undefined) {
+          return { ok: false, errors: [{ field: "filePath", message: pathError }] };
+        }
         const errors = validateMemoryRecordInput(input);
         if (errors.length > 0) {
           return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
@@ -2202,20 +2263,32 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
           content: "fallback",
           model: MODEL,
         }),
-        modelStream: (_request: ModelRequest): AsyncIterable<ModelChunk> => {
+        modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
           const currentCall = callCount;
           callCount++;
           if (currentCall === 0) {
             return toAsyncIterable(cassette.chunks);
           }
+          // Subsequent turns: derive response from accumulated messages to validate
+          // the runtime correctly passes tool output to the model. Extract the last
+          // tool result from messages to prove integration path works.
+          const msgs = request.messages ?? [];
+          const lastToolMsg = [...msgs].reverse().find((m) => m.senderId === "tool");
+          const toolContent =
+            lastToolMsg?.content?.[0]?.kind === "text" ? lastToolMsg.content[0].text : "";
+          const summary = toolContent.includes("memories")
+            ? "Listed memories successfully."
+            : toolContent.includes("testing_approach.md")
+              ? "Stored feedback memory at testing_approach.md."
+              : "Done.";
           return toAsyncIterable([
-            { kind: "text_delta" as const, delta: "Memory stored and listed." },
+            { kind: "text_delta" as const, delta: summary },
             {
               kind: "done" as const,
               response: {
-                content: "Memory stored and listed.",
+                content: summary,
                 model: MODEL,
-                usage: { inputTokens: 10, outputTokens: 5 },
+                usage: { inputTokens: msgs.length * 10, outputTokens: 5 },
               },
             },
           ]);
@@ -2395,6 +2468,17 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const storedContent = replayMemoryStore.get("testing_approach.md") ?? "";
     expect(storedContent).toContain("name: testing approach");
     expect(storedContent).toContain("type: feedback");
+
+    // Final model turn: derived from tool output, not hardcoded
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2); // initial intent + post-tool summary
+    const finalModel = modelSteps[modelSteps.length - 1];
+    const finalText = finalModel?.response?.text ?? "";
+    // Proves the second turn saw real tool output (not a hardcoded stub)
+    expect(finalText.length).toBeGreaterThan(0);
+    expect(finalText.includes("testing_approach.md") || finalText.includes("memories")).toBe(true);
 
     // Hook + MW spans present
     const hookSteps = steps.filter((s) => s.metadata?.type === "hook_execution");
