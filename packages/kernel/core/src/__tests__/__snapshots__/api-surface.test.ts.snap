@@ -1910,6 +1910,7 @@ import './common.js';
 import './message.js';
 import './channel.js';
 import './model-HASH.js';
+import './hook.js';
 import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
