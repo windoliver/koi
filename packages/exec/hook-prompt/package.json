@@ -13,9 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
-  },
+  "devDependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

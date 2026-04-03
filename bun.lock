@@ -167,9 +167,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
     },
     "packages/exec/temporal": {
       "name": "@koi/temporal",
