@@ -19,7 +19,7 @@ import { validateAgentType } from "./validate-agent-type.js";
  * name: researcher
  * description: Deep research agent
  * model: sonnet
- * tools: [Read, Grep, WebSearch]
+ * # tools/permissions/maxTurns coming in #1424, #1425
  * ---
  *
  * You are a research specialist...

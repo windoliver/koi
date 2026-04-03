@@ -69,4 +69,61 @@ Body text.`;
     expect(result.value.meta).toEqual({ name: "win-agent", description: "Windows style" });
     expect(result.value.body).toBe("Body here.");
   });
+
+  test("empty frontmatter (null YAML) returns empty meta", () => {
+    const content = "---\n\n---\n\nBody after empty frontmatter.";
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.meta).toEqual({});
+    expect(result.value.body).toBe("Body after empty frontmatter.");
+  });
+
+  test("trailing whitespace on delimiter lines", () => {
+    const content = "---   \nname: test\n---\t\n\nBody.";
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.meta.name).toBe("test");
+    expect(result.value.body).toBe("Body.");
+  });
+
+  test("YAML scalar in frontmatter returns error", () => {
+    const content = "---\njust a string\n---\n\nBody.";
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("mapping");
+  });
+
+  test("YAML array in frontmatter returns error", () => {
+    const content = "---\n- item1\n- item2\n---\n\nBody.";
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("mapping");
+  });
+
+  test("nested YAML objects pass through", () => {
+    const content =
+      "---\nname: test\nmetadata:\n  key: value\n  nested:\n    deep: true\n---\n\nBody.";
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.meta.name).toBe("test");
+    const metadata = result.value.meta.metadata as Record<string, unknown>;
+    expect(metadata.key).toBe("value");
+  });
+
+  test("YAML with special characters in values", () => {
+    const content =
+      '---\nname: "test: agent"\ndescription: "A test with: colons & special chars"\n---\n\nBody.';
+    const result = parseFrontmatter(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.meta.name).toBe("test: agent");
+    expect(result.value.meta.description).toBe("A test with: colons & special chars");
+  });
 });

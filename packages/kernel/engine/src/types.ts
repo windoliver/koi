@@ -241,6 +241,12 @@ export interface SpawnChildOptions {
    * Takes precedence over manifest.delivery when resolving the effective policy.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+  /**
+   * Abort signal for cooperative cancellation during slot acquisition.
+   * When provided and the ledger supports `acquireOrWait`, the spawn will
+   * wait for a slot instead of failing immediately at capacity.
+   */
+  readonly signal?: AbortSignal | undefined;
 
   // ---------------------------------------------------------------------------
   // Sub-agent constraints (hook agents, sandboxed spawns)

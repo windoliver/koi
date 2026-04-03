@@ -150,9 +150,15 @@ export { createBrickRequiresExtension } from "./brick-requires-extension.js";
 export { createChildHandle } from "./child-handle.js";
 // compose bridge (lifecycle-aware terminals)
 export { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
+// agent spawn adapter
+export type { CreateAgentSpawnFnOptions } from "./create-agent-spawn-fn.js";
+export { createAgentSpawnFn } from "./create-agent-spawn-fn.js";
 // hook spawn adapter
 export type { CreateHookSpawnFnOptions, HookAgentMarker } from "./create-hook-spawn-fn.js";
 export { createHookSpawnFn } from "./create-hook-spawn-fn.js";
+// spawn tool provider
+export type { SpawnToolProviderConfig } from "./create-spawn-tool-provider.js";
+export { createSpawnToolProvider } from "./create-spawn-tool-provider.js";
 // deduped tools accessor
 export { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 // delivery policy
@@ -174,9 +180,15 @@ export { createKoi } from "./koi.js";
 // lifecycle
 export type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 export { transition } from "./lifecycle.js";
+// output collectors
+export type { OutputCollector } from "./output-collector.js";
+export { createTextCollector, createVerdictCollector } from "./output-collector.js";
 // result pruner
 export type { ResultPrunerConfig } from "./result-pruner.js";
 export { createResultPruner } from "./result-pruner.js";
+// shared spawn lifecycle
+export type { RunSpawnedAgentOptions } from "./run-spawned-agent.js";
+export { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
 // spawn child
 export { spawnChildAgent } from "./spawn-child.js";
 // spawn ledger

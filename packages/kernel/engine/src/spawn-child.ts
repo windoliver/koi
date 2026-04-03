@@ -68,9 +68,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 1. Acquire ledger slot (tree-wide process count)
   //    Long-lived — released on child termination, not on tool call completion.
   //    Fan-out (short-lived) is handled by the spawn guard middleware.
-  const acquired = options.spawnLedger.acquire();
-  // acquire() returns boolean | Promise<boolean> per L0 interface
-  const didAcquire = await acquired;
+  //    When acquireOrWait is available and a signal is provided, wait for a slot
+  //    instead of failing immediately at capacity (backpressure).
+  let didAcquire: boolean;
+  if (options.spawnLedger.acquireOrWait !== undefined && options.signal !== undefined) {
+    didAcquire = await options.spawnLedger.acquireOrWait(options.signal);
+  } else {
+    const acquired = options.spawnLedger.acquire();
+    // acquire() returns boolean | Promise<boolean> per L0 interface
+    didAcquire = await acquired;
+  }
   if (!didAcquire) {
     const active = options.spawnLedger.activeCount();
     const cap = options.spawnLedger.capacity();

@@ -62,7 +62,7 @@ export function createAgentDefinitionRegistry(
   for (const def of allDefs) {
     const existing = byType.get(def.agentType);
     if (!existing) {
-      byType.set(def.agentType, deepFreezeDefinition(def));
+      byType.set(def.agentType, Object.isFrozen(def) ? def : deepFreezeDefinition(def));
       continue;
     }
 
@@ -79,7 +79,7 @@ export function createAgentDefinitionRegistry(
     }
 
     if (newPriority > existingPriority) {
-      byType.set(def.agentType, deepFreezeDefinition(def));
+      byType.set(def.agentType, Object.isFrozen(def) ? def : deepFreezeDefinition(def));
     }
   }
 
