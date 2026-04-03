@@ -122,6 +122,23 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         ...definition.manifest,
       };
 
+      // 2b. Capability attenuation guard: prevent privilege escalation via Spawn.
+      //     A parent cannot confer permissions it doesn't hold. If the resolved child
+      //     manifest declares permissions and the parent manifest does not, fail fast
+      //     rather than silently assembling a child with broader access.
+      const parentPermissions = base.parentAgent.manifest.permissions;
+      const childPermissions = manifest.permissions;
+      if (childPermissions !== undefined && parentPermissions === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Cannot spawn "${manifest.name}": child manifest declares permissions that the parent agent does not possess. Ensure the parent manifest includes equivalent permissions or configure delegation.`,
+            retryable: false,
+          },
+        };
+      }
+
       // 3. Use definition's systemPrompt if request didn't provide one
       if (systemPrompt === undefined) {
         systemPrompt = extractSystemPrompt(definition);
@@ -255,6 +272,44 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
                 createdAt: Date.now(),
               };
               parentInbox.push(errorItem);
+            }
+            // For on_demand: write a minimal error RunReport under the same session key
+            // so callers querying reportStore.getBySession(sessionId("delivery-<childId>"))
+            // can distinguish a failed job from a pending/missing one.
+            if (policy.kind === "on_demand" && options.reportStore !== undefined) {
+              const childId = spawnResult.childPid.id;
+              void Promise.resolve(
+                options.reportStore.put({
+                  agentId: childId,
+                  sessionId: `delivery-${childId}` as ReturnType<
+                    typeof import("@koi/core").sessionId
+                  >,
+                  runId: `delivery-${childId}-error-${Date.now()}` as ReturnType<
+                    typeof import("@koi/core").runId
+                  >,
+                  summary: `[FAILED] ${errorMessage}`,
+                  duration: {
+                    startedAt: Date.now(),
+                    completedAt: Date.now(),
+                    durationMs: 0,
+                    totalTurns: 0,
+                    totalActions: 0,
+                    truncated: false,
+                  },
+                  actions: [],
+                  artifacts: [],
+                  issues: [
+                    { severity: "critical", message: errorMessage, turnIndex: 0, resolved: false },
+                  ],
+                  cost: { totalTokens: 0, inputTokens: 0, outputTokens: 0 },
+                  recommendations: [],
+                }),
+              ).catch((storeErr: unknown) => {
+                console.error(
+                  `[agent-spawn] failed to write error report for child "${childId}"`,
+                  storeErr,
+                );
+              });
             }
           } finally {
             spawnResult.handle.terminate();
