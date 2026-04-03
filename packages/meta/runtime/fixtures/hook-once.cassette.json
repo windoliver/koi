@@ -1,37 +1,37 @@
 {
   "name": "hook-once",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775198302582,
+  "recordedAt": 1775200219378,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "add_numbers",
-      "callId": "tool_add_numbers_DjiOf6yzg6jvZARU5V2s"
+      "callId": "tool_add_numbers_PYFIk7yD1E5lllRd1jsx"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_DjiOf6yzg6jvZARU5V2s",
+      "callId": "tool_add_numbers_PYFIk7yD1E5lllRd1jsx",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_DjiOf6yzg6jvZARU5V2s",
+      "callId": "tool_add_numbers_PYFIk7yD1E5lllRd1jsx",
       "delta": "{\"b\":4,\"a\":3}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "add_numbers",
-      "callId": "tool_add_numbers_Nxdm6uLL7DBz6uiAKlbO"
+      "callId": "tool_add_numbers_fev0OvfjdtP8FfOPY8pf"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_Nxdm6uLL7DBz6uiAKlbO",
+      "callId": "tool_add_numbers_fev0OvfjdtP8FfOPY8pf",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_Nxdm6uLL7DBz6uiAKlbO",
-      "delta": "{\"a\":10,\"b\":20}"
+      "callId": "tool_add_numbers_fev0OvfjdtP8FfOPY8pf",
+      "delta": "{\"b\":20,\"a\":10}"
     },
     {
       "kind": "usage",
@@ -40,11 +40,11 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_add_numbers_DjiOf6yzg6jvZARU5V2s"
+      "callId": "tool_add_numbers_PYFIk7yD1E5lllRd1jsx"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_add_numbers_Nxdm6uLL7DBz6uiAKlbO"
+      "callId": "tool_add_numbers_fev0OvfjdtP8FfOPY8pf"
     },
     {
       "kind": "done",
@@ -52,11 +52,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775198301-nXNX680M2bPphb8lI6s8",
+        "responseId": "gen-1775200218-CFUC9K6gzqzfyApu9s4z",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_add_numbers_DjiOf6yzg6jvZARU5V2s",
+            "id": "tool_add_numbers_PYFIk7yD1E5lllRd1jsx",
             "name": "add_numbers",
             "arguments": {
               "b": 4,
@@ -65,11 +65,11 @@
           },
           {
             "kind": "tool_call",
-            "id": "tool_add_numbers_Nxdm6uLL7DBz6uiAKlbO",
+            "id": "tool_add_numbers_fev0OvfjdtP8FfOPY8pf",
             "name": "add_numbers",
             "arguments": {
-              "a": 10,
-              "b": 20
+              "b": 20,
+              "a": 10
             }
           }
         ],
