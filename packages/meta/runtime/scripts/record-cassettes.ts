@@ -47,11 +47,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
-import {
-  createBuiltinSearchProvider,
-  createFsReadTool,
-  createFsWriteTool,
-} from "@koi/tools-builtin";
+import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -423,38 +419,12 @@ if (nexusFsCheck.exitCode === 0) {
   await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
 
   const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
-  const writeTool = createFsWriteTool(backend, "nexus", { sandbox: false });
 
   nexusFsProvider = createSingleToolProvider({
     name: "nexus-fs",
     toolName: "nexus_read",
     createTool: () => readTool,
   });
-
-  // Also register write tool via a second provider
-  const nexusWriteProvider = createSingleToolProvider({
-    name: "nexus-fs-write",
-    toolName: "nexus_write",
-    createTool: () => writeTool,
-  });
-
-  nexusFsProvider = {
-    name: "nexus-fs",
-    attach: async (agent) => {
-      const readResult = await createSingleToolProvider({
-        name: "nexus-fs-read",
-        toolName: "nexus_read",
-        createTool: () => readTool,
-      }).attach(agent);
-      const writeResult = await nexusWriteProvider.attach(agent);
-      // Merge components from both providers
-      const components = new Map([
-        ...(readResult && "components" in readResult ? readResult.components : []),
-        ...(writeResult && "components" in writeResult ? writeResult.components : []),
-      ]);
-      return { components };
-    },
-  };
 
   console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
 } else {

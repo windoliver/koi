@@ -1183,23 +1183,37 @@ describe("Golden: @koi/fs-nexus", () => {
     }
   });
 
-  test("ATIF trajectory: nexus_read tool call captured", async () => {
-    const { existsSync, readFileSync } = await import("node:fs");
+  test("ATIF trajectory: nexus_read tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
     const trajectoryPath = `${FIXTURES}/nexus-fs-read.trajectory.json`;
     if (!existsSync(trajectoryPath)) {
-      console.log("  (skipped — nexus-fs-read.trajectory.json not recorded yet)");
-      return;
+      throw new Error(
+        "nexus-fs-read.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
     }
 
     const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
-      readonly steps?: readonly { readonly kind?: string; readonly tool_name?: string }[];
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
     };
 
     expect(trajectory.steps).toBeDefined();
-    // Should have at least a model step and a tool step
-    const toolSteps = (trajectory.steps ?? []).filter((s) => s.kind === "tool");
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with nexus_read
+    const toolSteps = steps.filter((s) => s.source === "tool");
     expect(toolSteps.length).toBeGreaterThanOrEqual(1);
-    // The tool should be nexus_read
-    expect(toolSteps.some((s) => s.tool_name === "nexus_read")).toBe(true);
+
+    const hasNexusRead = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "nexus_read"),
+    );
+    expect(hasNexusRead).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
 });

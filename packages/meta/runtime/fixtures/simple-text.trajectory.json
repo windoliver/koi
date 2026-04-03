@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-02T10:31:20.936Z",
+      "timestamp": "2026-04-03T04:06:09.594Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-02T10:31:20.936Z",
+      "timestamp": "2026-04-03T04:06:09.594Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,7 +38,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-02T10:31:20.942Z",
+      "timestamp": "2026-04-03T04:06:09.602Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Answer with just the number.",
       "observation": {
@@ -52,7 +52,7 @@
         "prompt_tokens": 58,
         "completion_tokens": 2
       },
-      "duration_ms": 420,
+      "duration_ms": 472,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -63,10 +63,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-02T10:31:21.371Z",
+      "timestamp": "2026-04-03T04:06:10.077Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 429.8045830000001,
+      "duration_ms": 476.8781249999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -80,10 +80,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-02T10:31:21.373Z",
+      "timestamp": "2026-04-03T04:06:10.080Z",
       "model_name": "hook:on-model-done",
       "message": "turn.ended → on-model-done",
-      "duration_ms": 9.25854100000015,
+      "duration_ms": 4.583292000000256,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
