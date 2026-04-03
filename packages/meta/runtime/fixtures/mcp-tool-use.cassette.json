@@ -1,54 +1,13 @@
 {
   "name": "mcp-tool-use",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775238787685,
+  "recordedAt": 1775257875462,
   "chunks": [
     {
-      "kind": "tool_call_start",
-      "toolName": "golden-mcp__weather",
-      "callId": "tool_golden-mcp__weather_SyoCI6pG9dT0jbTfNxlq"
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_golden-mcp__weather_SyoCI6pG9dT0jbTfNxlq",
-      "delta": ""
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_golden-mcp__weather_SyoCI6pG9dT0jbTfNxlq",
-      "delta": "{\"city\":\"Tokyo\"}"
-    },
-    {
-      "kind": "usage",
-      "inputTokens": 38,
-      "outputTokens": 8
-    },
-    {
-      "kind": "tool_call_end",
-      "callId": "tool_golden-mcp__weather_SyoCI6pG9dT0jbTfNxlq"
-    },
-    {
-      "kind": "done",
-      "response": {
-        "content": "",
-        "model": "google/gemini-2.0-flash-001",
-        "stopReason": "tool_use",
-        "responseId": "gen-1775238787-X0ZWmvMGeMjRGQsX6000",
-        "richContent": [
-          {
-            "kind": "tool_call",
-            "id": "tool_golden-mcp__weather_SyoCI6pG9dT0jbTfNxlq",
-            "name": "golden-mcp__weather",
-            "arguments": {
-              "city": "Tokyo"
-            }
-          }
-        ],
-        "usage": {
-          "inputTokens": 38,
-          "outputTokens": 8
-        }
-      }
+      "kind": "error",
+      "message": "openai-compat API error (401): User not found.",
+      "code": "PERMISSION",
+      "retryable": false
     }
   ]
 }
