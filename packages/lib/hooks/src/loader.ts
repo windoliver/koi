@@ -107,6 +107,25 @@ function loadHooksInternal(raw: unknown): Result<LoadHooksResult, KoiError> {
     seen.add(hook.name);
   }
 
+  // Reject prompt hooks — the standard hook middleware cannot execute them.
+  // Prompt hooks require the dedicated @koi/hook-prompt executor, which is
+  // not wired into the shared pipeline yet. Loading them would cause silent
+  // fail-open in pre-call position, bypassing the intended safety gate.
+  const promptHook = active.find((h) => h.kind === "prompt");
+  if (promptHook !== undefined) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Hook "${promptHook.name}" uses kind "prompt", which is not yet supported ` +
+          "in the standard hook pipeline. Use command, http, or agent hooks, " +
+          "or wire @koi/hook-prompt as a dedicated executor.",
+        retryable: false,
+        context: { hookName: promptHook.name },
+      },
+    };
+  }
+
   const warnings = collectEventWarnings(active);
 
   return { ok: true, value: { hooks: active, warnings } };
