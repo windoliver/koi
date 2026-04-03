@@ -1,0 +1,180 @@
+# @koi/tasks
+
+Pluggable task board persistence — in-memory and file-based backends for `TaskBoardStore`.
+
+## Layer
+
+L2 — depends on `@koi/core` (L0), `@koi/validation` (L0u).
+
+## Purpose
+
+Provides concrete implementations of the `TaskBoardStore` interface (defined in
+`@koi/core/task-board`) for persisting task board items across agent sessions.
+
+Two backends ship with this package:
+
+1. **In-memory** — `Map`-backed store for tests and short-lived sessions. All operations
+   are synchronous. State is lost when the process exits.
+2. **File-based** — One JSON file per task in a flat directory. Atomic write-to-temp +
+   rename for crash safety. Write-through cache for fast reads. State survives process
+   restart.
+
+Both backends share the same behavioral contract (verified by a shared test suite) and
+implement the same `TaskBoardStore` interface, so consumers can swap backends without
+code changes.
+
+## L0 Interface
+
+The `TaskBoardStore` interface lives in `@koi/core` (`task-board.ts`) alongside the
+`TaskItem`, `TaskItemId`, and `TaskBoard` types. Key design decisions:
+
+- **Bare returns** — `get()` returns `TaskItem | undefined`, `put()` returns `void`.
+  Throws on unexpected failures (filesystem corruption). No `Result<T, KoiError>` wrapper
+  for simple CRUD.
+- **`T | Promise<T>` return types** — All methods return `T | Promise<T>` so in-memory
+  backends can be synchronous while file/network backends return promises. Callers must
+  always `await`.
+- **`AsyncDisposable`** — Both backends implement `Symbol.asyncDispose` for cleanup.
+- **ID generation inside the store** — `nextId()` returns monotonic integer IDs
+  (`task_1`, `task_2`, ...) with a high water mark that never decreases, even after
+  deletion or reset. The store owns the counter because only it knows what IDs exist.
+
+```typescript
+interface TaskBoardStore extends AsyncDisposable {
+  readonly get: (id: TaskItemId) => TaskItem | undefined | Promise<TaskItem | undefined>;
+  readonly put: (item: TaskItem) => void | Promise<void>;
+  readonly delete: (id: TaskItemId) => void | Promise<void>;
+  readonly list: (filter?: TaskBoardStoreFilter) => readonly TaskItem[] | Promise<readonly TaskItem[]>;
+  readonly nextId: () => TaskItemId | Promise<TaskItemId>;
+  readonly watch: (listener: (event: TaskBoardStoreEvent) => void) => () => void;
+  readonly reset: () => void | Promise<void>;
+}
+```
+
+## Public API
+
+### `createMemoryTaskBoardStore(): TaskBoardStore`
+
+Creates an in-memory store backed by a `Map<TaskItemId, TaskItem>`.
+
+- All operations are synchronous (return values, not promises).
+- IDs are monotonic integers: `task_1`, `task_2`, `task_3`, ...
+- High water mark is never decremented — IDs are never reused after deletion.
+- `reset()` clears all items but preserves the HWM.
+- `dispose()` clears the map.
+
+### `createFileTaskBoardStore(config): Promise<TaskBoardStore>`
+
+Creates a file-based store with one JSON file per task.
+
+Returns a promise because construction involves scanning the directory.
+
+**Config:**
+
+```typescript
+interface FileTaskBoardStoreConfig {
+  /** Directory for task JSON files. Created if it does not exist. */
+  readonly baseDir: string;
+  /** Delete orphaned .tmp files on startup. Default: true. */
+  readonly cleanOrphanedTmp?: boolean;
+}
+```
+
+**Behavior:**
+
+- **Startup**: Scans filenames only (no content reads) to compute the high water mark
+  from existing IDs. O(n) filenames, zero file I/O.
+- **Write-through cache**: `put()` writes to disk AND updates an in-memory `Map`. `get()`
+  and `list()` serve from cache after initial population. Cache is populated lazily on
+  first `get()` or `list()` call.
+- **Atomic writes**: Each `put()` writes to a temp file (`task_N.json.<timestamp>.<random>.tmp`)
+  then renames to the final path. This ensures the target file is either the old version
+  or the new version, never corrupted.
+- **Orphaned temp cleanup**: On startup (unless `cleanOrphanedTmp: false`), scans for
+  `.tmp` files left by interrupted writes and deletes them.
+- **Self-healing**: If a known ID has no backing file (deleted externally) or the file is
+  corrupted JSON, `get()` returns `undefined` and removes the ID from the known set.
+- **Flat directory**: No hash sharding. Task boards typically have 5–50 items, rarely
+  >100. Sharding can be added behind the same interface if needed.
+
+**File layout:**
+
+```
+<baseDir>/
+  task_1.json
+  task_2.json
+  task_5.json      (gaps are normal — IDs are never reused)
+```
+
+## Watch / Notification
+
+Both backends emit events via the `watch()` method using the generic `ChangeNotifier<E>`
+pattern (shared with `StoreChangeNotifier` for brick stores):
+
+```typescript
+type TaskBoardStoreEvent =
+  | { readonly kind: "put"; readonly item: TaskItem }
+  | { readonly kind: "deleted"; readonly id: TaskItemId };
+```
+
+- `watch()` returns an unsubscribe function (idempotent).
+- Subscriber cap: 64 (throws if exceeded — catches listener leaks).
+- Snapshot-before-iterate: safe if a listener unsubscribes during notification.
+- Error isolation: one listener throwing does not break others.
+
+The generic `ChangeNotifier<E>` interface lives in `@koi/core` (`change-notifier.ts`).
+The in-memory implementation `createMemoryChangeNotifier<E>()` lives in `@koi/validation`
+(L0u) for reuse across all store implementations.
+
+## ID Generation
+
+Both backends use monotonic integer IDs with a high water mark:
+
+- Format: `task_1`, `task_2`, ..., `task_N`
+- The counter only increases — deleting `task_3` does not make `3` available again.
+- `reset()` clears all items but preserves the HWM.
+- File-based store: on startup, scans filenames to find `max(existing IDs)` and
+  continues from there. No `.meta` file needed.
+
+This matches CC's task ID model — human-readable integers that the LLM can reference
+naturally ("task_3 is blocked by task_1").
+
+## Contract Test Suite
+
+`task-board-store.contract.ts` defines 21 behavioral tests that any `TaskBoardStore`
+implementation must pass. Test categories:
+
+| Category | Tests | What it verifies |
+|----------|-------|------------------|
+| CRUD | 7 | Round-trip, overwrite, delete, list, field preservation |
+| List filters | 3 | Filter by status, assignedTo, combined |
+| ID + HWM | 5 | Monotonicity, no reuse after delete, reset preserves HWM, gaps |
+| Watch | 4 | Put/delete events, unsubscribe, no event on no-op delete |
+| Reset | 1 | Clears items, preserves HWM |
+
+Future store implementations (e.g., Nexus-backed) import and run the contract:
+
+```typescript
+import { runTaskBoardStoreContract } from "@koi/tasks/src/task-board-store.contract.js";
+runTaskBoardStoreContract(() => createMyStore());
+```
+
+## Relationship to Other Packages
+
+| Package | Relationship |
+|---------|-------------|
+| `@koi/core` | Defines `TaskBoardStore` interface + `TaskItem` types (L0) |
+| `@koi/validation` | Provides `createMemoryChangeNotifier<E>()` (L0u) |
+| `@koi/tasks` (future: tools) | #1428 — task tools (`task_create`, `task_list`, etc.) will consume the store |
+| `@koi/tasks` (future: reconciliation) | #1429 — transition guards and DAG validation will consume the store |
+| `@koi/core` `TaskStore` | **Separate domain** — scheduler task persistence (`ScheduledTask`), not task board |
+
+## v1 Reference
+
+- `archive/v1/packages/sched/scheduler/src/sqlite-store.ts` — SQLite-backed scheduler
+  store. We simplified: dropped SQLite (overkill for task-board scale), dropped scheduler
+  fields (priority queue, retries, timeouts), kept the prepared-statement and
+  async-dispose patterns.
+- `archive/v1/packages/fs/store-fs/src/fs-store.ts` — File-based brick store with atomic
+  writes and hash sharding. We reused the atomic-write pattern but dropped hash sharding
+  (unnecessary at task-board scale).

@@ -207,6 +207,8 @@ export type {
   CatalogSourceError,
 } from "./catalog.js";
 export { ALL_CATALOG_SOURCES, DEFAULT_CATALOG_SEARCH_LIMIT } from "./catalog.js";
+// change notifier — generic pub/sub for store mutation observation
+export type { ChangeNotifier } from "./change-notifier.js";
 // channel
 export type {
   ChannelAdapter,
@@ -998,6 +1000,10 @@ export type {
   TaskBoardConfig,
   TaskBoardEvent,
   TaskBoardSnapshot,
+  TaskBoardStore,
+  TaskBoardStoreEvent,
+  TaskBoardStoreFilter,
+  TaskBoardStoreNotifier,
   TaskInput,
   TaskItem,
   TaskItemId,

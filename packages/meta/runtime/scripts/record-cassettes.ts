@@ -48,6 +48,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream } from "@koi/query-engine";
+import { createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -100,6 +101,62 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// ---------------------------------------------------------------------------
+// Task tools (backed by @koi/tasks in-memory store)
+// ---------------------------------------------------------------------------
+
+const taskStore = createMemoryTaskBoardStore();
+
+const taskCreateResult = buildTool({
+  name: "task_create",
+  description: "Create a new task on the task board. Returns the created task.",
+  inputSchema: {
+    type: "object",
+    properties: { description: { type: "string", description: "What the task is about" } },
+    required: ["description"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const id = await taskStore.nextId();
+    const now = Date.now();
+    const item = {
+      id,
+      subject: String(args.description),
+      description: String(args.description),
+      dependencies: [],
+      retries: 0,
+      status: "pending" as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await taskStore.put(item);
+    return { created: { id, description: item.description, status: item.status } };
+  },
+});
+if (!taskCreateResult.ok) {
+  console.error(`buildTool(task_create) failed: ${taskCreateResult.error.message}`);
+  process.exit(1);
+}
+const taskCreateTool = taskCreateResult.value;
+
+const taskListResult = buildTool({
+  name: "task_list",
+  description: "List all tasks on the task board.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const items = await taskStore.list();
+    return {
+      tasks: items.map((i) => ({ id: i.id, description: i.description, status: i.status })),
+    };
+  },
+});
+if (!taskListResult.ok) {
+  console.error(`buildTool(task_list) failed: ${taskListResult.error.message}`);
+  process.exit(1);
+}
+const taskListTool = taskListResult.value;
 
 // =========================================================================
 // Recording helpers
@@ -646,7 +703,38 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 6. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  // 7. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  {
+    name: "task-board",
+    prompt:
+      'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => taskCreateTool,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => taskListTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 8. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
   {
     name: "mcp-tool-use",
     prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
@@ -715,6 +803,24 @@ await recordCassette("tool-use", () =>
       },
     ],
     tools: [addTool.descriptor],
+  }),
+);
+
+await recordCassette("task-board", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: 'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+          },
+        ],
+      },
+    ],
+    tools: [taskCreateTool.descriptor, taskListTool.descriptor],
   }),
 );
 

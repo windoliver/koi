@@ -1087,6 +1087,102 @@ describe("Golden: @koi/hooks agent hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tasks (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tasks", () => {
+  test("createMemoryTaskBoardStore CRUD round-trip with nextId + HWM", async () => {
+    const { createMemoryTaskBoardStore } = await import("@koi/tasks");
+    const { taskItemId } = await import("@koi/core");
+
+    const store = createMemoryTaskBoardStore();
+
+    // nextId generates monotonic IDs
+    const id1 = await store.nextId();
+    const id2 = await store.nextId();
+    expect(id1).toBe(taskItemId("task_1"));
+    expect(id2).toBe(taskItemId("task_2"));
+
+    // put + get round-trip
+    await store.put({
+      id: id1,
+      subject: "Review README",
+      description: "Review README",
+      dependencies: [],
+      retries: 0,
+      status: "pending",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const loaded = await store.get(id1);
+    expect(loaded?.description).toBe("Review README");
+
+    // delete preserves HWM
+    await store.delete(id1);
+    const id3 = await store.nextId();
+    expect(id3).toBe(taskItemId("task_3")); // Not task_1
+
+    // list with filter
+    await store.put({
+      id: id2,
+      subject: "Fix bug",
+      description: "Fix bug",
+      dependencies: [],
+      retries: 0,
+      status: "completed",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const pending = await store.list({ status: "pending" });
+    expect(pending).toHaveLength(0);
+    const completed = await store.list({ status: "completed" });
+    expect(completed).toHaveLength(1);
+  });
+
+  test("createFileTaskBoardStore persists to disk and survives recreation", async () => {
+    const { createFileTaskBoardStore } = await import("@koi/tasks");
+    const { taskItemId } = await import("@koi/core");
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "koi-golden-tasks-"));
+
+    // Create store, add a task, dispose
+    const store1 = await createFileTaskBoardStore({ baseDir: dir });
+    const id = await store1.nextId();
+    await store1.put({
+      id,
+      subject: "Persistent task",
+      description: "Persistent task",
+      dependencies: [],
+      retries: 0,
+      status: "pending",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await store1[Symbol.asyncDispose]();
+
+    // Recreate from same directory — task should survive
+    const store2 = await createFileTaskBoardStore({ baseDir: dir });
+    const loaded = await store2.get(taskItemId(id));
+    expect(loaded?.description).toBe("Persistent task");
+
+    // HWM preserved — next ID is higher
+    const id2 = await store2.nextId();
+    const num1 = parseInt(id.replace(/\D/g, ""), 10);
+    const num2 = parseInt(id2.replace(/\D/g, ""), 10);
+    expect(num2).toBeGreaterThan(num1);
+
+    await store2[Symbol.asyncDispose]();
+
+    // Cleanup
+    const { rmSync } = await import("node:fs");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/mcp (2 queries)
 // ---------------------------------------------------------------------------
 
