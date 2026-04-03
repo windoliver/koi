@@ -22,6 +22,7 @@ import type {
   TaskableAgent,
 } from "@koi/core";
 import { INBOX } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { runWithAgentContext } from "@koi/execution-context";
 
 import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
@@ -153,8 +154,9 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     The real output flows to the parent's inbox or ReportStore per policy.
     //     Return immediately — the SpawnResult output will be empty for async delivery.
     if (policy.kind !== "streaming") {
-      // Fail fast: on_demand without a ReportStore would silently drop the output.
-      // Callers must provide reportStore when requesting on_demand delivery.
+      // Fail fast: non-streaming delivery requires a sink for the result.
+      // on_demand needs a ReportStore; deferred needs the parent inbox.
+      // Without the appropriate sink the child runs but output is silently lost.
       if (policy.kind === "on_demand" && options.reportStore === undefined) {
         return {
           ok: false,
@@ -166,8 +168,34 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           },
         };
       }
+      if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
+            retryable: false,
+          },
+        };
+      }
       return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
-        const spawnResult = await spawnChildAgent(spawnOptions);
+        // Wrap spawnChildAgent() so slot-acquisition, governance, assembly, and
+        // cancellation failures all return SpawnResult instead of throwing.
+        // This matches the contract of runSpawnedAgent() used in the streaming path.
+        let spawnResult: Awaited<ReturnType<typeof spawnChildAgent>>;
+        try {
+          spawnResult = await spawnChildAgent(spawnOptions);
+        } catch (e: unknown) {
+          if (e instanceof KoiRuntimeError) {
+            return { ok: false, error: e.toKoiError() };
+          }
+          const message = e instanceof Error ? e.message : String(e);
+          return {
+            ok: false,
+            error: { code: "INTERNAL", message: `Spawn failed: ${message}`, retryable: false },
+          };
+        }
         const parentInbox = base.parentAgent.component(INBOX);
         const deliveryHandle = applyDeliveryPolicy({
           spawnResult,
