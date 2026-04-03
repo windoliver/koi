@@ -226,3 +226,73 @@ describeIf("createLocalTransport (requires nexus-fs)", () => {
     if (readResult.ok) expect(readResult.value.content).toBe("original content");
   });
 });
+
+describeIf("createLocalTransport multi-mount (requires nexus-fs)", () => {
+  let tmpDirA: string;
+  let tmpDirB: string;
+  let transport: NexusTransport;
+
+  beforeEach(async () => {
+    tmpDirA = mkdtempSync(join(tmpdir(), "koi-multi-a-"));
+    tmpDirB = mkdtempSync(join(tmpdir(), "koi-multi-b-"));
+    transport = await createLocalTransport({
+      mountUri: [`local://${tmpDirA}`, `local://${tmpDirB}`],
+      startupTimeoutMs: 15_000,
+    });
+  });
+
+  afterEach(() => {
+    transport.close();
+    try {
+      rmSync(tmpDirA, { recursive: true, force: true });
+      rmSync(tmpDirB, { recursive: true, force: true });
+    } catch {
+      // Cleanup best-effort
+    }
+  });
+
+  test("reports multiple mount points", () => {
+    expect(transport.mounts).toBeDefined();
+    expect(transport.mounts?.length).toBe(2);
+  });
+
+  test("write/read to different mounts", async () => {
+    const mounts = transport.mounts ?? [];
+    expect(mounts.length).toBe(2);
+    const mountA = mounts[0] ?? "";
+    const mountB = mounts[1] ?? "";
+
+    // Write to mount A
+    const writeA = await transport.call("write", {
+      path: `${mountA}/fileA.txt`,
+      content: "from mount A",
+    });
+    expect(writeA.ok).toBe(true);
+
+    // Write to mount B
+    const writeB = await transport.call("write", {
+      path: `${mountB}/fileB.txt`,
+      content: "from mount B",
+    });
+    expect(writeB.ok).toBe(true);
+
+    // Read back from each — files are isolated
+    const readA = await transport.call<{ readonly content: string }>("read", {
+      path: `${mountA}/fileA.txt`,
+    });
+    expect(readA.ok).toBe(true);
+    if (readA.ok) expect(readA.value.content).toBe("from mount A");
+
+    const readB = await transport.call<{ readonly content: string }>("read", {
+      path: `${mountB}/fileB.txt`,
+    });
+    expect(readB.ok).toBe(true);
+    if (readB.ok) expect(readB.value.content).toBe("from mount B");
+
+    // Mount A should NOT have mount B's file
+    const crossRead = await transport.call("read", {
+      path: `${mountA}/fileB.txt`,
+    });
+    expect(crossRead.ok).toBe(false);
+  });
+});

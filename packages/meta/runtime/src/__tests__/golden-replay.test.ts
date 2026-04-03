@@ -1182,4 +1182,24 @@ describe("Golden: @koi/fs-nexus", () => {
       expect(readResult.value.path).toBe("/golden/test.txt");
     }
   });
+
+  test("ATIF trajectory: nexus_read tool call captured", async () => {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const trajectoryPath = `${FIXTURES}/nexus-fs-read.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      console.log("  (skipped — nexus-fs-read.trajectory.json not recorded yet)");
+      return;
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly { readonly kind?: string; readonly tool_name?: string }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    // Should have at least a model step and a tool step
+    const toolSteps = (trajectory.steps ?? []).filter((s) => s.kind === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    // The tool should be nexus_read
+    expect(toolSteps.some((s) => s.tool_name === "nexus_read")).toBe(true);
+  });
 });
