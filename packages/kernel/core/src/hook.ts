@@ -237,6 +237,11 @@ export interface PromptHookConfig {
    * When false: if parsing fails, the action is allowed through (fail-open).
    */
   readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). Default: false.
+   */
+  readonly once?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
