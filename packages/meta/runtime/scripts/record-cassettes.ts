@@ -35,7 +35,7 @@ import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -200,6 +200,8 @@ interface QueryConfig {
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
+  /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
+  readonly useRegistry?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,11 +230,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
   const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
+
+  // Optional registry for once-hook lifecycle tracking
+  // let justified: mutable — created conditionally
+  let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
+  if (config.useRegistry === true) {
+    hookRegistry = createHookRegistry();
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+  }
+
   // Runtime hook dispatch — tool hooks + trajectory recording
+  const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
     hooks: loadedHooks,
     store,
     docId,
+    ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
   });
 
   // @koi/permissions + @koi/middleware-permissions
@@ -378,6 +391,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
 
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
+  hookRegistry?.cleanup(`golden-${name}`);
   await runtime.dispose();
 
   // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
@@ -717,6 +731,7 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 3,
+    useRegistry: true,
   },
 
   // 7. web-fetch: @koi/tools-web exercised with real HTTP fetch
