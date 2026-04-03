@@ -94,7 +94,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const serveWorkspaceRoot = pResolve0(pDirname0(manifestPath));
 
   // 2. VALIDATE: Load and validate manifest
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, { rejectUnsupportedHooks: true });
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
     process.exit(EXIT_CONFIG);

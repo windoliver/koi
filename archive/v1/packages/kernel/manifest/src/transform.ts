@@ -9,6 +9,7 @@ import type {
   ChannelIdentity,
   DegeneracyConfig,
   DeliveryPolicy,
+  HookConfig,
   JsonObject,
   MiddlewareConfig,
   ModelConfig,
@@ -289,6 +290,8 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
           ),
         }
       : {}),
+    // Transform hooks — Zod schema guarantees the discriminated union shape
+    ...(raw.hooks !== undefined ? { hooks: raw.hooks as unknown as readonly HookConfig[] } : {}),
     // Extension fields (engine, schedule, webhooks, forge, context, deploy)
     ...extractExtensions(raw as unknown as Readonly<Record<string, unknown>>),
     ...(raw.deploy !== undefined ? { deploy: raw.deploy as DeployConfig } : {}),

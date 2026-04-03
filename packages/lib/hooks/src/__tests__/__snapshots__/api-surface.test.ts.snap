@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig } from '@koi/core';
+"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig, PromptHookConfig } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -504,8 +504,9 @@ declare const hookFilterSchema: z.ZodType<HookFilter>;
 declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const agentHookSchema: z.ZodType<AgentHookConfig>;
+declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, promptHookSchema, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
 "
 `;

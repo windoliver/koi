@@ -202,6 +202,50 @@ export interface HttpHookConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Prompt hook config
+// ---------------------------------------------------------------------------
+
+/**
+ * A hook that makes a single-shot LLM call (~100-200 tokens) for pass/fail
+ * verification. Fills the gap between static hooks (command/http) and expensive
+ * agent hooks (4000+ tokens).
+ *
+ * The model receives a verification prompt and must respond with structured
+ * JSON: `{ "ok": true/false, "reason": "..." }`.
+ */
+export interface PromptHookConfig {
+  readonly kind: "prompt";
+  /** Human-readable hook name (unique within a manifest). */
+  readonly name: string;
+  /** Verification prompt sent to the model. */
+  readonly prompt: string;
+  /** Override model for the verification call (default: cheap/fast model). */
+  readonly model?: string | undefined;
+  /** Timeout in milliseconds. Default: 10_000. */
+  readonly timeoutMs?: number | undefined;
+  /** Max tokens for the verification response. Default: 256. */
+  readonly maxTokens?: number | undefined;
+  /** Filter conditions — when absent, fires on all events. */
+  readonly filter?: HookFilter | undefined;
+  /** Whether this hook is active. Default: true. */
+  readonly enabled?: boolean | undefined;
+  /** When true, this hook blocks subsequent serial hooks. Default: false (parallel). */
+  readonly serial?: boolean | undefined;
+  /**
+   * Post-execution failure behavior. Default: true (fail-closed).
+   *
+   * When true: if the model response cannot be parsed, the action is blocked.
+   * When false: if parsing fails, the action is allowed through (fail-open).
+   */
+  readonly failClosed?: boolean | undefined;
+  /**
+   * When true, this hook fires on the first matching event and is then removed
+   * ("fire once" semantics). Default: false.
+   */
+  readonly once?: boolean | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Hook redaction config — controls payload forwarding to agent hooks
 // ---------------------------------------------------------------------------
 
@@ -316,7 +360,7 @@ export interface AgentHookConfig {
 // ---------------------------------------------------------------------------
 
 /** Discriminated union of all hook config types. */
-export type HookConfig = CommandHookConfig | HttpHookConfig | AgentHookConfig;
+export type HookConfig = CommandHookConfig | HttpHookConfig | PromptHookConfig | AgentHookConfig;
 
 // ---------------------------------------------------------------------------
 // Env-var policy — system-wide allowlist for hook env-var expansion

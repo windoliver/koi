@@ -613,6 +613,7 @@ export type {
   HookRedactionConfig,
   HookType,
   HttpHookConfig,
+  PromptHookConfig,
 } from "./hook.js";
 export {
   DEFAULT_AGENT_HOOK_TIMEOUT_MS,

@@ -11,6 +11,7 @@ import type {
   HookConfig,
   HookFilter,
   HttpHookConfig,
+  PromptHookConfig,
 } from "@koi/core";
 import { z } from "zod";
 
@@ -149,6 +150,22 @@ function createAgentHookSchema(): z.ZodType<AgentHookConfig> {
 export const agentHookSchema: z.ZodType<AgentHookConfig> = createAgentHookSchema();
 
 // ---------------------------------------------------------------------------
+// Prompt hook schema
+// ---------------------------------------------------------------------------
+
+function createPromptHookSchema(): z.ZodType<PromptHookConfig> {
+  return z.object({
+    kind: z.literal("prompt"),
+    ...hookBaseFields,
+    prompt: z.string().min(1, "Prompt hook prompt must not be empty"),
+    model: z.string().optional(),
+    maxTokens: z.number().int().positive("maxTokens must be positive").optional(),
+  });
+}
+
+export const promptHookSchema: z.ZodType<PromptHookConfig> = createPromptHookSchema();
+
+// ---------------------------------------------------------------------------
 // Discriminated union schema
 // ---------------------------------------------------------------------------
 
@@ -156,7 +173,7 @@ function createHookConfigSchema(): z.ZodType<HookConfig> {
   // Use z.union since z.discriminatedUnion has ZodType<> annotation issues
   // with exactOptionalPropertyTypes. Runtime discrimination still works via
   // each variant's `kind: z.literal(...)` check.
-  return z.union([commandHookSchema, httpHookSchema, agentHookSchema]);
+  return z.union([commandHookSchema, httpHookSchema, promptHookSchema, agentHookSchema]);
 }
 
 export const hookConfigSchema: z.ZodType<HookConfig> = createHookConfigSchema();

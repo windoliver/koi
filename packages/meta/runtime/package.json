@@ -17,6 +17,7 @@
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
+    "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
