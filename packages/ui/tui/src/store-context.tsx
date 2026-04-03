@@ -5,12 +5,13 @@
  * Selector support ensures components only re-render when their slice changes.
  */
 
+import type React from "react";
 import { createContext, useContext, useSyncExternalStore } from "react";
 import type { TuiStore } from "./state/store.js";
 import type { TuiState } from "./state/types.js";
 
 /** React context carrying the TuiStore instance. */
-export const StoreContext = createContext<TuiStore | null>(null);
+export const StoreContext: React.Context<TuiStore | null> = createContext<TuiStore | null>(null);
 
 /**
  * Select a slice of TUI state with automatic re-render on change.

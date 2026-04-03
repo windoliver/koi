@@ -6,7 +6,7 @@
  * by reference. The reducer preserves references for unchanged messages.
  */
 
-import { memo, type ReactNode } from "react";
+import React, { memo, type ReactNode } from "react";
 import type { SyntaxStyle } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
@@ -108,4 +108,4 @@ function MessageRowInner({ message, syntaxStyle }: MessageRowProps): ReactNode {
   }
 }
 
-export const MessageRow = memo(MessageRowInner);
+export const MessageRow: React.NamedExoticComponent<MessageRowProps> = memo(MessageRowInner);
