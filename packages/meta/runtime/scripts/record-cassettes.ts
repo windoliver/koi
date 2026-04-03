@@ -8,8 +8,9 @@
  *   simple-text      — text response, no tools, permissions bypass
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
- *   permission-deny  — permissions default mode denies add_numbers
- *   hook-blocked     — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
+ *   permission-deny       — permissions default mode denies add_numbers
+ *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
+ *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -30,6 +31,7 @@ import type {
   EngineInput,
   JsonObject,
   ModelChunk,
+  PermissionBackend,
 } from "@koi/core";
 import {
   createSingleToolProvider,
@@ -48,6 +50,7 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
@@ -294,6 +297,10 @@ interface QueryConfig {
   readonly maxTurns?: number;
   /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
   readonly useRegistry?: boolean;
+  /** Custom permission backend — overrides permissionMode/permissionRules when provided. */
+  readonly permissionBackend?: PermissionBackend;
+  /** Denial escalation config for permissions middleware. */
+  readonly denialEscalation?: boolean | DenialEscalationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,13 +348,16 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   });
 
   // @koi/permissions + @koi/middleware-permissions
-  const permBackend = createPermissionBackend({
-    mode: config.permissionMode,
-    rules: [...config.permissionRules],
-  });
+  const permBackend =
+    config.permissionBackend ??
+    createPermissionBackend({
+      mode: config.permissionMode,
+      rules: [...config.permissionRules],
+    });
   const permMiddleware = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionDescription,
+    ...(config.denialEscalation !== undefined ? { denialEscalation: config.denialEscalation } : {}),
   });
 
   // @koi/mcp
@@ -773,7 +783,41 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  {
+    name: "denial-escalation",
+    prompt: "Call the add_numbers tool with a=3 and b=4. Report the result.",
+    permissionMode: "default",
+    permissionRules: [{ pattern: "*", action: "*", effect: "allow", source: "user" }],
+    permissionDescription: "default mode — policy enforcement active",
+    permissionBackend: {
+      check: (query) =>
+        query.resource === "add_numbers"
+          ? { effect: "deny" as const, reason: "Policy denies add_numbers" }
+          : { effect: "allow" as const },
+      checkBatch: (queries) => queries.map(() => ({ effect: "allow" as const })),
+    },
+    denialEscalation: { threshold: 1, windowMs: 300_000 },
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 6. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
   {
     name: "hook-blocked",
     prompt: "What is 2+2?",
@@ -792,7 +836,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 6. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  // 7. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
   {
     name: "hook-once",
     prompt:
@@ -826,7 +870,7 @@ const queries: readonly QueryConfig[] = [
     useRegistry: true,
   },
 
-  // 7. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 8. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
@@ -844,7 +888,7 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 7. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  // 9. task-board: @koi/tasks exercised — create + list tasks via in-memory store
   {
     name: "task-board",
     prompt:
@@ -875,7 +919,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 3,
   },
 
-  // 8. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
   {
     name: "mcp-tool-use",
     prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
@@ -894,7 +938,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
-  // 10. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
+  // 11. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
   {
     name: "turn-stop",
     prompt: "What is the capital of France? Answer concisely.",
@@ -913,7 +957,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 11. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
+  // 12. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
   ...(nexusFsProvider !== undefined
     ? [
         {
