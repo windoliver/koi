@@ -6,6 +6,7 @@
  */
 
 import type { CapabilityFragment, EngineInput, KoiMiddleware, SpawnResult } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import type { OutputCollector } from "./output-collector.js";
 import { spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
@@ -65,6 +66,12 @@ export async function runSpawnedAgent(options: RunSpawnedAgentOptions): Promise<
       await runtime.dispose();
     }
   } catch (e: unknown) {
+    // Preserve structured KoiError fields (code, retryable, context) from KoiRuntimeError.
+    // Flattening to INTERNAL would erase RATE_LIMIT, PERMISSION, TIMEOUT, etc. and their
+    // retryability — callers would lose all signal for governance/capacity failures.
+    if (e instanceof KoiRuntimeError) {
+      return { ok: false, error: e.toKoiError() };
+    }
     const message = e instanceof Error ? e.message : String(e);
     return {
       ok: false,

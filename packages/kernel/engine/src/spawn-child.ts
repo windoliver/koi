@@ -79,6 +79,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     didAcquire = await acquired;
   }
   if (!didAcquire) {
+    // Distinguish abort (user/system cancellation) from true capacity exhaustion.
+    // acquireOrWait resolves false when the AbortSignal fires — not a RATE_LIMIT event.
+    // RATE_LIMIT is retryable: true; a cancelled spawn must NOT trigger retry logic.
+    if (options.spawnLedger.acquireOrWait !== undefined && options.signal?.aborted) {
+      throw KoiRuntimeError.from(
+        "INTERNAL",
+        "Spawn cancelled: abort signal fired while waiting for a process slot",
+        { retryable: false },
+      );
+    }
     const active = options.spawnLedger.activeCount();
     const cap = options.spawnLedger.capacity();
     throw KoiRuntimeError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {

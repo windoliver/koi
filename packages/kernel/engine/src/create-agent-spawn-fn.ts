@@ -12,16 +12,20 @@ import type {
   AgentManifest,
   AgentResolver,
   EngineAdapter,
+  EngineInput,
   KoiMiddleware,
   SpawnFn,
   SpawnRequest,
   SpawnResult,
   TaskableAgent,
 } from "@koi/core";
+import { INBOX } from "@koi/core";
 import { runWithAgentContext } from "@koi/execution-context";
 
+import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
 import { createTextCollector } from "./output-collector.js";
 import { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
+import { spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -128,13 +132,53 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       },
     };
 
-    // 6. Wrap in agent context for identity isolation
+    // 6. Resolve delivery policy: request override > base default > manifest > streaming
+    const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
+
+    // 7. Wrap in agent context for identity isolation
     const agentContext = {
       agentId: request.agentId ?? `spawn-${manifest.name}-${Date.now()}`,
       sessionId: `session-${manifest.name}-${Date.now()}`,
       parentAgentId: base.parentAgent.pid.id,
     };
 
+    // 8a. Non-streaming delivery (deferred / on_demand): spawn child and fire-and-forget.
+    //     The real output flows to the parent's inbox or ReportStore per policy.
+    //     Return immediately — the SpawnResult output will be empty for async delivery.
+    if (policy.kind !== "streaming") {
+      return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
+        const spawnResult = await spawnChildAgent(spawnOptions);
+        const parentInbox = base.parentAgent.component(INBOX);
+        const deliveryHandle = applyDeliveryPolicy({
+          spawnResult,
+          policy,
+          ...(parentInbox !== undefined ? { parentInbox } : {}),
+          parentAgentId: base.parentAgent.pid.id,
+        });
+        const input: EngineInput = {
+          kind: "text",
+          text: request.description,
+          signal: request.signal,
+        };
+        void (async (): Promise<void> => {
+          try {
+            await deliveryHandle.runChild?.(input);
+          } catch (err: unknown) {
+            console.error(
+              `[agent-spawn] ${policy.kind} delivery failed for "${manifest.name}"`,
+              err,
+            );
+          } finally {
+            spawnResult.handle.terminate();
+            await spawnResult.handle.waitForCompletion();
+            await spawnResult.runtime.dispose();
+          }
+        })();
+        return { ok: true, output: "" };
+      });
+    }
+
+    // 8b. Streaming (default): run synchronously, collect output inline.
     return runWithAgentContext(agentContext, () =>
       runSpawnedAgent({
         spawnOptions,
