@@ -17,7 +17,9 @@ export async function loadManifestOrExit(
   manifestPath: string,
   exitCode?: number,
 ): Promise<LoadResult> {
-  const loadResult = await loadManifest(manifestPath);
+  const loadResult = await loadManifest(manifestPath, undefined, {
+    rejectUnsupportedHooks: true,
+  });
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
     process.exit(exitCode ?? EXIT_CONFIG);

@@ -90,10 +90,18 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined;
   const toolDenylist =
     options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
+  const baseAllowlist =
+    options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
+  // When nonInteractive, strip interactive tools from allowlist too (not just denylist)
+  const toolAllowlist =
+    options.nonInteractive === true && baseAllowlist !== undefined
+      ? stripFromAllowlist(baseAllowlist, NON_INTERACTIVE_DENIED_TOOLS)
+      : baseAllowlist;
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),
     ...(toolDenylist !== undefined ? { toolDenylist } : {}),
+    ...(toolAllowlist !== undefined ? { toolAllowlist } : {}),
   });
 
   // 4. Build additional providers from inheritance config
@@ -359,6 +367,18 @@ const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "ask-user",
   "ask_user",
 ]);
+
+/** Remove denied tool names from an allowlist. Returns a new Set. */
+function stripFromAllowlist(
+  allowlist: ReadonlySet<string>,
+  denied: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const result = new Set(allowlist);
+  for (const tool of denied) {
+    result.delete(tool);
+  }
+  return result;
+}
 
 /** Expand a tool denylist with interactive tool names for nonInteractive agents. */
 function expandDenylistForNonInteractive(

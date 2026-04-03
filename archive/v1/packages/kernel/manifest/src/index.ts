@@ -9,6 +9,7 @@
 
 // Functions
 export { getEngineName } from "./engine-name.js";
+export type { LoadOptions } from "./loader.js";
 export { loadManifest, loadManifestFromString } from "./loader.js";
 
 // Types

@@ -8,8 +8,9 @@
  *   simple-text      — text response, no tools, permissions bypass
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
- *   permission-deny  — permissions default mode denies add_numbers
- *   hook-blocked     — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
+ *   permission-deny       — permissions default mode denies add_numbers
+ *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
+ *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -30,12 +31,18 @@ import type {
   EngineInput,
   JsonObject,
   ModelChunk,
+  PermissionBackend,
 } from "@koi/core";
-import { createSingleToolProvider } from "@koi/core";
+import {
+  createSingleToolProvider,
+  serializeMemoryFrontmatter,
+  validateMemoryFilePath,
+  validateMemoryRecordInput,
+} from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -43,6 +50,7 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
@@ -78,6 +86,13 @@ const modelAdapter = createOpenAICompatAdapter({
   model: MODEL,
   retry: { maxRetries: 1 },
 });
+
+// ---------------------------------------------------------------------------
+// Shared prompts (reused for both cassette + trajectory recording)
+// ---------------------------------------------------------------------------
+
+const MEMORY_STORE_PROMPT =
+  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.';
 
 // ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
@@ -158,6 +173,86 @@ if (!taskListResult.ok) {
 }
 const taskListTool = taskListResult.value;
 
+// ---------------------------------------------------------------------------
+// Memory tools (backed by @koi/core L0 pure functions)
+// ---------------------------------------------------------------------------
+
+const memoryStore = new Map<string, string>();
+
+const memoryStoreResult = buildTool({
+  name: "memory_store",
+  description:
+    "Store a memory record. Provide name, description, type (user|feedback|project|reference), and content. Returns the serialized Markdown with frontmatter.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Human-readable name" },
+      description: { type: "string", description: "One-line summary" },
+      type: {
+        type: "string",
+        enum: ["user", "feedback", "project", "reference"],
+        description: "Memory type",
+      },
+      content: { type: "string", description: "Memory body content" },
+    },
+    required: ["name", "description", "type", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const input = {
+      name: String(args.name),
+      description: String(args.description),
+      type: String(args.type),
+      content: String(args.content),
+      filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
+    };
+    const pathError = validateMemoryFilePath(input.filePath);
+    if (pathError !== undefined) {
+      return { ok: false, errors: [{ field: "filePath", message: pathError }] };
+    }
+    const errors = validateMemoryRecordInput(input);
+    if (errors.length > 0) {
+      return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
+    }
+    const frontmatter = {
+      name: input.name,
+      description: input.description,
+      type: input.type as "user" | "feedback" | "project" | "reference",
+    };
+    const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
+    if (serialized === undefined) {
+      return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
+    }
+    memoryStore.set(input.filePath, serialized);
+    return { ok: true, filePath: input.filePath, serialized };
+  },
+});
+if (!memoryStoreResult.ok) {
+  console.error(`buildTool(memory_store) failed: ${memoryStoreResult.error.message}`);
+  process.exit(1);
+}
+const memoryStoreTool = memoryStoreResult.value;
+
+const memoryListResult = buildTool({
+  name: "memory_list",
+  description: "List all stored memory records with their file paths and types.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const records = [...memoryStore.entries()].map(([filePath, raw]) => {
+      const typeMatch = raw.match(/^type:\s*(.+)$/m);
+      const nameMatch = raw.match(/^name:\s*(.+)$/m);
+      return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
+    });
+    return { memories: records };
+  },
+});
+if (!memoryListResult.ok) {
+  console.error(`buildTool(memory_list) failed: ${memoryListResult.error.message}`);
+  process.exit(1);
+}
+const memoryListTool = memoryListResult.value;
+
 // =========================================================================
 // Recording helpers
 // =========================================================================
@@ -195,10 +290,17 @@ interface QueryConfig {
     readonly name: string;
     readonly cmd: readonly string[];
     readonly filter: { readonly events: readonly string[] };
+    readonly once?: boolean;
   }[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
+  /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
+  readonly useRegistry?: boolean;
+  /** Custom permission backend — overrides permissionMode/permissionRules when provided. */
+  readonly permissionBackend?: PermissionBackend;
+  /** Denial escalation config for permissions middleware. */
+  readonly denialEscalation?: boolean | DenialEscalationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,21 +329,35 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
   const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
+
+  // Optional registry for once-hook lifecycle tracking
+  // let justified: mutable — created conditionally
+  let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
+  if (config.useRegistry === true) {
+    hookRegistry = createHookRegistry();
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+  }
+
   // Runtime hook dispatch — tool hooks + trajectory recording
+  const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
     hooks: loadedHooks,
     store,
     docId,
+    ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
   });
 
   // @koi/permissions + @koi/middleware-permissions
-  const permBackend = createPermissionBackend({
-    mode: config.permissionMode,
-    rules: [...config.permissionRules],
-  });
+  const permBackend =
+    config.permissionBackend ??
+    createPermissionBackend({
+      mode: config.permissionMode,
+      rules: [...config.permissionRules],
+    });
   const permMiddleware = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionDescription,
+    ...(config.denialEscalation !== undefined ? { denialEscalation: config.denialEscalation } : {}),
   });
 
   // @koi/mcp
@@ -377,6 +493,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
 
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
+  hookRegistry?.cleanup(`golden-${name}`);
   await runtime.dispose();
 
   // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
@@ -666,7 +783,41 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  {
+    name: "denial-escalation",
+    prompt: "Call the add_numbers tool with a=3 and b=4. Report the result.",
+    permissionMode: "default",
+    permissionRules: [{ pattern: "*", action: "*", effect: "allow", source: "user" }],
+    permissionDescription: "default mode — policy enforcement active",
+    permissionBackend: {
+      check: (query) =>
+        query.resource === "add_numbers"
+          ? { effect: "deny" as const, reason: "Policy denies add_numbers" }
+          : { effect: "allow" as const },
+      checkBatch: (queries) => queries.map(() => ({ effect: "allow" as const })),
+    },
+    denialEscalation: { threshold: 1, windowMs: 300_000 },
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 6. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
   {
     name: "hook-blocked",
     prompt: "What is 2+2?",
@@ -685,7 +836,41 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 6. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 7. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  {
+    name: "hook-once",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "first-tool-guard",
+        cmd: ["echo", "once-hook-fired"],
+        filter: { events: ["tool.before"] },
+        once: true,
+      },
+      {
+        kind: "command",
+        name: "always-hook",
+        cmd: ["echo", "always-fired"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    maxTurns: 3,
+    useRegistry: true,
+  },
+
+  // 8. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
@@ -703,7 +888,7 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 7. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  // 9. task-board: @koi/tasks exercised — create + list tasks via in-memory store
   {
     name: "task-board",
     prompt:
@@ -734,7 +919,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 3,
   },
 
-  // 8. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
   {
     name: "mcp-tool-use",
     prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
@@ -753,7 +938,26 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
-  // 7. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
+  // 11. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
+  {
+    name: "turn-stop",
+    prompt: "What is the capital of France? Answer concisely.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "completion-gate",
+        cmd: ["sh", "-c", 'echo \'{"decision":"block","reason":"verification failed"}\''],
+        filter: { events: ["turn.stop"] },
+      },
+    ],
+    providers: [],
+    maxTurns: 0,
+  },
+
+  // 12. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
   ...(nexusFsProvider !== undefined
     ? [
         {
@@ -775,6 +979,36 @@ const queries: readonly QueryConfig[] = [
         },
       ]
     : []),
+
+  // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
+  {
+    name: "memory-store",
+    prompt: MEMORY_STORE_PROMPT,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "memory-store",
+        toolName: "memory_store",
+        createTool: () => memoryStoreTool,
+      }),
+      createSingleToolProvider({
+        name: "memory-list",
+        toolName: "memory_list",
+        createTool: () => memoryListTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
 ];
 
 // =========================================================================
@@ -821,6 +1055,42 @@ await recordCassette("task-board", () =>
       },
     ],
     tools: [taskCreateTool.descriptor, taskListTool.descriptor],
+  }),
+);
+
+await recordCassette("hook-once", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+          },
+        ],
+      },
+    ],
+    tools: [addTool.descriptor],
+  }),
+);
+
+await recordCassette("memory-store", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: MEMORY_STORE_PROMPT,
+          },
+        ],
+      },
+    ],
+    tools: [memoryStoreTool.descriptor, memoryListTool.descriptor],
   }),
 );
 

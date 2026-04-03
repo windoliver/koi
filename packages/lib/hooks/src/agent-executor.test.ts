@@ -243,6 +243,28 @@ describe("token accounting", () => {
     expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 
+  it("budget exhaustion is terminal — does not set executionFailed (once-hook consumed permanently)", async () => {
+    const spawnFn = makeSpawnFn({ ok: true, output: makeVerdictOutput(true) });
+    // Budget 100, worst-case 2*2000=4000 > 100 → immediate budget exhaustion
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      maxSessionTokens: 100,
+      maxTokens: 2000,
+      maxTurns: 2,
+    };
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision.kind).toBe("block");
+      // Budget exhaustion is terminal (monotonic) — no executionFailed,
+      // once-hooks are permanently consumed to avoid infinite retry
+      expect(result.executionFailed).toBeUndefined();
+    }
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
   it("continues when session token budget exhausted with failClosed=false", async () => {
     const spawnFn = makeSpawnFn({ ok: true, output: makeVerdictOutput(true) });
     // Budget 5000, each invocation reserves 2 * 2000 = 4000
@@ -356,7 +378,31 @@ describe("spawn request", () => {
     expect(tools[0]?.name).toBe("HookVerdict");
   });
 
-  it("passes merged tool denylist", async () => {
+  it("rejects conflicting lists without consuming token budget (permanent failure)", async () => {
+    const spawnFn = makeSpawnFn({ ok: true, output: makeVerdictOutput(true) });
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      toolAllowlist: ["Read"],
+      toolDenylist: ["Bash"],
+    } as AgentHookConfig; // cast to bypass TS — simulates programmatic caller
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision.kind).toBe("block");
+      if (result.decision.kind === "block") {
+        expect(result.decision.reason).toContain("mutually exclusive");
+      }
+      // Permanent failure — once-hooks consumed, not retried
+      expect(result.executionFailed).toBeUndefined();
+    }
+    // No token budget consumed (validation before reservation)
+    expect(executor.getSessionTokens("session-1")).toBe(0);
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it("passes merged tool denylist when hook specifies toolDenylist", async () => {
     const spawnFn = mock<SpawnFn>().mockResolvedValue({
       ok: true,
       output: makeVerdictOutput(true),
@@ -374,6 +420,190 @@ describe("spawn request", () => {
     expect(denylist).toContain("spawn");
     expect(denylist).toContain("agent");
     expect(denylist).toContain("Bash");
+    expect(request.toolAllowlist).toBeUndefined();
+  });
+
+  it("passes toolAllowlist in SpawnRequest when hook specifies allowlist", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const hook: AgentHookConfig = { ...baseHook, toolAllowlist: ["Read", "Grep"] };
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const allowlist = request.toolAllowlist as string[];
+    expect(allowlist).toContain("Read");
+    expect(allowlist).toContain("Grep");
+    // HookVerdict excluded from inheritance allowlist — injected via additionalTools instead
+    expect(allowlist).not.toContain("HookVerdict");
+    expect(request.toolDenylist).toBeUndefined();
+  });
+
+  it("uses default denylist when neither allowlist nor denylist specified", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const denylist = request.toolDenylist as string[];
+    expect(denylist).toContain("spawn");
+    expect(denylist).toContain("agent");
+    expect(denylist).toContain("Bash");
+    expect(request.toolAllowlist).toBeUndefined();
+  });
+
+  it("allowlist mode passes user tools without HookVerdict in allowlist", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const hook: AgentHookConfig = { ...baseHook, toolAllowlist: ["Bash", "Write"] };
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const allowlist = request.toolAllowlist as string[];
+    expect(allowlist).toContain("Bash");
+    expect(allowlist).toContain("Write");
+    // HookVerdict not in allowlist — comes via additionalTools only
+    expect(allowlist).not.toContain("HookVerdict");
+    // But it IS in additionalTools
+    const tools = request.additionalTools as ReadonlyArray<{ name: string }>;
+    expect(tools.some((t) => t.name === "HookVerdict")).toBe(true);
+  });
+
+  it("strips recursion tools from allowlist — spawn/agent/Agent cannot be re-enabled", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      toolAllowlist: ["Read", "spawn", "agent", "Agent", "Bash"],
+    };
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const allowlist = request.toolAllowlist as string[];
+    expect(allowlist).toContain("Read");
+    expect(allowlist).toContain("Bash");
+    // Recursion tools stripped
+    expect(allowlist).not.toContain("spawn");
+    expect(allowlist).not.toContain("agent");
+    expect(allowlist).not.toContain("Agent");
+    // HookVerdict also stripped from inheritance (injected via additionalTools)
+    expect(allowlist).not.toContain("HookVerdict");
+  });
+
+  it("strips HookVerdict from allowlist to prevent verdict-tool shadowing", async () => {
+    const spawnFn = mock<SpawnFn>().mockResolvedValue({
+      ok: true,
+      output: makeVerdictOutput(true),
+    });
+    // User explicitly includes HookVerdict in allowlist — should be stripped
+    const hook: AgentHookConfig = {
+      ...baseHook,
+      toolAllowlist: ["Read", "HookVerdict", "Grep"],
+    };
+    const executor = createAgentExecutor({ spawnFn });
+
+    await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+
+    const request = (spawnFn as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const allowlist = request.toolAllowlist as string[];
+    // HookVerdict stripped from inheritance allowlist
+    expect(allowlist).not.toContain("HookVerdict");
+    expect(allowlist).toContain("Read");
+    expect(allowlist).toContain("Grep");
+    // HookVerdict still injected via additionalTools (separate from allowlist)
+    const tools = request.additionalTools as ReadonlyArray<{ name: string }>;
+    expect(tools.some((t) => t.name === "HookVerdict")).toBe(true);
+  });
+
+  it("non-retryable spawn failure is permanent — no executionFailed (fail-open)", async () => {
+    const spawnFn = makeSpawnFn({
+      ok: false,
+      error: { code: "INTERNAL", message: "assembly error", retryable: false },
+    });
+    const hook: AgentHookConfig = { ...baseHook, failClosed: false };
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(hook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision).toEqual({ kind: "continue" });
+      expect(result.executionFailed).toBeUndefined();
+    }
+  });
+
+  it("non-retryable spawn failure is permanent — no executionFailed (fail-closed)", async () => {
+    const spawnFn = makeSpawnFn({
+      ok: false,
+      error: { code: "INTERNAL", message: "assembly error", retryable: false },
+    });
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision.kind).toBe("block");
+      expect(result.executionFailed).toBeUndefined();
+    }
+  });
+
+  it("retryable spawn failure sets executionFailed and refunds tokens", async () => {
+    const spawnFn = makeSpawnFn({
+      ok: false,
+      error: { code: "INTERNAL", message: "model overloaded", retryable: true },
+    });
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision.kind).toBe("block");
+      expect(result.executionFailed).toBe(true);
+    }
+    // Tokens refunded — budget not consumed
+    expect(executor.getSessionTokens("session-1")).toBe(0);
+  });
+
+  it("invalid verdict is transient failure — sets executionFailed for once-hook retry", async () => {
+    const spawnFn = makeSpawnFn({ ok: true, output: "I checked and it looks fine." });
+    const executor = createAgentExecutor({ spawnFn });
+
+    const result = await executor.execute(baseHook, baseEvent, AbortSignal.timeout(5000));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.decision.kind).toBe("block");
+      // LLM output is non-deterministic — transient, retryable for once-hooks
+      expect(result.executionFailed).toBe(true);
+    }
   });
 
   it("passes custom systemPrompt and maxTurns from hook config", async () => {

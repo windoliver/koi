@@ -3,8 +3,10 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "jsx": "react-jsx",
-    "jsxImportSource": "@opentui/react"
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/react",
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
   },
   "include": ["src"],
   "references": [{ "path": "../../kernel/core" }]

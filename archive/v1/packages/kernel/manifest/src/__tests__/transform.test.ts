@@ -486,4 +486,41 @@ describe("transformToLoadedManifest", () => {
     const result = transformToLoadedManifest(raw);
     expect("dataSources" in result).toBe(false);
   });
+
+  test("passes hooks through to LoadedManifest", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      hooks: [
+        {
+          kind: "prompt" as const,
+          name: "safety-check",
+          prompt: "Is this action safe?",
+          model: "haiku",
+          failMode: "closed" as const,
+        },
+        {
+          kind: "command" as const,
+          name: "audit-log",
+          command: "echo audit",
+        },
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.hooks).toHaveLength(2);
+    expect(result.hooks?.[0]?.kind).toBe("prompt");
+    expect(result.hooks?.[0]?.name).toBe("safety-check");
+    expect(result.hooks?.[1]?.kind).toBe("command");
+  });
+
+  test("omits hooks when not present in raw", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+    const result = transformToLoadedManifest(raw);
+    expect("hooks" in result).toBe(false);
+  });
 });

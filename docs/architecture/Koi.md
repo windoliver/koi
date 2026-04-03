@@ -226,13 +226,8 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
-<<<<<<< HEAD
 **L0-utility packages** (16 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
 `@koi/channel-base`, `@koi/config`, `@koi/context-manager`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/redaction`, `@koi/session-repair`, `@koi/shutdown`, `@koi/task-board`, `@koi/token-estimator`, `@koi/validation`.
-=======
-**L0-utility packages** (12 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
-`@koi/config`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/session-repair`, `@koi/shutdown`, `@koi/token-estimator`, `@koi/validation`.
->>>>>>> e28e89bc (chore: regenerate layer docs for @koi/config L0u addition)
 These contain pure utility functions with zero business logic. They depend on `@koi/core` + peer
 L0u packages only, and are importable by both L1 and L2 packages. They do NOT define core
 contracts — they provide shared implementations of common operations (error creation, schema

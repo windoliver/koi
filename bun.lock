@@ -16,6 +16,13 @@
         "typescript": "^6.0.2",
       },
     },
+    "packages/exec/hook-prompt": {
+      "name": "@koi/hook-prompt",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/kernel/core": {
       "name": "@koi/core",
       "version": "0.0.0",
@@ -262,6 +269,7 @@
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
@@ -274,6 +282,7 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "1.12.1",
@@ -592,6 +601,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/hook-prompt": ["@koi/hook-prompt@workspace:packages/exec/hook-prompt"],
 
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 

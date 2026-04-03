@@ -16,6 +16,7 @@ export type {
   ConnectionStatus,
   LayoutTier,
   PermissionPromptData,
+  PermissionRiskLevel,
   ToolCallStatus,
   TuiAction,
   TuiAssistantBlock,
