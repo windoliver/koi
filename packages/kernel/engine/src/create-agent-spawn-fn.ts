@@ -13,6 +13,7 @@ import type {
   AgentResolver,
   EngineAdapter,
   EngineInput,
+  InboxItem,
   KoiMiddleware,
   ReportStore,
   SpawnFn,
@@ -184,10 +185,25 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           try {
             await deliveryHandle.runChild?.(input);
           } catch (err: unknown) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
             console.error(
               `[agent-spawn] ${policy.kind} delivery failed for "${manifest.name}"`,
               err,
             );
+            // Propagate delivery failure to parent inbox so the caller can observe it
+            // instead of silently discarding the error. The item mode "collect" allows
+            // the parent to inspect it at its next turn boundary.
+            if (parentInbox !== undefined) {
+              const errorItem: InboxItem = {
+                id: `delivery-error-${spawnResult.childPid.id}-${Date.now()}`,
+                from: spawnResult.childPid.id,
+                mode: "collect",
+                content: `[delivery-error] agent "${manifest.name}" (${policy.kind}): ${errorMessage}`,
+                priority: 0,
+                createdAt: Date.now(),
+              };
+              parentInbox.push(errorItem);
+            }
           } finally {
             spawnResult.handle.terminate();
             await spawnResult.handle.waitForCompletion();

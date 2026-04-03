@@ -115,6 +115,17 @@ export function createTextCollector(): OutputCollector {
         } else if (typeof result === "object" && result !== null) {
           lastToolResult = JSON.stringify(result);
         }
+        return;
+      }
+
+      // Fallback: extract text from the terminal done event when no deltas were
+      // streamed (e.g. a child run that emits only a done event with batched content).
+      if (event.kind === "done" && textBuffer.length === 0 && lastToolResult.length === 0) {
+        for (const block of event.output.content) {
+          if (block.kind === "text") {
+            textBuffer += block.text;
+          }
+        }
       }
     },
 
