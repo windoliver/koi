@@ -1692,6 +1692,16 @@ describe("Golden: hook-redaction trajectory", () => {
     // Should have a hook execution step for the secret-scanner agent hook
     const hookSteps = steps.filter((s) => s.extra?.type === "hook_execution");
     expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // CRITICAL: verify secrets are NOT present anywhere in the trajectory.
+    // The whole point of redaction is that raw credentials never appear in
+    // observable output. If these substrings appear, redaction failed.
+    // CRITICAL: raw secrets must never appear anywhere in the recorded trajectory.
+    // If redaction works, the API key prefix and password are stripped before
+    // any data reaches observable output (hook agent prompts, ATIF steps).
+    const fullJson = readFileSync(trajectoryPath, "utf-8");
+    expect(fullJson).not.toContain("sk-ant-api03-");
+    expect(fullJson).not.toContain("super-secret-pw-123");
   });
 });
 
