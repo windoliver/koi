@@ -1,5 +1,5 @@
 /**
- * GitHub token detector — matches all GitHub token families:
+ * GitHub token detector — matches prefix-based GitHub token families:
  *
  * - `ghp_` — classic personal access tokens
  * - `ghs_` — server-to-server tokens (GitHub App installation)
@@ -15,8 +15,12 @@ import { collectMatches, EMPTY_MATCHES } from "./collect.js";
 /** Classic GitHub tokens: ghp_, ghs_, gho_, ghu_, ghr_ + 36+ alphanumeric chars. */
 const GITHUB_CLASSIC_PATTERN = /gh[psuor]_[A-Za-z0-9_]{36,}/g;
 
-/** Fine-grained PATs: github_pat_ + 22+ alphanumeric/underscore chars. */
-const GITHUB_PAT_PATTERN = /github_pat_[A-Za-z0-9_]{22,}/g;
+/**
+ * Fine-grained PATs: github_pat_ + 22 base62 + _ + 59 base62 (82 suffix chars total).
+ * Require at least 40 chars after prefix to avoid over-redacting short identifiers
+ * while still catching tokens with minor format variations.
+ */
+const GITHUB_PAT_PATTERN = /github_pat_[A-Za-z0-9_]{40,}/g;
 
 export function createGitHubDetector(): SecretPattern {
   return {

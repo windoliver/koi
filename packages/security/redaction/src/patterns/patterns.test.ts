@@ -91,6 +91,12 @@ describe("createGitHubDetector", () => {
     expect(matches[0]?.kind).toBe("github_token");
   });
 
+  test("ignores short github_pat_ strings (avoids over-redaction)", () => {
+    const short = "github_pat_short_id";
+    const matches = detector.detect(short);
+    expect(matches.length).toBe(0);
+  });
+
   test("detects multiple token families in same text", () => {
     const text = `ghp_${"a".repeat(36)} and github_pat_${"b".repeat(82)}`;
     const matches = detector.detect(text);
