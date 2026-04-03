@@ -14,6 +14,7 @@ import type {
   EngineAdapter,
   EngineInput,
   KoiMiddleware,
+  ReportStore,
   SpawnFn,
   SpawnRequest,
   SpawnResult,
@@ -59,6 +60,11 @@ export interface CreateAgentSpawnFnOptions {
   readonly manifestTemplate: AgentManifest;
   /** Inherited middleware (observe-phase: tracing, telemetry). */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * ReportStore for on_demand delivery. Required when spawning agents with
+   * `delivery.kind === "on_demand"` — fail-fast if absent to prevent silent drops.
+   */
+  readonly reportStore?: ReportStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +152,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     The real output flows to the parent's inbox or ReportStore per policy.
     //     Return immediately — the SpawnResult output will be empty for async delivery.
     if (policy.kind !== "streaming") {
+      // Fail fast: on_demand without a ReportStore would silently drop the output.
+      // Callers must provide reportStore when requesting on_demand delivery.
+      if (policy.kind === "on_demand" && options.reportStore === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
+            retryable: false,
+          },
+        };
+      }
       return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
         const spawnResult = await spawnChildAgent(spawnOptions);
         const parentInbox = base.parentAgent.component(INBOX);
@@ -153,6 +172,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           spawnResult,
           policy,
           ...(parentInbox !== undefined ? { parentInbox } : {}),
+          ...(options.reportStore !== undefined ? { reportStore: options.reportStore } : {}),
           parentAgentId: base.parentAgent.pid.id,
         });
         const input: EngineInput = {

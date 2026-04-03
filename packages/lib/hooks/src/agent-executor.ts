@@ -46,10 +46,11 @@ import { extractStructure, redactEventData } from "./payload-redaction.js";
 // Hook agents get read-only tools unless explicitly opted in via hook config.
 // HookVerdict denylisted to prevent parent tools from shadowing the synthetic verdict tool.
 const DEFAULT_TOOL_DENYLIST: ReadonlySet<string> = new Set([
-  // Recursion prevention
+  // Recursion prevention — all known spawn-tool names (case-sensitive matches)
   "spawn",
   "agent",
   "Agent",
+  "Spawn",
   // Write/execute tools denied by default — hook agents should verify, not mutate
   "Bash",
   "Write",
