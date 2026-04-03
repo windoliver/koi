@@ -389,5 +389,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       }
       return { ...state, modal: null };
     }
+
+    default:
+      return state;
   }
 }

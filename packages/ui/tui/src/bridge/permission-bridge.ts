@@ -9,7 +9,7 @@
  * - Bridge resolves the Promise, dispatches permission_response to store, shows next queue item
  * - Bridge owns the queue — reducer just renders whatever modal it's told
  *
- * Timeout: 60s fail-closed deny (Decision 7A, matches @koi/acp precedent).
+ * Timeout: 30s fail-closed deny (Decision 7A, matches @koi/acp precedent).
  * Timer starts when the prompt becomes visible, not at enqueue — queued prompts
  * don't time out while waiting behind another prompt.
  */
@@ -48,7 +48,7 @@ interface PendingApproval {
 export interface PermissionBridgeOptions {
   /** TUI store to dispatch set_modal and permission_response actions. */
   readonly store: TuiStore;
-  /** Timeout in ms before auto-denying. Default: 60_000. */
+  /** Timeout in ms before auto-denying. Default: 30_000. */
   readonly timeoutMs?: number;
   /** Risk level classifier. Default: always "medium". */
   readonly classifyRisk?: (request: ApprovalRequest) => PermissionRiskLevel;
