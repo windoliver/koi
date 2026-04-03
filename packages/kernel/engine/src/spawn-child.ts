@@ -103,8 +103,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   // 3. Build inherited component provider (scope-filtered + denylist-filtered)
   //    When nonInteractive, also strip interactive/approval-capable tools.
-  const baseDenylist =
-    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined;
+  // Always exclude Spawn (and nonInteractive tools when applicable) from inheritance.
+  // Spawn carries a parent-bound closure; inheriting it would mis-attribute nested
+  // spawns to the ancestor. Each child that needs Spawn must get a fresh provider.
+  const baseDenylist = expandDenylistWithAlwaysExcluded(
+    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
+  );
   const toolDenylist =
     options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
   const inheritedProvider = createInheritedComponentProvider({
@@ -376,6 +380,26 @@ const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "ask-user",
   "ask_user",
 ]);
+
+/**
+ * Tool names always excluded from child tool inheritance.
+ * The Spawn tool carries a closure bound to the parent agent entity; if a child
+ * inherited it, nested spawn calls would be attributed to the ancestor rather than
+ * the actual spawning agent (wrong lineage, wrong inbox/report routing, wrong depth).
+ * Each child that needs Spawn must have a fresh provider attached during assembly.
+ */
+const ALWAYS_EXCLUDED_FROM_INHERITANCE: ReadonlySet<string> = new Set(["Spawn"]);
+
+/** Always exclude certain tools from child inheritance. */
+function expandDenylistWithAlwaysExcluded(
+  base: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const merged = new Set(base ?? []);
+  for (const tool of ALWAYS_EXCLUDED_FROM_INHERITANCE) {
+    merged.add(tool);
+  }
+  return merged;
+}
 
 /** Expand a tool denylist with interactive tool names for nonInteractive agents. */
 function expandDenylistForNonInteractive(

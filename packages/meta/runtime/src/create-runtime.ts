@@ -19,6 +19,7 @@ import type {
   TurnId,
 } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
+import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
   createDebugInstrumentation,
@@ -96,12 +97,31 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? collectDebugInfo(middleware, adapter, channel, stubInstances)
       : undefined;
 
+  // Create spawn provider when a resolver is provided. Callers pass the provider
+  // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
+  const spawnProvider =
+    config.resolver !== undefined
+      ? createSpawnToolProvider({
+          resolver: config.resolver,
+          spawnLedger: createInMemorySpawnLedger(50),
+          adapter,
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: "sonnet" },
+          },
+          ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        })
+      : undefined;
+
   return {
     adapter,
     channel,
     middleware,
     debugInfo,
     trajectoryStore,
+    spawnProvider,
     dispose: async () => {
       const results = await Promise.allSettled([
         channel.disconnect(),

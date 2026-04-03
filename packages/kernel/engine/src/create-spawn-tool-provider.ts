@@ -55,6 +55,12 @@ export interface SpawnToolProviderConfig {
    * Intercept/resolve-phase middleware should NOT be inherited.
    */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * ReportStore for on_demand delivery. Required when resolved agent manifests
+   * use `delivery.kind === "on_demand"`. Without it the spawn function will
+   * hard-fail on_demand manifests via the VALIDATION error in createAgentSpawnFn.
+   */
+  readonly reportStore?: import("@koi/core").ReportStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +93,7 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         adapter: config.adapter,
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
+        ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
       });
 
       const tool: Tool = {

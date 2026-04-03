@@ -1,9 +1,12 @@
 import type {
+  AgentResolver,
   ApprovalHandler,
   ChannelAdapter,
   ChannelCapabilities,
+  ComponentProvider,
   EngineAdapter,
   KoiMiddleware,
+  ReportStore,
   ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
@@ -65,6 +68,19 @@ export interface RuntimeConfig {
    * tools are available. When omitted, callHandlers.tools is empty.
    */
   readonly toolDescriptors?: readonly ToolDescriptor[] | undefined;
+
+  /**
+   * Agent resolver for definition lookup. When provided, `createRuntime` returns a
+   * `spawnProvider` in `RuntimeHandle` that callers can pass to `createKoi({ providers })`
+   * to register the `Spawn` tool and enable agent-to-agent delegation.
+   */
+  readonly resolver?: AgentResolver | undefined;
+
+  /**
+   * ReportStore for `on_demand` delivery. Required when spawned agents use
+   * `delivery.kind === "on_demand"`. Passed through to the spawn provider.
+   */
+  readonly reportStore?: ReportStore | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
@@ -119,6 +135,13 @@ export interface RuntimeHandle {
    * Shared between harness (writes DebugSpans) and event-trace (writes RichTrajectorySteps).
    */
   readonly trajectoryStore: TrajectoryDocumentStore | undefined;
+
+  /**
+   * Spawn tool provider. Only populated when `config.resolver` is provided.
+   * Pass this to `createKoi({ providers: [handle.spawnProvider] })` to register
+   * the `Spawn` tool and enable agent-to-agent delegation for that agent.
+   */
+  readonly spawnProvider: ComponentProvider | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;
