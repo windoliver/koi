@@ -1757,3 +1757,168 @@ describe("Golden: @koi/hooks payload redaction", () => {
     expect(JSON.stringify(result.data)).toContain("visible");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/memory (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory", () => {
+  test("frontmatter + index roundtrip with validation and injection safety", async () => {
+    const {
+      parseMemoryFrontmatter,
+      serializeMemoryFrontmatter,
+      formatMemoryIndexEntry,
+      parseMemoryIndexEntry,
+      validateMemoryRecordInput,
+      validateMemoryFilePath,
+      hasFrontmatterUnsafeChars,
+      isMemoryType,
+      memoryRecordId,
+      ALL_MEMORY_TYPES,
+    } = await import("@koi/core");
+
+    // All 4 memory types are valid
+    for (const t of ALL_MEMORY_TYPES) {
+      expect(isMemoryType(t)).toBe(true);
+    }
+    expect(isMemoryType("bogus")).toBe(false);
+
+    // Branded constructor — produces branded string
+    const id = memoryRecordId("test-memory-1");
+    expect(String(id)).toBe("test-memory-1");
+
+    // Frontmatter roundtrip: serialize → parse → identical
+    const frontmatter = {
+      name: "User role",
+      description: "Senior engineer",
+      type: "user" as const,
+    };
+    const content = "Deep Go expertise, new to React.";
+    const serialized = serializeMemoryFrontmatter(frontmatter, content);
+    expect(serialized).toBeDefined();
+    if (serialized === undefined) throw new Error("serialized is undefined");
+    expect(serialized).toContain("---");
+    expect(serialized).toContain("name: User role");
+    expect(serialized).toContain("type: user");
+    expect(serialized).toContain(content);
+
+    const parsed = parseMemoryFrontmatter(serialized);
+    expect(parsed).toBeDefined();
+    if (parsed === undefined) throw new Error("parsed is undefined");
+    expect(parsed.frontmatter.name).toBe("User role");
+    expect(parsed.frontmatter.description).toBe("Senior engineer");
+    expect(parsed.frontmatter.type).toBe("user");
+    expect(parsed.content).toBe(content);
+
+    // Index entry roundtrip: format → parse → identical
+    const entry = { title: "User role", filePath: "user_role.md", hook: "Senior engineer info" };
+    const line = formatMemoryIndexEntry(entry);
+    expect(line).toBeDefined();
+    if (line === undefined) throw new Error("line is undefined");
+    expect(line).toContain("[User role]");
+    expect(line).toContain("(user_role.md)");
+
+    const parsedEntry = parseMemoryIndexEntry(line);
+    expect(parsedEntry).toBeDefined();
+    if (parsedEntry === undefined) throw new Error("parsedEntry is undefined");
+    expect(parsedEntry.title).toBe(entry.title);
+    expect(parsedEntry.filePath).toBe(entry.filePath);
+    expect(parsedEntry.hook).toBe(entry.hook);
+
+    // Validate valid input — empty array means no errors
+    const validInput = {
+      name: "Feedback on testing",
+      description: "Always write failing tests first",
+      type: "feedback",
+      content: "Rule: write failing tests.\n**Why:** catches regressions.",
+      filePath: "feedback_testing.md",
+    };
+    const inputErrors = validateMemoryRecordInput(validInput);
+    expect(inputErrors).toHaveLength(0);
+
+    // Validate valid file path — undefined means no error
+    const pathError = validateMemoryFilePath("feedback_testing.md");
+    expect(pathError).toBeUndefined();
+
+    // Injection safety: newlines in frontmatter fields are unsafe
+    expect(hasFrontmatterUnsafeChars("clean value")).toBe(false);
+    expect(hasFrontmatterUnsafeChars("line1\nline2")).toBe(true);
+    // Tab (\x09) is intentionally allowed — only control chars \x00-\x08 are blocked
+    expect(hasFrontmatterUnsafeChars("has\x01control")).toBe(true);
+
+    // Path traversal rejected — returns error string
+    const traversalError = validateMemoryFilePath("../etc/passwd");
+    expect(traversalError).toBeDefined();
+
+    // Non-.md extension rejected
+    const extError = validateMemoryFilePath("secrets.json");
+    expect(extError).toBeDefined();
+  });
+
+  test("collective memory scoring, deduplication, budget selection, and compaction", async () => {
+    const { computeMemoryPriority, deduplicateEntries, selectEntriesWithinBudget, compactEntries } =
+      await import("@koi/validation");
+    const { COLLECTIVE_MEMORY_DEFAULTS } = await import("@koi/core");
+    type CollectiveMemoryEntry = import("@koi/core").CollectiveMemoryEntry;
+
+    const now = Date.now();
+    const MS_PER_DAY = 86_400_000;
+
+    const makeEntry = (
+      id: string,
+      content: string,
+      accessCount: number,
+      daysAgo: number,
+    ): CollectiveMemoryEntry => ({
+      id,
+      content,
+      category: "heuristic",
+      source: { agentId: "test", runId: "run-1", timestamp: now - daysAgo * MS_PER_DAY },
+      createdAt: now - daysAgo * MS_PER_DAY,
+      accessCount,
+      lastAccessedAt: now - daysAgo * MS_PER_DAY,
+    });
+
+    // Priority scoring: recent + high access > stale + low access
+    const recent = makeEntry("e1", "recent entry", 5, 1);
+    const stale = makeEntry("e2", "stale entry", 1, 60);
+    expect(computeMemoryPriority(recent, now)).toBeGreaterThan(computeMemoryPriority(stale, now));
+
+    // Deduplication: near-identical content merged
+    const original = makeEntry("e3", "always use bun test for running tests", 3, 2);
+    const duplicate = makeEntry("e4", "always use bun test for running all tests", 1, 5);
+    const unique = makeEntry("e5", "never force push to main branch", 2, 3);
+    const deduped = deduplicateEntries([original, duplicate, unique], 0.6, now);
+    // Duplicate should be removed, keeping the higher-priority one
+    expect(deduped.length).toBeLessThan(3);
+    expect(deduped.some((e) => e.id === "e5")).toBe(true); // unique preserved
+
+    // Budget selection: respects token limit
+    const entries = [
+      makeEntry("b1", "A".repeat(100), 3, 1),
+      makeEntry("b2", "B".repeat(100), 2, 2),
+      makeEntry("b3", "C".repeat(100), 1, 3),
+    ];
+    // Very small budget — should not return all entries
+    const selected = selectEntriesWithinBudget(entries, 50, 4, now);
+    expect(selected.length).toBeLessThan(entries.length);
+
+    // Compaction: full pipeline — prune → dedup → trim → generation increment
+    const memory = {
+      entries: [
+        makeEntry("c1", "active entry", 5, 1),
+        makeEntry("c2", "never accessed stale entry", 0, 60),
+        makeEntry("c3", "another active entry", 3, 2),
+      ],
+      totalTokens: 300,
+      generation: 0,
+    };
+    const compacted = compactEntries(memory, COLLECTIVE_MEMORY_DEFAULTS, now);
+    // Generation should increment
+    expect(compacted.generation).toBe(1);
+    // Stale never-accessed entry (c2, 60 days old > 30 day coldAgeDays) should be pruned
+    expect(compacted.entries.some((e) => e.id === "c2")).toBe(false);
+    // Active entries survive
+    expect(compacted.entries.some((e) => e.id === "c1")).toBe(true);
+  });
+});

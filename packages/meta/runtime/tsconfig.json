@@ -22,6 +22,7 @@
     { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../security/middleware-permissions" },
-    { "path": "../../security/permissions" }
+    { "path": "../../security/permissions" },
+    { "path": "../../lib/validation" }
   ]
 }
