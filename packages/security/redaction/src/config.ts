@@ -4,7 +4,7 @@
 
 import type { KoiError, Result } from "@koi/core";
 import { createAllSecretPatterns, DEFAULT_SENSITIVE_FIELDS } from "./patterns/index.js";
-import type { RedactionConfig } from "./types.js";
+import type { RedactionConfig, SecretPattern } from "./types.js";
 
 /** Default configuration for createRedactor(). */
 export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
@@ -107,14 +107,19 @@ export function validateRedactionConfig(
     onError: raw.onError ?? DEFAULT_REDACTION_CONFIG.onError,
   };
 
-  // ReDoS safety check for custom patterns — always runs (fail-closed)
-  for (const pattern of merged.customPatterns) {
+  // ReDoS safety check — runs on all user-supplied patterns (fail-closed).
+  // Built-in defaults are trusted; only check patterns the caller actually overrides.
+  const userSuppliedPatterns: readonly SecretPattern[] = raw.patterns
+    ? [...merged.patterns, ...merged.customPatterns]
+    : merged.customPatterns;
+
+  for (const pattern of userSuppliedPatterns) {
     for (const adversarial of ADVERSARIAL_INPUTS) {
       const start = performance.now();
       pattern.detect(adversarial);
       const elapsed = performance.now() - start;
       if (elapsed > REDOS_THRESHOLD_MS) {
-        const message = `Custom pattern "${pattern.name}" took ${elapsed.toFixed(1)}ms on adversarial input — possible ReDoS`;
+        const message = `Pattern "${pattern.name}" took ${elapsed.toFixed(1)}ms on adversarial input — possible ReDoS`;
         merged.onError?.(new Error(message));
         return {
           ok: false,

@@ -65,6 +65,72 @@ describe("validateRedactionConfig", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  test("rejects slow pattern in customPatterns", () => {
+    const result = validateRedactionConfig({
+      customPatterns: [
+        {
+          name: "slow-custom",
+          kind: "slow",
+          detect: (_text: string) => {
+            // Simulate a pattern that takes too long (>5ms threshold)
+            const end = performance.now() + 10;
+            while (performance.now() < end) {
+              /* busy-wait */
+            }
+            return [];
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("slow-custom");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("rejects slow pattern in patterns override", () => {
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "slow-override",
+          kind: "slow",
+          detect: (_text: string) => {
+            const end = performance.now() + 10;
+            while (performance.now() < end) {
+              /* busy-wait */
+            }
+            return [];
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("slow-override");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("skips ReDoS check on default patterns (trusted)", () => {
+    // Default patterns should always pass — they are curated built-ins
+    const result = validateRedactionConfig({});
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts safe user-supplied patterns override", () => {
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "safe",
+          kind: "safe",
+          detect: () => [],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("DEFAULT_REDACTION_CONFIG", () => {
