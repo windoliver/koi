@@ -1,21 +1,21 @@
 {
   "name": "tool-use",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775200217942,
+  "recordedAt": 1775201872089,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "add_numbers",
-      "callId": "tool_add_numbers_AoIBOOU71Hk8Alb1ShN1"
+      "callId": "tool_add_numbers_iaF6U0LGZbgakRVfYEU9"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_AoIBOOU71Hk8Alb1ShN1",
+      "callId": "tool_add_numbers_iaF6U0LGZbgakRVfYEU9",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_AoIBOOU71Hk8Alb1ShN1",
+      "callId": "tool_add_numbers_iaF6U0LGZbgakRVfYEU9",
       "delta": "{\"a\":7,\"b\":5}"
     },
     {
@@ -25,7 +25,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_add_numbers_AoIBOOU71Hk8Alb1ShN1"
+      "callId": "tool_add_numbers_iaF6U0LGZbgakRVfYEU9"
     },
     {
       "kind": "done",
@@ -33,11 +33,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775200217-f5AKNEVfhm0UlhhNt3qe",
+        "responseId": "gen-1775201871-XRdZ099Kj4KqgPGbVOYJ",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_add_numbers_AoIBOOU71Hk8Alb1ShN1",
+            "id": "tool_add_numbers_iaF6U0LGZbgakRVfYEU9",
             "name": "add_numbers",
             "arguments": {
               "a": 7,
