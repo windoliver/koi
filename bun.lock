@@ -147,6 +147,15 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/fs-nexus": {
+      "name": "@koi/fs-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/edit-match": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/git-utils": {
       "name": "@koi/git-utils",
       "version": "0.0.0",
@@ -205,6 +214,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/tasks": {
+      "name": "@koi/tasks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/lib/tools-builtin": {
       "name": "@koi/tools-builtin",
       "version": "0.0.0",
@@ -251,6 +268,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/fs-nexus": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
@@ -259,6 +277,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/tasks": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
@@ -287,14 +306,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-      },
-    },
-    "packages/net/fs-nexus": {
-      "name": "@koi/fs-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
       },
     },
     "packages/net/mcp": {
@@ -583,7 +594,7 @@
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
-    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/net/fs-nexus"],
+    "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
@@ -616,6 +627,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
+
+    "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 
