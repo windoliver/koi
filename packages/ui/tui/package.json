@@ -1,6 +1,6 @@
 {
   "name": "@koi/tui",
-  "description": "Ink-based terminal UI for Koi agent conversations",
+  "description": "OpenTUI-based terminal UI for Koi agent conversations",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,13 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@opentui/core": "0.1.96",
+    "@opentui/react": "0.1.96",
+    "react": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.2"
   },
   "scripts": {
     "build": "tsup",

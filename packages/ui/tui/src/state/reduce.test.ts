@@ -190,6 +190,14 @@ describe("reduce — engine_event — thinking_delta", () => {
     }
   });
 
+  test("empty thinking_delta is a no-op", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const next = reduce(state, engineEvent({ kind: "thinking_delta", delta: "" }));
+    expect(next).toBe(state);
+  });
+
   test("appends to existing thinking block", () => {
     const state = stateWith({
       messages: [
@@ -293,7 +301,7 @@ describe("reduce — engine_event — tool_call", () => {
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
         expect(block.args).toBe('{"dir":"."}');
-        expect(block.result).toEqual({ files: ["a.ts"] });
+        expect(block.result).toBe('{"files":["a.ts"]}');
       }
     }
   });
@@ -350,7 +358,7 @@ describe("reduce — engine_event — tool_call", () => {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
-        expect(block.result).toEqual(toolResult);
+        expect(block.result).toBe(JSON.stringify(toolResult));
         expect(block.args).toBe('{"dir":"."}'); // args preserved
       }
     }
@@ -416,10 +424,118 @@ describe("reduce — engine_event — tool_call", () => {
 });
 
 // ---------------------------------------------------------------------------
+// engine_event — full tool call lifecycle integration
+// ---------------------------------------------------------------------------
+
+describe("reduce — engine_event — full lifecycle", () => {
+  test("turn_start → text → thinking → tool_start → tool_delta → tool_end → text → turn_end", () => {
+    let state = createInitialState();
+
+    // 1. Turn starts
+    state = reduce(state, engineEvent({ kind: "turn_start", turnIndex: 0 }));
+    expect(state.messages).toHaveLength(1);
+
+    // 2. Thinking first
+    state = reduce(state, engineEvent({ kind: "thinking_delta", delta: "Let me " }));
+    state = reduce(state, engineEvent({ kind: "thinking_delta", delta: "analyze this." }));
+
+    // 3. Text response
+    state = reduce(state, engineEvent({ kind: "text_delta", delta: "I'll read " }));
+    state = reduce(state, engineEvent({ kind: "text_delta", delta: "the file." }));
+
+    // 4. Tool call
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "read_file",
+        callId: testCallId("call-1"),
+      }),
+    );
+    state = reduce(
+      state,
+      engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: '{"path":' }),
+    );
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_delta",
+        callId: testCallId("call-1"),
+        delta: '"src/index.ts"}',
+      }),
+    );
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_end",
+        callId: testCallId("call-1"),
+        result: { content: "file contents" },
+      }),
+    );
+
+    // 5. Post-tool text
+    state = reduce(state, engineEvent({ kind: "text_delta", delta: "Here's what I found." }));
+
+    // 6. Turn ends
+    state = reduce(state, engineEvent({ kind: "turn_end", turnIndex: 0 }));
+
+    // Assert final message shape
+    const msg = lastMessage(state);
+    expect(msg.kind).toBe("assistant");
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      expect(msg.blocks).toHaveLength(4); // thinking, text, tool_call, text
+
+      const [b0, b1, b2, b3] = msg.blocks;
+      expect(b0?.kind).toBe("thinking");
+      if (b0?.kind === "thinking") expect(b0.text).toBe("Let me analyze this.");
+
+      expect(b1?.kind).toBe("text");
+      if (b1?.kind === "text") expect(b1.text).toBe("I'll read the file.");
+
+      expect(b2?.kind).toBe("tool_call");
+      if (b2?.kind === "tool_call") {
+        expect(b2.toolName).toBe("read_file");
+        expect(b2.status).toBe("complete");
+        expect(b2.args).toBe('{"path":"src/index.ts"}');
+        expect(b2.result).toBe('{"content":"file contents"}');
+      }
+
+      expect(b3?.kind).toBe("text");
+      if (b3?.kind === "text") expect(b3.text).toBe("Here's what I found.");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // engine_event — tool output cap
 // ---------------------------------------------------------------------------
 
 describe("reduce — engine_event — tool args cap", () => {
+  test("caps tool_call_start initial args at MAX_TOOL_OUTPUT_CHARS", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const largeValue = "v".repeat(MAX_TOOL_OUTPUT_CHARS + 100);
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "big_tool",
+        callId: testCallId("call-1"),
+        args: { data: largeValue },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.args).toBeDefined();
+        expect(block.args?.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+      }
+    }
+  });
+
   test("caps tool args at MAX_TOOL_OUTPUT_CHARS (tail-sliced)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
@@ -438,6 +554,135 @@ describe("reduce — engine_event — tool args cap", () => {
       if (block.kind === "tool_call") {
         expect(block.args?.length).toBe(MAX_TOOL_OUTPUT_CHARS);
         expect(block.args?.endsWith("x")).toBe(true);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool result cap
+// ---------------------------------------------------------------------------
+
+describe("reduce — engine_event — tool result cap", () => {
+  test("caps tool_call_end result at MAX_TOOL_OUTPUT_CHARS", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const largeResult = "r".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: largeResult }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(typeof block.result).toBe("string");
+        expect((block.result as string).length).toBe(MAX_TOOL_OUTPUT_CHARS);
+      }
+    }
+  });
+
+  test("caps non-string tool result via JSON serialization", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "big", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const bigObj = { data: "x".repeat(MAX_TOOL_OUTPUT_CHARS + 100) };
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: bigObj }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(typeof block.result).toBe("string");
+        expect((block.result as string).length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+      }
+    }
+  });
+
+  test("handles function result without crashing", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "fn", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    // JSON.stringify(() => {}) returns undefined — must not crash
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: () => {} }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("complete");
+        expect(block.result).toBe("[unserializable]");
+      }
+    }
+  });
+
+  test("handles symbol result without crashing", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "sym", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: Symbol("test") }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("complete");
+        expect(block.result).toBe("[unserializable]");
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Text blocks are NOT capped (user-facing content)
+// ---------------------------------------------------------------------------
+
+describe("reduce — text blocks unbounded", () => {
+  test("long text_delta is preserved in full", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const largeText = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
+    const next = reduce(state, engineEvent({ kind: "text_delta", delta: largeText }));
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "text") {
+        expect(block.text.length).toBe(MAX_TOOL_OUTPUT_CHARS + 5000);
+      }
+    }
+  });
+
+  test("long thinking_delta is preserved in full", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const largeText = "t".repeat(MAX_TOOL_OUTPUT_CHARS + 3000);
+    const next = reduce(state, engineEvent({ kind: "thinking_delta", delta: largeText }));
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "thinking") {
+        expect(block.text.length).toBe(MAX_TOOL_OUTPUT_CHARS + 3000);
       }
     }
   });
@@ -614,6 +859,12 @@ describe("reduce — set_modal", () => {
     expect(next.modal).toBeNull();
   });
 
+  test("null to null returns same reference", () => {
+    const state = createInitialState(); // modal starts as null
+    const next = reduce(state, { kind: "set_modal", modal: null });
+    expect(next).toBe(state);
+  });
+
   test("dismiss preserves active view", () => {
     const state = stateWith({
       activeView: "sessions",
@@ -672,6 +923,123 @@ describe("reduce — set_layout", () => {
     const state = stateWith({ layoutTier: "normal" });
     const next = reduce(state, { kind: "set_layout", tier: "normal" });
     expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_zoom
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_zoom", () => {
+  test("transitions zoom level", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_zoom", level: 2 });
+    expect(next.zoomLevel).toBe(2);
+  });
+
+  test("same zoom level returns same reference", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_zoom", level: 1 });
+    expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add_error
+// ---------------------------------------------------------------------------
+
+describe("reduce — add_error", () => {
+  test("adds error block and closes streaming", () => {
+    const state = stateWith({
+      messages: [assistantMsg("text", { id: "assistant-0", streaming: true })],
+    });
+    const next = reduce(state, {
+      kind: "add_error",
+      code: "RATE_LIMIT",
+      message: "API rate limit exceeded",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      expect(msg.blocks).toHaveLength(2); // original text + error
+      const errorBlock = msg.blocks.find((b) => b.kind === "error");
+      if (errorBlock?.kind === "error") {
+        expect(errorBlock.code).toBe("RATE_LIMIT");
+        expect(errorBlock.message).toBe("API rate limit exceeded");
+      }
+    }
+  });
+
+  test("creates implicit assistant message if none exists", () => {
+    const state = createInitialState();
+    const next = reduce(state, {
+      kind: "add_error",
+      code: "CONNECTION",
+      message: "Lost connection",
+    });
+    expect(next.messages).toHaveLength(1);
+    const msg = lastMessage(next);
+    expect(msg.kind).toBe("assistant");
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      expect(msg.blocks).toHaveLength(1);
+      const block = blockAt(msg, 0);
+      expect(block.kind).toBe("error");
+    }
+  });
+
+  test("creates new assistant when last message is user (not misattributed)", () => {
+    const state = stateWith({
+      messages: [
+        assistantMsg("old response", { id: "assistant-0", streaming: false }),
+        userMsg("follow-up question", "user-1"),
+      ],
+    });
+    const next = reduce(state, {
+      kind: "add_error",
+      code: "TRANSPORT",
+      message: "Connection lost",
+    });
+    // Error should be on a NEW assistant, not the old one
+    expect(next.messages).toHaveLength(3);
+    const oldAssistant = messageAt(next, 0);
+    if (oldAssistant.kind === "assistant") {
+      expect(oldAssistant.blocks.every((b) => b.kind !== "error")).toBe(true);
+    }
+    const errorAssistant = messageAt(next, 2);
+    expect(errorAssistant.kind).toBe("assistant");
+    if (errorAssistant.kind === "assistant") {
+      expect(errorAssistant.streaming).toBe(false);
+      const errorBlock = errorAssistant.blocks.find((b) => b.kind === "error");
+      expect(errorBlock?.kind).toBe("error");
+    }
+  });
+
+  test("finalizes running tool calls before appending error", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "text", text: "calling tool" },
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(state, {
+      kind: "add_error",
+      code: "TRANSPORT",
+      message: "Connection lost",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      const tool = msg.blocks.find((b) => b.kind === "tool_call");
+      if (tool?.kind === "tool_call") {
+        expect(tool.status).toBe("error");
+      }
+      const errorBlock = msg.blocks.find((b) => b.kind === "error");
+      if (errorBlock?.kind === "error") {
+        expect(errorBlock.code).toBe("TRANSPORT");
+      }
+    }
   });
 });
 
