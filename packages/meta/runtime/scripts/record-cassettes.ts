@@ -195,6 +195,7 @@ interface QueryConfig {
     readonly name: string;
     readonly cmd: readonly string[];
     readonly filter: { readonly events: readonly string[] };
+    readonly once?: boolean;
   }[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
@@ -685,7 +686,40 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 6. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 6. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  {
+    name: "hook-once",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "first-tool-guard",
+        cmd: ["echo", "once-hook-fired"],
+        filter: { events: ["tool.before"] },
+        once: true,
+      },
+      {
+        kind: "command",
+        name: "always-hook",
+        cmd: ["echo", "always-fired"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 7. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
@@ -821,6 +855,24 @@ await recordCassette("task-board", () =>
       },
     ],
     tools: [taskCreateTool.descriptor, taskListTool.descriptor],
+  }),
+);
+
+await recordCassette("hook-once", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
+          },
+        ],
+      },
+    ],
+    tools: [addTool.descriptor],
   }),
 );
 
