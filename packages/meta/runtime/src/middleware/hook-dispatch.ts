@@ -29,6 +29,16 @@ import type {
 } from "@koi/core";
 import { executeHooks } from "@koi/hooks";
 
+/** Minimal registry interface for once-hook lifecycle tracking. */
+export interface HookRegistryLike {
+  readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[]) => void;
+  readonly execute: (
+    sessionId: string,
+    event: HookEvent,
+  ) => Promise<readonly HookExecutionResult[]>;
+  readonly cleanup: (sessionId: string) => void;
+}
+
 export interface HookDispatchConfig {
   /** Hook configurations loaded from the manifest. */
   readonly hooks: readonly HookConfig[];
@@ -38,6 +48,15 @@ export interface HookDispatchConfig {
   readonly docId?: string;
   /** Session-level abort signal for cancellation. */
   readonly signal?: AbortSignal;
+  /**
+   * Optional hook registry for once-hook lifecycle tracking.
+   * When provided, hooks are dispatched through the registry (which
+   * handles once-hook consumption) instead of calling executeHooks directly.
+   * Requires registrySessionId to identify the session in the registry.
+   */
+  readonly registry?: HookRegistryLike;
+  /** Session ID used for registry.execute(). Required when registry is set. */
+  readonly registrySessionId?: string;
 }
 
 /**
@@ -49,7 +68,21 @@ export interface HookDispatchConfig {
  * - modify: patches request.input before proceeding
  */
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
-  const { hooks, store, docId, signal } = config;
+  const { hooks, store, docId, signal, registry, registrySessionId } = config;
+
+  /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
+  async function dispatchHooks(
+    event: HookEvent,
+    abortSignal?: AbortSignal,
+  ): Promise<readonly HookExecutionResult[]> {
+    if (registry !== undefined && registrySessionId !== undefined) {
+      // Use the configured session ID and override the event's sessionId
+      // to match what was registered. The registry enforces identity anyway.
+      const registryEvent: HookEvent = { ...event, sessionId: registrySessionId };
+      return registry.execute(registrySessionId, registryEvent);
+    }
+    return executeHooks(hooks, event, abortSignal);
+  }
 
   async function recordHookResults(
     results: readonly HookExecutionResult[],
@@ -145,7 +178,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           agentId: ctx.session.agentId,
           sessionId: ctx.session.sessionId as string,
         };
-        const results = await executeHooks(hooks, event, ctx.signal ?? signal);
+        const results = await dispatchHooks(event, ctx.signal ?? signal);
         await recordHookResults(results, "turn.ended");
       } catch {
         // Observer hook dispatch — swallow to avoid breaking the turn loop
@@ -164,7 +197,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         sessionId: ctx.session.sessionId as string,
         toolName: request.toolId,
       };
-      const preResults = await executeHooks(hooks, preEvent, ctx.signal ?? signal);
+      const preResults = await dispatchHooks(preEvent, ctx.signal ?? signal);
       await recordHookResults(preResults, `tool.before:${request.toolId}`);
 
       // Enforce pre-execution decisions
@@ -198,7 +231,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           sessionId: ctx.session.sessionId as string,
           toolName: request.toolId,
         };
-        const postResults = await executeHooks(hooks, postEvent, ctx.signal ?? signal);
+        const postResults = await dispatchHooks(postEvent, ctx.signal ?? signal);
         await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
 
         // Post-hook failures redact output (security: partial redaction is
