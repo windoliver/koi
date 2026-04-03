@@ -326,10 +326,10 @@ function truncateOversizedStep(doc: AtifDocument, maxSize: number): AtifDocument
   }
 
   // Truncate observation results
-  if (truncated.observation !== undefined) {
-    const obs = truncated.observation as { results?: readonly { content: string }[] };
+  if (truncated["observation"] !== undefined) {
+    const obs = truncated["observation"] as { results?: readonly { content: string }[] };
     if (obs.results !== undefined) {
-      truncated.observation = {
+      truncated["observation"] = {
         results: obs.results.map((r) =>
           r.content.length > FIELD_LIMIT * 2
             ? { ...r, content: `${r.content.slice(0, FIELD_LIMIT)}${SENTINEL}` }
@@ -340,11 +340,11 @@ function truncateOversizedStep(doc: AtifDocument, maxSize: number): AtifDocument
   }
 
   // Truncate tool_calls arguments
-  if ("tool_calls" in truncated && Array.isArray(truncated.tool_calls)) {
-    truncated.tool_calls = (truncated.tool_calls as readonly Record<string, unknown>[]).map(
+  if ("tool_calls" in truncated && Array.isArray(truncated["tool_calls"])) {
+    truncated["tool_calls"] = (truncated["tool_calls"] as readonly Record<string, unknown>[]).map(
       (tc) => {
-        if (tc.arguments !== undefined) {
-          const argStr = JSON.stringify(tc.arguments);
+        if (tc["arguments"] !== undefined) {
+          const argStr = JSON.stringify(tc["arguments"]);
           if (argStr.length > FIELD_LIMIT * 2) {
             return { ...tc, arguments: { _truncated: true, _originalSize: argStr.length } };
           }
@@ -355,9 +355,9 @@ function truncateOversizedStep(doc: AtifDocument, maxSize: number): AtifDocument
   }
 
   // Truncate extra/metadata
-  if (truncated.extra !== undefined) {
-    const extraStr = JSON.stringify(truncated.extra);
-    if (extraStr.length > FIELD_LIMIT * 4) truncated.extra = { _truncated: true };
+  if (truncated["extra"] !== undefined) {
+    const extraStr = JSON.stringify(truncated["extra"]);
+    if (extraStr.length > FIELD_LIMIT * 4) truncated["extra"] = { _truncated: true };
   }
 
   const candidate: AtifDocument = {
@@ -368,14 +368,13 @@ function truncateOversizedStep(doc: AtifDocument, maxSize: number): AtifDocument
 
   // Aggressive strip: remove all optional content fields
   const stripped = { ...truncated };
-  delete stripped.observation;
-  delete stripped.extra;
-  delete stripped.reasoning_content;
-  if ("tool_calls" in stripped && Array.isArray(stripped.tool_calls)) {
-    stripped.tool_calls = (stripped.tool_calls as readonly Record<string, unknown>[]).map((tc) => ({
-      tool_call_id: tc.tool_call_id,
-      function_name: tc.function_name,
-    }));
+  delete stripped["observation"];
+  delete stripped["extra"];
+  delete stripped["reasoning_content"];
+  if ("tool_calls" in stripped && Array.isArray(stripped["tool_calls"])) {
+    stripped["tool_calls"] = (stripped["tool_calls"] as readonly Record<string, unknown>[]).map(
+      (tc) => ({ tool_call_id: tc["tool_call_id"], function_name: tc["function_name"] }),
+    );
   }
 
   return { ...doc, steps: [...otherSteps, stripped as unknown as AtifStep] };

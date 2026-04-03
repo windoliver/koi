@@ -331,7 +331,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
 
       if (config?.onProgress) {
         const snap = makeProgressSnapshot(state);
-        await safeCallback(() => config.onProgress?.(snap), "onProgress");
+        await safeCallback(() => config.onProgress!(snap), "onProgress");
       }
     },
 
@@ -397,7 +397,7 @@ export function createReportMiddleware(config?: ReportMiddlewareConfig): ReportH
             swallowError(e, { package: "@koi/middleware-report", operation: "formatter" });
             formatted = "";
           }
-          await safeCallback(() => config.onReport?.(report, formatted), "onReport");
+          await safeCallback(() => config.onReport!(report, formatted), "onReport");
         }
       } finally {
         sessions.delete(ctx.sessionId);

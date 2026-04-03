@@ -117,7 +117,8 @@ function loadHooksInternal(raw: unknown): Result<LoadHooksResult, KoiError> {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: `Hook "${promptHook.name}" uses kind "prompt", which is not yet supported ` +
+        message:
+          `Hook "${promptHook.name}" uses kind "prompt", which is not yet supported ` +
           "in the standard hook pipeline. Use command, http, or agent hooks, " +
           "or wire @koi/hook-prompt as a dedicated executor.",
         retryable: false,
