@@ -1,0 +1,28 @@
+{
+  "name": "@koi/agent-runtime",
+  "description": "Agent definition model — built-in and custom agent loading with validation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "yaml": "2.8.2",
+    "zod": "4.3.6"
+  },
+  "koi": {
+    "optional": true
+  }
+}
