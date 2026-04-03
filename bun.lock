@@ -219,6 +219,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
         "@koi/validation": "workspace:*",
       },
     },
