@@ -99,11 +99,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
 
   // Create spawn provider when a resolver is provided. Callers pass the provider
   // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
+  // Use the caller-supplied ledger (for shared/distributed accounting) or fall back
+  // to a local default — never silently create a private ledger that bypasses policy.
   const spawnProvider =
     config.resolver !== undefined
       ? createSpawnToolProvider({
           resolver: config.resolver,
-          spawnLedger: createInMemorySpawnLedger(50),
+          spawnLedger: config.spawnLedger ?? createInMemorySpawnLedger(50),
           adapter,
           manifestTemplate: {
             name: "spawned-agent",
@@ -111,6 +113,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             description: "Spawned sub-agent",
             model: { name: "sonnet" },
           },
+          ...(config.spawnPolicy !== undefined ? { spawnPolicy: config.spawnPolicy } : {}),
           ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
         })
       : undefined;

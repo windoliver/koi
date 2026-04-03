@@ -28,6 +28,7 @@ import type {
 } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_SPAWN_POLICY, type SpawnPolicy } from "@koi/engine-compose";
+import { KoiRuntimeError } from "@koi/errors";
 
 import { createAgentSpawnFn } from "./create-agent-spawn-fn.js";
 
@@ -160,9 +161,13 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
               : {}),
           });
 
-          return result.ok
-            ? { output: result.output }
-            : { error: result.error.message, code: result.error.code };
+          if (!result.ok) {
+            // Propagate as a KoiRuntimeError so the engine's tool-failure path
+            // (retries, interruption handling, observability) sees a real failure
+            // rather than a success payload with embedded error fields.
+            throw new KoiRuntimeError(result.error);
+          }
+          return { output: result.output };
         },
       };
 

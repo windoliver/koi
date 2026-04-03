@@ -7,9 +7,11 @@ import type {
   EngineAdapter,
   KoiMiddleware,
   ReportStore,
+  SpawnLedger,
   ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
+import type { SpawnPolicy } from "@koi/engine-compose";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -81,6 +83,19 @@ export interface RuntimeConfig {
    * `delivery.kind === "on_demand"`. Passed through to the spawn provider.
    */
   readonly reportStore?: ReportStore | undefined;
+
+  /**
+   * Shared spawn ledger for process accounting. When provided it is threaded
+   * into the spawn provider so cross-runtime/cross-node accounting is preserved.
+   * When omitted a default in-memory ledger (capacity 50) is created locally.
+   */
+  readonly spawnLedger?: SpawnLedger | undefined;
+
+  /**
+   * Spawn governance policy (max depth, fan-out, total processes).
+   * When omitted the DEFAULT_SPAWN_POLICY is used.
+   */
+  readonly spawnPolicy?: SpawnPolicy | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

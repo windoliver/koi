@@ -151,9 +151,14 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
 
         const accepted = inbox.push(item);
         if (!accepted) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `Deferred delivery: inbox rejected item (capacity exceeded) for agent ${spawnResult.childPid.id}`,
+          // Treat inbox rejection as a hard delivery failure. The child ran successfully
+          // but its output cannot be delivered — throwing here causes createAgentSpawnFn's
+          // background task to catch it and push an error item to the parent inbox so the
+          // caller can observe the failure rather than silently losing the result.
+          throw KoiRuntimeError.from(
+            "INTERNAL",
+            `Deferred delivery: parent inbox at capacity, child output lost for agent ${spawnResult.childPid.id}`,
+            { retryable: false, context: { childId: spawnResult.childPid.id } },
           );
         }
       },
