@@ -1,8 +1,10 @@
 /**
- * @koi/tui — Ink-based terminal UI for Koi agent conversations.
+ * @koi/tui — Terminal UI for Koi agent conversations.
  *
- * This is the top-level package entry. State management is re-exported
- * from the ./state subpath.
+ * State management is re-exported from the ./state subpath.
+ * Components and the store hook are exported from the main entry.
  */
 
+export * from "./components/index.js";
 export * from "./state/index.js";
+export { StoreContext, useTuiStore } from "./store-context.js";
