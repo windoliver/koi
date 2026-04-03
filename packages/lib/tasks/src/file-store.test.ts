@@ -27,6 +27,7 @@ function createTestTask(id: string, overrides?: Partial<Task>): Task {
     description: `Task ${id}`,
     dependencies: [],
     retries: 0,
+    version: 0,
     status: "pending",
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -64,6 +65,71 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
 
     // Corrupted file should be treated as missing
     expect(result).toBeUndefined();
+  });
+
+  // FS-1b: Malformed version field — rejected, not coerced to 0
+  test("rejects file with malformed version (string instead of number)", async () => {
+    const task = { ...createTestTask("task_1"), version: "7" };
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(task));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    const result = await store.get(taskItemId("task_1"));
+
+    // Malformed version = invalid file, treated as missing
+    expect(result).toBeUndefined();
+  });
+
+  // FS-1c: Invalid status value — rejected
+  test("rejects file with invalid status literal", async () => {
+    const task = { ...createTestTask("task_1"), status: "bogus" };
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(task));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    expect(await store.get(taskItemId("task_1"))).toBeUndefined();
+  });
+
+  // FS-1d: Non-string dependency entries — rejected
+  test("rejects file with non-string dependency entries", async () => {
+    const task = { ...createTestTask("task_1"), dependencies: [42, null] };
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(task));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    expect(await store.get(taskItemId("task_1"))).toBeUndefined();
+  });
+
+  // FS-1e: Missing version field (old file) — backfilled to 0
+  test("backfills version to 0 when field is absent (backward compat)", async () => {
+    const { version: _, ...taskWithoutVersion } = createTestTask("task_1");
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(taskWithoutVersion));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    const result = await store.get(taskItemId("task_1"));
+
+    expect(result).toBeDefined();
+    expect(result?.version).toBe(0);
+  });
+
+  // FS-1f: Legacy file missing retries/createdAt/updatedAt/subject — backfilled
+  test("loads legacy task file missing retries, timestamps, and subject", async () => {
+    // Minimal old-format file: only id, description, status, dependencies
+    const legacyTask = {
+      id: "task_1",
+      description: "Old task",
+      status: "pending",
+      dependencies: [],
+    };
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(legacyTask));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    const result = await store.get(taskItemId("task_1"));
+
+    expect(result).toBeDefined();
+    expect(result?.description).toBe("Old task");
+    expect(result?.retries).toBe(0);
+    expect(result?.version).toBe(0);
+    expect(result?.createdAt).toBe(0);
+    expect(result?.updatedAt).toBe(0);
+    expect(result?.subject).toBe("Old task");
   });
 
   // FS-2: Orphaned .tmp files cleaned on startup
@@ -173,7 +239,30 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
     expect(next).toBe(taskItemId("task_10"));
   });
 
-  // FS-9: Missing file after known-IDs says it exists (self-healing)
+  // FS-9: CAS enforced even with cold cache (Codex finding)
+  test("rejects stale write before cache is populated", async () => {
+    // Write a version-1 task file before creating the store
+    const task = createTestTask("task_1", { version: 1 });
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(task));
+
+    // Create store — cache is cold (lazy), only filenames scanned
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+
+    // Attempt to write version 0 (older) immediately — before any get()/list()
+    let threw = false;
+    try {
+      await store.put(createTestTask("task_1", { version: 0 }));
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+
+    // Verify the on-disk version is still 1
+    const loaded = await store.get(taskItemId("task_1"));
+    expect(loaded?.version).toBe(1);
+  });
+
+  // FS-10: Missing file after known-IDs says it exists (self-healing)
   test("self-heals when known ID has no backing file", async () => {
     // Create a valid file
     await writeFile(join(testDir, "task_1.json"), JSON.stringify(createTestTask("task_1")));

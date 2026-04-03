@@ -8,6 +8,7 @@
 import type { Task, TaskBoardStore, TaskBoardStoreEvent, TaskBoardStoreFilter, TaskItemId } from "@koi/core";
 import { taskItemId } from "@koi/core";
 import { createMemoryChangeNotifier } from "@koi/validation";
+import { matchesFilter } from "./filter.js";
 
 /**
  * Create an in-memory TaskBoardStore backed by a Map.
@@ -26,6 +27,13 @@ export function createMemoryTaskBoardStore(): TaskBoardStore {
   };
 
   const put = (item: Task): void => {
+    // Stale-write guard: reject same or older version (single-writer safety net)
+    const existing = items.get(item.id);
+    if (existing !== undefined && existing.version >= item.version) {
+      throw new Error(
+        `Version conflict for task ${item.id}: stored version ${String(existing.version)} >= incoming version ${String(item.version)}`,
+      );
+    }
     items.set(item.id, item);
     notifier.notify({ kind: "put", item });
   };
@@ -41,9 +49,7 @@ export function createMemoryTaskBoardStore(): TaskBoardStore {
   const list = (filter?: TaskBoardStoreFilter): readonly Task[] => {
     const result: Task[] = [];
     for (const item of items.values()) {
-      if (filter?.status !== undefined && item.status !== filter.status) continue;
-      if (filter?.assignedTo !== undefined && item.assignedTo !== filter.assignedTo) continue;
-      result.push(item);
+      if (matchesFilter(item, filter)) result.push(item);
     }
     return result;
   };

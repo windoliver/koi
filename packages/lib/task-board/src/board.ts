@@ -22,7 +22,7 @@ import type {
   TaskStatus,
 } from "@koi/core";
 import { DEFAULT_TASK_BOARD_CONFIG, isTerminalTaskStatus, isValidTransition } from "@koi/core";
-import { detectCycle } from "./dag.js";
+import { detectCycle, isAcyclic } from "./dag.js";
 
 // ---------------------------------------------------------------------------
 // Error factories
@@ -80,6 +80,7 @@ function inputToTask(input: TaskInput, now: number): Task {
     subject: input.subject ?? input.description,
     description: input.description,
     retries: 0,
+    version: 0,
     dependencies: input.dependencies ?? [],
     status: "pending",
     metadata: input.metadata,
@@ -96,10 +97,50 @@ function emit(config: TaskBoardConfig, event: TaskBoardEvent): void {
   if (config.onEvent !== undefined) {
     try {
       config.onEvent(event);
-    } catch {
-      // Swallow consumer errors — mutations must never fail due to event handlers.
+    } catch (error: unknown) {
+      if (config.onEventError !== undefined) {
+        try {
+          config.onEventError(error, event);
+        } catch {
+          // Double-fault: swallow silently.
+        }
+      }
     }
   }
+}
+
+/** Filter items by predicate — shared helper for query methods. */
+function filterTasks(
+  items: ReadonlyMap<TaskItemId, Task>,
+  predicate: (task: Task) => boolean,
+): readonly Task[] {
+  const result: Task[] = [];
+  for (const [, task] of items) {
+    if (predicate(task)) result.push(task);
+  }
+  return result;
+}
+
+/**
+ * Build reverse adjacency: task → list of its direct dependents.
+ * O(V + E) construction, enables O(dependents) lookups.
+ */
+function buildReverseAdjacency(
+  items: ReadonlyMap<TaskItemId, Task>,
+): ReadonlyMap<TaskItemId, readonly TaskItemId[]> {
+  const reverse = new Map<TaskItemId, TaskItemId[]>();
+  for (const [id] of items) {
+    reverse.set(id, []);
+  }
+  for (const [id, task] of items) {
+    for (const dep of task.dependencies) {
+      const list = reverse.get(dep);
+      if (list !== undefined) {
+        list.push(id);
+      }
+    }
+  }
+  return reverse;
 }
 
 /**
@@ -154,25 +195,26 @@ function computeUnreachableSet(items: ReadonlyMap<TaskItemId, Task>): ReadonlySe
 
 /**
  * Find all pending tasks downstream of the given task that are newly unreachable.
- * Used for incremental unreachable tracking after fail/kill.
+ * Uses reverse adjacency for O(reachable) instead of O(V²).
  */
 function findNewlyUnreachable(
   taskId: TaskItemId,
   items: ReadonlyMap<TaskItemId, Task>,
   existingUnreachable: ReadonlySet<TaskItemId>,
+  reverseAdj: ReadonlyMap<TaskItemId, readonly TaskItemId[]>,
 ): readonly TaskItemId[] {
   const newlyUnreachable: TaskItemId[] = [];
   const visited = new Set<TaskItemId>();
 
   function traverse(current: TaskItemId): void {
-    for (const [id, task] of items) {
+    const dependents = reverseAdj.get(current) ?? [];
+    for (const id of dependents) {
       if (visited.has(id)) continue;
-      if (!task.dependencies.includes(current)) continue;
       visited.add(id);
-      if (task.status === "pending" && !existingUnreachable.has(id)) {
+      const task = items.get(id);
+      if (task !== undefined && task.status === "pending" && !existingUnreachable.has(id)) {
         newlyUnreachable.push(id);
       }
-      // Continue traversal to find transitive dependents
       traverse(id);
     }
   }
@@ -193,6 +235,7 @@ function createBoardFromState(
 ): TaskBoard {
   const maxRetries = config.maxRetries ?? DEFAULT_TASK_BOARD_CONFIG.maxRetries ?? 3;
   const now = (): number => Date.now();
+  const reverseAdj = buildReverseAdjacency(items);
 
   function transitionTask(
     taskId: TaskItemId,
@@ -214,6 +257,7 @@ function createBoardFromState(
     const updated: Task = {
       ...task,
       status: to,
+      version: task.version + 1,
       updatedAt: now(),
       ...(patch ?? {}),
     };
@@ -289,16 +333,24 @@ function createBoardFromState(
         newItems.set(input.id, entry);
       }
 
+      // Validate dependencies exist
       for (const entry of newEntries) {
         for (const dep of entry.dependencies) {
           if (!newItems.has(dep)) {
             return fail(notFoundError(dep));
           }
         }
-        const cycle = detectCycle(newItems, entry.dependencies, entry.id);
-        if (cycle !== undefined) {
-          return fail(validationError(`Cycle detected: ${cycle.join(" → ")}`));
+      }
+
+      // Hybrid cycle detection: O(V+E) topo sort first, DFS only if cycle found
+      if (!isAcyclic(newItems)) {
+        for (const entry of newEntries) {
+          const cycle = detectCycle(newItems, entry.dependencies, entry.id);
+          if (cycle !== undefined) {
+            return fail(validationError(`Cycle detected: ${cycle.join(" → ")}`));
+          }
         }
+        return fail(validationError("Cycle detected in task dependency graph"));
       }
 
       // Recompute unreachable for new board state
@@ -306,6 +358,22 @@ function createBoardFromState(
       const newBoard = createBoardFromState(newItems, results, newUnreachable, config);
       for (const entry of newEntries) {
         emit(config, { kind: "task:added", task: entry });
+      }
+      // Emit task:unreachable for batch-added tasks that are immediately dead
+      for (const entry of newEntries) {
+        if (!newUnreachable.has(entry.id)) continue;
+        const blockingDep = entry.dependencies.find((dep) => {
+          const depTask = newItems.get(dep);
+          return (
+            (depTask !== undefined &&
+              (depTask.status === "failed" || depTask.status === "killed")) ||
+            unreachableIds.has(dep) ||
+            newUnreachable.has(dep)
+          );
+        });
+        if (blockingDep !== undefined) {
+          emit(config, { kind: "task:unreachable", taskId: entry.id, blockedBy: blockingDep });
+        }
       }
       return ok(newBoard);
     },
@@ -324,6 +392,30 @@ function createBoardFromState(
       }
       if (!isReady(task, items)) {
         return fail(validationError(`Cannot assign task ${taskId}: dependencies not satisfied`));
+      }
+      // Enforce at-most-N in_progress per owner
+      const maxPerOwner = config.maxInProgressPerOwner;
+      if (maxPerOwner !== undefined && maxPerOwner <= 0) {
+        return fail(
+          validationError(
+            `Cannot assign task ${taskId}: maxInProgressPerOwner is ${String(maxPerOwner)} (no assignments allowed)`,
+          ),
+        );
+      }
+      if (maxPerOwner !== undefined) {
+        let count = 0;
+        for (const [, t] of items) {
+          if (t.status === "in_progress" && t.assignedTo === agentId) {
+            count += 1;
+            if (count >= maxPerOwner) {
+              return fail(
+                validationError(
+                  `Cannot assign task ${taskId} to ${agentId}: agent already has ${String(count)} in-progress task(s) (max: ${String(maxPerOwner)})`,
+                ),
+              );
+            }
+          }
+        }
       }
       const result = transitionTask(taskId, "in_progress", { assignedTo: agentId });
       if (!result.ok) return { ok: false, error: result.error };
@@ -372,6 +464,7 @@ function createBoardFromState(
           ...task,
           status: "pending",
           retries: task.retries + 1,
+          version: task.version + 1,
           assignedTo: undefined,
           error,
           updatedAt: now(),
@@ -388,7 +481,12 @@ function createBoardFromState(
       if (!result.ok) return { ok: false, error: result.error };
 
       // Eager unreachable tracking: find newly unreachable downstream tasks
-      const newlyUnreachable = findNewlyUnreachable(taskId, result.value.items, unreachableIds);
+      const newlyUnreachable = findNewlyUnreachable(
+        taskId,
+        result.value.items,
+        unreachableIds,
+        reverseAdj,
+      );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
         newUnreachable.add(id);
@@ -407,7 +505,12 @@ function createBoardFromState(
       if (!result.ok) return { ok: false, error: result.error };
 
       // Eager unreachable tracking: find newly unreachable downstream tasks
-      const newlyUnreachable = findNewlyUnreachable(taskId, result.value.items, unreachableIds);
+      const newlyUnreachable = findNewlyUnreachable(
+        taskId,
+        result.value.items,
+        unreachableIds,
+        reverseAdj,
+      );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
         newUnreachable.add(id);
@@ -434,6 +537,7 @@ function createBoardFromState(
         ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
+        version: task.version + 1,
         updatedAt: now(),
       };
       const newItems = new Map(items);
@@ -450,43 +554,19 @@ function createBoardFromState(
     },
 
     ready(): readonly Task[] {
-      const readyTasks: Task[] = [];
-      for (const [, task] of items) {
-        if (isReady(task, items)) {
-          readyTasks.push(task);
-        }
-      }
-      return readyTasks;
+      return filterTasks(items, (t) => isReady(t, items));
     },
 
     pending(): readonly Task[] {
-      const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.status === "pending") {
-          result.push(task);
-        }
-      }
-      return result;
+      return filterTasks(items, (t) => t.status === "pending");
     },
 
     blocked(): readonly Task[] {
-      const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.status === "pending" && !isReady(task, items)) {
-          result.push(task);
-        }
-      }
-      return result;
+      return filterTasks(items, (t) => t.status === "pending" && !isReady(t, items));
     },
 
     inProgress(): readonly Task[] {
-      const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.status === "in_progress") {
-          result.push(task);
-        }
-      }
-      return result;
+      return filterTasks(items, (t) => t.status === "in_progress");
     },
 
     completed(): readonly TaskResult[] {
@@ -494,23 +574,11 @@ function createBoardFromState(
     },
 
     failed(): readonly Task[] {
-      const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.status === "failed") {
-          result.push(task);
-        }
-      }
-      return result;
+      return filterTasks(items, (t) => t.status === "failed");
     },
 
     killed(): readonly Task[] {
-      const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.status === "killed") {
-          result.push(task);
-        }
-      }
-      return result;
+      return filterTasks(items, (t) => t.status === "killed");
     },
 
     unreachable(): readonly Task[] {
@@ -526,11 +594,11 @@ function createBoardFromState(
     },
 
     dependentsOf(taskId: TaskItemId): readonly Task[] {
+      const depIds = reverseAdj.get(taskId) ?? [];
       const result: Task[] = [];
-      for (const [, task] of items) {
-        if (task.dependencies.includes(taskId)) {
-          result.push(task);
-        }
+      for (const id of depIds) {
+        const task = items.get(id);
+        if (task !== undefined) result.push(task);
       }
       return result;
     },
@@ -556,11 +624,19 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
   if (initial !== undefined) {
     const items = new Map<TaskItemId, Task>();
     for (const item of initial.items) {
-      // Backward compatibility: ensure new fields have defaults for old snapshots
+      // Backward compatibility: ensure new fields have defaults for old snapshots.
+      // Normalize version to a safe non-negative integer — malformed values
+      // (NaN, negative, string) are coerced to 0 to prevent poisoning CAS logic.
+      const rawVersion = item.version ?? 0;
+      const safeVersion =
+        typeof rawVersion === "number" && Number.isFinite(rawVersion) && rawVersion >= 0
+          ? Math.floor(rawVersion)
+          : 0;
       const task: Task = {
         ...item,
         subject: item.subject ?? "",
         retries: item.retries ?? 0,
+        version: safeVersion,
         createdAt: item.createdAt ?? 0,
         updatedAt: item.updatedAt ?? 0,
       };

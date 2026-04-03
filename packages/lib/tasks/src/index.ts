@@ -9,4 +9,6 @@
  */
 
 export { createFileTaskBoardStore, type FileTaskBoardStoreConfig } from "./file-store.js";
+export { matchesFilter } from "./filter.js";
+export { createManagedTaskBoard, type ManagedTaskBoard, type ManagedTaskBoardConfig } from "./managed-board.js";
 export { createMemoryTaskBoardStore } from "./memory-store.js";

@@ -96,9 +96,9 @@ export function topologicalSort(items: ReadonlyMap<TaskItemId, Task>): readonly 
   }
 
   const result: TaskItemId[] = [];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (current === undefined) break;
+  // Index-based iteration avoids O(V) cost of array.shift()
+  for (let i = 0; i < queue.length; i++) {
+    const current = queue[i]!;
     result.push(current);
     // Decrease in-degree of dependents via reverse adjacency — O(edges from current)
     const deps = dependents.get(current);
@@ -114,4 +114,13 @@ export function topologicalSort(items: ReadonlyMap<TaskItemId, Task>): readonly 
   }
 
   return result;
+}
+
+/**
+ * Returns true if the task graph is a DAG (no cycles).
+ * Uses topological sort: if all nodes are visited, graph is acyclic.
+ * O(V+E) — faster than per-node DFS for batch validation.
+ */
+export function isAcyclic(items: ReadonlyMap<TaskItemId, Task>): boolean {
+  return topologicalSort(items).length === items.size;
 }
