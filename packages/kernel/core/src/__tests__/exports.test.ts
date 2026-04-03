@@ -11,6 +11,9 @@ import type {
   Agent,
   // lifecycle
   AgentCondition,
+  // agent definition
+  AgentDefinition,
+  AgentDefinitionSource,
   AgentDescriptor,
   AgentId,
   AgentManifest,
@@ -139,6 +142,7 @@ import type {
   ZoneStatus,
 } from "../index.js";
 import {
+  AGENT_DEFINITION_PRIORITY,
   ALL_BRICK_KINDS,
   agentId,
   agentToken,
@@ -208,6 +212,8 @@ type _TypeGuard =
   | AssertDefined<MiddlewareConfig>
   | AssertDefined<PermissionConfig>
   | AssertDefined<SearchConfig>
+  | AssertDefined<AgentDefinition>
+  | AssertDefined<AgentDefinitionSource>
   | AssertDefined<AgentManifest>
   | AssertDefined<EngineStopReason>
   | AssertDefined<EngineMetrics>
@@ -327,6 +333,7 @@ describe("export inventory", () => {
     expect(REPUTATION_LEVEL_ORDER).toBeDefined();
     expect(ZONE_REGISTRY).toBeDefined();
     expect(zoneId).toBeDefined();
+    expect(AGENT_DEFINITION_PRIORITY).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
