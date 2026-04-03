@@ -181,6 +181,13 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/task-board": {
+      "name": "@koi/task-board",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/tools-builtin": {
       "name": "@koi/tools-builtin",
       "version": "0.0.0",
@@ -522,6 +529,8 @@
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
+
+    "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 
