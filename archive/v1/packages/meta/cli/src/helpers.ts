@@ -1,0 +1,81 @@
+/**
+ * Shared utilities for CLI commands (start, serve).
+ */
+
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import type { ContentBlock } from "@koi/core";
+
+export { createLocalFileSystem } from "./local-filesystem.js";
+
+/**
+ * Extracts text from an array of content blocks, joining with newlines.
+ */
+/**
+ * Resolves the dashboard-ui dist directory for serving static SPA assets.
+ * Returns undefined if the package is not available (e.g. not built yet).
+ */
+export function resolveDashboardAssetsDir(): string | undefined {
+  try {
+    const pkgPath = require.resolve("@koi/dashboard-ui/package.json");
+    return resolve(dirname(pkgPath), "dist");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extracts text from an array of content blocks, joining with newlines.
+ */
+export function extractTextFromBlocks(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/** Shared session chat log prefix (accessible from admin API filesystem). */
+export const CHAT_SESSION_PREFIX = "/session/chat";
+
+/**
+ * Persist a chat exchange (user + assistant) to the shared session log.
+ *
+ * Appends JSONL entries so multiple exchanges accumulate in the same file.
+ * Uses the same format as TUI session logs so the session picker can
+ * read them without any changes.
+ */
+export async function persistChatExchange(
+  workspaceRoot: string,
+  agentId: string,
+  threadId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  const chatDir = join(workspaceRoot, "agents", agentId, "session", "chat");
+  await mkdir(chatDir, { recursive: true });
+  const logPath = join(chatDir, `${threadId}.jsonl`);
+  const entries = `${[
+    JSON.stringify({ kind: "user", text: userText, timestamp: Date.now() }),
+    JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
+  ].join("\n")}\n`;
+  await appendFile(logPath, entries);
+}
+
+/**
+ * Best-effort chat persistence — logs a warning on failure instead of
+ * silently swallowing the error.
+ */
+export async function persistChatExchangeSafely(
+  workspaceRoot: string,
+  agentId: string,
+  threadId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  try {
+    await persistChatExchange(workspaceRoot, agentId, threadId, userText, assistantText);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Failed to persist chat: ${reason}\n`);
+  }
+}

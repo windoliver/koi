@@ -1,0 +1,56 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/snapshot-chain-store API surface . has stable type surface 1`] = `
+"import { SnapshotChainStore, ThreadSnapshotStore, ThreadStore } from '@koi/core';
+
+/**
+ * InMemorySnapshotChainStore — Map-based store for tests and development.
+ *
+ * No persistence across restarts. Supports full DAG topology,
+ * content-hash deduplication, ancestor walking, forking, and pruning.
+ */
+
+declare function createInMemorySnapshotChainStore<T>(): SnapshotChainStore<T>;
+
+/**
+ * SQLite-backed SnapshotChainStore<T> — persistent DAG snapshot storage.
+ *
+ * Uses bun:sqlite via @koi/sqlite-utils openDb() for WAL mode and optimized
+ * PRAGMAs. Supports full DAG topology with separate parent tracking,
+ * content-hash deduplication, ancestor walking, forking, and pruning.
+ *
+ * Chain membership is tracked in \`chain_heads\` + node \`chain_id\` columns.
+ * A \`chain_members\` bridge table allows a single node to belong to
+ * multiple chains (as required by fork semantics).
+ */
+
+/** Create a SQLite-backed SnapshotChainStore. */
+declare function createSqliteSnapshotChainStore<T>(dbPath: string): SnapshotChainStore<T>;
+
+/**
+ * ThreadStore facade — thin adapter over SnapshotChainStore<ThreadSnapshot>.
+ *
+ * Maps ThreadId → ChainId (identity), provides idempotent append-and-checkpoint,
+ * and deduplicates messages by ThreadMessageId (Decision 6A).
+ */
+
+interface CreateThreadStoreConfig {
+    readonly store: ThreadSnapshotStore;
+    /**
+     * Maximum snapshots to retain per thread. Older snapshots are pruned
+     * after each append to bound disk/memory growth.
+     * Default: 500 (~2.5 MB per thread at 5 KB/snapshot).
+     */
+    readonly maxRetained?: number;
+}
+/**
+ * Create a ThreadStore backed by a SnapshotChainStore<ThreadSnapshot>.
+ *
+ * Idempotency: duplicate ThreadMessageId values produce a CONFLICT error
+ * (Decision 6A). The idempotency set is maintained in-memory per thread.
+ */
+declare function createThreadStore(config: CreateThreadStoreConfig): ThreadStore;
+
+export { type CreateThreadStoreConfig, createInMemorySnapshotChainStore, createSqliteSnapshotChainStore, createThreadStore };
+"
+`;

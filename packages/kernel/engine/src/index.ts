@@ -13,12 +13,19 @@ export type {
   CapabilityInjectionConfig,
   ComposedExtensions,
   CreateSpawnGuardOptions,
+  DebugInstrumentation,
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugSpan,
+  DebugTurnTrace,
   DefaultGuardExtensionConfig,
   DepthToolRule,
   IterationLimits,
   LoopDetectionConfig,
   LoopDetectionKind,
   LoopWarningInfo,
+  MiddlewareSource,
   RecomposedChains,
   SpawnPolicy,
   SpawnWarningInfo,
@@ -35,6 +42,8 @@ export {
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
+  // instrumentation
+  createDebugInstrumentation,
   createDefaultGuardExtension,
   // guards
   createIterationGuard,
@@ -141,6 +150,9 @@ export { createBrickRequiresExtension } from "./brick-requires-extension.js";
 export { createChildHandle } from "./child-handle.js";
 // compose bridge (lifecycle-aware terminals)
 export { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
+// hook spawn adapter
+export type { CreateHookSpawnFnOptions, HookAgentMarker } from "./create-hook-spawn-fn.js";
+export { createHookSpawnFn } from "./create-hook-spawn-fn.js";
 // deduped tools accessor
 export { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 // delivery policy

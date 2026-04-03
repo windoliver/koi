@@ -1,58 +1,85 @@
 /**
- * @koi/mcp — MCP Client Bridge (Layer 2)
+ * @koi/mcp — MCP transport layer + connection management.
  *
- * Connects to MCP-compatible tool servers (filesystem, GitHub, Slack, etc.)
- * and attaches discovered tools as Koi ECS components. Supports both
- * individual tool mode and discover mode (2 meta-tools).
- *
- * Depends on @koi/core only — never on L1 or peer L2 packages.
+ * Provides CC-compatible .mcp.json config loading, transport abstraction,
+ * connection lifecycle state machine, error mapping, and auth provider
+ * interface for connecting to MCP servers.
  */
 
-// types — client manager
-export type { McpClientManager, McpToolInfo } from "./client-manager.js";
-// runtime values — client manager
-export { createMcpClientManager } from "./client-manager.js";
-// types — component provider
-export type {
-  CreateManagerFn,
-  McpComponentProviderResult,
-  McpServerFailure,
-} from "./component-provider.js";
-// runtime values — component provider
+// Auth
+export type { McpAuthProvider } from "./auth.js";
+export { createBearerAuthProvider } from "./auth.js";
+// Component provider
+export type { McpComponentProviderOptions } from "./component-provider.js";
 export { createMcpComponentProvider } from "./component-provider.js";
-// types — config
+// Config — external schema (CC-compatible)
+// Config — internal types (Koi convention)
 export type {
-  HttpTransportConfig,
-  McpProviderConfig,
+  ExternalServerConfig,
+  HttpServerConfig,
+  McpJsonConfig,
   McpServerConfig,
-  McpServerMode,
-  McpTransportConfig,
-  ResolvedMcpProviderConfig,
+  McpTransportKind,
+  NormalizeResult,
   ResolvedMcpServerConfig,
-  SseTransportConfig,
-  StdioTransportConfig,
+  ResolveOptions,
+  SseServerConfig,
+  StdioServerConfig,
 } from "./config.js";
-// runtime values — config
 export {
-  resolveProviderConfig,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  DEFAULT_TIMEOUT_MS,
+  externalServerConfigSchema,
+  mcpJsonSchema,
+  normalizeMcpServers,
   resolveServerConfig,
-  validateMcpProviderConfig,
-  validateMcpServerConfig,
+  validateMcpJson,
 } from "./config.js";
-export { createExecuteTool } from "./discover/execute-tool.js";
-// runtime values — discover mode
-export { createSearchTool } from "./discover/search-tool.js";
-// runtime values — errors
+// Connection
+export type { ConnectionDeps, McpConnection, McpToolInfo } from "./connection.js";
+export { createMcpConnection } from "./connection.js";
+// Env expansion
+export { expandEnvVars, expandEnvVarsInRecord } from "./env.js";
+// Errors
+export type { McpErrorContext } from "./errors.js";
 export {
   connectionTimeoutError,
   mapMcpError,
   notConnectedError,
   reconnectExhaustedError,
-  serverStartError,
+  sessionExpiredError,
 } from "./errors.js";
-// types — resolver
-export type { McpResolver } from "./resolver.js";
-// runtime values — resolver
+// .mcp.json loader
+export { loadMcpJsonFile, loadMcpJsonString } from "./mcp-json.js";
+// Resolver
+export type { McpResolver, McpResolverOptions, McpServerFailure } from "./resolver.js";
 export { createMcpResolver } from "./resolver.js";
-// runtime values — tool adapter
-export { mapMcpToolToKoi } from "./tool-adapter.js";
+
+// Schema normalization
+export { normalizeToolSchema } from "./schema.js";
+// State
+export type {
+  AuthChallenge,
+  TransportState,
+  TransportStateListener,
+  TransportStateMachine,
+} from "./state.js";
+export { createTransportStateMachine } from "./state.js";
+// Tool adapter
+export {
+  mapMcpToolInfoToDescriptor,
+  mapMcpToolToKoi,
+  namespacedToolName,
+  parseNamespacedToolName,
+  validateServerName,
+} from "./tool-adapter.js";
+// Transport
+export type {
+  CreateTransportFn,
+  CreateTransportOptions,
+  KoiMcpTransport,
+  TransportEvent,
+  TransportEventListener,
+} from "./transport.js";
+export { createTransport } from "./transport.js";

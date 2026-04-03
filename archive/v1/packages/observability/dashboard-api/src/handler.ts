@@ -1,0 +1,706 @@
+/**
+ * createDashboardHandler — main factory for the dashboard HTTP handler.
+ *
+ * Returns a composable handler that returns `Response | null`.
+ * Null means the request didn't match any dashboard route,
+ * allowing the consumer to chain with other handlers.
+ */
+
+import type { FileSystemBackend } from "@koi/core";
+import { agentId as toAgentId } from "@koi/core";
+import type {
+  CommandDispatcher,
+  DashboardConfig,
+  DashboardDataSource,
+  RuntimeViewDataSource,
+  WorkspaceContextResponse,
+} from "@koi/dashboard-types";
+import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
+import { applyCors, getCorsHeaders, handlePreflight } from "./middleware/cors.js";
+import type { RouteParams } from "./router.js";
+import { createRouter, errorResponse, jsonResponse } from "./router.js";
+import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
+import { handleChannels } from "./routes/channels.js";
+import {
+  handleDemoteBrick,
+  handleDispatchAgent,
+  handleListMailbox,
+  handlePromoteBrick,
+  handleQuarantineBrick,
+  handleResumeAgent,
+  handleRetryDeadLetter,
+  handleReviewGovernance,
+  handleSuspendAgent,
+  handleTerminateAgentCmd,
+} from "./routes/commands.js";
+import {
+  handleApproveDataSource,
+  handleGetDataSourceSchema,
+  handleListDataSources,
+  handleRejectDataSource,
+  handleRescanDataSources,
+} from "./routes/data-sources.js";
+import type { EditablePathMatcher } from "./routes/filesystem.js";
+import {
+  createDefaultEditablePaths,
+  handleFsDelete,
+  handleFsList,
+  handleFsRead,
+  handleFsSearch,
+  handleFsWrite,
+} from "./routes/filesystem.js";
+import type { DashboardCapabilities } from "./routes/health.js";
+import { handleHealth } from "./routes/health.js";
+import { handleMetrics } from "./routes/metrics.js";
+import {
+  handleCostSnapshot,
+  handleDeleteSchedule,
+  handleHarnessCheckpoints,
+  handleHarnessStatus,
+  handlePauseHarness,
+  handlePauseSchedule,
+  handleResumeHarness,
+  handleResumeSchedule,
+  handleRetrySchedulerDlq,
+  handleSchedulerDlq,
+  handleSchedulerSchedules,
+  handleSchedulerStats,
+  handleSchedulerTasks,
+  handleSignalWorkflow,
+  handleTaskBoard,
+  handleTemporalHealth,
+  handleTemporalWorkflow,
+  handleTemporalWorkflows,
+  handleTerminateWorkflow,
+} from "./routes/orchestration.js";
+import type { ServiceManagementCallbacks } from "./routes/service-management.js";
+import {
+  handleDemoInit,
+  handleDemoPacks,
+  handleDemoReset,
+  handleDeploy,
+  handleDetailedStatus,
+  handleShutdown,
+  handleUndeploy,
+} from "./routes/service-management.js";
+import { handleSkills } from "./routes/skills.js";
+import {
+  handleAgentProcfs,
+  handleDebugContributions,
+  handleDebugInventory,
+  handleDebugTrace,
+  handleForgeBricks,
+  handleForgeEvents,
+  handleForgeStats,
+  handleGatewayTopology,
+  handleListDelegations,
+  handleListGovernanceQueue,
+  handleListHandoffs,
+  handleListScratchpad,
+  handleMiddlewareChain,
+  handleProcessTree,
+  handleReadScratchpad,
+} from "./routes/views.js";
+import { createSseProducer } from "./sse/producer.js";
+import { createStaticServe } from "./static-serve.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Handler for AG-UI chat requests (POST /agents/:id/chat → SSE stream). */
+export type AgentChatHandler = (req: Request, agentId: string) => Response | Promise<Response>;
+
+export interface DashboardHandlerOptions {
+  readonly dataSource: DashboardDataSource;
+  readonly fileSystem?: FileSystemBackend;
+  readonly runtimeViews?: RuntimeViewDataSource;
+  readonly commands?: CommandDispatcher;
+  /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
+  readonly editablePaths?: EditablePathMatcher;
+  /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
+  readonly agentChatHandler?: AgentChatHandler;
+  /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
+  readonly serviceManagement?: ServiceManagementCallbacks;
+  /** Optional workspace context for debugging (cwd, paths, ports). */
+  readonly workspaceContext?: WorkspaceContextResponse | undefined;
+}
+
+export interface DashboardHandlerResult {
+  readonly handler: (req: Request) => Promise<Response | null>;
+  readonly dispose: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createDashboardHandler(
+  dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions,
+  config?: DashboardConfig,
+): DashboardHandlerResult {
+  // Support both old and new call signatures
+  const options: DashboardHandlerOptions =
+    "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
+
+  const {
+    dataSource,
+    fileSystem,
+    runtimeViews,
+    commands,
+    agentChatHandler,
+    serviceManagement,
+    workspaceContext,
+  } = options;
+  const editablePaths =
+    options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
+
+  const basePath = config?.basePath ?? DEFAULT_DASHBOARD_CONFIG.basePath;
+  const apiPath = config?.apiPath ?? DEFAULT_DASHBOARD_CONFIG.apiPath;
+  const enableCors = config?.cors ?? DEFAULT_DASHBOARD_CONFIG.cors;
+  const batchIntervalMs = config?.sseBatchIntervalMs ?? DEFAULT_DASHBOARD_CONFIG.sseBatchIntervalMs;
+  const maxConnections = config?.maxSseConnections ?? DEFAULT_DASHBOARD_CONFIG.maxSseConnections;
+
+  // Compute capabilities from provided options (per-subsystem granularity)
+  const capabilities: DashboardCapabilities = {
+    fileSystem: fileSystem !== undefined,
+    runtimeViews: runtimeViews !== undefined,
+    commands: commands !== undefined,
+    dataSources: dataSource.listDataSources !== undefined,
+    governance: commands?.listGovernanceQueue !== undefined,
+    orchestration: {
+      temporal: runtimeViews?.temporal !== undefined,
+      scheduler: runtimeViews?.scheduler !== undefined,
+      taskBoard: runtimeViews?.taskBoard !== undefined,
+      harness: runtimeViews?.harness !== undefined,
+    },
+    ...(commands !== undefined
+      ? {
+          commandsDetail: {
+            pauseHarness: commands.pauseHarness !== undefined,
+            resumeHarness: commands.resumeHarness !== undefined,
+            retryDlq: commands.retrySchedulerDeadLetter !== undefined,
+            pauseSchedule: commands.pauseSchedule !== undefined,
+            resumeSchedule: commands.resumeSchedule !== undefined,
+            deleteSchedule: commands.deleteSchedule !== undefined,
+          },
+        }
+      : {}),
+  };
+
+  // SSE producer
+  const sseProducer = createSseProducer(dataSource, {
+    batchIntervalMs,
+    maxConnections,
+  });
+
+  // Static asset serving (optional)
+  const staticServe =
+    config?.assetsDir !== undefined ? createStaticServe(config.assetsDir) : undefined;
+
+  // Build route list — core routes always present, new routes conditional
+  const routes: Array<{
+    readonly method: string;
+    readonly pattern: string;
+    readonly handler: (req: Request, params: RouteParams) => Response | Promise<Response>;
+  }> = [
+    // Core routes (always available)
+    { method: "GET", pattern: "/health", handler: (_req, _params) => handleHealth(capabilities) },
+    {
+      method: "GET",
+      pattern: "/workspace",
+      handler: (_req, _params) =>
+        workspaceContext !== undefined
+          ? jsonResponse(workspaceContext)
+          : errorResponse("NOT_FOUND", "Workspace context not available", 404),
+    },
+    {
+      method: "GET",
+      pattern: "/agents",
+      handler: (req, params) => handleListAgents(req, params, dataSource),
+    },
+    {
+      method: "GET",
+      pattern: "/agents/:id",
+      handler: (req, params) => handleGetAgent(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/agents/:id/terminate",
+      handler: (req, params) => handleTerminateAgent(req, params, dataSource),
+    },
+    // AG-UI chat endpoint (returns SSE stream or 501 when no handler configured)
+    {
+      method: "POST",
+      pattern: "/agents/:id/chat",
+      handler: async (req, params) => {
+        if (agentChatHandler === undefined) {
+          return errorResponse(
+            "NOT_IMPLEMENTED",
+            "AG-UI chat not configured — provide agentChatHandler to enable",
+            501,
+          );
+        }
+        const rawId = params.id;
+        if (rawId === undefined) {
+          return errorResponse("VALIDATION", "Missing agent ID", 400);
+        }
+        const id = decodeURIComponent(rawId);
+        // Verify agent exists and is not terminated before delegating to chat handler
+        const agent = await dataSource.getAgent(toAgentId(id));
+        if (agent === undefined) {
+          return errorResponse("NOT_FOUND", `Agent ${id} not found`, 404);
+        }
+        if (agent.state === "terminated") {
+          return errorResponse("CONFLICT", `Agent ${id} is terminated`, 409);
+        }
+        return agentChatHandler(req, id);
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/channels",
+      handler: (req, params) => handleChannels(req, params, dataSource),
+    },
+    {
+      method: "GET",
+      pattern: "/skills",
+      handler: (req, params) => handleSkills(req, params, dataSource),
+    },
+    {
+      method: "GET",
+      pattern: "/metrics",
+      handler: (req, params) => handleMetrics(req, params, dataSource),
+    },
+    // Data source discovery routes (always registered, return empty when not configured)
+    {
+      method: "GET",
+      pattern: "/data-sources",
+      handler: (req, params) => handleListDataSources(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/:name/approve",
+      handler: (req, params) => handleApproveDataSource(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/:name/reject",
+      handler: (req, params) => handleRejectDataSource(req, params, dataSource),
+    },
+    {
+      method: "GET",
+      pattern: "/data-sources/:name/schema",
+      handler: (req, params) => handleGetDataSourceSchema(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/rescan",
+      handler: (req, params) => handleRescanDataSources(req, params, dataSource),
+    },
+  ];
+
+  // Filesystem routes (when FileSystemBackend is provided)
+  if (fileSystem !== undefined) {
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/fs/list",
+        handler: (req, params) => handleFsList(req, params, fileSystem),
+      },
+      {
+        method: "GET",
+        pattern: "/fs/read",
+        handler: (req, params) => handleFsRead(req, params, fileSystem, editablePaths),
+      },
+      {
+        method: "GET",
+        pattern: "/fs/search",
+        handler: (req, params) => handleFsSearch(req, params, fileSystem),
+      },
+      {
+        method: "PUT",
+        pattern: "/fs/file",
+        handler: (req, params) => handleFsWrite(req, params, fileSystem, editablePaths),
+      },
+      {
+        method: "DELETE",
+        pattern: "/fs/file",
+        handler: (req, params) => handleFsDelete(req, params, fileSystem, editablePaths),
+      },
+    );
+  }
+
+  // Runtime view routes (when RuntimeViewDataSource is provided)
+  if (runtimeViews !== undefined) {
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/agents/tree",
+        handler: (req, params) => handleProcessTree(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/agents/:id/procfs",
+        handler: (req, params) => handleAgentProcfs(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/middleware/:id",
+        handler: (req, params) => handleMiddlewareChain(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/gateway/topology",
+        handler: (req, params) => handleGatewayTopology(req, params, runtimeViews),
+      },
+    );
+
+    // Forge views (self-improvement observability)
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/forge/bricks",
+        handler: (req, params) => handleForgeBricks(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/forge/stats",
+        handler: (req, params) => handleForgeStats(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/forge/events",
+        handler: (req, params) => handleForgeEvents(req, params, runtimeViews),
+      },
+    );
+
+    // Debug views (instrumentation)
+    // Note: /contributions must come before /:id/ routes to avoid `:id` matching "contributions"
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/debug/contributions",
+        handler: (req, params) => handleDebugContributions(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/debug/:id/inventory",
+        handler: (req, params) => handleDebugInventory(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/debug/:id/trace/:turn",
+        handler: (req, params) => handleDebugTrace(req, params, runtimeViews),
+      },
+    );
+
+    // Orchestration views (Phase 2 — registered when runtimeViews provided)
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/temporal/health",
+        handler: (req, params) => handleTemporalHealth(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/temporal/workflows",
+        handler: (req, params) => handleTemporalWorkflows(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/temporal/workflows/:id",
+        handler: (req, params) => handleTemporalWorkflow(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/tasks",
+        handler: (req, params) => handleSchedulerTasks(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/stats",
+        handler: (req, params) => handleSchedulerStats(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/schedules",
+        handler: (req, params) => handleSchedulerSchedules(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/dlq",
+        handler: (req, params) => handleSchedulerDlq(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/taskboard",
+        handler: (req, params) => handleTaskBoard(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/harness/status",
+        handler: (req, params) => handleHarnessStatus(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/harness/checkpoints",
+        handler: (req, params) => handleHarnessCheckpoints(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/cost/snapshot",
+        handler: (req, params) => handleCostSnapshot(req, params, runtimeViews),
+      },
+    );
+  }
+
+  // Command routes (when CommandDispatcher is provided)
+  if (commands !== undefined) {
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/agents/dispatch",
+        handler: (req, params) => handleDispatchAgent(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/suspend",
+        handler: (req, params) => handleSuspendAgent(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/resume",
+        handler: (req, params) => handleResumeAgent(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/terminate",
+        handler: (req, params) => handleTerminateAgentCmd(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/events/dlq/:id/retry",
+        handler: (req, params) => handleRetryDeadLetter(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/mailbox/:agentId/list",
+        handler: (req, params) => handleListMailbox(req, params, commands),
+      },
+    );
+
+    // Orchestration commands (Phase 2)
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/temporal/workflows/:id/signal",
+        handler: (req, params) => handleSignalWorkflow(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/temporal/workflows/:id/terminate",
+        handler: (req, params) => handleTerminateWorkflow(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/schedules/:id/pause",
+        handler: (req, params) => handlePauseSchedule(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/schedules/:id/resume",
+        handler: (req, params) => handleResumeSchedule(req, params, commands),
+      },
+      {
+        method: "DELETE",
+        pattern: "/cmd/scheduler/schedules/:id",
+        handler: (req, params) => handleDeleteSchedule(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/dlq/:id/retry",
+        handler: (req, params) => handleRetrySchedulerDlq(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/harness/pause",
+        handler: (req, params) => handlePauseHarness(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/harness/resume",
+        handler: (req, params) => handleResumeHarness(req, params, commands),
+      },
+      // Governance review
+      {
+        method: "POST",
+        pattern: "/cmd/governance/:id/review",
+        handler: (req, params) => handleReviewGovernance(req, params, commands),
+      },
+      // Forge brick lifecycle
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/promote",
+        handler: (req, params) => handlePromoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/demote",
+        handler: (req, params) => handleDemoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/quarantine",
+        handler: (req, params) => handleQuarantineBrick(req, params, commands),
+      },
+      // Delegation, handoff, scratchpad, governance views (read-only through commands)
+      {
+        method: "GET",
+        pattern: "/view/delegations/:agentId",
+        handler: (req, params) => handleListDelegations(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/handoffs/:agentId",
+        handler: (req, params) => handleListHandoffs(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/list",
+        handler: (req, params) => handleListScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/file",
+        handler: (req, params) => handleReadScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/governance/queue",
+        handler: (req, params) => handleListGovernanceQueue(req, params, commands),
+      },
+    );
+  }
+
+  // Service management routes (when ServiceManagementCallbacks is provided)
+  if (serviceManagement !== undefined) {
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/shutdown",
+        handler: (req, params) => handleShutdown(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/status/detailed",
+        handler: (req, params) => handleDetailedStatus(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/init",
+        handler: (req, params) => handleDemoInit(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/reset",
+        handler: (req, params) => handleDemoReset(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/demo/packs",
+        handler: (req, params) => handleDemoPacks(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleDeploy(req, params, serviceManagement),
+      },
+      {
+        method: "DELETE",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleUndeploy(req, params, serviceManagement),
+      },
+    );
+  }
+
+  const boundRoutes = createRouter(routes);
+
+  /** Check that pathname starts with prefix at a path boundary (next char is "/" or end). */
+  function matchesPathPrefix(pathname: string, prefix: string): boolean {
+    if (!pathname.startsWith(prefix)) return false;
+    const next = pathname[prefix.length];
+    return next === undefined || next === "/" || prefix.endsWith("/");
+  }
+
+  const rawHandler = async (req: Request, pathname: string): Promise<Response | null> => {
+    // Handle CORS preflight
+    if (enableCors && req.method === "OPTIONS" && matchesPathPrefix(pathname, apiPath)) {
+      return handlePreflight();
+    }
+
+    // API routes
+    if (matchesPathPrefix(pathname, apiPath)) {
+      const apiSubpath = pathname.slice(apiPath.length);
+
+      // SSE events endpoint — inject CORS headers directly to avoid re-wrapping stream
+      if (req.method === "GET" && apiSubpath === "/events") {
+        const corsHeaders = enableCors ? getCorsHeaders() : undefined;
+        return sseProducer.connect(req, corsHeaders);
+      }
+
+      // REST routes
+      const match = boundRoutes.match(req.method, apiSubpath);
+      if (match !== undefined) {
+        return match.handler(req, match.params);
+      }
+
+      return errorResponse("NOT_FOUND", `No route for ${req.method} ${pathname}`, 404);
+    }
+
+    // Static assets (if assetsDir configured)
+    if (staticServe !== undefined && matchesPathPrefix(pathname, basePath)) {
+      const assetPath = pathname.slice(basePath.length) || "/index.html";
+
+      const response = await staticServe.serve(assetPath);
+      if (response !== null) return response;
+
+      // SPA fallback — serve index.html for non-file paths
+      if (!assetPath.includes(".")) {
+        return staticServe.serve("/index.html");
+      }
+    }
+
+    // Not a dashboard request
+    return null;
+  };
+
+  const handler = async (req: Request): Promise<Response | null> => {
+    const pathname = new URL(req.url).pathname;
+
+    // Only handle dashboard paths
+    if (!matchesPathPrefix(pathname, apiPath) && !matchesPathPrefix(pathname, basePath)) {
+      return null;
+    }
+
+    // SSE responses already have CORS headers injected — skip re-wrapping
+    const isSse = pathname === `${apiPath}/events` && req.method === "GET";
+
+    try {
+      const result = await rawHandler(req, pathname);
+      if (result === null) {
+        return errorResponse("NOT_FOUND", "Not found", 404);
+      }
+      return enableCors && !isSse ? applyCors(result) : result;
+    } catch (e: unknown) {
+      console.error("[dashboard-api] Unhandled error:", e);
+      return errorResponse("INTERNAL", "Internal server error", 500);
+    }
+  };
+
+  const dispose = (): void => {
+    sseProducer.dispose();
+  };
+
+  return { handler, dispose };
+}

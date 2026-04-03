@@ -1,0 +1,28 @@
+{
+  "name": "@koi/sandbox-executor",
+  "description": "Provide subprocess and promoted (in-process) executors for sandbox verification",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/sandbox": "workspace:*",
+    "@koi/sandbox-ipc": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  }
+}

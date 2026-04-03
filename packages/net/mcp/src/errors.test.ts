@@ -4,127 +4,220 @@ import {
   mapMcpError,
   notConnectedError,
   reconnectExhaustedError,
-  serverStartError,
+  sessionExpiredError,
 } from "./errors.js";
 
 // ---------------------------------------------------------------------------
-// mapMcpError
+// mapMcpError — HTTP status codes (highest priority)
 // ---------------------------------------------------------------------------
 
-describe("mapMcpError", () => {
-  test("maps rate limit errors", () => {
-    const error = mapMcpError(new Error("Rate limit exceeded"), "test-server");
-    expect(error.code).toBe("RATE_LIMIT");
-    expect(error.retryable).toBe(true);
-    expect(error.context).toEqual({ serverName: "test-server" });
+describe("mapMcpError with HTTP status", () => {
+  test("maps 401 to PERMISSION", () => {
+    const err = mapMcpError(new Error("Unauthorized"), {
+      serverName: "s1",
+      httpStatus: 401,
+    });
+    expect(err.code).toBe("PERMISSION");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toContain("HTTP 401");
   });
 
-  test("maps 429 status to rate limit", () => {
-    const error = mapMcpError(new Error("HTTP 429"), "test-server");
-    expect(error.code).toBe("RATE_LIMIT");
-    expect(error.retryable).toBe(true);
+  test("maps 403 to PERMISSION", () => {
+    const err = mapMcpError(new Error("Forbidden"), {
+      serverName: "s1",
+      httpStatus: 403,
+    });
+    expect(err.code).toBe("PERMISSION");
+    expect(err.retryable).toBe(false);
   });
 
-  test("maps too many requests to rate limit", () => {
-    const error = mapMcpError(new Error("Too many requests"), "test-server");
-    expect(error.code).toBe("RATE_LIMIT");
-    expect(error.retryable).toBe(true);
+  test("maps 404 to NOT_FOUND", () => {
+    const err = mapMcpError(new Error("Not found"), {
+      serverName: "s1",
+      httpStatus: 404,
+    });
+    expect(err.code).toBe("NOT_FOUND");
+    expect(err.retryable).toBe(false);
   });
 
-  test("maps timeout errors", () => {
-    const error = mapMcpError(new Error("Request timeout"), "test-server");
-    expect(error.code).toBe("TIMEOUT");
-    expect(error.retryable).toBe(true);
+  test("maps 429 to RATE_LIMIT (retryable)", () => {
+    const err = mapMcpError(new Error("Too many requests"), {
+      serverName: "s1",
+      httpStatus: 429,
+    });
+    expect(err.code).toBe("RATE_LIMIT");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps ETIMEDOUT to timeout", () => {
-    const error = mapMcpError(new Error("connect ETIMEDOUT"), "test-server");
-    expect(error.code).toBe("TIMEOUT");
-    expect(error.retryable).toBe(true);
+  test("maps 500 to EXTERNAL (retryable)", () => {
+    const err = mapMcpError(new Error("Internal server error"), {
+      serverName: "s1",
+      httpStatus: 500,
+    });
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps connection closed to external retryable", () => {
-    const error = mapMcpError(new Error("connection closed"), "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(true);
+  test("maps 502 to EXTERNAL (retryable)", () => {
+    const err = mapMcpError(new Error("Bad gateway"), {
+      serverName: "s1",
+      httpStatus: 502,
+    });
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps connection reset to external retryable", () => {
-    const error = mapMcpError(new Error("ECONNRESET"), "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(true);
+  test("maps 503 to EXTERNAL (retryable)", () => {
+    const err = mapMcpError(new Error("Service unavailable"), {
+      serverName: "s1",
+      httpStatus: 503,
+    });
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps connection refused to external retryable", () => {
-    const error = mapMcpError(new Error("ECONNREFUSED"), "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(true);
+  test("maps 504 to TIMEOUT (retryable)", () => {
+    const err = mapMcpError(new Error("Gateway timeout"), {
+      serverName: "s1",
+      httpStatus: 504,
+    });
+    expect(err.code).toBe("TIMEOUT");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps socket hang up to external retryable", () => {
-    const error = mapMcpError(new Error("socket hang up"), "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(true);
+  test("maps 400 to VALIDATION", () => {
+    const err = mapMcpError(new Error("Bad request"), {
+      serverName: "s1",
+      httpStatus: 400,
+    });
+    expect(err.code).toBe("VALIDATION");
+    expect(err.retryable).toBe(false);
   });
 
-  test("maps unauthorized errors to permission", () => {
-    const error = mapMcpError(new Error("Unauthorized"), "test-server");
-    expect(error.code).toBe("PERMISSION");
-    expect(error.retryable).toBe(false);
+  test("HTTP status takes priority over message patterns", () => {
+    // Message says "timeout" but HTTP status says 401 (PERMISSION)
+    const err = mapMcpError(new Error("timeout connecting"), {
+      serverName: "s1",
+      httpStatus: 401,
+    });
+    expect(err.code).toBe("PERMISSION");
   });
 
-  test("maps forbidden errors to permission", () => {
-    const error = mapMcpError(new Error("Forbidden"), "test-server");
-    expect(error.code).toBe("PERMISSION");
-    expect(error.retryable).toBe(false);
+  test("unknown HTTP status falls through to message patterns", () => {
+    const err = mapMcpError(new Error("rate limit exceeded"), {
+      serverName: "s1",
+      httpStatus: 418, // I'm a teapot
+    });
+    expect(err.code).toBe("RATE_LIMIT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapMcpError — JSON-RPC error codes
+// ---------------------------------------------------------------------------
+
+describe("mapMcpError with JSON-RPC codes", () => {
+  test("maps -32700 (parse error) to VALIDATION", () => {
+    const err = mapMcpError(new Error("Parse error"), {
+      serverName: "s1",
+      jsonRpcCode: -32700,
+    });
+    expect(err.code).toBe("VALIDATION");
+    expect(err.retryable).toBe(false);
   });
 
-  test("maps not found errors", () => {
-    const error = mapMcpError(new Error("Tool not found"), "test-server");
-    expect(error.code).toBe("NOT_FOUND");
-    expect(error.retryable).toBe(false);
+  test("maps -32601 (method not found) to NOT_FOUND", () => {
+    const err = mapMcpError(new Error("Method not found"), {
+      serverName: "s1",
+      jsonRpcCode: -32601,
+    });
+    expect(err.code).toBe("NOT_FOUND");
   });
 
-  test("maps unknown tool errors", () => {
-    const error = mapMcpError(new Error("unknown tool: foo"), "test-server");
-    expect(error.code).toBe("NOT_FOUND");
-    expect(error.retryable).toBe(false);
+  test("maps -32603 (internal error) to EXTERNAL (retryable)", () => {
+    const err = mapMcpError(new Error("Internal error"), {
+      serverName: "s1",
+      jsonRpcCode: -32603,
+    });
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
   });
 
-  test("maps validation errors", () => {
-    const error = mapMcpError(new Error("Invalid input"), "test-server");
-    expect(error.code).toBe("VALIDATION");
-    expect(error.retryable).toBe(false);
+  test("HTTP status takes priority over JSON-RPC code", () => {
+    const err = mapMcpError(new Error("error"), {
+      serverName: "s1",
+      httpStatus: 429,
+      jsonRpcCode: -32603,
+    });
+    expect(err.code).toBe("RATE_LIMIT"); // HTTP 429 wins
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapMcpError — message pattern fallback
+// ---------------------------------------------------------------------------
+
+describe("mapMcpError with message patterns", () => {
+  test("matches rate limit patterns", () => {
+    expect(mapMcpError(new Error("rate limit exceeded"), { serverName: "s1" }).code).toBe(
+      "RATE_LIMIT",
+    );
+    expect(mapMcpError(new Error("too many requests"), { serverName: "s1" }).code).toBe(
+      "RATE_LIMIT",
+    );
   });
 
-  test("falls back to EXTERNAL for unrecognized errors", () => {
-    const error = mapMcpError(new Error("something weird happened"), "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(false);
+  test("matches timeout patterns", () => {
+    expect(mapMcpError(new Error("request timeout"), { serverName: "s1" }).code).toBe("TIMEOUT");
+    expect(mapMcpError(new Error("ETIMEDOUT"), { serverName: "s1" }).code).toBe("TIMEOUT");
   });
 
-  test("handles string errors", () => {
-    const error = mapMcpError("timeout occurred", "test-server");
-    expect(error.code).toBe("TIMEOUT");
-    expect(error.cause).toBeUndefined();
+  test("matches connection error patterns", () => {
+    expect(mapMcpError(new Error("connection refused"), { serverName: "s1" }).code).toBe(
+      "EXTERNAL",
+    );
+    expect(mapMcpError(new Error("ECONNRESET"), { serverName: "s1" }).code).toBe("EXTERNAL");
+    expect(mapMcpError(new Error("socket hang up"), { serverName: "s1" }).code).toBe("EXTERNAL");
+    expect(mapMcpError(new Error("EPIPE"), { serverName: "s1" }).code).toBe("EXTERNAL");
   });
 
-  test("handles non-Error, non-string errors", () => {
-    const error = mapMcpError(42, "test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.message).toContain("42");
-    expect(error.cause).toBeUndefined();
+  test("matches permission patterns", () => {
+    expect(mapMcpError(new Error("unauthorized"), { serverName: "s1" }).code).toBe("PERMISSION");
+    expect(mapMcpError(new Error("forbidden"), { serverName: "s1" }).code).toBe("PERMISSION");
   });
 
-  test("preserves Error as cause", () => {
-    const original = new Error("connection closed unexpectedly");
-    const error = mapMcpError(original, "test-server");
-    expect(error.cause).toBe(original);
+  test("matches not-found patterns", () => {
+    expect(mapMcpError(new Error("not found"), { serverName: "s1" }).code).toBe("NOT_FOUND");
+    expect(mapMcpError(new Error("unknown tool"), { serverName: "s1" }).code).toBe("NOT_FOUND");
+  });
+
+  test("falls back to EXTERNAL for unknown messages", () => {
+    const err = mapMcpError(new Error("something weird happened"), {
+      serverName: "s1",
+    });
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(false); // EXTERNAL default
+  });
+
+  test("preserves cause when error is an Error instance", () => {
+    const cause = new Error("original");
+    const err = mapMcpError(cause, { serverName: "s1" });
+    expect(err.cause).toBe(cause);
+  });
+
+  test("no cause when error is not an Error instance", () => {
+    const err = mapMcpError("string error", { serverName: "s1" });
+    expect(err.cause).toBeUndefined();
+  });
+
+  test("includes server name in context", () => {
+    const err = mapMcpError(new Error("oops"), { serverName: "my-server" });
+    expect(err.context).toEqual({ serverName: "my-server" });
   });
 
   test("includes server name in message", () => {
-    const error = mapMcpError(new Error("boom"), "my-server");
-    expect(error.message).toContain("my-server");
+    const err = mapMcpError(new Error("oops"), { serverName: "my-server" });
+    expect(err.message).toContain("my-server");
   });
 });
 
@@ -132,48 +225,33 @@ describe("mapMcpError", () => {
 // Factory helpers
 // ---------------------------------------------------------------------------
 
-describe("connectionTimeoutError", () => {
-  test("creates timeout error with server name and timeout", () => {
-    const error = connectionTimeoutError("test-server", 5000);
-    expect(error.code).toBe("TIMEOUT");
-    expect(error.retryable).toBe(true);
-    expect(error.message).toContain("5000ms");
-    expect(error.context).toEqual({ serverName: "test-server", timeoutMs: 5000 });
-  });
-});
-
-describe("serverStartError", () => {
-  test("creates external error from Error cause", () => {
-    const cause = new Error("spawn ENOENT");
-    const error = serverStartError("test-server", cause);
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(false);
-    expect(error.message).toContain("spawn ENOENT");
-    expect(error.cause).toBe(cause);
+describe("error factory helpers", () => {
+  test("connectionTimeoutError", () => {
+    const err = connectionTimeoutError("srv", 5000);
+    expect(err.code).toBe("TIMEOUT");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain("5000ms");
+    expect(err.message).toContain("srv");
   });
 
-  test("creates external error from string cause", () => {
-    const error = serverStartError("test-server", "process exited");
-    expect(error.message).toContain("process exited");
-    expect(error.cause).toBeUndefined();
+  test("notConnectedError", () => {
+    const err = notConnectedError("srv");
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain("not connected");
   });
-});
 
-describe("notConnectedError", () => {
-  test("creates retryable external error", () => {
-    const error = notConnectedError("test-server");
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(true);
-    expect(error.message).toContain("not connected");
+  test("reconnectExhaustedError", () => {
+    const err = reconnectExhaustedError("srv", 5);
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toContain("5 attempts");
   });
-});
 
-describe("reconnectExhaustedError", () => {
-  test("creates non-retryable external error with attempt count", () => {
-    const error = reconnectExhaustedError("test-server", 3);
-    expect(error.code).toBe("EXTERNAL");
-    expect(error.retryable).toBe(false);
-    expect(error.message).toContain("3 attempts");
-    expect(error.context).toEqual({ serverName: "test-server", attempts: 3 });
+  test("sessionExpiredError", () => {
+    const err = sessionExpiredError("srv");
+    expect(err.code).toBe("EXTERNAL");
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain("session expired");
   });
 });

@@ -1,0 +1,40 @@
+{
+  "name": "@koi/runtime",
+  "description": "L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/channel-cli": "workspace:*",
+    "@koi/core": "workspace:*",
+    "@koi/engine": "workspace:*",
+    "@koi/engine-compose": "workspace:*",
+    "@koi/event-trace": "workspace:*",
+    "@koi/hooks": "workspace:*",
+    "@koi/mcp": "workspace:*",
+    "@koi/middleware-goal": "workspace:*",
+    "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-report": "workspace:*",
+    "@koi/model-openai-compat": "workspace:*",
+    "@koi/permissions": "workspace:*",
+    "@koi/query-engine": "workspace:*",
+    "@koi/tools-builtin": "workspace:*",
+    "@koi/tools-core": "workspace:*",
+    "@koi/tools-web": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.12.1"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

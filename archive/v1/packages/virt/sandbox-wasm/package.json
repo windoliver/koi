@@ -1,0 +1,26 @@
+{
+  "name": "@koi/sandbox-wasm",
+  "description": "Execute code in Wasm sandboxes with sync and async executor variants",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*",
+    "quickjs-emscripten-core": "0.32.0",
+    "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
+    "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0"
+  }
+}

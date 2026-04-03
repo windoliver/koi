@@ -1,0 +1,108 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-permissions API surface . has stable type surface 1`] = `
+"import { PermissionBackend } from '@koi/core/permission-backend';
+export { PermissionBackend, PermissionDecision, PermissionQuery } from '@koi/core/permission-backend';
+import { AuditSink, KoiMiddleware } from '@koi/core';
+import { Result, KoiError } from '@koi/core/errors';
+import { CircuitBreakerConfig } from '@koi/errors';
+import { JsonObject } from '@koi/core/common';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+
+/**
+ * Pattern-based permission backend and approval handler.
+ */
+
+interface PermissionRules {
+    readonly allow: readonly string[];
+    readonly deny: readonly string[];
+    readonly ask: readonly string[];
+}
+/**
+ * Built-in tool group presets matching common agent tool categories.
+ * Use with \`group:<name>\` in permission rules, e.g. \`allow: ["group:fs_read"]\`.
+ *
+ * Groups use prefix wildcards so they match any tool within the category.
+ * Consumers can override or extend these by merging with their own groups map.
+ */
+declare const DEFAULT_GROUPS: Readonly<Record<string, readonly string[]>>;
+interface PatternBackendConfig {
+    readonly rules: PermissionRules;
+    readonly defaultDeny?: boolean;
+    readonly groups?: Readonly<Record<string, readonly string[]>>;
+}
+interface ApprovalHandler {
+    readonly requestApproval: (toolId: string, input: JsonObject, reason: string, agentId?: string) => Promise<boolean>;
+}
+/**
+ * Pattern-based permission backend.
+ * Evaluation order: deny-first, then ask, then allow, then defaultDeny.
+ */
+declare function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend;
+/**
+ * Auto-approval handler for testing and development.
+ * Always approves all requests.
+ */
+declare function createAutoApprovalHandler(): ApprovalHandler;
+
+/**
+ * Permissions middleware configuration and validation.
+ */
+
+interface PermissionCacheConfig {
+    readonly allowTtlMs?: number;
+    readonly denyTtlMs?: number;
+    readonly maxEntries?: number;
+    /** Time-to-live in ms for cached approvals. 0 = no expiry. Default: 300_000 (5 min). */
+    readonly ttlMs?: number;
+}
+/** Default max entries for the approval (ask) cache. */
+declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+/** Default approval cache TTL: 5 minutes. Prevents stale authorizations surviving policy or identity changes. */
+declare const DEFAULT_APPROVAL_CACHE_TTL_MS = 300000;
+/** Default config for the decision (allow/deny) cache. */
+declare const DEFAULT_CACHE_CONFIG: {
+    readonly allowTtlMs: 300000;
+    readonly denyTtlMs: 10000;
+    readonly maxEntries: 1024;
+};
+interface PermissionsMiddlewareConfig {
+    readonly backend: PermissionBackend;
+    readonly approvalHandler?: ApprovalHandler;
+    readonly approvalTimeoutMs?: number;
+    readonly cache?: boolean | PermissionCacheConfig;
+    readonly description?: string;
+    readonly clock?: () => number;
+    readonly auditSink?: AuditSink;
+    readonly circuitBreaker?: CircuitBreakerConfig;
+}
+declare function validatePermissionsConfig(config: unknown): Result<PermissionsMiddlewareConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-permissions.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates allow/deny/ask options, and calls the factory.
+ */
+
+/**
+ * Descriptor for permissions middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
+ * Permissions middleware factory — tool-level access control + HITL approval.
+ *
+ * Uses PermissionBackend (L0) for pluggable authorization.
+ * Filters denied tools from model calls (wrapModelCall) and re-checks at
+ * tool invocation (wrapToolCall). Supports async backends, decision caching,
+ * and fail-closed semantics.
+ */
+
+declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware$1;
+
+export { type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_CACHE_CONFIG, DEFAULT_GROUPS, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionBackend, createPermissionsMiddleware, descriptor, validatePermissionsConfig };
+"
+`;

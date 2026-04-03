@@ -90,6 +90,7 @@ Every skill can exist at one of three levels. Each level includes everything fro
 │          │     │ body     │     │ body     │
 │          │     │          │     │ scripts  │
 │          │     │          │     │ refs     │
+│          │     │          │     │ assets   │
 └──────────┘     └──────────┘     └──────────┘
    promote()        promote()
 ```
@@ -98,7 +99,7 @@ Every skill can exist at one of three levels. Each level includes everything fro
 |-------|---------|-------------|----------|
 | **metadata** | name + description + tags | ~100 bytes | Skill catalog, discovery |
 | **body** | metadata + full markdown instructions | ~2-8 KB | Active skill usage |
-| **bundled** | body + embedded scripts + reference files | ~5-20 KB | Skills that need code execution |
+| **bundled** | body + scripts + references + assets | ~5-20 KB | Skills needing embedded code or templates |
 
 ### Unified Skill Source
 
@@ -409,3 +410,271 @@ const provider = createSkillComponentProvider({
 10. **Defense-in-depth on forge** — security scanner always runs on forged skill content at body level, even though artifacts were presumably scanned during creation. Trust but verify.
 11. **Fail-fast on missing store** — if a manifest declares forged skills but no ForgeStore is provided, `createSkillComponentProvider` throws immediately rather than failing silently at attach time.
 12. **Error isolation** — a forged skill failing to load does not block filesystem skills (and vice versa). Failures are reported in `skipped`.
+
+---
+
+## Bundled Directory Conventions
+
+At the **bundled** load level, three sibling directories are scanned alongside `SKILL.md`:
+
+```
+skills/code-review/
+├── SKILL.md           ← frontmatter + markdown body
+├── scripts/           ← executable helper scripts
+│   └── lint.sh
+├── references/        ← input knowledge the agent reads
+│   └── conventions.md
+└── assets/            ← output templates the agent fills in
+    └── report-template.md
+```
+
+| Directory | Purpose | When to use |
+|-----------|---------|-------------|
+| `scripts/` | Helper scripts the agent can execute | Shell automation, code generation |
+| `references/` | Input knowledge — conventions, checklists, style guides | Agent reads these to inform its work |
+| `assets/` | Output templates — scaffolds, report layouts, plan structures | Agent populates these to produce structured output |
+
+The distinction between `references/` and `assets/` is directional: references flow **in** (agent reads them), assets flow **out** (agent fills them in). Both are loaded as `{ filename, content }` pairs.
+
+For **forged skills**, the same convention applies to `artifact.files` keys: `scripts/lint.sh`, `references/conventions.md`, `assets/report-template.md`.
+
+---
+
+## Content Design Patterns
+
+The preceding sections cover how to **load and wire** skills. This section covers how to **write the markdown body** — the content the agent actually sees.
+
+Seven recurring patterns emerge across skills in the Koi ecosystem. Each pattern answers a different design question. Use `metadata.pattern` in frontmatter to classify your skill.
+
+### Choosing a pattern
+
+```
+Does the skill teach when/how to use a tool or library?
+  └─ YES → Tool Wrapper
+
+Does the skill produce structured output from a template?
+  └─ YES → Generator
+
+Does the skill evaluate work against criteria?
+  └─ YES → Reviewer
+
+Does the skill need to gather requirements before acting?
+  └─ YES → Inversion
+
+Does the skill enforce a multi-step process with checkpoints?
+  └─ YES → Pipeline
+
+Is the skill bundled with a BrickDescriptor (engine/channel adapter)?
+  └─ YES → Companion
+
+Does the skill wrap token-budgeted retrieval from a knowledge base?
+  └─ YES → Guide
+```
+
+### Pattern 1: Tool Wrapper
+
+Gives the agent on-demand context for a specific library or tool. The SKILL.md loads reference docs from `references/` and applies them as instructions.
+
+**When to use:** The agent needs domain expertise about a framework, API, or internal convention.
+
+**Structure:**
+
+```markdown
+---
+name: fastapi-expert
+description: FastAPI conventions and best practices
+metadata:
+  pattern: tool-wrapper
+  domain: fastapi
+---
+
+You are an expert in FastAPI development.
+
+## When reviewing code
+1. Load 'references/conventions.md' for the complete list
+2. Check the user's code against each convention
+3. For each violation, cite the specific rule and suggest the fix
+
+## When writing code
+1. Follow every convention in references/conventions.md exactly
+2. Add type annotations to all function signatures
+```
+
+**Koi-specific:** Provider skills (see `docs/architecture/provider-skills.md`) are tool wrappers shipped alongside tool providers. They follow the 4-section template: Overview, When to use, Workflow, Error handling. Twelve packages already ship provider skills — use this as your baseline.
+
+**Key files:**
+- `references/` — conventions, API docs, style guides
+
+### Pattern 2: Generator
+
+Produces consistent structured output by filling in a template. The agent loads a template from `assets/`, a style guide from `references/`, gathers variables from the user, and populates the document.
+
+**When to use:** You need deterministic output structure across runs — reports, documentation, scaffolds, commit messages.
+
+**Structure:**
+
+```markdown
+---
+name: report-generator
+description: Generates structured technical reports
+metadata:
+  pattern: generator
+  output-format: markdown
+---
+
+Follow these steps exactly:
+
+Step 1: Load 'references/style-guide.md' for tone and formatting rules.
+Step 2: Load 'assets/report-template.md' for the required output structure.
+Step 3: Ask the user for any missing information:
+  - Topic or subject
+  - Key findings or data points
+  - Target audience
+Step 4: Fill the template following the style guide. Every section must be present.
+Step 5: Return the completed report as a single document.
+```
+
+**Key files:**
+- `references/` — style guide, formatting rules
+- `assets/` — output template the agent fills in
+
+### Pattern 3: Reviewer
+
+Separates **what to check** from **how to check it**. The agent loads a rubric from `references/` and methodically scores the submission, grouping findings by severity.
+
+**When to use:** PR reviews, security audits, accessibility checks, compliance verification.
+
+**Structure:**
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code for quality and common issues
+metadata:
+  pattern: reviewer
+  severity-levels: error,warning,info
+---
+
+Follow this review protocol:
+
+Step 1: Load 'references/review-checklist.md' for the review criteria.
+Step 2: Read the user's code. Understand its purpose before critiquing.
+Step 3: For each checklist rule, check the code. For violations:
+  - Note the location
+  - Classify: error (must fix), warning (should fix), info (consider)
+  - Explain WHY, not just WHAT
+  - Suggest a fix with corrected code
+Step 4: Produce a structured review:
+  - **Summary**: What the code does, overall quality
+  - **Findings**: Grouped by severity (errors first)
+  - **Score**: 1-10 with justification
+```
+
+**Key files:**
+- `references/review-checklist.md` — modular rubric (swap it for OWASP to get a security audit)
+
+### Pattern 4: Inversion
+
+Flips the agent/user dynamic. Instead of the agent guessing and generating, it **interviews the user** through structured questions before producing output. Explicit gating instructions prevent the agent from acting prematurely.
+
+**When to use:** Requirements gathering, project planning, configuration wizards — any task where incomplete context leads to wasted work.
+
+**Structure:**
+
+```markdown
+---
+name: project-planner
+description: Plans projects by gathering requirements first
+metadata:
+  pattern: inversion
+  interaction: multi-turn
+---
+
+You are conducting a structured requirements interview.
+DO NOT start building until all phases are complete.
+
+## Phase 1 — Problem Discovery (ask one at a time, wait for each)
+- Q1: "What problem does this solve for its users?"
+- Q2: "Who are the primary users?"
+- Q3: "What is the expected scale?"
+
+## Phase 2 — Technical Constraints (only after Phase 1)
+- Q4: "What deployment environment?"
+- Q5: "Any stack requirements?"
+- Q6: "Non-negotiable requirements?"
+
+## Phase 3 — Synthesis (only after all questions answered)
+1. Load 'assets/plan-template.md'
+2. Fill in every section using gathered requirements
+3. Ask: "Does this capture your requirements?"
+4. Iterate until confirmed
+```
+
+**Gating convention:** Use explicit "DO NOT proceed to Phase N until..." instructions. The agent must respect these as hard checkpoints.
+
+### Pattern 5: Pipeline
+
+Enforces a strict sequential workflow with hard checkpoints. Each step must complete (and sometimes receive user approval) before the next begins. Uses all directory types at the specific step where they're needed.
+
+**When to use:** Multi-step workflows where skipping a step produces invalid output — doc generation, deployment, migration.
+
+**Structure:**
+
+```markdown
+---
+name: doc-pipeline
+description: Generates API docs from source through a multi-step pipeline
+metadata:
+  pattern: pipeline
+  steps: "4"
+---
+
+Execute each step in order. Do NOT skip steps.
+
+## Step 1 — Parse & Inventory
+Analyze the code. Present the public API as a checklist.
+Ask: "Is this the complete API you want documented?"
+
+## Step 2 — Generate Docstrings
+Load 'references/docstring-style.md' for the format.
+Present each generated docstring for user approval.
+DO NOT proceed to Step 3 until the user confirms.
+
+## Step 3 — Assemble Documentation
+Load 'assets/api-doc-template.md' for the structure.
+Compile all symbols into a single reference document.
+
+## Step 4 — Quality Check
+Review against 'references/quality-checklist.md'.
+Fix issues before presenting the final document.
+```
+
+**Key files:**
+- `references/` — style guides and checklists loaded at specific steps
+- `assets/` — output template loaded only at assembly step
+
+### Pattern 6: Companion
+
+Teaching prompts bundled with `BrickDescriptor` packages. These are not standalone SKILL.md files — they're inline `companionSkills` on descriptors, auto-registered to ForgeStore during agent startup.
+
+**When to use:** An L2 package (engine adapter, channel adapter) needs to teach the LLM when to use it.
+
+See `docs/architecture/companion-skills.md` for details.
+
+### Pattern 7: Guide
+
+Token-budgeted retrieval from a knowledge base. The agent uses the `ask_guide` tool to search a corpus, receiving only concise, relevant chunks instead of raw search dumps.
+
+**When to use:** Agents with access to large skill/doc libraries where unbounded search would flood the context window.
+
+See `docs/patterns/guide-agent.md` for details.
+
+### Composing patterns
+
+Patterns are not mutually exclusive:
+
+- A **Pipeline** can include a **Reviewer** step to verify its own output
+- A **Generator** can start with an **Inversion** phase to gather template variables
+- A **Tool Wrapper** can embed a **Reviewer** checklist for its domain
+
+The `includes` frontmatter directive and progressive loading ensure the agent only spends context tokens on the patterns it needs at runtime.

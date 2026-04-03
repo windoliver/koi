@@ -1,0 +1,164 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/manifest API surface . has stable type surface 1`] = `
+"import { AgentManifest, Result, KoiError } from '@koi/core';
+
+/**
+ * Types for the manifest loader output.
+ *
+ * \`LoadedManifest\` extends L0's \`AgentManifest\` with extension fields
+ * that exist in koi.yaml but are not part of the core contract.
+ */
+
+/**
+ * Typed deploy configuration after validation and defaults.
+ */
+interface DeployConfig {
+    readonly port: number;
+    readonly restart: "on-failure" | "always" | "no";
+    readonly restartDelaySec: number;
+    readonly envFile?: string | undefined;
+    readonly logDir?: string | undefined;
+    readonly system: boolean;
+}
+/** Manifest-level soul/user config: string path/inline or object with path + maxTokens. */
+type SoulUserConfig = string | {
+    readonly path: string;
+    readonly maxTokens?: number;
+};
+/** Filesystem scope: root path + read-only/read-write mode. */
+interface ManifestFileSystemScope {
+    readonly root: string;
+    readonly mode?: "rw" | "ro" | undefined;
+}
+/** Browser scope: navigation security + trust tier. */
+interface ManifestBrowserScope {
+    readonly allowedProtocols?: readonly string[] | undefined;
+    readonly allowedDomains?: readonly string[] | undefined;
+    readonly blockPrivateAddresses?: boolean | undefined;
+    readonly sandbox?: boolean | undefined;
+}
+/** Credentials scope: key glob pattern filter. */
+interface ManifestCredentialsScope {
+    readonly keyPattern: string;
+}
+/** Memory scope: namespace isolation. */
+interface ManifestMemoryScope {
+    readonly namespace: string;
+}
+/** Declarative scope section in koi.yaml — agents declare their boundaries. */
+interface ManifestScopeConfig {
+    readonly filesystem?: ManifestFileSystemScope | undefined;
+    readonly browser?: ManifestBrowserScope | undefined;
+    readonly credentials?: ManifestCredentialsScope | undefined;
+    readonly memory?: ManifestMemoryScope | undefined;
+}
+/**
+ * Extension fields that exist in koi.yaml but are outside L0 core contracts.
+ * All values are validated by the schema layer.
+ */
+/** Nexus backend connection config in the manifest. */
+interface NexusManifestConfig {
+    readonly url?: string | undefined;
+}
+/** A data source entry in the manifest \`dataSources\` extension. */
+interface DataSourceManifestEntry {
+    readonly name: string;
+    readonly protocol: string;
+    readonly description?: string | undefined;
+    readonly auth?: {
+        readonly kind: string;
+        readonly ref: string;
+        readonly scopes?: readonly string[] | undefined;
+    } | undefined;
+    readonly allowedHosts?: readonly string[] | undefined;
+}
+/**
+ * Code-execution sandbox config in the manifest.
+ *
+ * Distinct from the agent-spawn \`sandbox\` field in L0 \`AgentManifest\` —
+ * this configures the \`execute_code\` tool's backend, not child-agent isolation.
+ *
+ * The \`provider\` field selects the sandbox backend (e.g. "docker", "e2b",
+ * "daytona"). Remaining fields are provider-specific and validated at
+ * runtime by \`createCloudSandbox()\`.
+ */
+interface CodeSandboxManifestConfig {
+    readonly provider: string;
+    readonly [key: string]: unknown;
+}
+interface ManifestExtensions {
+    readonly engine?: unknown;
+    readonly schedule?: unknown;
+    readonly webhooks?: unknown;
+    readonly forge?: unknown;
+    readonly context?: unknown;
+    readonly soul?: SoulUserConfig | undefined;
+    readonly user?: SoulUserConfig | undefined;
+    readonly deploy?: DeployConfig | undefined;
+    readonly scope?: ManifestScopeConfig | undefined;
+    readonly preset?: string | undefined;
+    readonly demo?: {
+        readonly pack?: string;
+        readonly [key: string]: unknown;
+    } | undefined;
+    readonly nexus?: NexusManifestConfig | undefined;
+    readonly codeSandbox?: CodeSandboxManifestConfig | undefined;
+    readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
+}
+/**
+ * The fully loaded and validated agent manifest.
+ * Combines L0 \`AgentManifest\` with extension fields.
+ */
+type LoadedManifest = AgentManifest & ManifestExtensions;
+/** A warning produced during manifest loading (non-fatal). */
+interface ManifestWarning {
+    readonly path: string;
+    readonly message: string;
+    readonly suggestion?: string;
+}
+/** Successful result of loading a manifest. */
+interface LoadResult {
+    readonly manifest: LoadedManifest;
+    readonly warnings: readonly ManifestWarning[];
+}
+
+/**
+ * Extracts the engine name from a loaded manifest's engine field.
+ *
+ * The manifest engine field can be:
+ * - \`undefined\` → defaults to \`"pi"\`
+ * - a \`string\` → the engine name directly
+ * - an \`object\` with \`{ name: string }\` → \`name\` property
+ */
+
+declare function getEngineName(manifest: LoadedManifest): string;
+
+/**
+ * Main loader — reads, interpolates, parses, validates, and transforms koi.yaml manifests.
+ */
+
+/**
+ * Loads and validates a koi.yaml manifest from a file path.
+ *
+ * Pipeline: read file → interpolate env → parse YAML → validate → transform → return.
+ *
+ * @param filePath - Absolute or relative path to the koi.yaml file
+ * @param env - Environment variables map (defaults to \`process.env\`)
+ * @returns \`Result<LoadResult, KoiError>\` — success with manifest + warnings, or validation error
+ */
+declare function loadManifest(filePath: string, env?: Readonly<Record<string, string | undefined>>): Promise<Result<LoadResult, KoiError>>;
+/**
+ * Loads and validates a koi.yaml manifest from a raw YAML string.
+ *
+ * Synchronous variant — same pipeline minus file I/O. Useful for testing and embedding.
+ *
+ * @param yaml - Raw YAML string (may contain \`\${VAR}\` references)
+ * @param env - Environment variables map (defaults to \`process.env\`)
+ * @returns \`Result<LoadResult, KoiError>\` — success with manifest + warnings, or validation error
+ */
+declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
+
+export { type CodeSandboxManifestConfig, type DataSourceManifestEntry, type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
+"
+`;

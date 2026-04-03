@@ -37,6 +37,7 @@ export type {
   FilesystemSkillSource,
   ForgedSkillSource,
   ManifestSandboxConfig,
+  ManifestSandboxPersistence,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
@@ -501,15 +502,18 @@ export { DEFAULT_FORGE_BUDGET } from "./forge-demand.js";
 export type {
   BrickKind,
   BrickLifecycle,
+  BrickSignature,
   ForgeScope,
   MutationPressure,
   MutationPressurePolicy,
   PolicyValidationResult,
+  TrustTier,
   TrustTransitionCaller,
 } from "./forge-types.js";
 export {
   ALL_BRICK_KINDS,
   DEFAULT_MUTATION_PRESSURE_POLICY,
+  isBrickKind,
   MAX_PIPELINE_STEPS,
   SANDBOX_REQUIRED_BY_KIND,
   VALID_LIFECYCLE_TRANSITIONS,
@@ -550,21 +554,6 @@ export {
   GOVERNANCE_ALLOW,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
-// hook — lifecycle hooks for agent manifests
-export type {
-  AgentHookConfig,
-  CommandHookConfig,
-  HookConfig,
-  HookEvent,
-  HookEventKind,
-  HookExecutor,
-  HookFilter,
-  HookType,
-  HookVerdict,
-  HttpHookConfig,
-  PromptHookConfig,
-} from "./hook.js";
-export { HOOK_EVENT_KINDS } from "./hook.js";
 // handoff — types
 export type {
   ArtifactRef,
@@ -601,6 +590,31 @@ export type {
 } from "./health.js";
 // health — runtime values
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// hook — session-scoped side-effect triggers
+export type {
+  AgentHookConfig,
+  CommandHookConfig,
+  HookConfig,
+  HookDecision,
+  HookEnvPolicy,
+  HookEvent,
+  HookEventKind,
+  HookEventName,
+  HookExecutionResult,
+  HookFilter,
+  HookRedactionConfig,
+  HookType,
+  HttpHookConfig,
+  PromptHookConfig,
+} from "./hook.js";
+export {
+  DEFAULT_AGENT_HOOK_TIMEOUT_MS,
+  DEFAULT_AGENT_MAX_TOKENS,
+  DEFAULT_AGENT_MAX_TURNS,
+  DEFAULT_AGENT_SESSION_TOKEN_BUDGET,
+  DEFAULT_HOOK_TIMEOUT_MS,
+  HOOK_EVENT_KINDS,
+} from "./hook.js";
 // inbox — message steering queue for autonomous agents
 export type { InboxComponent, InboxItem, InboxMode, InboxPolicy } from "./inbox.js";
 export { DEFAULT_INBOX_POLICY } from "./inbox.js";
@@ -648,6 +662,32 @@ export type {
   MessageKind,
 } from "./mailbox.js";
 export { messageId } from "./mailbox.js";
+// memory — LLM-visible persistent memory record model
+export type {
+  MemoryFrontmatter,
+  MemoryIndex,
+  MemoryIndexEntry,
+  MemoryRecord,
+  MemoryRecordId,
+  MemoryRecordInput,
+  MemoryRecordPatch,
+  MemoryType,
+  MemoryValidationError,
+} from "./memory.js";
+// memory — runtime values (branded constructor, guards, parser, serializer, validation)
+export {
+  ALL_MEMORY_TYPES,
+  formatMemoryIndexEntry,
+  hasFrontmatterUnsafeChars,
+  isMemoryType,
+  MEMORY_INDEX_MAX_LINES,
+  memoryRecordId,
+  parseMemoryFrontmatter,
+  parseMemoryIndexEntry,
+  serializeMemoryFrontmatter,
+  validateMemoryFilePath,
+  validateMemoryRecordInput,
+} from "./memory.js";
 // message
 export type {
   ButtonBlock,
@@ -679,6 +719,15 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model adapter
+export type {
+  ModelAdapter,
+  ModelContentBlock,
+  ModelStopReason,
+  ModelTextBlock,
+  ModelThinkingBlock,
+  ModelToolCallBlock,
+} from "./model-adapter.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // name service — DNS-like name resolution for agents and bricks
@@ -731,6 +780,7 @@ export { ALL_CHANGE_TARGETS, PROPOSAL_GATE_REQUIREMENTS, proposalId } from "./pr
 export type {
   ContentMarker,
   DataClassification,
+  EvolutionKind,
   ForgeAttestationSignature,
   ForgeBuildDefinition,
   ForgeBuilder,
@@ -751,6 +801,9 @@ export type {
   ReconciliationController,
 } from "./reconciliation.js";
 export { DEFAULT_RECONCILE_RUNNER_CONFIG } from "./reconciliation.js";
+// content replacement
+export type { ReplacementRef, ReplacementStore } from "./replacement.js";
+export { replacementRef } from "./replacement.js";
 // reputation backend — pluggable trust scoring and feedback contract
 export type {
   FeedbackKind,
@@ -764,6 +817,14 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// rich trajectory — full execution traces for LLM reflection
+export type {
+  RichContent,
+  RichStepMetrics,
+  RichTrajectoryStep,
+  RichTrajectoryStore,
+  TrajectoryDocumentStore,
+} from "./rich-trajectory.js";
 // run report — structured summary of an autonomous agent run
 export type {
   ActionEntry,
@@ -780,6 +841,7 @@ export type {
   SandboxAdapterResult,
   SandboxExecOptions,
   SandboxInstance,
+  SandboxInstanceState,
   SandboxProcessHandle,
   SandboxSpawnOptions,
   SandboxStdinPipe,

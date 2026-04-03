@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": {
+      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
@@ -13,17 +14,11 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "devDependencies": {
-    "@koi/engine": "workspace:*",
-    "@koi/engine-pi": "workspace:*",
-    "@koi/middleware-audit": "workspace:*",
-    "@koi/test-utils": "workspace:*"
-  },
+  "devDependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test",
-    "test:api": "bun test src/__tests__/api-surface.test.ts"
+    "test": "bun test"
   }
 }

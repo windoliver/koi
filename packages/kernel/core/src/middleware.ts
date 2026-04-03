@@ -12,12 +12,18 @@ import type {
   ToolDescriptor,
   TurnId,
 } from "./ecs.js";
+import type { KoiErrorCode } from "./errors.js";
 import type { InboundMessage } from "./message.js";
+import type { ModelContentBlock, ModelStopReason } from "./model-adapter.js";
 
 export interface SessionContext {
   readonly agentId: string;
   readonly sessionId: SessionId;
   readonly runId: RunId;
+  /** Stable ID for the copilot conversation that spans multiple engine sessions.
+   *  Set once at conversation start, reused across all runtime.run() calls.
+   *  When absent, sessionId is used as the fallback scope. */
+  readonly conversationId?: string;
   /** Authenticated user identity. Injected by L1 when provided in CreateKoiOptions. */
   readonly userId?: string;
   /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */
@@ -42,6 +48,13 @@ export interface ModelRequest {
   readonly model?: string;
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /**
+   * System prompt for this request. Injected by L1 engine from the agent
+   * manifest — not from user input. Mapped to system/developer role in the
+   * provider request. This is a trusted field: adapters MUST NOT read system
+   * prompts from generic `metadata` to prevent privilege escalation.
+   */
+  readonly systemPrompt?: string | undefined;
   readonly metadata?: JsonObject;
   /** Propagated abort signal — adapters should compose with their own timeout. */
   readonly signal?: AbortSignal | undefined;
@@ -55,8 +68,16 @@ export interface ModelResponse {
   readonly usage?: {
     readonly inputTokens: number;
     readonly outputTokens: number;
+    readonly cacheReadTokens?: number | undefined;
+    readonly cacheWriteTokens?: number | undefined;
   };
   readonly metadata?: JsonObject;
+  /** Why the model stopped generating. Absent for legacy callers. */
+  readonly stopReason?: ModelStopReason | undefined;
+  /** Provider-specific response identifier for debugging/audit. */
+  readonly responseId?: string | undefined;
+  /** Rich content blocks when the model returns tool calls or thinking. */
+  readonly richContent?: readonly ModelContentBlock[] | undefined;
 }
 
 export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
@@ -71,6 +92,9 @@ export type ModelChunk =
   | {
       readonly kind: "error";
       readonly message: string;
+      readonly code?: KoiErrorCode | undefined;
+      readonly retryable?: boolean | undefined;
+      readonly retryAfterMs?: number | undefined;
       readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
     }
   | { readonly kind: "done"; readonly response: ModelResponse };

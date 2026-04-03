@@ -20,6 +20,8 @@ export interface BrickSearchQuery {
   readonly tags?: readonly string[];
   readonly limit?: number;
   readonly cursor?: string;
+  /** Filter by community namespace (e.g., "@author"). */
+  readonly namespace?: string;
 }
 
 export const DEFAULT_BRICK_SEARCH_LIMIT: 50 = 50;
@@ -51,6 +53,7 @@ export interface BrickRegistryReader {
   readonly get: (
     kind: BrickKind,
     name: string,
+    namespace?: string,
   ) => Result<BrickArtifact, KoiError> | Promise<Result<BrickArtifact, KoiError>>;
   readonly onChange?: (listener: (event: BrickRegistryChangeEvent) => void) => () => void;
 }

@@ -25,6 +25,9 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
   if (query.createdBy !== undefined && brick.provenance.metadata.agentId !== query.createdBy) {
     return false;
   }
+  if (query.parentBrickId !== undefined && brick.provenance.parentBrickId !== query.parentBrickId) {
+    return false;
+  }
   if (
     query.classification !== undefined &&
     brick.provenance.classification !== query.classification
@@ -46,6 +49,10 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
       }
     }
   }
+  // Exact case-insensitive name match (used for name-based dedup)
+  if (query.name !== undefined && brick.name.toLowerCase() !== query.name.toLowerCase()) {
+    return false;
+  }
   // Case-insensitive substring match against name + description + trigger patterns
   if (query.text !== undefined && query.text.length > 0) {
     const lower = query.text.toLowerCase();
@@ -55,6 +62,10 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
     if (!matchesNameOrDesc && !matchesTrigger) {
       return false;
     }
+  }
+  // Namespace filter — exact match
+  if (query.namespace !== undefined && brick.namespace !== query.namespace) {
+    return false;
   }
   // Case-insensitive substring match against trigger patterns
   if (query.triggerText !== undefined && query.triggerText.length > 0) {

@@ -1,0 +1,1494 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/dashboard-types API surface . has stable type surface 1`] = `
+"import { Result, AgentId, KoiError, ProcessState, FileSystemBackend } from '@koi/core';
+
+/**
+ * CommandDispatcher — imperative operations for the admin panel.
+ *
+ * These are non-file actions exposed via POST /api/cmd/* endpoints.
+ * All methods return Result<T, KoiError> for expected failures.
+ */
+
+interface AgentMessage {
+    readonly id: string;
+    readonly from: AgentId;
+    readonly to: AgentId;
+    readonly content: string;
+    readonly timestamp: number;
+}
+/** Request body for POST /cmd/agents/dispatch. */
+interface DispatchAgentRequest {
+    /** Display name for the new agent (required). */
+    readonly name: string;
+    /** Optional manifest path or inline manifest to use. */
+    readonly manifest?: string;
+    /** Optional initial message to send to the agent after dispatch. */
+    readonly message?: string;
+    /** Agent type for lifecycle management. Default: "copilot". */
+    readonly agentType?: "copilot" | "worker" | undefined;
+}
+/** Response body for a successful dispatch. */
+interface DispatchAgentResponse {
+    /** The ID assigned to the newly dispatched agent. */
+    readonly agentId: AgentId;
+    /** Display name echoed back. */
+    readonly name: string;
+}
+interface CommandDispatcher {
+    readonly dispatchAgent?: (request: DispatchAgentRequest) => Result<DispatchAgentResponse, KoiError> | Promise<Result<DispatchAgentResponse, KoiError>>;
+    readonly suspendAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly resumeAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly retryDeadLetter?: (entryId: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly listMailbox?: (agentId: AgentId) => Result<readonly AgentMessage[], KoiError> | Promise<Result<readonly AgentMessage[], KoiError>>;
+    readonly signalWorkflow?: (id: string, signal: string, payload: unknown) => Promise<Result<void, KoiError>>;
+    readonly terminateWorkflow?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly pauseSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly resumeSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly deleteSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly retrySchedulerDeadLetter?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly pauseHarness?: () => Promise<Result<void, KoiError>>;
+    readonly resumeHarness?: () => Promise<Result<void, KoiError>>;
+    readonly listDelegations?: (agentId: AgentId) => Result<readonly DelegationSummary[], KoiError> | Promise<Result<readonly DelegationSummary[], KoiError>>;
+    readonly listHandoffs?: (agentId: AgentId) => Result<readonly HandoffSummary[], KoiError> | Promise<Result<readonly HandoffSummary[], KoiError>>;
+    readonly listScratchpad?: (groupId?: string) => Result<readonly ScratchpadEntrySummary[], KoiError> | Promise<Result<readonly ScratchpadEntrySummary[], KoiError>>;
+    readonly readScratchpad?: (path: string) => Result<ScratchpadEntryDetail, KoiError> | Promise<Result<ScratchpadEntryDetail, KoiError>>;
+    readonly reviewGovernance?: (id: string, decision: "approved" | "rejected", reason?: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly listGovernanceQueue?: () => Result<readonly GovernancePendingItem[], KoiError> | Promise<Result<readonly GovernancePendingItem[], KoiError>>;
+    readonly promoteBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly demoteBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly quarantineBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+interface DelegationSummary {
+    readonly id: string;
+    readonly issuerId: string;
+    readonly delegateeId: string;
+    readonly scope: string;
+    readonly expiresAt: number | null;
+    readonly chainDepth: number;
+}
+interface HandoffSummary {
+    readonly id: string;
+    readonly from: string;
+    readonly to: string;
+    readonly status: string;
+    readonly phase: {
+        readonly completed: number;
+        readonly next: string;
+    };
+    readonly createdAt: number;
+}
+interface ScratchpadEntrySummary {
+    readonly path: string;
+    readonly authorId: string;
+    readonly groupId: string;
+    readonly sizeBytes: number;
+    readonly updatedAt: number;
+}
+interface ScratchpadEntryDetail extends ScratchpadEntrySummary {
+    readonly content: string;
+    readonly generation: number;
+}
+interface GovernancePendingItem {
+    readonly id: string;
+    readonly agentId: string;
+    readonly requestKind: string;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly timestamp: number;
+}
+
+/**
+ * Dashboard configuration types and defaults.
+ */
+interface DashboardConfig {
+    /** URL path prefix for the dashboard UI. Default: "/admin" */
+    readonly basePath?: string;
+    /** URL path prefix for API endpoints. Default: "/admin/api" */
+    readonly apiPath?: string;
+    /** Absolute path to built dashboard-ui dist/ directory. */
+    readonly assetsDir?: string;
+    /** SSE event batch interval in milliseconds. Default: 100 */
+    readonly sseBatchIntervalMs?: number;
+    /** Maximum concurrent SSE connections. Default: 50 */
+    readonly maxSseConnections?: number;
+    /** Enable CORS headers. Default: false */
+    readonly cors?: boolean;
+}
+declare const DEFAULT_DASHBOARD_CONFIG: Readonly<{
+    readonly basePath: "/admin";
+    readonly apiPath: "/admin/api";
+    readonly sseBatchIntervalMs: 100;
+    readonly maxSseConnections: 50;
+    readonly cors: false;
+}>;
+
+/**
+ * Dashboard event types — namespaced discriminated unions for SSE streaming.
+ *
+ * Events are organized by domain (agent, skill, channel, system) with
+ * a top-level \`kind\` discriminator and a \`subKind\` sub-discriminator.
+ * Batched into DashboardEventBatch envelopes for efficient SSE transport.
+ */
+
+type AgentDashboardEvent = {
+    readonly kind: "agent";
+    readonly subKind: "status_changed";
+    readonly agentId: AgentId;
+    readonly from: ProcessState;
+    readonly to: ProcessState;
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "dispatched";
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly agentType: "copilot" | "worker";
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "terminated";
+    readonly agentId: AgentId;
+    readonly reason?: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "metrics_updated";
+    readonly agentId: AgentId;
+    readonly turns: number;
+    readonly tokenCount: number;
+    readonly timestamp: number;
+};
+type SkillDashboardEvent = {
+    readonly kind: "skill";
+    readonly subKind: "installed";
+    readonly name: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "skill";
+    readonly subKind: "removed";
+    readonly name: string;
+    readonly timestamp: number;
+};
+type ChannelDashboardEvent = {
+    readonly kind: "channel";
+    readonly subKind: "connected";
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "channel";
+    readonly subKind: "disconnected";
+    readonly channelId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "channel";
+    readonly subKind: "message_received";
+    readonly channelId: string;
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+};
+type SystemDashboardEvent = {
+    readonly kind: "system";
+    readonly subKind: "memory_warning";
+    readonly heapUsedMb: number;
+    readonly heapLimitMb: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "system";
+    readonly subKind: "error";
+    readonly message: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "system";
+    readonly subKind: "activity";
+    readonly message: string;
+    readonly timestamp: number;
+};
+type NexusDashboardEvent = {
+    readonly kind: "nexus";
+    readonly subKind: "file_changed";
+    readonly path: string;
+    readonly changeType: "created" | "updated" | "deleted";
+    readonly timestamp: number;
+} | {
+    readonly kind: "nexus";
+    readonly subKind: "namespace_changed";
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+};
+type GatewayDashboardEvent = {
+    readonly kind: "gateway";
+    readonly subKind: "connection_changed";
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly connected: boolean;
+    readonly timestamp: number;
+} | {
+    readonly kind: "gateway";
+    readonly subKind: "topology_changed";
+    readonly nodeCount: number;
+    readonly connectionCount: number;
+    readonly timestamp: number;
+};
+type TemporalDashboardEvent = {
+    readonly kind: "temporal";
+    readonly subKind: "workflow_started";
+    readonly workflowId: string;
+    readonly workflowType: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "temporal";
+    readonly subKind: "workflow_completed";
+    readonly workflowId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "temporal";
+    readonly subKind: "health_changed";
+    readonly healthy: boolean;
+    readonly timestamp: number;
+};
+type SchedulerDashboardEvent = {
+    readonly kind: "scheduler";
+    readonly subKind: "task_submitted";
+    readonly taskId: string;
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "task_completed";
+    readonly taskId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "task_dead_letter";
+    readonly taskId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "schedule_fired";
+    readonly scheduleId: string;
+    readonly timestamp: number;
+};
+type TaskBoardDashboardEvent = {
+    readonly kind: "taskboard";
+    readonly subKind: "task_status_changed";
+    readonly taskId: string;
+    readonly status: string;
+    readonly timestamp: number;
+};
+type HarnessDashboardEvent = {
+    readonly kind: "harness";
+    readonly subKind: "checkpoint_created";
+    readonly checkpointType: "soft" | "hard";
+    readonly timestamp: number;
+} | {
+    readonly kind: "harness";
+    readonly subKind: "phase_changed";
+    readonly from: string;
+    readonly to: string;
+    readonly timestamp: number;
+};
+type DataSourceDashboardEvent = {
+    readonly kind: "datasource";
+    readonly subKind: "data_source_discovered";
+    readonly name: string;
+    readonly protocol: string;
+    readonly source: "manifest" | "env" | "mcp";
+    readonly timestamp: number;
+} | {
+    readonly kind: "datasource";
+    readonly subKind: "connector_forged";
+    readonly name: string;
+    readonly protocol: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "datasource";
+    readonly subKind: "connector_health_update";
+    readonly name: string;
+    readonly healthy: boolean;
+    readonly timestamp: number;
+};
+type ForgeDashboardEvent = {
+    readonly kind: "forge";
+    readonly subKind: "brick_forged";
+    readonly brickId: string;
+    readonly name: string;
+    readonly origin: "crystallize";
+    readonly ngramKey: string;
+    readonly occurrences: number;
+    readonly score: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_demand_forged";
+    readonly brickId: string;
+    readonly name: string;
+    readonly triggerId: string;
+    readonly triggerKind: string;
+    readonly confidence: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_deprecated";
+    readonly brickId: string;
+    readonly reason: string;
+    readonly fitnessOriginal: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_promoted";
+    readonly brickId: string;
+    readonly fitnessOriginal: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_quarantined";
+    readonly brickId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "demand_detected";
+    readonly signalId: string;
+    readonly triggerKind: string;
+    readonly confidence: number;
+    readonly suggestedBrickKind: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "crystallize_candidate";
+    readonly ngramKey: string;
+    readonly occurrences: number;
+    readonly suggestedName: string;
+    readonly score: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "fitness_flushed";
+    readonly brickId: string;
+    readonly successRate: number;
+    readonly sampleCount: number;
+    readonly timestamp: number;
+};
+type MonitorDashboardEvent = {
+    readonly kind: "monitor";
+    readonly subKind: "anomaly_detected";
+    readonly anomalyKind: string;
+    readonly agentId: string;
+    readonly sessionId: string;
+    readonly detail: Readonly<Record<string, unknown>>;
+    readonly timestamp: number;
+};
+/** PTY output event — raw terminal bytes from an agent subprocess. */
+interface PtyOutputDashboardEvent {
+    readonly kind: "pty_output";
+    readonly subKind: "pty_data";
+    readonly agentId: string;
+    /** Base64-encoded PTY bytes (batched at ~50-100ms intervals by dashboard-api). */
+    readonly data: string;
+    readonly timestamp: number;
+}
+/** Log event — structured log line from the runtime. */
+interface LogDashboardEvent {
+    readonly kind: "log";
+    readonly subKind: "log_line";
+    readonly level: "debug" | "info" | "warn" | "error";
+    readonly source: string;
+    readonly message: string;
+    readonly timestamp: number;
+}
+/** Governance events — approval requests and decisions. */
+type GovernanceDashboardEvent = {
+    readonly kind: "governance";
+    readonly subKind: "approval_required";
+    readonly approvalId: string;
+    readonly agentId: string;
+    readonly action: string;
+    readonly resource: string;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent | PtyOutputDashboardEvent | LogDashboardEvent | GovernanceDashboardEvent;
+/** Batched envelope sent over SSE. Monotonic seq for gap detection. */
+interface DashboardEventBatch {
+    readonly events: readonly DashboardEvent[];
+    readonly seq: number;
+    readonly timestamp: number;
+}
+/** Type guard for DashboardEvent. Validates kind + subKind presence. */
+declare function isDashboardEvent(value: unknown): value is DashboardEvent;
+declare const isAgentEvent: (event: DashboardEvent) => event is AgentDashboardEvent;
+declare const isSkillEvent: (event: DashboardEvent) => event is SkillDashboardEvent;
+declare const isChannelEvent: (event: DashboardEvent) => event is ChannelDashboardEvent;
+declare const isSystemEvent: (event: DashboardEvent) => event is SystemDashboardEvent;
+declare const isNexusEvent: (event: DashboardEvent) => event is NexusDashboardEvent;
+declare const isGatewayEvent: (event: DashboardEvent) => event is GatewayDashboardEvent;
+declare const isTemporalEvent: (event: DashboardEvent) => event is TemporalDashboardEvent;
+declare const isSchedulerEvent: (event: DashboardEvent) => event is SchedulerDashboardEvent;
+declare const isTaskBoardEvent: (event: DashboardEvent) => event is TaskBoardDashboardEvent;
+declare const isHarnessEvent: (event: DashboardEvent) => event is HarnessDashboardEvent;
+declare const isDataSourceEvent: (event: DashboardEvent) => event is DataSourceDashboardEvent;
+declare const isForgeEvent: (event: DashboardEvent) => event is ForgeDashboardEvent;
+declare const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboardEvent;
+declare const isPtyOutputEvent: (event: DashboardEvent) => event is PtyOutputDashboardEvent;
+declare const isLogEvent: (event: DashboardEvent) => event is LogDashboardEvent;
+
+/**
+ * DashboardDataSource — adapter interface for dashboard data access.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be sync
+ * (in-memory mock) or async (network-backed) without interface changes.
+ * Callers must always \`await\` the result.
+ */
+
+interface DashboardAgentSummary {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly agentType: "copilot" | "worker";
+    readonly state: ProcessState;
+    readonly model?: string;
+    readonly channels: readonly string[];
+    readonly turns: number;
+    readonly startedAt: number;
+    readonly lastActivityAt: number;
+}
+interface DashboardAgentDetail extends DashboardAgentSummary {
+    readonly parentId?: AgentId;
+    readonly skills: readonly string[];
+    readonly tokenCount: number;
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+interface DashboardChannelSummary {
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly agentId: AgentId;
+    readonly connected: boolean;
+    readonly messageCount: number;
+    readonly connectedAt: number;
+}
+interface DashboardSkillSummary {
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    readonly agentId: AgentId;
+}
+interface DashboardSystemMetrics {
+    readonly uptimeMs: number;
+    readonly heapUsedMb: number;
+    readonly heapTotalMb: number;
+    readonly activeAgents: number;
+    readonly totalAgents: number;
+    readonly activeChannels: number;
+}
+interface DashboardSchemaColumn {
+    readonly name: string;
+    readonly type: string;
+    readonly nullable: boolean;
+}
+interface DashboardSchemaTable {
+    readonly name: string;
+    readonly schema: string;
+    readonly columns: readonly DashboardSchemaColumn[];
+    readonly foreignKeys?: readonly {
+        readonly column: string;
+        readonly referencedTable: string;
+        readonly referencedColumn: string;
+    }[] | undefined;
+}
+interface DashboardVerificationStage {
+    readonly stage: string;
+    readonly passed: boolean;
+    readonly durationMs: number;
+}
+interface DataSourceFitnessSummary {
+    readonly successCount: number;
+    readonly errorCount: number;
+    readonly successRate: number;
+    readonly p95LatencyMs: number | undefined;
+    readonly lastUsedAt: number;
+}
+interface DataSourceSummary {
+    readonly name: string;
+    readonly protocol: string;
+    readonly status: "approved" | "pending" | "rejected";
+    readonly source: "manifest" | "env" | "mcp";
+    readonly fitness?: DataSourceFitnessSummary | undefined;
+    readonly verificationProgress?: number | undefined;
+}
+interface DataSourceDetail {
+    readonly name: string;
+    readonly protocol: string;
+    readonly status: "approved" | "pending" | "rejected";
+    readonly source: "manifest" | "env" | "mcp";
+    readonly description?: string | undefined;
+    readonly endpoint?: string | undefined;
+    readonly tables?: readonly DashboardSchemaTable[] | undefined;
+    readonly fitness?: DataSourceFitnessSummary | undefined;
+    readonly trailStrength?: number | undefined;
+    readonly verification?: readonly DashboardVerificationStage[] | undefined;
+    readonly provenance?: {
+        readonly builder: string;
+        readonly forgedAt: number;
+        readonly verificationPassed: boolean;
+    } | undefined;
+}
+interface DashboardDataSource {
+    readonly listAgents: () => readonly DashboardAgentSummary[] | Promise<readonly DashboardAgentSummary[]>;
+    readonly getAgent: (agentId: AgentId) => DashboardAgentDetail | undefined | Promise<DashboardAgentDetail | undefined>;
+    readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly listChannels: () => readonly DashboardChannelSummary[] | Promise<readonly DashboardChannelSummary[]>;
+    readonly listSkills: () => readonly DashboardSkillSummary[] | Promise<readonly DashboardSkillSummary[]>;
+    readonly getSystemMetrics: () => DashboardSystemMetrics | Promise<DashboardSystemMetrics>;
+    readonly subscribe: (listener: (event: DashboardEvent) => void) => () => void;
+    readonly listDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
+    readonly approveDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly rejectDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly getDataSourceSchema?: (name: string) => DataSourceDetail | undefined | Promise<DataSourceDetail | undefined>;
+    /** Trigger a server-side re-scan for new data sources (env, MCP). */
+    readonly rescanDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
+}
+
+/**
+ * RuntimeViewDataSource — computed state views for the admin panel.
+ *
+ * These are read-only projections of engine/gateway state that are
+ * NOT file-backed. Surfaced via GET /api/view/* endpoints.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be
+ * sync (in-memory engine registry) or async (remote query).
+ */
+
+interface ProcessTreeNode {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly state: ProcessState;
+    readonly agentType: "copilot" | "worker";
+    readonly depth: number;
+    readonly children: readonly ProcessTreeNode[];
+}
+interface ProcessTreeSnapshot {
+    readonly roots: readonly ProcessTreeNode[];
+    readonly totalAgents: number;
+    readonly timestamp: number;
+}
+interface AgentProcfs {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly state: ProcessState;
+    readonly agentType: "copilot" | "worker";
+    readonly model?: string;
+    readonly channels: readonly string[];
+    readonly turns: number;
+    readonly tokenCount: number;
+    readonly startedAt: number;
+    readonly lastActivityAt: number;
+    readonly parentId?: AgentId;
+    readonly childCount: number;
+    readonly tools?: readonly {
+        readonly name: string;
+        readonly origin: string;
+    }[] | undefined;
+    readonly skills?: readonly {
+        readonly name: string;
+        readonly source: string;
+    }[] | undefined;
+}
+interface MiddlewareEntry {
+    readonly name: string;
+    readonly phase: "intercept" | "observe" | "resolve";
+    readonly enabled: boolean;
+    /** Middleware priority within its phase tier (lower = outer onion layer). */
+    readonly priority?: number | undefined;
+    /** Which hooks this middleware implements (e.g., ["wrapModelCall", "wrapToolCall"]). */
+    readonly hooks?: readonly string[] | undefined;
+    /** Whether this middleware runs concurrently in the observe phase. */
+    readonly concurrent?: boolean | undefined;
+    /** How this middleware was injected: static (manifest), forged, or dynamic. */
+    readonly source?: "static" | "forged" | "dynamic" | undefined;
+}
+interface MiddlewareChain {
+    readonly agentId: AgentId;
+    readonly entries: readonly MiddlewareEntry[];
+}
+interface GatewayConnection {
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly agentId: AgentId;
+    readonly connected: boolean;
+    readonly connectedAt: number;
+}
+interface GatewayTopology {
+    readonly connections: readonly GatewayConnection[];
+    readonly nodeCount: number;
+    readonly timestamp: number;
+}
+
+interface WorkflowSummary {
+    readonly workflowId: string;
+    readonly workflowType: string;
+    readonly status: "running" | "completed" | "failed" | "cancelled" | "terminated" | "timed_out";
+    readonly startTime: number;
+    readonly closeTime?: number;
+    readonly taskQueue: string;
+    /** Whether this workflow is a copilot or worker agent. */
+    readonly entityType?: "copilot" | "worker";
+    /** How many times this workflow has restarted via Continue-As-New (when available). */
+    readonly canCount?: number;
+}
+interface WorkflowDetail extends WorkflowSummary {
+    readonly runId: string;
+    readonly searchAttributes: Readonly<Record<string, unknown>>;
+    readonly memo: Readonly<Record<string, unknown>>;
+    readonly pendingActivities: number;
+    /** Number of pending (unprocessed) signals queued for this workflow. */
+    readonly pendingSignals: number;
+    /** How many times this workflow has restarted via Continue-As-New. */
+    readonly canCount: number;
+    /** Lightweight state references from the workflow's query handler. */
+    readonly stateRefs?: WorkflowStateRefs;
+    /** Server-backed event timeline from Temporal workflow history. */
+    readonly timeline?: readonly TimelineEvent[];
+}
+/** A single event in the workflow timeline, derived from Temporal history. */
+interface TimelineEvent {
+    readonly time: number;
+    readonly label: string;
+    readonly category: "lifecycle" | "activity" | "signal" | "timer" | "error";
+}
+/** Agent state references exposed via workflow query. */
+interface WorkflowStateRefs {
+    readonly lastTurnId?: string;
+    readonly turnsProcessed: number;
+    /** Activity status from the getStatus query (idle/working/shutting_down). */
+    readonly activityStatus?: string;
+}
+interface TemporalHealth {
+    readonly healthy: boolean;
+    readonly serverAddress: string;
+    readonly namespace: string;
+    readonly latencyMs?: number;
+}
+interface SchedulerTaskSummary {
+    readonly taskId: string;
+    readonly agentId: string;
+    readonly status: "pending" | "running" | "completed" | "failed" | "dead_letter";
+    readonly priority: number;
+    readonly submittedAt: number;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly retryCount: number;
+}
+interface SchedulerStats {
+    readonly submitted: number;
+    readonly completed: number;
+    readonly failed: number;
+    readonly deadLetterCount: number;
+    readonly concurrencyLimit?: number | undefined;
+    readonly currentConcurrency: number;
+}
+interface CronSchedule {
+    readonly scheduleId: string;
+    readonly pattern: string;
+    readonly nextFireTime?: number | undefined;
+    readonly active: boolean;
+    readonly description?: string;
+}
+interface SchedulerDeadLetterEntry {
+    readonly entryId: string;
+    readonly taskId: string;
+    readonly failedAt: number;
+    readonly error: string;
+    readonly retryCount: number;
+}
+interface TaskBoardNode {
+    readonly taskId: string;
+    readonly label: string;
+    readonly status: "pending" | "running" | "completed" | "failed";
+    readonly assignedTo?: string;
+    readonly result?: unknown;
+    readonly error?: string;
+}
+interface TaskBoardEdge {
+    readonly from: string;
+    readonly to: string;
+}
+interface TaskBoardSnapshot {
+    readonly nodes: readonly TaskBoardNode[];
+    readonly edges: readonly TaskBoardEdge[];
+    readonly timestamp: number;
+}
+interface HarnessStatus {
+    readonly phase: "idle" | "running" | "paused" | "completed" | "failed";
+    readonly sessionCount: number;
+    readonly taskProgress: {
+        readonly completed: number;
+        readonly total: number;
+    };
+    readonly tokenUsage: {
+        readonly used: number;
+        readonly budget: number;
+    };
+    readonly autoResumeEnabled: boolean;
+    readonly startedAt?: number;
+}
+interface CheckpointEntry {
+    readonly id: string;
+    readonly type: "soft" | "hard";
+    readonly createdAt: number;
+    readonly sessionId?: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+interface ForgeBrickView {
+    readonly brickId: string;
+    readonly name: string;
+    readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+    readonly fitness: number;
+    readonly sampleCount: number;
+    readonly createdAt: number;
+    readonly lastUpdatedAt: number;
+    /** Evolution lineage — present when brick was derived from another. */
+    readonly parentBrickId?: string;
+    readonly evolutionKind?: "fix" | "derived" | "captured";
+    readonly evolutionDescription?: string;
+    readonly version?: string;
+}
+interface ForgeStats {
+    readonly totalBricks: number;
+    readonly activeBricks: number;
+    readonly demandSignals: number;
+    readonly crystallizeCandidates: number;
+    readonly timestamp: number;
+}
+interface DebugSpanResponse {
+    /** Stable identity for cross-referencing with inventory. */
+    readonly debugId?: string | undefined;
+    readonly name: string;
+    readonly hook: string;
+    readonly durationMs: number;
+    readonly source: string;
+    readonly phase: string;
+    readonly priority: number;
+    readonly nextCalled: boolean;
+    readonly error?: string | undefined;
+    readonly children?: readonly DebugSpanResponse[] | undefined;
+    readonly tier?: string | undefined;
+}
+interface ResolverSpanResponse {
+    readonly toolId: string;
+    readonly source: string;
+    readonly durationMs: number;
+}
+interface ChannelIOSpanResponse {
+    readonly direction: string;
+    readonly kind: string;
+    readonly durationMs: number;
+}
+interface ForgeRefreshSpanResponse {
+    readonly descriptorsChanged: boolean;
+    readonly descriptorCount: number;
+    readonly middlewareRecomposed: boolean;
+    readonly timestamp: number;
+}
+interface DebugTurnTraceResponse {
+    readonly turnIndex: number;
+    readonly totalDurationMs: number;
+    readonly spans: readonly DebugSpanResponse[];
+    readonly timestamp: number;
+    readonly resolverSpans?: readonly ResolverSpanResponse[] | undefined;
+    readonly channelSpans?: readonly ChannelIOSpanResponse[] | undefined;
+    readonly forgeSpans?: readonly ForgeRefreshSpanResponse[] | undefined;
+}
+interface DebugInventoryItemResponse {
+    readonly name: string;
+    readonly category: string;
+    readonly enabled: boolean;
+    readonly source: string;
+    readonly hooks?: readonly string[] | undefined;
+    readonly phase?: string | undefined;
+    readonly priority?: number | undefined;
+    readonly concurrent?: boolean | undefined;
+    readonly lastUsedTurn?: number | undefined;
+}
+interface DebugInventoryResponse {
+    readonly agentId: string;
+    readonly items: readonly DebugInventoryItemResponse[];
+    readonly timestamp: number;
+}
+interface ContributionGraphResponse {
+    readonly stacks: readonly StackContributionResponse[];
+    readonly generatedAt: number;
+}
+interface StackContributionResponse {
+    readonly id: string;
+    readonly label: string;
+    readonly enabled: boolean;
+    readonly source: string;
+    readonly status?: string | undefined;
+    readonly reason?: string | undefined;
+    readonly packages: readonly PackageContributionResponse[];
+}
+interface PackageContributionResponse {
+    readonly id: string;
+    readonly kind: string;
+    readonly source: string;
+    readonly middlewareNames?: readonly string[] | undefined;
+    readonly providerNames?: readonly string[] | undefined;
+    readonly toolNames?: readonly string[] | undefined;
+    readonly channelNames?: readonly string[] | undefined;
+    readonly notes?: readonly string[] | undefined;
+}
+interface BudgetSummary {
+    readonly used: number;
+    readonly limit: number;
+}
+interface AgentCostEntry {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly model: string;
+    readonly turns: number;
+    readonly costUsd: number;
+    readonly budgetUsed: number;
+    readonly budgetLimit: number;
+}
+interface CascadeTierSummary {
+    readonly model: string;
+    readonly calls: number;
+    readonly costUsd: number;
+    readonly percentOfCalls: number;
+    readonly label: string;
+}
+interface CircuitBreakerSummary {
+    readonly state: "CLOSED" | "HALF_OPEN" | "OPEN";
+    readonly failures: number;
+    readonly threshold: number;
+    readonly windowMs: number;
+}
+interface CostSnapshot {
+    readonly sessionBudget: BudgetSummary;
+    readonly dailyBudget: BudgetSummary;
+    readonly monthlyBudget: BudgetSummary;
+    readonly agents: readonly AgentCostEntry[];
+    readonly cascade: {
+        readonly tiers: readonly CascadeTierSummary[];
+        readonly savingsUsd: number;
+        readonly baselineModel: string;
+    };
+    readonly circuitBreaker: CircuitBreakerSummary;
+    readonly timestamp: number;
+}
+interface RuntimeViewDataSource {
+    readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
+    readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
+    readonly getMiddlewareChain: (agentId: AgentId) => MiddlewareChain | Promise<MiddlewareChain>;
+    readonly getGatewayTopology: () => GatewayTopology | Promise<GatewayTopology>;
+    readonly temporal?: {
+        readonly getHealth: () => TemporalHealth | Promise<TemporalHealth>;
+        readonly listWorkflows: () => Promise<readonly WorkflowSummary[]>;
+        readonly getWorkflow: (id: string) => Promise<Result<WorkflowDetail | undefined, KoiError>>;
+    };
+    readonly scheduler?: {
+        readonly listTasks: () => Promise<readonly SchedulerTaskSummary[]>;
+        readonly getStats: () => SchedulerStats | Promise<SchedulerStats>;
+        readonly listSchedules: () => Promise<readonly CronSchedule[]>;
+        readonly listDeadLetters: () => Promise<readonly SchedulerDeadLetterEntry[]>;
+    };
+    readonly taskBoard?: {
+        readonly getSnapshot: () => TaskBoardSnapshot | Promise<TaskBoardSnapshot>;
+    };
+    readonly harness?: {
+        readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
+        readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+    };
+    readonly forge?: {
+        readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
+        readonly getStats: () => ForgeStats | Promise<ForgeStats>;
+        readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
+    };
+    readonly cost?: {
+        readonly getSnapshot: () => CostSnapshot | Promise<CostSnapshot>;
+    };
+    readonly debug?: {
+        readonly getInventory: (agentId: AgentId) => DebugInventoryResponse | Promise<DebugInventoryResponse>;
+        readonly getTrace: (agentId: AgentId, turnIndex: number) => DebugTurnTraceResponse | undefined | Promise<DebugTurnTraceResponse | undefined>;
+        readonly getContributions?: () => ContributionGraphResponse | Promise<ContributionGraphResponse>;
+    } | undefined;
+}
+interface WorkspaceContextResponse {
+    readonly cwd: string;
+    readonly koiYamlPath: string;
+    readonly nexusYamlPath: string | undefined;
+    readonly nexusDataDir: string | undefined;
+    readonly nexusContainerProject: string | undefined;
+    readonly nexusPort: number | undefined;
+    readonly nexusBaseUrl: string | undefined;
+    readonly adminPort: number;
+    readonly presetId: string;
+}
+
+/**
+ * Admin panel configuration and saved view definitions.
+ */
+
+interface SavedViewDefinition {
+    readonly id: string;
+    readonly label: string;
+    /** Root path(s) to filter the file tree. */
+    readonly rootPaths: readonly string[];
+    /** Optional glob to further filter entries. */
+    readonly globPattern?: string;
+    /** URL query param value for this view. */
+    readonly urlParam: string;
+}
+/** Built-in saved views — hardcoded, not user-configurable in Phase 1. */
+declare const SAVED_VIEWS: readonly SavedViewDefinition[];
+interface AdminPanelDataSources {
+    /** V1 data source (agents, channels, skills, metrics, SSE). */
+    readonly dataSource: DashboardDataSource;
+    /** File operations via Nexus filesystem backend. */
+    readonly fileSystem?: FileSystemBackend;
+    /** Computed runtime views (process tree, procfs, middleware, gateway). */
+    readonly runtimeViews?: RuntimeViewDataSource;
+    /** Imperative commands (suspend, resume, terminate, DLQ retry). */
+    readonly commands?: CommandDispatcher;
+}
+interface AdminPanelConfig extends DashboardConfig {
+    /** Data sources for the admin panel. When absent, uses dataSource only. */
+    readonly dataSources?: Omit<AdminPanelDataSources, "dataSource">;
+}
+
+/**
+ * SSE (Server-Sent Events) parser — spec-compliant, chunk-boundary-safe.
+ *
+ * Shared between @koi/tui and @koi/dashboard-ui for AG-UI chat streaming.
+ * Spec: https://html.spec.whatwg.org/multipage/server-sent-events.html
+ */
+/** Parsed SSE event. */
+interface SSEEvent {
+    readonly event: string;
+    readonly data: string;
+    readonly id: string;
+    readonly retry: number | undefined;
+}
+/**
+ * Stateful SSE parser that handles chunk boundaries correctly.
+ *
+ * Feed it raw string chunks from a ReadableStream and it will
+ * yield complete SSE events. Handles:
+ * - Events split across chunks
+ * - Multiple events in one chunk
+ * - Multi-line data fields (joined with \\n)
+ * - Comment lines (: prefix) — silently discarded
+ * - Empty lines as event terminators
+ * - id and retry fields
+ */
+declare class SSEParser {
+    private buffer;
+    private eventType;
+    private dataLines;
+    private lastEventId;
+    private retryMs;
+    /** The last received event ID (for reconnection with Last-Event-ID header). */
+    get lastId(): string;
+    /**
+     * Feed a raw chunk of text from the stream.
+     * Returns zero or more complete SSE events.
+     */
+    feed(chunk: string): readonly SSEEvent[];
+    /** Reset parser state (for reconnection). Preserves lastEventId. */
+    reset(): void;
+    private processLine;
+}
+/** Options for consuming an SSE stream. */
+interface SSEStreamOptions {
+    /** Called for each parsed SSE event. */
+    readonly onEvent: (event: SSEEvent) => void;
+    /** Called when the stream closes normally. */
+    readonly onClose?: () => void;
+    /** Called when the stream errors. */
+    readonly onError?: (error: unknown) => void;
+    /** AbortSignal to cancel the stream. */
+    readonly signal?: AbortSignal;
+}
+/**
+ * Consume an SSE stream from a fetch Response.
+ *
+ * Reads the response body as text chunks, parses SSE events,
+ * and calls the provided callbacks.
+ *
+ * Returns the parser instance (for accessing lastId on reconnect).
+ */
+declare function consumeSSEStream(response: Response, options: SSEStreamOptions): Promise<SSEParser>;
+
+/**
+ * AG-UI (Agent-User Interaction) protocol types and validated parser.
+ *
+ * Shared between @koi/tui and @koi/dashboard-ui for streaming agent chat.
+ * Protocol: HTTP POST → SSE stream of typed JSON events.
+ */
+
+/** AG-UI SSE event types emitted by @koi/channel-agui. */
+type AguiEventType = "RUN_STARTED" | "RUN_FINISHED" | "RUN_ERROR" | "STATE_SNAPSHOT" | "STATE_DELTA" | "STEP_STARTED" | "STEP_FINISHED" | "TEXT_MESSAGE_START" | "TEXT_MESSAGE_CONTENT" | "TEXT_MESSAGE_END" | "REASONING_MESSAGE_START" | "REASONING_MESSAGE_CONTENT" | "REASONING_MESSAGE_END" | "TOOL_CALL_START" | "TOOL_CALL_ARGS" | "TOOL_CALL_END" | "TOOL_CALL_RESULT" | "CUSTOM";
+/** Parsed AG-UI event with typed fields. */
+type AguiEvent = {
+    readonly type: "RUN_STARTED";
+    readonly threadId: string;
+    readonly runId: string;
+} | {
+    readonly type: "RUN_FINISHED";
+    readonly threadId: string;
+    readonly runId: string;
+} | {
+    readonly type: "RUN_ERROR";
+    readonly message: string;
+} | {
+    readonly type: "STATE_SNAPSHOT";
+    readonly snapshot: unknown;
+} | {
+    readonly type: "STATE_DELTA";
+    readonly delta: unknown;
+} | {
+    readonly type: "STEP_STARTED";
+    readonly stepName: string;
+} | {
+    readonly type: "STEP_FINISHED";
+    readonly stepName: string;
+} | {
+    readonly type: "TEXT_MESSAGE_START";
+    readonly messageId: string;
+    readonly role: string;
+} | {
+    readonly type: "TEXT_MESSAGE_CONTENT";
+    readonly messageId: string;
+    readonly delta: string;
+} | {
+    readonly type: "TEXT_MESSAGE_END";
+    readonly messageId: string;
+} | {
+    readonly type: "REASONING_MESSAGE_START";
+    readonly messageId: string;
+} | {
+    readonly type: "REASONING_MESSAGE_CONTENT";
+    readonly messageId: string;
+    readonly delta: string;
+} | {
+    readonly type: "REASONING_MESSAGE_END";
+    readonly messageId: string;
+} | {
+    readonly type: "TOOL_CALL_START";
+    readonly toolCallId: string;
+    readonly toolCallName: string;
+} | {
+    readonly type: "TOOL_CALL_ARGS";
+    readonly toolCallId: string;
+    readonly delta: string;
+} | {
+    readonly type: "TOOL_CALL_END";
+    readonly toolCallId: string;
+} | {
+    readonly type: "TOOL_CALL_RESULT";
+    readonly toolCallId: string;
+    readonly result: string;
+} | {
+    readonly type: "CUSTOM";
+    readonly name: string;
+    readonly value: unknown;
+};
+/** Input for starting a chat run. */
+interface ChatRunInput {
+    readonly threadId: string;
+    readonly runId: string;
+    readonly message: string;
+    /** Prior messages for context (optional — agent may have memory middleware). */
+    readonly history?: readonly ChatHistoryMessage[];
+}
+/** Minimal message shape for AG-UI history. */
+interface ChatHistoryMessage {
+    readonly id: string;
+    readonly role: "user" | "assistant";
+    readonly content: string;
+}
+/**
+ * Parse a raw SSE event into a typed AguiEvent with field validation.
+ *
+ * Returns null for:
+ * - Malformed JSON
+ * - Missing \`type\` field
+ * - Missing required fields for the given event type
+ */
+declare function parseAguiEvent(sse: SSEEvent): AguiEvent | null;
+
+/**
+ * Cursor-based pagination types for Phase 3 conversation history.
+ * Defined now for API stability — unused until Phase 3.
+ */
+interface CursorRequest {
+    readonly cursor?: string;
+    readonly limit?: number;
+}
+interface CursorPage<T> {
+    readonly items: readonly T[];
+    readonly nextCursor?: string;
+    readonly hasMore: boolean;
+}
+
+/**
+ * REST API response types for the dashboard.
+ *
+ * All responses use the ApiResult<T> envelope — a discriminated union
+ * that separates success from error without throwing.
+ */
+type ApiResult<T> = {
+    readonly ok: true;
+    readonly data: T;
+} | {
+    readonly ok: false;
+    readonly error: ApiError;
+};
+interface ApiError {
+    readonly code: string;
+    readonly message: string;
+}
+/** Subsystem health status. */
+interface SubsystemStatus {
+    readonly status: "ready" | "not_running" | "degraded";
+    readonly url?: string | undefined;
+    readonly latencyMs?: number | undefined;
+}
+/** Port binding status. */
+interface PortStatus {
+    readonly port: number;
+    readonly service: string;
+    readonly status: "listening" | "closed";
+}
+/** Detailed status response with subsystem health. */
+interface DetailedStatusResponse {
+    readonly status: string;
+    readonly uptimeMs: number;
+    readonly subsystems: {
+        readonly admin: SubsystemStatus;
+        readonly nexus: SubsystemStatus;
+        readonly temporal: SubsystemStatus;
+        readonly gateway: SubsystemStatus;
+    };
+    readonly ports: readonly PortStatus[];
+}
+/** Summary of a demo pack. */
+interface DemoPackSummary {
+    readonly id: string;
+    readonly name: string;
+    readonly description: string;
+    readonly requires: readonly string[];
+}
+
+/**
+ * Shared route constants for the admin API.
+ *
+ * Both @koi/dashboard-api (server) and @koi/tui (client) import these
+ * to eliminate URL drift across the HTTP boundary.
+ *
+ * Paths are relative to the API prefix (default: "/admin/api").
+ */
+/** HTTP method type. */
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+/** A typed route definition. */
+interface RouteDefinition {
+    readonly method: HttpMethod;
+    readonly path: string;
+}
+/**
+ * All admin API routes.
+ *
+ * Path params are encoded as \`:param\` (e.g., \`/agents/:id\`).
+ * The client is responsible for interpolating actual values.
+ */
+declare const ADMIN_ROUTES: {
+    readonly health: {
+        readonly method: "GET";
+        readonly path: "/health";
+    };
+    readonly listAgents: {
+        readonly method: "GET";
+        readonly path: "/agents";
+    };
+    readonly getAgent: {
+        readonly method: "GET";
+        readonly path: "/agents/:id";
+    };
+    readonly terminateAgent: {
+        readonly method: "POST";
+        readonly path: "/agents/:id/terminate";
+    };
+    readonly listChannels: {
+        readonly method: "GET";
+        readonly path: "/channels";
+    };
+    readonly listSkills: {
+        readonly method: "GET";
+        readonly path: "/skills";
+    };
+    readonly getMetrics: {
+        readonly method: "GET";
+        readonly path: "/metrics";
+    };
+    readonly dispatchAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/dispatch";
+    };
+    readonly suspendAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/suspend";
+    };
+    readonly resumeAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/resume";
+    };
+    readonly terminateAgentCmd: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/terminate";
+    };
+    readonly retryDeadLetter: {
+        readonly method: "POST";
+        readonly path: "/cmd/events/dlq/:id/retry";
+    };
+    readonly listMailbox: {
+        readonly method: "POST";
+        readonly path: "/cmd/mailbox/:agentId/list";
+    };
+    readonly processTree: {
+        readonly method: "GET";
+        readonly path: "/view/agents/tree";
+    };
+    readonly agentProcfs: {
+        readonly method: "GET";
+        readonly path: "/view/agents/:id/procfs";
+    };
+    readonly middlewareChain: {
+        readonly method: "GET";
+        readonly path: "/view/middleware/:id";
+    };
+    readonly gatewayTopology: {
+        readonly method: "GET";
+        readonly path: "/view/gateway/topology";
+    };
+    readonly costSnapshot: {
+        readonly method: "GET";
+        readonly path: "/view/cost/snapshot";
+    };
+    readonly forgeBricks: {
+        readonly method: "GET";
+        readonly path: "/view/forge/bricks";
+    };
+    readonly forgeStats: {
+        readonly method: "GET";
+        readonly path: "/view/forge/stats";
+    };
+    readonly forgeEvents: {
+        readonly method: "GET";
+        readonly path: "/view/forge/events";
+    };
+    readonly debugInventory: {
+        readonly method: "GET";
+        readonly path: "/view/debug/:id/inventory";
+    };
+    readonly debugTrace: {
+        readonly method: "GET";
+        readonly path: "/view/debug/:id/trace/:turn";
+    };
+    readonly debugContributions: {
+        readonly method: "GET";
+        readonly path: "/view/debug/contributions";
+    };
+    readonly temporalHealth: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/health";
+    };
+    readonly temporalWorkflows: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/workflows";
+    };
+    readonly temporalWorkflow: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/workflows/:id";
+    };
+    readonly temporalSignal: {
+        readonly method: "POST";
+        readonly path: "/cmd/temporal/workflows/:id/signal";
+    };
+    readonly temporalTerminate: {
+        readonly method: "POST";
+        readonly path: "/cmd/temporal/workflows/:id/terminate";
+    };
+    readonly schedulerTasks: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/tasks";
+    };
+    readonly schedulerStats: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/stats";
+    };
+    readonly schedulerSchedules: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/schedules";
+    };
+    readonly schedulerDlq: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/dlq";
+    };
+    readonly schedulerPause: {
+        readonly method: "POST";
+        readonly path: "/cmd/scheduler/schedules/:id/pause";
+    };
+    readonly schedulerResume: {
+        readonly method: "POST";
+        readonly path: "/cmd/scheduler/schedules/:id/resume";
+    };
+    readonly schedulerDeleteSchedule: {
+        readonly method: "DELETE";
+        readonly path: "/cmd/scheduler/schedules/:id";
+    };
+    readonly taskBoardSnapshot: {
+        readonly method: "GET";
+        readonly path: "/view/taskboard/snapshot";
+    };
+    readonly harnessStatus: {
+        readonly method: "GET";
+        readonly path: "/view/harness/status";
+    };
+    readonly harnessCheckpoints: {
+        readonly method: "GET";
+        readonly path: "/view/harness/checkpoints";
+    };
+    readonly harnessPause: {
+        readonly method: "POST";
+        readonly path: "/cmd/harness/pause";
+    };
+    readonly harnessResume: {
+        readonly method: "POST";
+        readonly path: "/cmd/harness/resume";
+    };
+    readonly listDelegations: {
+        readonly method: "GET";
+        readonly path: "/view/delegations/:agentId";
+    };
+    readonly listHandoffs: {
+        readonly method: "GET";
+        readonly path: "/view/handoffs/:agentId";
+    };
+    readonly listScratchpad: {
+        readonly method: "GET";
+        readonly path: "/view/scratchpad/list";
+    };
+    readonly readScratchpad: {
+        readonly method: "GET";
+        readonly path: "/view/scratchpad/file";
+    };
+    readonly governanceQueue: {
+        readonly method: "GET";
+        readonly path: "/view/governance/queue";
+    };
+    readonly reviewGovernance: {
+        readonly method: "POST";
+        readonly path: "/cmd/governance/:id/review";
+    };
+    readonly promoteBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/promote";
+    };
+    readonly demoteBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/demote";
+    };
+    readonly quarantineBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/quarantine";
+    };
+    readonly listDataSources: {
+        readonly method: "GET";
+        readonly path: "/data-sources";
+    };
+    readonly approveDataSource: {
+        readonly method: "POST";
+        readonly path: "/data-sources/:name/approve";
+    };
+    readonly rejectDataSource: {
+        readonly method: "POST";
+        readonly path: "/data-sources/:name/reject";
+    };
+    readonly getDataSourceSchema: {
+        readonly method: "GET";
+        readonly path: "/data-sources/:name/schema";
+    };
+    readonly rescanDataSources: {
+        readonly method: "POST";
+        readonly path: "/data-sources/rescan";
+    };
+    readonly agentChat: {
+        readonly method: "POST";
+        readonly path: "/agents/:id/chat";
+    };
+    readonly events: {
+        readonly method: "GET";
+        readonly path: "/events";
+    };
+    readonly fsList: {
+        readonly method: "GET";
+        readonly path: "/fs/list";
+    };
+    readonly fsRead: {
+        readonly method: "GET";
+        readonly path: "/fs/read";
+    };
+    readonly fsWrite: {
+        readonly method: "PUT";
+        readonly path: "/fs/file";
+    };
+    readonly fsSearch: {
+        readonly method: "GET";
+        readonly path: "/fs/search";
+    };
+    readonly fsDelete: {
+        readonly method: "DELETE";
+        readonly path: "/fs/file";
+    };
+    readonly shutdown: {
+        readonly method: "POST";
+        readonly path: "/cmd/shutdown";
+    };
+    readonly detailedStatus: {
+        readonly method: "GET";
+        readonly path: "/status/detailed";
+    };
+    readonly demoInit: {
+        readonly method: "POST";
+        readonly path: "/cmd/demo/init";
+    };
+    readonly demoReset: {
+        readonly method: "POST";
+        readonly path: "/cmd/demo/reset";
+    };
+    readonly demoPacks: {
+        readonly method: "GET";
+        readonly path: "/demo/packs";
+    };
+    readonly deploy: {
+        readonly method: "POST";
+        readonly path: "/cmd/deploy";
+    };
+    readonly undeploy: {
+        readonly method: "DELETE";
+        readonly path: "/cmd/deploy";
+    };
+};
+/** Type of the ADMIN_ROUTES object. */
+type AdminRoutes = typeof ADMIN_ROUTES;
+/**
+ * Interpolate path params into a route path.
+ *
+ * @example
+ * interpolatePath("/agents/:id", { id: "agent-123" })
+ * // => "/agents/agent-123"
+ */
+declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
+
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentCostEntry, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type BudgetSummary, type CascadeTierSummary, type ChannelDashboardEvent, type ChannelIOSpanResponse, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CircuitBreakerSummary, type CommandDispatcher, type ContributionGraphResponse, type CostSnapshot, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DebugInventoryItemResponse, type DebugInventoryResponse, type DebugSpanResponse, type DebugTurnTraceResponse, type DelegationSummary, type DemoPackSummary, type DetailedStatusResponse, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeRefreshSpanResponse, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type LogDashboardEvent, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type PackageContributionResponse, type PortStatus, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type ResolverSpanResponse, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type StackContributionResponse, type SubsystemStatus, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, type WorkspaceContextResponse, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isLogEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+"
+`;

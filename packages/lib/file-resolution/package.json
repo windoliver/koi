@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "@koi/token-estimator": "workspace:*"
+  },
+  "koi": {
+    "optional": true
   }
 }

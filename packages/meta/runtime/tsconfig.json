@@ -1,0 +1,26 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../../kernel/engine" },
+    { "path": "../../kernel/engine-compose" },
+    { "path": "../../lib/channel-cli" },
+    { "path": "../../lib/event-trace" },
+    { "path": "../../lib/hooks" },
+    { "path": "../../lib/query-engine" },
+    { "path": "../../lib/tools-builtin" },
+    { "path": "../../lib/tools-core" },
+    { "path": "../../lib/tools-web" },
+    { "path": "../../mm/model-openai-compat" },
+    { "path": "../../net/mcp" },
+    { "path": "../../lib/middleware-goal" },
+    { "path": "../../lib/middleware-report" },
+    { "path": "../../security/middleware-permissions" },
+    { "path": "../../security/permissions" }
+  ]
+}

@@ -1,0 +1,1065 @@
+/**
+ * Immutable state store for the TUI application.
+ *
+ * Single state object, pure reducer, explicit render trigger.
+ * No magic, no subscriptions, no external dependencies.
+ */
+
+import type { ChatMessage } from "@koi/dashboard-client";
+import type { DashboardAgentSummary, ForgeDashboardEvent } from "@koi/dashboard-types";
+import {
+  isAgentEvent,
+  isChannelEvent,
+  isForgeEvent,
+  isGatewayEvent,
+  isHarnessEvent,
+  isMonitorEvent,
+  isNexusEvent,
+  isSchedulerEvent,
+  isSkillEvent,
+  isSystemEvent,
+  isTaskBoardEvent,
+  isTemporalEvent,
+} from "@koi/dashboard-types";
+import { computeLayoutTier } from "../theme.js";
+import {
+  addGovernanceApproval,
+  addGovernanceViolation,
+  computeDagLayout,
+  reduceChannels,
+  reduceGateway,
+  reduceHarness,
+  reduceNexus,
+  reduceScheduler,
+  reduceSkills,
+  reduceSystem,
+  reduceTaskBoard,
+  reduceTemporal,
+  removeGovernanceApproval,
+} from "./domain-reducers.js";
+import { reduceService } from "./service-reducer.js";
+import type { TuiBrickSummary } from "./types.js";
+import {
+  MAX_SESSION_MESSAGES,
+  MAX_VIEW_HISTORY,
+  type TuiAction,
+  type TuiState,
+  type TuiView,
+  type ZoomLevel,
+} from "./types.js";
+
+/** Views that are overlays — they don't push to the navigation stack. */
+const OVERLAY_VIEWS: ReadonlySet<TuiView> = new Set([
+  "palette",
+  "consent",
+  "sourcedetail",
+  "presetdetail",
+  // Wizard steps are linear flows, not stack-navigable
+  "welcome",
+  "nameinput",
+  "addons",
+  "model",
+  "engine",
+  "channelspicker",
+  "nexusconfig",
+  "progress",
+]);
+
+import { reduceWizard } from "./wizard-reducer.js";
+
+const MAX_FORGE_EVENTS = 200;
+const MAX_MONITOR_EVENTS = 50;
+const MAX_FORGE_SPARKLINE_POINTS = 50;
+const MAX_PTY_CHUNKS = 200;
+
+/** Listener callback for state changes. */
+export type StateListener = (state: TuiState) => void;
+
+/** Store interface — getState + dispatch + subscribe. */
+export interface TuiStore {
+  readonly getState: () => TuiState;
+  readonly dispatch: (action: TuiAction) => void;
+  readonly subscribe: (listener: StateListener) => () => void;
+}
+
+/**
+ * Pure reducer — returns new state for each action.
+ * Never mutates the input state.
+ */
+export function reduce(state: TuiState, action: TuiAction): TuiState {
+  // Delegate to wizard reducer first
+  const wizardResult = reduceWizard(state, action);
+  if (wizardResult !== undefined) return { ...state, ...wizardResult };
+
+  // Delegate to service reducer
+  const serviceResult = reduceService(state, action);
+  if (serviceResult !== undefined) return { ...state, ...serviceResult };
+
+  switch (action.kind) {
+    case "set_view": {
+      // Push current view to history stack (if not an overlay and not same view)
+      if (
+        !OVERLAY_VIEWS.has(action.view) &&
+        !OVERLAY_VIEWS.has(state.view) &&
+        state.view !== action.view
+      ) {
+        const history = [...state.viewHistory, state.view].slice(-MAX_VIEW_HISTORY);
+        return { ...state, view: action.view, viewHistory: history };
+      }
+      return { ...state, view: action.view };
+    }
+
+    case "navigate_back": {
+      if (state.viewHistory.length === 0) return { ...state, view: "agents" };
+      const history = state.viewHistory.slice(0, -1);
+      const target = state.viewHistory[state.viewHistory.length - 1] as TuiView;
+      return { ...state, view: target, viewHistory: history };
+    }
+
+    case "show_toast": {
+      // Auto-incrementing ID prevents cross-view race conditions on clear
+      const id = (state.toast?.id ?? 0) + 1;
+      return { ...state, toast: { id, message: action.message, kind: action.toastKind } };
+    }
+
+    case "clear_toast": {
+      // Only clear if the ID matches (prevents clearing a newer toast)
+      if (state.toast === null || state.toast.id !== action.id) return state;
+      return { ...state, toast: null };
+    }
+
+    case "set_agents":
+      return {
+        ...state,
+        agents: action.agents,
+        // Clamp selected index to new list bounds
+        selectedAgentIndex: Math.min(
+          state.selectedAgentIndex,
+          Math.max(0, action.agents.length - 1),
+        ),
+      };
+
+    case "select_agent":
+      return {
+        ...state,
+        selectedAgentIndex: Math.max(0, Math.min(action.index, state.agents.length - 1)),
+      };
+
+    case "set_session":
+      return { ...state, activeSession: action.session };
+
+    case "append_tokens": {
+      if (state.activeSession === null) return state;
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          pendingText: state.activeSession.pendingText + action.text,
+        },
+      };
+    }
+
+    case "flush_tokens": {
+      if (state.activeSession === null) return state;
+      if (state.activeSession.pendingText === "") return state;
+      const flushedMessage: ChatMessage = {
+        kind: "assistant" as const,
+        text: state.activeSession.pendingText,
+        timestamp: Date.now(),
+      };
+      const messages = [...state.activeSession.messages, flushedMessage].slice(
+        -MAX_SESSION_MESSAGES,
+      );
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          pendingText: "",
+          messages,
+        },
+      };
+    }
+
+    case "add_message": {
+      if (state.activeSession === null) {
+        // No active session — surface lifecycle messages as toasts so they're visible
+        if (action.message.kind === "lifecycle") {
+          const id = (state.toast?.id ?? 0) + 1;
+          const event = "event" in action.message ? String(action.message.event) : "";
+          return { ...state, toast: { id, message: event, kind: "success" } };
+        }
+        return state;
+      }
+      const messages = [...state.activeSession.messages, action.message].slice(
+        -MAX_SESSION_MESSAGES,
+      );
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          messages,
+        },
+      };
+    }
+
+    case "update_tool_result": {
+      if (state.activeSession === null) return state;
+      const { toolCallId, result } = action;
+      // Find the last tool_call message matching this toolCallId and update it
+      const msgs = state.activeSession.messages;
+      let targetIndex = -1;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (msg !== undefined && msg.kind === "tool_call" && msg.toolCallId === toolCallId) {
+          targetIndex = i;
+          break;
+        }
+      }
+      if (targetIndex === -1) return state;
+      const target = msgs[targetIndex];
+      if (target === undefined || target.kind !== "tool_call") return state;
+      const updatedMessage: ChatMessage = {
+        ...target,
+        result,
+      };
+      const updatedMessages = [
+        ...msgs.slice(0, targetIndex),
+        updatedMessage,
+        ...msgs.slice(targetIndex + 1),
+      ];
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          messages: updatedMessages,
+        },
+      };
+    }
+
+    case "set_connection_status":
+      return { ...state, connectionStatus: action.status };
+
+    case "set_streaming": {
+      if (state.activeSession === null) return state;
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          isStreaming: action.isStreaming,
+        },
+      };
+    }
+
+    case "set_error":
+      return { ...state, error: action.error };
+
+    case "set_session_picker":
+      return {
+        ...state,
+        sessionPickerEntries: action.entries,
+        sessionPickerLoading: action.loading,
+      };
+
+    case "set_data_sources":
+      return {
+        ...state,
+        dataSources: action.sources,
+        dataSourcesLoading: false,
+        selectedDataSourceIndex: Math.min(
+          state.selectedDataSourceIndex,
+          Math.max(0, action.sources.length - 1),
+        ),
+      };
+
+    case "set_data_sources_loading":
+      return { ...state, dataSourcesLoading: action.loading };
+
+    case "select_data_source":
+      return {
+        ...state,
+        selectedDataSourceIndex: Math.max(0, Math.min(action.index, state.dataSources.length - 1)),
+      };
+
+    case "set_source_detail":
+      return { ...state, sourceDetail: action.detail, sourceDetailLoading: false };
+
+    case "set_source_detail_loading":
+      return { ...state, sourceDetailLoading: action.loading };
+
+    case "set_pending_consent":
+      return { ...state, pendingConsent: action.sources };
+
+    case "clear_pending_consent":
+      return { ...state, pendingConsent: undefined };
+
+    case "apply_event_batch": {
+      const { batch } = action;
+      let updatedAgents: readonly DashboardAgentSummary[] | null = null;
+      const forgeEvents: ForgeDashboardEvent[] = [];
+
+      // Gap detection: warn if sequence numbers are not contiguous
+      const expectedSeq = state.lastEventSeq + 1;
+      const hasGap = state.lastEventSeq > 0 && batch.seq !== expectedSeq;
+
+      // Domain sub-state accumulators
+      let skillsView = state.skillsView;
+      let channelsView = state.channelsView;
+      let systemView = state.systemView;
+      let nexusView = state.nexusView;
+      let gatewayView = state.gatewayView;
+      let temporalView = state.temporalView;
+      let schedulerView = state.schedulerView;
+      let taskBoardView = state.taskBoardView;
+      let harnessView = state.harnessView;
+
+      for (const event of batch.events) {
+        if (isAgentEvent(event)) {
+          updatedAgents = state.agents;
+        }
+        if (isForgeEvent(event)) {
+          forgeEvents.push(event);
+        }
+        if (isSkillEvent(event)) {
+          skillsView = reduceSkills(skillsView, event);
+        }
+        if (isChannelEvent(event)) {
+          channelsView = reduceChannels(channelsView, event);
+        }
+        if (isSystemEvent(event)) {
+          systemView = reduceSystem(systemView, event);
+        }
+        if (isNexusEvent(event)) {
+          nexusView = reduceNexus(nexusView, event);
+        }
+        if (isGatewayEvent(event)) {
+          gatewayView = reduceGateway(gatewayView, event);
+        }
+        if (isTemporalEvent(event)) {
+          temporalView = reduceTemporal(temporalView, event);
+        }
+        if (isSchedulerEvent(event)) {
+          schedulerView = reduceScheduler(schedulerView, event);
+        }
+        if (isTaskBoardEvent(event)) {
+          taskBoardView = reduceTaskBoard(taskBoardView, event);
+        }
+        if (isHarnessEvent(event)) {
+          harnessView = reduceHarness(harnessView, event);
+        }
+      }
+
+      // Apply forge events inline if any were found
+      const forgeState = forgeEvents.length > 0 ? applyForgeBatch(state, forgeEvents) : {};
+
+      // Apply monitor events
+      let monitorState = {};
+      for (const event of batch.events) {
+        if (isMonitorEvent(event)) {
+          const combined = [
+            ...((monitorState as { readonly monitorEvents?: readonly (typeof event)[] })
+              .monitorEvents ?? state.monitorEvents),
+            event,
+          ];
+          monitorState = {
+            monitorEvents:
+              combined.length > MAX_MONITOR_EVENTS ? combined.slice(-MAX_MONITOR_EVENTS) : combined,
+          };
+        }
+      }
+
+      return {
+        ...state,
+        lastEventSeq: batch.seq,
+        ...(updatedAgents !== null ? { agents: updatedAgents } : {}),
+        ...forgeState,
+        ...monitorState,
+        skillsView,
+        channelsView,
+        systemView,
+        nexusView,
+        gatewayView,
+        temporalView,
+        schedulerView,
+        taskBoardView,
+        harnessView,
+        // Surface gap as an error for UI to handle
+        ...(hasGap
+          ? {
+              error: {
+                kind: "api_error" as const,
+                code: "SSE_GAP",
+                message: `SSE gap detected: expected seq ${String(expectedSeq)}, got ${String(batch.seq)}`,
+              },
+            }
+          : {}),
+      };
+    }
+
+    case "apply_forge_batch":
+      return { ...state, ...applyForgeBatch(state, action.events) };
+
+    case "hydrate_forge": {
+      const bricks: Record<string, TuiBrickSummary> = {};
+      for (const brick of action.bricks) {
+        bricks[brick.brickId] = {
+          name: brick.name,
+          status: brick.status,
+          fitness: brick.fitness,
+          ...(brick.version !== undefined ? { version: brick.version } : {}),
+          ...(brick.parentBrickId !== undefined ? { parentBrickId: brick.parentBrickId } : {}),
+          ...(brick.evolutionKind !== undefined ? { evolutionKind: brick.evolutionKind } : {}),
+          ...(brick.evolutionDescription !== undefined
+            ? { evolutionDescription: brick.evolutionDescription }
+            : {}),
+        };
+      }
+      const events =
+        action.events.length > MAX_FORGE_EVENTS
+          ? action.events.slice(-MAX_FORGE_EVENTS)
+          : action.events;
+      // Build sparklines from fitness_flushed events in hydrated data
+      const sparklines: Record<string, readonly number[]> = {};
+      for (const event of action.events) {
+        if (event.subKind === "fitness_flushed") {
+          const bid = (event as { readonly brickId: string }).brickId;
+          const rate = (event as { readonly successRate: number }).successRate;
+          const prev = sparklines[bid] ?? [];
+          sparklines[bid] = [...prev, rate].slice(-MAX_FORGE_SPARKLINE_POINTS);
+        }
+      }
+      return { ...state, forgeBricks: bricks, forgeEvents: events, forgeSparklines: sparklines };
+    }
+
+    case "apply_monitor_event": {
+      const combined = [...state.monitorEvents, action.event];
+      return {
+        ...state,
+        monitorEvents:
+          combined.length > MAX_MONITOR_EVENTS ? combined.slice(-MAX_MONITOR_EVENTS) : combined,
+      };
+    }
+
+    case "set_zoom_level":
+      return { ...state, zoomLevel: action.level };
+
+    case "cycle_zoom": {
+      const ZOOM_CYCLE: readonly ZoomLevel[] = ["normal", "half", "full"];
+      const currentIdx = ZOOM_CYCLE.indexOf(state.zoomLevel);
+      const nextIdx = (currentIdx + 1) % ZOOM_CYCLE.length;
+      const nextZoom = ZOOM_CYCLE[nextIdx];
+      return nextZoom !== undefined ? { ...state, zoomLevel: nextZoom } : state;
+    }
+
+    case "set_terminal_cols":
+      return { ...state, cols: action.cols, layoutTier: computeLayoutTier(action.cols) };
+
+    case "append_pty_data": {
+      const prev = state.ptyBuffers[action.agentId] ?? [];
+      const updated = [...prev, action.data].slice(-MAX_PTY_CHUNKS);
+      return {
+        ...state,
+        ptyBuffers: { ...state.ptyBuffers, [action.agentId]: updated },
+      };
+    }
+
+    case "clear_pty_buffer": {
+      const { [action.agentId]: _, ...rest } = state.ptyBuffers;
+      return { ...state, ptyBuffers: rest };
+    }
+
+    case "set_split_session":
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: action.session,
+        },
+      };
+
+    case "remove_split_session": {
+      const { [action.agentId]: _, ...rest } = state.splitSessions;
+      return { ...state, splitSessions: rest };
+    }
+
+    case "append_split_tokens": {
+      const session = state.splitSessions[action.agentId];
+      if (session === undefined) return state;
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: {
+            ...session,
+            pendingText: session.pendingText + action.text,
+          },
+        },
+      };
+    }
+
+    case "flush_split_tokens": {
+      const session = state.splitSessions[action.agentId];
+      if (session === undefined) return state;
+      if (session.pendingText === "") return state;
+      const flushedMessage: ChatMessage = {
+        kind: "assistant" as const,
+        text: session.pendingText,
+        timestamp: Date.now(),
+      };
+      const messages = [...session.messages, flushedMessage].slice(-MAX_SESSION_MESSAGES);
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: {
+            ...session,
+            pendingText: "",
+            messages,
+          },
+        },
+      };
+    }
+
+    case "set_focused_pane": {
+      // Clamp to visible pane count — respects layout tier pane cap
+      const totalPanes = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
+      const maxPanes = state.layoutTier === "full" || state.layoutTier === "compact" ? 4 : 2;
+      const visiblePanes = Math.min(totalPanes, maxPanes);
+      const maxIndex = Math.max(0, visiblePanes - 1);
+      return {
+        ...state,
+        focusedPaneIndex: Math.max(0, Math.min(action.index, maxIndex)),
+      };
+    }
+
+    // ─── Domain event actions ──────────────────────────────────────────
+
+    case "apply_skill_event":
+      return { ...state, skillsView: reduceSkills(state.skillsView, action.event) };
+
+    case "apply_channel_event":
+      return { ...state, channelsView: reduceChannels(state.channelsView, action.event) };
+
+    case "apply_system_event":
+      return { ...state, systemView: reduceSystem(state.systemView, action.event) };
+
+    case "apply_nexus_event":
+      return { ...state, nexusView: reduceNexus(state.nexusView, action.event) };
+
+    case "apply_gateway_event":
+      return { ...state, gatewayView: reduceGateway(state.gatewayView, action.event) };
+
+    case "apply_temporal_event":
+      return { ...state, temporalView: reduceTemporal(state.temporalView, action.event) };
+
+    case "apply_scheduler_event":
+      return { ...state, schedulerView: reduceScheduler(state.schedulerView, action.event) };
+
+    case "apply_taskboard_event":
+      return { ...state, taskBoardView: reduceTaskBoard(state.taskBoardView, action.event) };
+
+    case "apply_harness_event":
+      return { ...state, harnessView: reduceHarness(state.harnessView, action.event) };
+
+    case "set_capabilities":
+      return { ...state, capabilities: action.capabilities };
+
+    // ─── Domain data-fetch actions ─────────────────────────────────────
+
+    case "set_gateway_topology":
+      return { ...state, gatewayView: { ...state.gatewayView, topology: action.topology } };
+
+    case "set_temporal_health":
+      return { ...state, temporalView: { ...state.temporalView, health: action.health } };
+
+    case "set_temporal_workflows":
+      return {
+        ...state,
+        temporalView: {
+          ...state.temporalView,
+          workflows: action.workflows,
+          selectedWorkflowIndex: Math.min(
+            state.temporalView.selectedWorkflowIndex,
+            Math.max(0, action.workflows.length - 1),
+          ),
+        },
+      };
+
+    case "set_temporal_workflow_detail":
+      return { ...state, temporalView: { ...state.temporalView, workflowDetail: action.detail } };
+
+    case "select_temporal_workflow":
+      return {
+        ...state,
+        temporalView: {
+          ...state.temporalView,
+          selectedWorkflowIndex: Math.max(
+            0,
+            Math.min(action.index, state.temporalView.workflows.length - 1),
+          ),
+        },
+      };
+
+    case "set_scheduler_stats":
+      return { ...state, schedulerView: { ...state.schedulerView, stats: action.stats } };
+
+    case "set_scheduler_tasks":
+      return { ...state, schedulerView: { ...state.schedulerView, tasks: action.tasks } };
+
+    case "set_scheduler_schedules":
+      return { ...state, schedulerView: { ...state.schedulerView, schedules: action.schedules } };
+
+    case "set_scheduler_dead_letters":
+      return { ...state, schedulerView: { ...state.schedulerView, deadLetters: action.entries } };
+
+    case "set_taskboard_snapshot": {
+      const { snapshot } = action;
+      const prev = state.taskBoardView;
+      const needsRelayout =
+        prev.snapshot === null ||
+        snapshot.nodes.length !== prev.layoutNodeCount ||
+        snapshot.edges.length !== prev.layoutEdgeCount;
+      const layout = needsRelayout
+        ? computeDagLayout(snapshot.nodes, snapshot.edges)
+        : prev.cachedLayout;
+      return {
+        ...state,
+        taskBoardView: {
+          ...prev,
+          snapshot,
+          cachedLayout: layout,
+          layoutNodeCount: snapshot.nodes.length,
+          layoutEdgeCount: snapshot.edges.length,
+        },
+      };
+    }
+
+    case "set_harness_status":
+      return { ...state, harnessView: { ...state.harnessView, status: action.status } };
+
+    case "set_harness_checkpoints":
+      return { ...state, harnessView: { ...state.harnessView, checkpoints: action.checkpoints } };
+
+    case "set_cost_snapshot":
+      return {
+        ...state,
+        costView: { ...state.costView, snapshot: action.snapshot, loading: false },
+      };
+
+    case "set_cost_loading":
+      return {
+        ...state,
+        costView: { ...state.costView, loading: action.loading },
+      };
+
+    case "set_middleware_chain":
+      return {
+        ...state,
+        middlewareView: { ...state.middlewareView, chain: action.chain, loading: false },
+      };
+
+    case "set_middleware_loading":
+      return { ...state, middlewareView: { ...state.middlewareView, loading: action.loading } };
+
+    case "set_process_tree":
+      return {
+        ...state,
+        processTreeView: { ...state.processTreeView, snapshot: action.snapshot, loading: false },
+      };
+
+    case "set_process_tree_loading":
+      return { ...state, processTreeView: { ...state.processTreeView, loading: action.loading } };
+
+    case "set_agent_procfs":
+      return {
+        ...state,
+        agentProcfsView: { ...state.agentProcfsView, procfs: action.procfs, loading: false },
+      };
+
+    case "set_agent_procfs_loading":
+      return { ...state, agentProcfsView: { ...state.agentProcfsView, loading: action.loading } };
+
+    // ─── Governance actions ────────────────────────────────────────────
+
+    case "add_governance_approval":
+      return {
+        ...state,
+        governanceView: addGovernanceApproval(state.governanceView, action.approval),
+      };
+
+    case "remove_governance_approval":
+      return {
+        ...state,
+        governanceView: removeGovernanceApproval(state.governanceView, action.id),
+      };
+
+    case "set_governance_approvals":
+      return {
+        ...state,
+        governanceView: {
+          ...state.governanceView,
+          pendingApprovals: action.approvals,
+          selectedIndex: Math.min(
+            state.governanceView.selectedIndex,
+            Math.max(0, action.approvals.length - 1),
+          ),
+        },
+      };
+
+    case "add_governance_violation":
+      return {
+        ...state,
+        governanceView: addGovernanceViolation(state.governanceView, action.violation),
+      };
+
+    case "select_governance_item":
+      return {
+        ...state,
+        governanceView: {
+          ...state.governanceView,
+          selectedIndex: Math.max(
+            0,
+            Math.min(action.index, state.governanceView.pendingApprovals.length - 1),
+          ),
+        },
+      };
+
+    case "set_skills_list":
+      return { ...state, skillsView: { ...state.skillsView, skills: action.skills } };
+
+    case "set_channels_list":
+      return { ...state, channelsView: { ...state.channelsView, channels: action.channels } };
+
+    case "set_system_metrics":
+      return { ...state, systemView: { ...state.systemView, metrics: action.metrics } };
+
+    case "toggle_agent_list_mode":
+      return { ...state, agentListMode: state.agentListMode === "flat" ? "tree" : "flat" };
+
+    case "set_mailbox_target":
+      return { ...state, mailboxTargetAgentId: action.agentId };
+
+    case "select_forge_brick": {
+      const brickCount = Object.keys(state.forgeBricks).length;
+      return {
+        ...state,
+        forgeSelectedBrickIndex: Math.max(0, Math.min(action.index, brickCount - 1)),
+      };
+    }
+
+    // ─── Delegation actions ────────────────────────────────────────────
+    case "set_delegations":
+      return {
+        ...state,
+        delegationView: {
+          ...state.delegationView,
+          delegations: action.delegations,
+          loading: false,
+        },
+      };
+    case "set_delegation_loading":
+      return { ...state, delegationView: { ...state.delegationView, loading: action.loading } };
+
+    // ─── Handoff actions ─────────────────────────────────────────────
+    case "set_handoffs":
+      return {
+        ...state,
+        handoffView: { ...state.handoffView, handoffs: action.handoffs, loading: false },
+      };
+    case "set_handoff_loading":
+      return { ...state, handoffView: { ...state.handoffView, loading: action.loading } };
+
+    // ─── Scratchpad actions ──────────────────────────────────────────
+    case "set_scratchpad_entries":
+      return {
+        ...state,
+        scratchpadView: { ...state.scratchpadView, entries: action.entries, loading: false },
+      };
+    case "set_scratchpad_detail":
+      return {
+        ...state,
+        scratchpadView: { ...state.scratchpadView, selectedEntry: action.detail, loading: false },
+      };
+    case "set_scratchpad_loading":
+      return { ...state, scratchpadView: { ...state.scratchpadView, loading: action.loading } };
+
+    // ─── Mailbox actions ─────────────────────────────────────────────
+    case "set_mailbox_messages":
+      return {
+        ...state,
+        mailboxView: { ...state.mailboxView, messages: action.messages, loading: false },
+      };
+    case "set_mailbox_loading":
+      return { ...state, mailboxView: { ...state.mailboxView, loading: action.loading } };
+
+    // ─── Nexus browser actions ───────────────────────────────────────
+    case "set_nexus_browser_entries":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          entries: action.entries,
+          path: action.path,
+          selectedIndex: 0,
+          loading: false,
+        },
+      };
+    case "set_nexus_browser_content":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          fileContent: action.content,
+          loading: false,
+          previewScrollOffset: 0,
+        },
+      };
+    case "scroll_nexus_preview":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          previewScrollOffset: Math.max(0, state.nexusBrowser.previewScrollOffset + action.delta),
+        },
+      };
+    case "set_nexus_browser_loading":
+      return { ...state, nexusBrowser: { ...state.nexusBrowser, loading: action.loading } };
+    case "select_nexus_browser_entry":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          selectedIndex: Math.max(0, Math.min(action.index, state.nexusBrowser.entries.length - 1)),
+        },
+      };
+
+    // ─── Debug view actions ───────────────────────────────────────────
+    case "set_debug_inventory":
+      return {
+        ...state,
+        debugView: { ...state.debugView, inventory: action.items, loading: false },
+      };
+    case "set_debug_contributions":
+      return {
+        ...state,
+        debugView: { ...state.debugView, contributions: action.contributions },
+      };
+    case "set_debug_trace":
+      return {
+        ...state,
+        debugView: { ...state.debugView, trace: action.trace, loading: false },
+      };
+    case "set_debug_loading":
+      return { ...state, debugView: { ...state.debugView, loading: action.loading } };
+    case "select_debug_turn":
+      return {
+        ...state,
+        debugView: { ...state.debugView, selectedTurnIndex: Math.max(0, action.turnIndex) },
+      };
+    case "set_debug_panel":
+      return { ...state, debugView: { ...state.debugView, activePanel: action.panel } };
+    case "cycle_debug_visibility": {
+      const TIERS = ["critical", "secondary", "all"] as const;
+      const idx = TIERS.indexOf(state.debugView.visibilityTier);
+      const next = TIERS[(idx + 1) % TIERS.length] ?? "critical";
+      return { ...state, debugView: { ...state.debugView, visibilityTier: next } };
+    }
+    case "highlight_debug_middleware":
+      return {
+        ...state,
+        debugView: { ...state.debugView, highlightedMiddleware: action.name },
+      };
+
+    case "scroll_domain_view": {
+      const { domain, offset } = action;
+      switch (domain) {
+        case "skills":
+          return {
+            ...state,
+            skillsView: { ...state.skillsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "channels":
+          return {
+            ...state,
+            channelsView: { ...state.channelsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "system":
+          return {
+            ...state,
+            systemView: { ...state.systemView, scrollOffset: Math.max(0, offset) },
+          };
+        case "nexus":
+          return { ...state, nexusView: { ...state.nexusView, scrollOffset: Math.max(0, offset) } };
+        case "gateway":
+          return {
+            ...state,
+            gatewayView: { ...state.gatewayView, scrollOffset: Math.max(0, offset) },
+          };
+        case "temporal":
+          return {
+            ...state,
+            temporalView: { ...state.temporalView, scrollOffset: Math.max(0, offset) },
+          };
+        case "scheduler":
+          return {
+            ...state,
+            schedulerView: { ...state.schedulerView, scrollOffset: Math.max(0, offset) },
+          };
+        case "taskboard":
+          return {
+            ...state,
+            taskBoardView: { ...state.taskBoardView, scrollOffset: Math.max(0, offset) },
+          };
+        case "harness":
+          return {
+            ...state,
+            harnessView: { ...state.harnessView, scrollOffset: Math.max(0, offset) },
+          };
+        case "governance":
+          return {
+            ...state,
+            governanceView: { ...state.governanceView, scrollOffset: Math.max(0, offset) },
+          };
+        case "middleware":
+          return {
+            ...state,
+            middlewareView: { ...state.middlewareView, scrollOffset: Math.max(0, offset) },
+          };
+        case "processtree":
+          return {
+            ...state,
+            processTreeView: { ...state.processTreeView, scrollOffset: Math.max(0, offset) },
+          };
+        case "agentprocfs":
+          return {
+            ...state,
+            agentProcfsView: { ...state.agentProcfsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "cost":
+          return { ...state, costView: { ...state.costView, scrollOffset: Math.max(0, offset) } };
+        case "delegation":
+          return {
+            ...state,
+            delegationView: { ...state.delegationView, scrollOffset: Math.max(0, offset) },
+          };
+        case "handoffs":
+          return {
+            ...state,
+            handoffView: { ...state.handoffView, scrollOffset: Math.max(0, offset) },
+          };
+        case "scratchpad":
+          return {
+            ...state,
+            scratchpadView: { ...state.scratchpadView, scrollOffset: Math.max(0, offset) },
+          };
+        case "mailbox":
+          return {
+            ...state,
+            mailboxView: { ...state.mailboxView, scrollOffset: Math.max(0, offset) },
+          };
+        case "debug":
+          return {
+            ...state,
+            debugView: { ...state.debugView, scrollOffset: Math.max(0, offset) },
+          };
+        default:
+          return state;
+      }
+    }
+
+    default:
+      return state;
+  }
+}
+
+/** Apply a batch of forge events to the TUI state. */
+function applyForgeBatch(
+  state: TuiState,
+  events: readonly ForgeDashboardEvent[],
+): Partial<TuiState> {
+  if (events.length === 0) return {};
+
+  const bricks: Record<string, TuiBrickSummary> = { ...state.forgeBricks };
+  const sparklines: Record<string, readonly number[]> = { ...state.forgeSparklines };
+
+  for (const event of events) {
+    switch (event.subKind) {
+      case "brick_forged":
+      case "brick_demand_forged":
+        bricks[event.brickId] = { name: event.name, status: "active", fitness: 0 };
+        break;
+      case "brick_deprecated": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = {
+            ...existing,
+            status: "deprecated",
+            fitness: event.fitnessOriginal,
+          };
+        }
+        break;
+      }
+      case "brick_promoted": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = {
+            ...existing,
+            status: "promoted",
+            fitness: event.fitnessOriginal,
+          };
+        }
+        break;
+      }
+      case "brick_quarantined": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = { ...existing, status: "quarantined" };
+        }
+        break;
+      }
+      case "fitness_flushed": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = { ...existing, fitness: event.successRate };
+        }
+        const prev = sparklines[event.brickId] ?? [];
+        sparklines[event.brickId] = [...prev, event.successRate].slice(-MAX_FORGE_SPARKLINE_POINTS);
+        break;
+      }
+    }
+  }
+
+  const combined = [...state.forgeEvents, ...events];
+  const forgeEvents =
+    combined.length > MAX_FORGE_EVENTS ? combined.slice(-MAX_FORGE_EVENTS) : combined;
+
+  return { forgeEvents, forgeBricks: bricks, forgeSparklines: sparklines };
+}
+
+/** Create an immutable store with dispatch + subscribe. */
+export function createStore(initialState: TuiState): TuiStore {
+  let current = initialState;
+  const listeners = new Set<StateListener>();
+
+  return {
+    getState(): TuiState {
+      return current;
+    },
+
+    dispatch(action: TuiAction): void {
+      const next = reduce(current, action);
+      if (next !== current) {
+        current = next;
+        for (const listener of listeners) {
+          listener(current);
+        }
+      }
+    },
+
+    subscribe(listener: StateListener): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}

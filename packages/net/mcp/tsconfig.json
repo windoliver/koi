@@ -6,11 +6,8 @@
   },
   "include": ["src/**/*"],
   "references": [
-    {
-      "path": "../../kernel/core"
-    },
-    {
-      "path": "../../lib/validation"
-    }
+    { "path": "../../kernel/core" },
+    { "path": "../../lib/errors" },
+    { "path": "../../lib/validation" }
   ]
 }

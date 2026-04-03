@@ -33,19 +33,10 @@ const ADVERSARIAL_INPUTS = [
  * Validate a partial redaction config and merge with defaults.
  * Returns a fully resolved `RedactionConfig` or a validation error.
  */
-export function validateRedactionConfig(config: unknown): Result<RedactionConfig, KoiError> {
-  if (config !== undefined && config !== null && typeof config !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "RedactionConfig must be an object or undefined",
-        retryable: false,
-      },
-    };
-  }
-
-  const raw = (config ?? {}) as Record<string, unknown>;
+export function validateRedactionConfig(
+  config?: Partial<RedactionConfig>,
+): Result<RedactionConfig, KoiError> {
+  const raw = config ?? {};
 
   // Validate maxDepth
   if (raw.maxDepth !== undefined) {
@@ -106,24 +97,14 @@ export function validateRedactionConfig(config: unknown): Result<RedactionConfig
   }
 
   const merged: RedactionConfig = {
-    patterns: Array.isArray(raw.patterns)
-      ? (raw.patterns as RedactionConfig["patterns"])
-      : DEFAULT_REDACTION_CONFIG.patterns,
-    customPatterns: Array.isArray(raw.customPatterns)
-      ? (raw.customPatterns as RedactionConfig["customPatterns"])
-      : DEFAULT_REDACTION_CONFIG.customPatterns,
-    fieldNames: Array.isArray(raw.fieldNames)
-      ? (raw.fieldNames as RedactionConfig["fieldNames"])
-      : DEFAULT_REDACTION_CONFIG.fieldNames,
-    censor:
-      (raw.censor as RedactionConfig["censor"] | undefined) ?? DEFAULT_REDACTION_CONFIG.censor,
-    fieldCensor:
-      (raw.fieldCensor as RedactionConfig["fieldCensor"] | undefined) ??
-      DEFAULT_REDACTION_CONFIG.fieldCensor,
-    maxDepth: (raw.maxDepth as number | undefined) ?? DEFAULT_REDACTION_CONFIG.maxDepth,
-    maxStringLength:
-      (raw.maxStringLength as number | undefined) ?? DEFAULT_REDACTION_CONFIG.maxStringLength,
-    onError: (raw.onError as RedactionConfig["onError"]) ?? DEFAULT_REDACTION_CONFIG.onError,
+    patterns: raw.patterns ?? DEFAULT_REDACTION_CONFIG.patterns,
+    customPatterns: raw.customPatterns ?? DEFAULT_REDACTION_CONFIG.customPatterns,
+    fieldNames: raw.fieldNames ?? DEFAULT_REDACTION_CONFIG.fieldNames,
+    censor: raw.censor ?? DEFAULT_REDACTION_CONFIG.censor,
+    fieldCensor: raw.fieldCensor ?? DEFAULT_REDACTION_CONFIG.fieldCensor,
+    maxDepth: raw.maxDepth ?? DEFAULT_REDACTION_CONFIG.maxDepth,
+    maxStringLength: raw.maxStringLength ?? DEFAULT_REDACTION_CONFIG.maxStringLength,
+    onError: raw.onError ?? DEFAULT_REDACTION_CONFIG.onError,
   };
 
   // ReDoS safety check for custom patterns — always runs (fail-closed)

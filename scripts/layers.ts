@@ -16,51 +16,21 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  * Importable by both L1 and L2 packages.
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
-  "@koi/acp-protocol",
   "@koi/channel-base",
-  "@koi/cli-render",
-  "@koi/crystallize",
-  "@koi/crypto-utils",
-  "@koi/dashboard-client",
-  "@koi/dashboard-types",
-  "@koi/delegation",
-  "@koi/delegation-nexus",
+  "@koi/config",
+  "@koi/context-manager",
   "@koi/edit-match",
   "@koi/errors",
   "@koi/event-delivery",
   "@koi/execution-context",
-  "@koi/failure-context",
   "@koi/file-resolution",
-  "@koi/forge-types",
-  "@koi/gateway-types",
   "@koi/git-utils",
-  "@koi/harness-scheduler",
   "@koi/hash",
-  "@koi/manifest",
-  "@koi/name-resolution",
-  "@koi/nexus-client",
-  "@koi/preset-resolver",
-  "@koi/resolve",
-  "@koi/sandbox-cloud-base",
-  "@koi/sandbox-wasm",
-  "@koi/scope",
-  "@koi/search-provider",
+  "@koi/redaction",
   "@koi/session-repair",
-  "@koi/session-state",
-  "@koi/setup-core",
   "@koi/shutdown",
-  "@koi/skill-scanner",
-  "@koi/snapshot-chain-store",
-  "@koi/sqlite-utils",
-  "@koi/task-board",
-  "@koi/test-utils",
-  "@koi/test-utils-contracts",
-  "@koi/test-utils-mocks",
-  "@koi/test-utils-store-contracts",
   "@koi/token-estimator",
   "@koi/validation",
-  "@koi/variant-selection",
-  "@koi/welford-stats",
 ]);
 
 export const L1_PACKAGES: ReadonlySet<string> = new Set([
@@ -73,34 +43,10 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
  * Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration.
  * L3 packages may depend on any layer.
  */
-export const L3_PACKAGES: ReadonlySet<string> = new Set([
-  "@koi/agent-spawner",
-  "@koi/auto-harness",
-  "@koi/autonomous",
-  "@koi/channels",
-  "@koi/cli",
-  "@koi/context-arena",
-  "@koi/data-source-stack",
-  "@koi/forge",
-  "@koi/gateway-stack",
-  "@koi/goal-stack",
-  "@koi/governance",
-  "@koi/ipc-stack",
-  "@koi/nexus",
-  "@koi/node-stack",
-  "@koi/quality-gate",
-  "@koi/retry-stack",
-  "@koi/rlm-stack",
-  "@koi/sandbox-stack",
-  "@koi/skill-stack",
-  "@koi/starter",
-  "@koi/temporal",
-  "@koi/tool-stack",
-  "@koi/workspace-stack",
-]);
+export const L3_PACKAGES: ReadonlySet<string> = new Set(["@koi/cli", "@koi/runtime"]);
 
 /**
  * L4 — single distributable package that absorbs all L3 + orphaned L2.
  * Published as the unscoped `koi` package.
  */
-export const L4_PACKAGES: ReadonlySet<string> = new Set(["koi"]);
+export const L4_PACKAGES: ReadonlySet<string> = new Set([]);

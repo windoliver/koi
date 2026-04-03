@@ -13,6 +13,9 @@ const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 /** Placeholder for circular references. */
 const CIRCULAR_PLACEHOLDER = "[Circular]";
 
+/** Placeholder for depth-exceeded subtrees (fail-closed). */
+const DEPTH_EXCEEDED_PLACEHOLDER = "[DEPTH_EXCEEDED]";
+
 interface WalkContext {
   readonly patterns: readonly SecretPattern[];
   readonly fieldMatcher: FieldMatcher;
@@ -41,20 +44,24 @@ function walkValue(
   depth: number,
   seen: WeakSet<object>,
 ): WalkResult {
-  // Depth guard
+  // Depth guard — fail-closed: replace with placeholder instead of leaking the subtree
   if (depth > ctx.maxDepth) {
-    return { value, changed: false, ...UNCHANGED_ZERO };
+    return { value: DEPTH_EXCEEDED_PLACEHOLDER, changed: true, ...UNCHANGED_ZERO };
   }
 
-  // Field-name match: censor the entire string value
-  if (key !== undefined && typeof value === "string" && ctx.fieldMatcher(key)) {
-    const censored = applyCensorToField(value, ctx.fieldCensor, key);
-    return {
-      value: censored,
-      changed: censored !== value,
-      secretCount: 0,
-      fieldCount: censored !== value ? 1 : 0,
-    };
+  // Field-name match: censor regardless of value type (strings, numbers, objects, etc.)
+  if (key !== undefined && ctx.fieldMatcher(key)) {
+    if (typeof value === "string") {
+      const censored = applyCensorToField(value, ctx.fieldCensor, key);
+      return {
+        value: censored,
+        changed: censored !== value,
+        secretCount: 0,
+        fieldCount: censored !== value ? 1 : 0,
+      };
+    }
+    // Non-string sensitive field: redact the entire value wholesale
+    return { value: "[REDACTED]", changed: true, secretCount: 0, fieldCount: 1 };
   }
 
   // String leaf: scan for secrets
@@ -81,11 +88,17 @@ function walkValue(
 
   // Array
   if (Array.isArray(value)) {
-    return walkArray(value, ctx, depth, seen);
+    const arrayResult = walkArray(value, ctx, depth, seen);
+    // Remove from seen after unwinding — allows shared (non-cyclic) sibling refs
+    seen.delete(value);
+    return arrayResult;
   }
 
   // Plain object
-  return walkObject(value as Record<string, unknown>, ctx, depth, seen);
+  const objResult = walkObject(value as Record<string, unknown>, ctx, depth, seen);
+  // Remove from seen after unwinding — allows shared (non-cyclic) sibling refs
+  seen.delete(value);
+  return objResult;
 }
 
 function walkArray(
@@ -133,9 +146,19 @@ function walkObject(
   const entries: Array<readonly [string, unknown]> = [];
 
   for (const key of keys) {
-    // Prototype pollution guard
-    if (UNSAFE_KEYS.has(key) || !Object.hasOwn(obj, key)) {
+    if (!Object.hasOwn(obj, key)) {
       entries.push([key, obj[key]] as const);
+      continue;
+    }
+
+    // Prototype pollution guard: do NOT recurse into __proto__/constructor/prototype
+    // objects, but still scan/censor the leaf value to prevent redaction bypass.
+    if (UNSAFE_KEYS.has(key)) {
+      const leafResult = walkValue(obj[key], key, ctx, depth + 1, new WeakSet<object>());
+      if (leafResult.changed) anyChanged = true;
+      totalSecrets += leafResult.secretCount;
+      totalFields += leafResult.fieldCount;
+      entries.push([key, leafResult.value] as const);
       continue;
     }
 

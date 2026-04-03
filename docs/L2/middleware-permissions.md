@@ -27,9 +27,9 @@ Without this package, every agent would reimplement tool filtering, approval flo
 │  @koi/middleware-permissions  (L2)                          │
 │                                                            │
 │  config.ts          ← config interface + validation        │
-│  engine.ts          ← pattern backend + approval handler   │
-│  permissions.ts     ← middleware factory (core logic)      │
-│  hash.ts            ← FNV-1a for cache keys               │
+│  classifier.ts     ← pattern backend + approval handler   │
+│  denial-tracker.ts ← per-session denial accumulator       │
+│  middleware.ts     ← middleware factory (core logic)      │
 │  index.ts           ← public API surface                   │
 │                                                            │
 ├────────────────────────────────────────────────────────────┤
@@ -38,10 +38,10 @@ Without this package, every agent would reimplement tool filtering, approval flo
 │  @koi/core   (L0)   KoiMiddleware, ModelRequest,           │
 │                      ToolRequest, TurnContext,              │
 │                      PermissionBackend, AuditEntry,         │
-│                      AuditSink                              │
+│                      AuditSink, ApprovalHandler             │
 │  @koi/errors (L0u)  KoiRuntimeError, createCircuitBreaker, │
 │                      swallowError                           │
-│  @koi/hash   (L0u)  (vendored — fnv1a lives in hash.ts)    │
+│  @koi/hash   (L0u)  fnv1a for cache keys                   │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -359,6 +359,42 @@ Reuses `createCircuitBreaker` from `@koi/errors` (L0u). Accepts `clock` injectio
 
 ---
 
+## Denial Escalation
+
+When the same tool is repeatedly denied within a session, the middleware can short-circuit to deny without re-querying the backend. This saves latency and prevents the model from repeatedly attempting tools that will always be denied.
+
+```
+Tool "bash" denied 3 times this session
+    │
+    ├── denialEscalation disabled? → query backend as normal
+    │
+    └── denialEscalation enabled?
+         │
+         └── tracker.getByTool("bash").length >= threshold?
+              │
+              ├── yes → instant DENY (backend skipped, "auto-denied" reason)
+              │
+              └── no  → query backend as normal
+```
+
+Disabled by default (backward-compatible). Enable via config:
+
+```typescript
+const middleware = createPermissionsMiddleware({
+  backend,
+  denialEscalation: true,              // threshold: 3 (default)
+  // or:
+  denialEscalation: { threshold: 5 },  // custom threshold
+});
+```
+
+- Scope: per-tool, per-session (cleared on `onSessionEnd`)
+- Applies to both `wrapToolCall` (execution) and `wrapModelCall` (filtering)
+- Escalated denials are still recorded in the `DenialTracker` for observability
+- Escalated denials bypass the decision cache (no cache key computation needed)
+
+---
+
 ## Pluggable Backend
 
 The `PermissionBackend` is an L0 interface — swap implementations without changing middleware code:
@@ -425,12 +461,13 @@ Creates the middleware instance.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `config.backend` | `PermissionBackend` | **required** | Pluggable authorization backend |
-| `config.approvalHandler` | `ApprovalHandler` | — | HITL approval for `ask` decisions |
 | `config.approvalTimeoutMs` | `number` | `30000` | Timeout before auto-deny on ask |
-| `config.cache` | `boolean \| PermissionCacheConfig` | `false` | Enable decision + approval caching |
+| `config.cache` | `boolean \| PermissionCacheConfig` | `false` | Enable decision caching |
+| `config.approvalCache` | `boolean \| ApprovalCacheConfig` | `false` | Enable approval caching |
 | `config.clock` | `() => number` | `Date.now` | Inject clock for testing |
 | `config.auditSink` | `AuditSink` | — | Structured decision logging |
 | `config.circuitBreaker` | `CircuitBreakerConfig` | — | Resilience for remote backends |
+| `config.denialEscalation` | `boolean \| DenialEscalationConfig` | `false` | Auto-deny after repeated denials |
 | `config.description` | `string` | `"Permission checks enabled"` | Capability label |
 
 **Returns:** `KoiMiddleware`
@@ -453,7 +490,17 @@ Built-in pattern-matching backend (synchronous, in-process).
 
 Always approves. For testing and development only.
 
-**Returns:** `ApprovalHandler`
+**Returns:** `ApprovalHandler` (L0 type — returns `ApprovalDecision`)
+
+#### `createDenialTracker(maxEntries?)`
+
+Creates a per-session denial accumulator for observability and diagnostics.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `maxEntries` | `number` | `1024` | Max denial records before oldest evicted |
+
+**Returns:** `DenialTracker`
 
 #### `validatePermissionsConfig(input)`
 
@@ -485,7 +532,11 @@ Default decision cache settings: `{ maxEntries: 1024, allowTtlMs: 300_000, denyT
 | `PermissionCacheConfig` | `{ maxEntries, allowTtlMs, denyTtlMs, ttlMs }` |
 | `PatternBackendConfig` | Config for `createPatternPermissionBackend()` |
 | `PermissionRules` | `{ allow, deny, ask }` pattern arrays |
-| `ApprovalHandler` | `{ requestApproval(toolId, input, reason) => Promise<boolean> }` |
+| `ApprovalHandler` | L0 type: `(request: ApprovalRequest) => Promise<ApprovalDecision>` |
+| `DenialRecord` | `{ toolId, reason, timestamp, principal, turnIndex }` |
+| `DenialTracker` | `{ record, getAll, getByTool, count, clear }` |
+| `ApprovalCacheConfig` | `{ ttlMs?, maxEntries? }` |
+| `DenialEscalationConfig` | `{ threshold?, enabled? }` |
 | `PermissionBackend` | L0 interface: `check()` + optional `checkBatch()` + `dispose()` |
 | `PermissionDecision` | `{ effect: "allow" } \| { effect: "deny", reason } \| { effect: "ask", reason }` |
 | `PermissionQuery` | `{ principal, action, resource, context? }` |

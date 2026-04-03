@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickArtifactBase, ForgeQuery } from "@koi/core";
+import type { BrickArtifactBase, BrickId, ForgeQuery } from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesBrickQuery } from "./query-match.js";
+import { DEFAULT_PROVENANCE } from "./test-fixtures.js";
 
 function createBrickBase(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
   return {
@@ -153,6 +153,22 @@ describe("matchesBrickQuery", () => {
     expect(matchesBrickQuery(brick, query)).toBe(true);
   });
 
+  // --- name matching (exact, case-insensitive) ---
+
+  test("filters by name (exact case-insensitive match)", () => {
+    const brick = createBrickBase({ name: "pioneer-api-fetch" });
+    expect(matchesBrickQuery(brick, { name: "pioneer-api-fetch" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "Pioneer-API-Fetch" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "pioneer-api" })).toBe(false);
+    expect(matchesBrickQuery(brick, { name: "other-tool" })).toBe(false);
+  });
+
+  test("name filter combines with lifecycle filter", () => {
+    const brick = createBrickBase({ name: "pioneer-exec", lifecycle: "active" });
+    expect(matchesBrickQuery(brick, { name: "pioneer-exec", lifecycle: "active" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "pioneer-exec", lifecycle: "deprecated" })).toBe(false);
+  });
+
   // --- triggerText matching ---
 
   test("filters by triggerText (case-insensitive substring on trigger array)", () => {
@@ -187,5 +203,29 @@ describe("matchesBrickQuery", () => {
     });
     expect(matchesBrickQuery(brick, { kind: "skill", triggerText: "visualize" })).toBe(true);
     expect(matchesBrickQuery(brick, { kind: "tool", triggerText: "visualize" })).toBe(false);
+  });
+
+  // --- parentBrickId lineage filter ---
+
+  test("filters by parentBrickId", () => {
+    const parentId = brickId("sha256:parent-brick-001") as BrickId;
+    const brick = createBrickBase({
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        parentBrickId: parentId,
+        evolutionKind: "fix",
+      },
+    });
+    expect(matchesBrickQuery(brick, { parentBrickId: parentId })).toBe(true);
+    expect(matchesBrickQuery(brick, { parentBrickId: brickId("sha256:other") as BrickId })).toBe(
+      false,
+    );
+  });
+
+  test("parentBrickId filter excludes bricks without a parent", () => {
+    const brick = createBrickBase();
+    expect(matchesBrickQuery(brick, { parentBrickId: brickId("sha256:any") as BrickId })).toBe(
+      false,
+    );
   });
 });

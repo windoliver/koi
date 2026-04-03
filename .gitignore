@@ -3,6 +3,7 @@ dist/
 .turbo/
 coverage/
 *.tsbuildinfo
+tsup.config.bundled_*.mjs
 .env
 .env.*
 !.env.example
@@ -13,3 +14,17 @@ workstream.md
 prompt
 plan-work.md
 demo-strategy.md
+koi.yaml
+.claude/worktrees/
+.codex-tmp/
+concierge/
+my-agent/
+my-agent2/
+my-agent3/
+my-demo/
+my-demo2/
+my-test/
+agents/
+nexus-data/
+session/
+tasks/

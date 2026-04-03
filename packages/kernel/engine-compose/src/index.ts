@@ -6,7 +6,12 @@
  */
 
 // composition
-export type { CapabilityInjectionConfig, RecomposedChains, TerminalHandlers } from "./compose.js";
+export type {
+  CapabilityInjectionConfig,
+  RecomposedChains,
+  ResolvedMiddleware,
+  TerminalHandlers,
+} from "./compose.js";
 export {
   collectCapabilities,
   composeModelChain,
@@ -20,6 +25,22 @@ export {
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "./compose.js";
+// instrumentation
+export type {
+  ChannelIOSpan,
+  DebugInstrumentation,
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugSpan,
+  DebugTurnTrace,
+  ForgeRefreshSpan,
+  MiddlewareSource,
+  ResolverSpan,
+  ToolChildSpanRecord,
+  VisibilityTier,
+} from "./compose-instrumentation.js";
+export { createDebugInstrumentation } from "./compose-instrumentation.js";
 // extension composer
 export type {
   ComposedExtensions,
@@ -40,12 +61,14 @@ export type {
   LoopWarningInfo,
   SpawnPolicy,
   SpawnWarningInfo,
+  ToolExecutionConfig,
 } from "./guard-types.js";
 export {
   DEFAULT_ITERATION_LIMITS,
   DEFAULT_LOOP_DETECTION,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
+  DEFAULT_TOOL_EXECUTION,
 } from "./guard-types.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";
@@ -55,6 +78,11 @@ export {
   createSpawnGuard,
   detectRepeatingPattern,
 } from "./guards.js";
+// structured output guard
+export type { StructuredOutputGuardConfig } from "./structured-output-guard.js";
+export { createStructuredOutputGuard } from "./structured-output-guard.js";
+// tool execution guard
+export { createToolExecutionGuard } from "./tool-execution-guard.js";
 // visibility filter
 export type { VisibilityFilterConfig } from "./visibility-filter.js";
 export { createVisibilityFilter } from "./visibility-filter.js";

@@ -14,7 +14,9 @@
 
 When writing scripts, commands, or configs — always use the **Choice** column. Never introduce anything from the **Wrong alternative** column.
 
-## TypeScript (strict, no exceptions)
+## TypeScript 6 (strict, no exceptions)
+
+**Current version: TypeScript 6.0.x** — all TS 6 defaults are set explicitly in `tsconfig.base.json`.
 
 All flags are on. Do not weaken them. When writing new code:
 
@@ -22,7 +24,28 @@ All flags are on. Do not weaken them. When writing new code:
 - `verbatimModuleSyntax` — always use `import type` for type-only imports
 - `isolatedDeclarations` — always write explicit return types on exported functions
 - `erasableSyntaxOnly` — no constructs with runtime behavior (see banned list)
+- `noUncheckedSideEffectImports` — side-effect imports (`import "./polyfill"`) must resolve
 - **ESM-only** with `.js` extensions in all import paths (e.g., `import { foo } from "./bar.js"`)
+- **ES2025 lib** — `Promise.try`, Set methods, iterator helpers, `RegExp.escape` types available
+
+### TS 6 migration status
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `ignoreDeprecations: "6.0"` | Temporary | tsup DTS builds use `baseUrl` internally. Remove once tsup fixes. **Must remove before TS 7.** |
+| `esModuleInterop` | Removed | TS 6 forces `true`; setting `false` is a deprecation error |
+| `lib: ES2025` | Done | Upgraded from ES2023 |
+| `noUncheckedSideEffectImports` | Done | Explicitly set (new TS 6 default) |
+| All other TS 6 defaults | Explicit | `strict`, `target`, `module`, `moduleResolution`, `types`, `rootDir` all set — immune to default changes |
+
+### TS 7 preparation
+
+TypeScript 7 is a native Go port. All TS 6 deprecations become **hard removals**:
+- `ignoreDeprecations: "6.0"` will stop working — resolve all deprecations before upgrading
+- `baseUrl` will be removed — tsup must fix its DTS generation first
+- `--module amd/umd/system/none` removed — already not used
+- `--moduleResolution node10/classic` removed — already using `NodeNext`
+- Import assertions (`assert`) removed — use import attributes (`with`) syntax
 
 ### Banned TypeScript constructs
 
@@ -36,6 +59,9 @@ All flags are on. Do not weaken them. When writing new code:
 | `@ts-ignore` | `@ts-expect-error` (self-cleaning: fails when error is fixed) |
 | Constructor parameter properties | Explicit `readonly` field declarations |
 | `class` (default) | Plain functions + types. Use `class` only when state encapsulation is genuinely needed |
+| `import ... assert {}` | `import ... with {}` (import attributes — TS 6 removed assertion syntax) |
+| `esModuleInterop: false` | Removed — TS 6 forces `true` |
+| `allowSyntheticDefaultImports: false` | Removed — TS 6 forces `true` |
 
 ## Bun-specific
 
@@ -81,7 +107,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages (38 total — canonical list in `scripts/layers.ts`): `@koi/acp-protocol`, `@koi/channel-base`, `@koi/crystallize`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/delegation-nexus`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/failure-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/preset-resolver`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/task-board`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`, `@koi/welford-stats`
+- L0u packages (11 total — canonical list in `scripts/layers.ts`): `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/session-repair`, `@koi/shutdown`, `@koi/token-estimator`, `@koi/validation`
 - L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
@@ -89,7 +115,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating meta-packages (L3):**
 - Only re-export from L0 + L1 + selected L2 — no new logic
-- L3 packages (canonical list in `scripts/layers.ts`): `@koi/autonomous`, `@koi/cli`, `@koi/context-arena`, `@koi/governance`, `@koi/starter`
+- L3 packages (canonical list in `scripts/layers.ts`): none currently (all v1 L3 packages archived)
 
 ### Core Contracts (L0)
 
@@ -364,6 +390,134 @@ When considering adding a dependency:
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+- **Minimalistic & Elegant**: Write the least code that solves the problem correctly. No over-engineering, no unnecessary abstraction. If it can be 10 lines, don't write 50.
+
+## Feature References
+
+When designing new features (hooks, permissions, plugins, skills, etc.), cross-reference
+with the decompiled Claude Code source for best-practice patterns and battle-tested design:
+
+- **Source**: https://github.com/windoliver/claude-code-source-code
+- **Key areas**: `src/utils/hooks/` (hook system), `src/schemas/` (Zod schemas), `src/utils/permissions/` (permission model), `src/utils/skills/` (skill runtime)
+- **Use for**: architectural patterns, event taxonomies, security constraints (SSRF guards, env-var allowlisting, policy tiers), hook lifecycle design
+- **Do not**: copy code verbatim — adapt patterns to Koi's layered architecture (L0/L1/L2)
+
+## v2 Rewrite
+
+Architecture plan: `.claude/plans/v2-rewrite.md` — **read before any v2 work**.
+
+### Development Workflow (enforced)
+
+Every PR follows **Doc → Tests → Code**. No exceptions.
+
+| Step | What | Enforced By |
+|------|------|-------------|
+| 1. Doc | Write/update `docs/L2/<package>.md` before code | CI: doc-gate check |
+| 2. Tests | Write failing tests that define behavior | CI: coverage ≥ 80%, no test deletion |
+| 3. Code | Implement minimal code to pass tests | CI: typecheck + lint + check:layers |
+| 4. Refactor | Clean up (< 400 lines/file, < 50 lines/fn) | CI: complexity check |
+
+### Code Quality Rules
+
+- Every file < 400 lines (800 hard max)
+- Every function < 50 lines
+- No duplication (5+ duplicated lines = CI fail)
+- No premature abstraction — Rule of Three
+- No feature flags — each capability is a package you include or don't
+- Prefer 10 clear lines over 3 clever ones
+
+### CI Gate (all must pass)
+
+```bash
+bun run test              # unit + contract tests
+bun run typecheck         # strict TS compilation
+bun run lint              # Biome lint
+bun run check:layers      # L0/L1/L2/L3 dependency enforcement
+bun run check:unused      # no dead exports
+bun run check:duplicates  # no copy-paste blocks
+```
+
+### Agent Rules
+
+- NEVER write code without a failing test first
+- NEVER delete or weaken existing tests to make CI pass
+- NEVER skip `check:layers` — layer violations are the #1 regression
+- ALWAYS read `.claude/plans/v2-rewrite.md` before starting v2 work
+- ALWAYS read `docs/L2/<package>.md` before modifying a package
+- ALWAYS run affected tests before submitting (`bun run test --filter=<package>`)
+- ALWAYS research the v1 archive before building a new v2 package — check `archive/v1/packages/` for the equivalent v1 implementation. Study its patterns, types, tests, and edge cases. Port what works, simplify what was over-engineered, and document what you learned in the PR description
+- ALWAYS check `archive/v1/packages/meta/` (cli, koi, forge, starter) — these L3/L4 meta-packages show how v1 wired everything together: feature composition, middleware stacking, command dispatch, E2E test patterns, and real-world integration edge cases. They are the best reference for how packages interact at the integration boundary
+
+### Golden Query & Trajectory Rule (every new L2 package)
+
+Every new L2 package PR **must** be wired into `@koi/runtime` with golden query coverage. No exceptions.
+
+**The flow:**
+
+| Step | What | How |
+|------|------|-----|
+| 1. Wire | Add package as `@koi/runtime` dependency | `packages/meta/runtime/package.json` + `tsconfig.json` |
+| 2. Query config | Add a golden query to the recording script | `packages/meta/runtime/scripts/record-cassettes.ts` — add a `QueryConfig` entry |
+| 3. Record | Run real LLM + real tools to produce ATIF trajectory | `OPENROUTER_API_KEY=... bun run packages/meta/runtime/scripts/record-cassettes.ts` |
+| 4. Validate | Add trajectory assertions to golden-replay tests | `packages/meta/runtime/src/__tests__/golden-replay.test.ts` |
+| 5. Standalone | Add 2 per-L2 golden queries (no LLM needed) | Same file — `describe("Golden: @koi/<name>", ...)` |
+
+**CI enforces (all must pass):**
+```bash
+bun run check:orphans          # L2 must be dep of @koi/runtime
+bun run check:golden-queries   # L2 must have golden query assertions
+bun run test --filter=@koi/runtime  # Full-loop replay: cassette → createKoi → live ATIF
+```
+
+**Recording produces:**
+- `fixtures/<name>.cassette.json` — VCR replay (ModelChunk[] from real LLM)
+- `fixtures/<name>.trajectory.json` — Full ATIF v1.6 document with all L2 observable output
+
+**CI replay test runs the full agent loop without LLM or network:**
+1. Load cassette chunks (mock LLM response)
+2. Build mock adapter with cassette as `modelStream` terminal
+3. Wire ALL L2 middleware (event-trace, hooks, permissions, etc.) via `createKoi`
+4. Run agent loop → tool execution → second model call
+5. Validate live ATIF trajectory: MCP steps, MW spans, hook steps, model steps, tool steps
+
+**Current golden queries (5):**
+| Query | What it covers |
+|-------|---------------|
+| simple-text | Text response, no tools, MW:permissions, MCP lifecycle |
+| tool-use | add_numbers via buildTool, hooks fire, MW spans, model→tool→model |
+| glob-use | Glob builtin tool called, returns file paths |
+| permission-deny | Permissions default mode denies tool, model explains unavailable |
+| web-fetch | web_fetch real HTTP call, SSRF protection, Example Domain |
+
+**Re-record when:**
+- New L2 package adds tools or middleware
+- Tool behavior changes (args, output format)
+- Hook event names change
+- Model adapter response format changes
+
+## Tmux (parallel agent safety)
+
+Multiple Claude Code agents run in parallel across worktrees. **Always** prefix tmux session names with the worktree slug to avoid conflicts:
+
+```bash
+WORKTREE=$(basename "$PWD")   # e.g. "zany-popping-fountain"
+tmux new-session -d -s "${WORKTREE}-koi" 'bun run packages/meta/cli/src/bin.ts up'
+tmux capture-pane -t "${WORKTREE}-koi" -p
+tmux send-keys -t "${WORKTREE}-koi" 'hello' Enter
+```
+
+| Correct | Wrong |
+|---------|-------|
+| `zany-popping-fountain-koi` | `koi` |
+| `melodic-sprouting-kahan-nexus` | `nexus` |
+| `${WORKTREE}-e2e` | `e2e`, `test`, `ace-test` |
+
+**Never** use bare generic names. Another agent **will** rename or kill your session.
+
+When tmux is unreliable, use the admin HTTP API as fallback:
+```bash
+curl -s http://localhost:3100/admin/api/health
+```
 
 ## Git
 

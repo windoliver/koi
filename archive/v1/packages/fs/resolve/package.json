@@ -1,0 +1,51 @@
+{
+  "name": "@koi/resolve",
+  "description": "Auto-resolve koi.yaml manifest to runtime instances via BrickDescriptor registry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry.d.ts",
+      "import": "./dist/registry.js"
+    },
+    "./resolve-manifest": {
+      "types": "./dist/resolve-manifest.d.ts",
+      "import": "./dist/resolve-manifest.js"
+    },
+    "./register-companion-skills": {
+      "types": "./dist/register-companion-skills.d.ts",
+      "import": "./dist/register-companion-skills.js"
+    },
+    "./register-bundled-agents": {
+      "types": "./dist/register-bundled-agents.d.ts",
+      "import": "./dist/register-bundled-agents.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
+    "./discover-static": {
+      "types": "./dist/discover-static.d.ts",
+      "import": "./dist/discover-static.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/hash": "workspace:*",
+    "@koi/search-provider": "workspace:*",
+    "@koi/validation": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts",
+    "generate:manifest": "bun ../../../scripts/generate-descriptor-manifest.ts"
+  }
+}

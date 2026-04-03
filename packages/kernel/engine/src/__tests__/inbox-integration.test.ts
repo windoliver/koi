@@ -15,9 +15,9 @@ import type {
   InboxItem,
 } from "@koi/core";
 import { agentId, INBOX } from "@koi/core";
-import { createFakeEngineAdapter } from "@koi/test-utils";
 import { createInboxQueue } from "../inbox-queue.js";
 import { createKoi } from "../koi.js";
+import { createFakeEngineAdapter } from "./helpers/fake-engine-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers

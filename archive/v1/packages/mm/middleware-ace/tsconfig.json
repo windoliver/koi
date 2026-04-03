@@ -1,0 +1,26 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "src/__tests__/run-rich-trajectory-e2e.ts",
+    "src/__tests__/e2e-rich-trajectory-koi.test.ts"
+  ],
+  "references": [
+    {
+      "path": "../../lib/ace-types"
+    },
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/resolve"
+    },
+    {
+      "path": "../token-estimator"
+    }
+  ]
+}

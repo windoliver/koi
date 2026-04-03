@@ -1,130 +1,125 @@
 import { describe, expect, test } from "bun:test";
-import { createMockMcpClientManager } from "./__tests__/mock-mcp-server.js";
-import type { McpToolInfo } from "./client-manager.js";
-import { mapMcpToolToKoi } from "./tool-adapter.js";
+import { createMockConnection } from "./__tests__/mock-connection.js";
+import {
+  mapMcpToolInfoToDescriptor,
+  mapMcpToolToKoi,
+  namespacedToolName,
+  parseNamespacedToolName,
+  validateServerName,
+} from "./tool-adapter.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+describe("validateServerName", () => {
+  test("accepts normal server names", () => {
+    expect(() => validateServerName("filesystem")).not.toThrow();
+    expect(() => validateServerName("my-server")).not.toThrow();
+    expect(() => validateServerName("server.with.dots")).not.toThrow();
+  });
 
-function createTestToolInfo(): McpToolInfo {
-  return {
-    name: "read_file",
-    description: "Reads a file from the filesystem",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "File path" },
-      },
-      required: ["path"],
-    },
-  };
-}
+  test("rejects server names containing the namespace separator", () => {
+    expect(() => validateServerName("prod__github")).toThrow(/namespace separator/);
+    expect(() => validateServerName("a__b__c")).toThrow(/namespace separator/);
+  });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+  test("accepts names with single underscore", () => {
+    expect(() => validateServerName("my_server")).not.toThrow();
+  });
+});
+
+describe("namespacedToolName", () => {
+  test("joins server and tool with double underscore", () => {
+    expect(namespacedToolName("filesystem", "read_file")).toBe("filesystem__read_file");
+  });
+
+  test("handles server names with special characters", () => {
+    expect(namespacedToolName("my-server", "my.tool")).toBe("my-server__my.tool");
+  });
+});
+
+describe("parseNamespacedToolName", () => {
+  test("parses valid namespaced name", () => {
+    const result = parseNamespacedToolName("filesystem__read_file");
+    expect(result).toEqual({ serverName: "filesystem", toolName: "read_file" });
+  });
+
+  test("returns undefined for name without separator", () => {
+    expect(parseNamespacedToolName("no_separator")).toBeUndefined();
+  });
+
+  test("returns undefined for empty string", () => {
+    expect(parseNamespacedToolName("")).toBeUndefined();
+  });
+
+  test("handles separator at start (invalid server name)", () => {
+    // Separator at index 0 means empty server name — invalid
+    expect(parseNamespacedToolName("__tool")).toBeUndefined();
+  });
+
+  test("handles multiple separators (takes first)", () => {
+    const result = parseNamespacedToolName("server__ns__tool");
+    expect(result).toEqual({ serverName: "server", toolName: "ns__tool" });
+  });
+});
+
+describe("mapMcpToolInfoToDescriptor", () => {
+  test("creates descriptor with namespaced name and server field", () => {
+    const descriptor = mapMcpToolInfoToDescriptor(
+      { name: "search", description: "Search things", inputSchema: { type: "object" } },
+      "github",
+    );
+    expect(descriptor.name).toBe("github__search");
+    expect(descriptor.description).toBe("Search things");
+    expect(descriptor.server).toBe("github");
+    expect(descriptor.origin).toBe("operator");
+  });
+
+  test("normalizes input schema", () => {
+    const descriptor = mapMcpToolInfoToDescriptor(
+      { name: "tool", description: "desc", inputSchema: {} },
+      "srv",
+    );
+    expect(descriptor.inputSchema).toEqual({ type: "object", properties: {} });
+  });
+});
 
 describe("mapMcpToolToKoi", () => {
-  test("creates tool with namespaced name", () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    expect(tool.descriptor.name).toBe("mcp/filesystem/read_file");
-  });
-
-  test("preserves description and inputSchema", () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    expect(tool.descriptor.description).toBe("Reads a file from the filesystem");
-    expect(tool.descriptor.inputSchema).toEqual(toolInfo.inputSchema);
-  });
-
-  test("sets trust tier to promoted", () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
+  test("creates Tool with correct origin and policy", () => {
+    const conn = createMockConnection("test-server", [
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+    ]);
+    const tool = mapMcpToolToKoi(
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+      conn,
+      "test-server",
+    );
+    expect(tool.origin).toBe("operator");
     expect(tool.policy.sandbox).toBe(false);
+    expect(tool.descriptor.name).toBe("test-server__echo");
+    expect(tool.descriptor.server).toBe("test-server");
   });
 
-  test("execute delegates to client.callTool with original tool name", async () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({
-      name: "filesystem",
-      callResults: {
-        read_file: [{ type: "text", text: "file contents" }],
-      },
+  test("execute delegates to connection callTool", async () => {
+    const conn = createMockConnection("srv", [], {
+      echo: { ok: true, value: [{ type: "text", text: "hello" }] },
     });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    const result = await tool.execute({ path: "/test.txt" });
-    expect(result).toEqual([{ type: "text", text: "file contents" }]);
+    const tool = mapMcpToolToKoi(
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+      conn,
+      "srv",
+    );
+    const result = await tool.execute({ msg: "hi" });
+    expect(result).toEqual([{ type: "text", text: "hello" }]);
   });
 
-  test("execute returns error result when callTool fails", async () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({
-      name: "filesystem",
-      callResults: {},
+  test("execute returns error result on callTool failure", async () => {
+    const conn = createMockConnection("srv", [], {
+      echo: { ok: false, error: { code: "EXTERNAL", message: "fail", retryable: false } },
     });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    const result = await tool.execute({ path: "/missing.txt" });
-    expect(result).toHaveProperty("ok", false);
-  });
-
-  test("handles different server names in namespace", () => {
-    const toolInfo = createTestToolInfo();
-    const client1 = createMockMcpClientManager({ name: "server-a" });
-    const client2 = createMockMcpClientManager({ name: "server-b" });
-
-    const tool1 = mapMcpToolToKoi(toolInfo, client1, "server-a");
-    const tool2 = mapMcpToolToKoi(toolInfo, client2, "server-b");
-
-    expect(tool1.descriptor.name).toBe("mcp/server-a/read_file");
-    expect(tool2.descriptor.name).toBe("mcp/server-b/read_file");
-  });
-
-  test("execute function is async", () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({ name: "test" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "test");
-
-    const result = tool.execute({});
-    expect(result).toBeInstanceOf(Promise);
-  });
-
-  test("forwards tags from McpToolInfo to ToolDescriptor", () => {
-    const toolInfo: McpToolInfo = {
-      ...createTestToolInfo(),
-      tags: ["coding", "filesystem"],
-    };
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    expect(tool.descriptor.tags).toEqual(["coding", "filesystem"]);
-  });
-
-  test("omits tags when McpToolInfo has no tags", () => {
-    const toolInfo = createTestToolInfo();
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    expect(tool.descriptor.tags).toBeUndefined();
-  });
-
-  test("omits tags when McpToolInfo has empty tags", () => {
-    const toolInfo: McpToolInfo = {
-      ...createTestToolInfo(),
-      tags: [],
-    };
-    const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
-
-    expect(tool.descriptor.tags).toBeUndefined();
+    const tool = mapMcpToolToKoi(
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+      conn,
+      "srv",
+    );
+    const result = await tool.execute({});
+    expect(result).toEqual({ ok: false, error: { code: "EXTERNAL", message: "fail" } });
   });
 });

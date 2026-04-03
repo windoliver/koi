@@ -1,0 +1,319 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/autonomous API surface . has stable type surface 1`] = `
+"import { AgentManifest, EngineAdapter, KoiMiddleware, ComponentProvider, BrickId, BrickArtifact, Result, KoiError, AgentResolver, ThreadStore, CheckpointPolicy, InboxPolicy, ForgeStore, SpawnFn, MailboxComponent, AgentMessageInput, AgentMessage, AgentId, TaskBoard, TaskItemId, TaskBoardSnapshot } from '@koi/core';
+import { MiddlewareRegistry } from '@koi/starter';
+import { HarnessScheduler } from '@koi/harness-scheduler';
+import { LongRunningHarness, OnCompletedCallback, OnFailedCallback } from '@koi/long-running';
+
+/**
+ * Agent instantiation from forge brick artifacts.
+ *
+ * Parses an AgentArtifact's manifest YAML and returns a KoiRuntime-ready
+ * configuration. Lives in L3 since it composes L0 types with L1 factory input.
+ */
+
+/** Configuration for agent instantiation. */
+interface AgentInstantiateConfig {
+    /** Factory that creates an EngineAdapter from a parsed manifest. */
+    readonly adapterFactory: (manifest: AgentManifest) => EngineAdapter | Promise<EngineAdapter>;
+    /** Optional middleware to compose into the instantiated agent. */
+    readonly middleware?: readonly KoiMiddleware[] | undefined;
+    /** Optional component providers for the instantiated agent. */
+    readonly providers?: readonly ComponentProvider[] | undefined;
+    /** Optional middleware registry — when provided, manifest-declared middleware are resolved and prepended. */
+    readonly middlewareRegistry?: MiddlewareRegistry | undefined;
+    /** Agent depth — passed to middleware resolution for depth-aware middleware. */
+    readonly agentDepth?: number | undefined;
+}
+/** Result of agent instantiation — ready to pass to createKoi(). */
+interface AgentInstantiateResult {
+    readonly manifest: AgentManifest;
+    readonly adapter: EngineAdapter;
+    readonly brickId: BrickId;
+    readonly middleware: readonly KoiMiddleware[];
+    readonly providers: readonly ComponentProvider[];
+}
+/**
+ * Creates a runtime-ready configuration from a forge AgentArtifact.
+ *
+ * Parses the brick's manifestYaml, creates an adapter via the factory,
+ * and returns everything needed for createKoi().
+ */
+declare function createAgentFromBrick(brick: BrickArtifact, config: AgentInstantiateConfig): Promise<Result<AgentInstantiateResult, KoiError>>;
+
+/**
+ * Spawn fitness wrapper — records spawn outcomes to a health tracker.
+ *
+ * Wraps a spawn function to track success/failure metrics per agent brick,
+ * enabling fitness-based variant selection to evolve over time.
+ */
+
+/** Minimal health recording interface (subset of ToolHealthTracker). */
+interface SpawnHealthRecorder {
+    readonly recordSuccess: (id: string, latencyMs: number) => void;
+    readonly recordFailure: (id: string, latencyMs: number, error: string) => void;
+}
+interface SpawnFitnessWrapperConfig {
+    readonly healthRecorder: SpawnHealthRecorder;
+    /** Injectable clock for testing. Default: Date.now. */
+    readonly clock?: (() => number) | undefined;
+}
+/** Generic spawn request — must have at least a manifest. */
+interface SpawnRequestLike {
+    readonly manifest: AgentManifest;
+}
+/** Generic spawn result — discriminated ok/error union. */
+type SpawnResultLike = {
+    readonly ok: true;
+} | {
+    readonly ok: false;
+    readonly error: string;
+};
+/** Wraps a spawn function to record outcomes to a health tracker. */
+declare function createSpawnFitnessWrapper<TReq extends SpawnRequestLike, TRes extends SpawnResultLike>(spawn: (request: TReq) => Promise<TRes>, config: SpawnFitnessWrapperConfig): (request: TReq) => Promise<TRes>;
+/** Embeds a brickId into a manifest's metadata for downstream tracking. */
+declare function embedBrickId(manifest: AgentManifest, brickId: string): AgentManifest;
+
+interface AutonomousLogger {
+    readonly warn: (message: string) => void;
+    readonly error: (message: string) => void;
+    readonly debug?: ((message: string) => void) | undefined;
+}
+/** Default logger that writes to stderr with [autonomous] prefix. */
+declare function createStderrLogger(): AutonomousLogger;
+interface AutonomousAgentParts {
+    /** The long-running harness managing multi-session lifecycle. */
+    readonly harness: LongRunningHarness;
+    /** The scheduler that auto-resumes the harness when suspended. */
+    readonly scheduler: HarnessScheduler;
+    /** Optional compactor middleware for context compaction. */
+    readonly compactorMiddleware?: KoiMiddleware | undefined;
+    /** Optional collective memory middleware for cross-run learning persistence. */
+    readonly collectiveMemoryMiddleware?: KoiMiddleware | undefined;
+    /** Optional report middleware for post-run summaries and progress tracking. */
+    readonly reportMiddleware?: KoiMiddleware | undefined;
+    /** Optional event-trace middleware for per-event tracing and mid-turn rewind. */
+    readonly eventTraceMiddleware?: KoiMiddleware | undefined;
+    /** Optional thread store for persistent checkpoint support. */
+    readonly threadStore?: ThreadStore | undefined;
+    /** Checkpoint policy override. Defaults to DEFAULT_CHECKPOINT_POLICY. */
+    readonly checkpointPolicy?: CheckpointPolicy | undefined;
+    /** Inbox policy override. Defaults to DEFAULT_INBOX_POLICY. */
+    readonly inboxPolicy?: InboxPolicy | undefined;
+    /** Optional agent resolver for dynamic agent discovery (forge-backed). */
+    readonly agentResolver?: AgentResolver | undefined;
+    /** Optional forge store for creating catalog-backed resolvers. */
+    readonly forgeStore?: ForgeStore | undefined;
+    /** Optional health recorder for spawn fitness tracking. */
+    readonly healthRecorder?: SpawnHealthRecorder | undefined;
+    /** Optional goal-stack middleware for intra-session goal tracking. */
+    readonly goalStackMiddleware?: readonly KoiMiddleware[] | undefined;
+    /**
+     * When true, automatically wires a full goal-stack (reminder + anchor + planning)
+     * with task-board-aware sources and drift detection, using the harness's live task
+     * board as the snapshot source. Includes the write_plan tool via the "autonomous" preset.
+     * Ignored when goalStackMiddleware is provided (caller has full control in that case).
+     */
+    readonly taskBoardGoalStack?: boolean | undefined;
+    /**
+     * Optional auto-harness middleware stack for failure-driven middleware synthesis.
+     * When provided, includes the policy-cache middleware and wires the synthesis
+     * callback into the forge pipeline. Requires forgeStore to also be provided.
+     * Created via createAutoHarnessStack() from @koi/auto-harness.
+     */
+    readonly autoHarnessMiddleware?: readonly KoiMiddleware[] | undefined;
+    /**
+     * Optional spawn function getter for delegation bridge dispatch. When the
+     * getter returns a SpawnFn, tasks with \`delegation: "spawn"\` are auto-dispatched
+     * to worker agents via the delegation bridge. Deferred via getter because SpawnFn
+     * requires engine runtime context that isn't available at construction time.
+     */
+    readonly getSpawn?: (() => SpawnFn | undefined) | undefined;
+    /** Optional logger for autonomous operational messages (retry, reconciliation, etc.). Defaults to stderr. */
+    readonly logger?: AutonomousLogger | undefined;
+    /**
+     * Optional callback to emit dashboard events (SSE → TUI).
+     * When provided, task status changes are pushed so the TUI task board
+     * view updates in real-time without polling.
+     *
+     * Structural type to avoid importing @koi/dashboard-types — the caller
+     * (CLI) bridges to the actual DashboardEvent union.
+     */
+    readonly onTaskBoardEvent?: ((event: {
+        readonly kind: "taskboard";
+        readonly subKind: "task_status_changed";
+        readonly taskId: string;
+        readonly status: string;
+        readonly timestamp: number;
+    }) => void) | undefined;
+}
+interface AutonomousAgent {
+    /** The underlying harness. */
+    readonly harness: LongRunningHarness;
+    /** The scheduler managing auto-resume. */
+    readonly scheduler: HarnessScheduler;
+    /** Collect all middleware (harness + checkpoint + inbox + optional compactor). */
+    readonly middleware: () => readonly KoiMiddleware[];
+    /** Component providers (inbox, plan_autonomous). */
+    readonly providers: () => readonly ComponentProvider[];
+    /** Dispose all parts in correct order (bridge abort, scheduler, harness). */
+    readonly dispose: () => Promise<void>;
+    /** Agent resolver -- auto-created from forgeStore if not provided explicitly. */
+    readonly agentResolver?: AgentResolver | undefined;
+}
+
+/**
+ * Autonomous agent factory — composes harness + scheduler + optional compactor
+ * into a coordinated autonomous agent with checkpoint/inbox support.
+ *
+ * ## Forge → Delegation Bridge (auto-enabled)
+ *
+ * Pass \`forgeStore\` to enable automatic agent discovery via the forge:
+ *
+ *   const agent = createAutonomousAgent({ harness, scheduler, forgeStore });
+ *
+ * This auto-creates a CatalogAgentResolver that:
+ *   - Discovers agent bricks from the forge matching requested type tags
+ *   - Selects the best brick by fitness score (weighted random)
+ *   - Parses and caches manifests (TTL-based)
+ *
+ * The resolver is exposed on the returned \`agent.agentResolver\` and can be
+ * passed directly to delegation tool configs:
+ *
+ *   const config: ParallelMinionsConfig = {
+ *     agentResolver: agent.agentResolver,
+ *     spawn: mySpawnFn,
+ *   };
+ *
+ * For spawn fitness tracking, also pass \`healthRecorder\` and wrap your
+ * spawn function with \`createSpawnFitnessWrapper()\`:
+ *
+ *   import { createSpawnFitnessWrapper, embedBrickId } from "@koi/autonomous";
+ *
+ *   const wrappedSpawn = createSpawnFitnessWrapper(rawSpawn, { healthRecorder });
+ *
+ * Spawn outcomes feed back into brick fitness scores, so higher-performing
+ * agent bricks are selected more often over time.
+ *
+ * Disposal order: stop scheduler first (prevents new resumes), then dispose harness.
+ */
+
+declare function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent;
+
+/**
+ * Retry wrapper for MailboxComponent.send() — delivers messages with
+ * exponential backoff on transient failures.
+ *
+ * Used by both CompletionNotifier (plan-level) and per-task notifications
+ * to ensure at-least-once delivery semantics.
+ */
+
+interface RetrySendConfig {
+    /** Maximum number of retry attempts after the initial try. Default: 3. */
+    readonly maxRetries?: number | undefined;
+    /** Base delay in ms for exponential backoff. Default: 1000. */
+    readonly baseDelayMs?: number | undefined;
+    /** Maximum delay in ms for backoff cap. Default: 10000. */
+    readonly maxDelayMs?: number | undefined;
+    /** Optional logger for retry diagnostics. */
+    readonly logger?: AutonomousLogger | undefined;
+}
+/**
+ * Send a message via mailbox with retry on transient (retryable) failures.
+ *
+ * - Succeeds immediately if the first attempt works.
+ * - Retries up to \`maxRetries\` times with exponential backoff for retryable errors.
+ * - Returns immediately on non-retryable errors (no retry).
+ * - Returns the final Result after all attempts exhaust.
+ */
+declare function sendWithRetry(mailbox: MailboxComponent, message: AgentMessageInput, config?: RetrySendConfig | undefined): Promise<Result<AgentMessage, KoiError>>;
+
+/**
+ * Completion notifier — creates harness lifecycle callbacks that send
+ * push notifications to the initiating copilot's inbox on plan
+ * completion or failure.
+ *
+ * Usage:
+ *   const notifier = createCompletionNotifier({ initiatorId, agentId, mailbox });
+ *   const harness = createLongRunningHarness({
+ *     ...config,
+ *     onCompleted: notifier.onCompleted,
+ *     onFailed: notifier.onFailed,
+ *   });
+ *
+ * Follows the "thin event" pattern (Stripe, A2A): the notification carries
+ * status + summary only. The copilot fetches full results via task_synthesize().
+ */
+
+interface CompletionNotifierConfig {
+    /** AgentId of the copilot to notify. */
+    readonly initiatorId: AgentId;
+    /** AgentId of the autonomous agent sending the notification. */
+    readonly agentId: AgentId;
+    /** Mailbox used to deliver the notification message. */
+    readonly mailbox: MailboxComponent;
+    /** Retry configuration for transient send failures. */
+    readonly retry?: RetrySendConfig | undefined;
+    /** Optional logger for notification diagnostics. */
+    readonly logger?: AutonomousLogger | undefined;
+}
+interface CompletionNotifierCallbacks {
+    readonly onCompleted: OnCompletedCallback;
+    readonly onFailed: OnFailedCallback;
+}
+/**
+ * Create onCompleted/onFailed callbacks that send push notifications
+ * to the initiating copilot's inbox via the mailbox.
+ *
+ * Designed to be spread into a \`LongRunningConfig\`:
+ *
+ *   const { onCompleted, onFailed } = createCompletionNotifier(notifierConfig);
+ *   const harness = createLongRunningHarness({ ...config, onCompleted, onFailed });
+ */
+declare function createCompletionNotifier(config: CompletionNotifierConfig): CompletionNotifierCallbacks;
+
+/**
+ * Task board reconciler — defense-in-depth consistency check.
+ *
+ * After spawn dispatch completes, compares the delegation bridge's board
+ * (ground truth from actual worker execution) against the harness's board
+ * (which may have missed transitions due to assignTask/completeTask failures).
+ *
+ * Called once on engine wake-up (after all workers complete), not on a timer.
+ */
+
+interface ReconcileResult {
+    /** Number of tasks that were fixed. */
+    readonly fixed: number;
+    /** Human-readable descriptions of each fix applied. */
+    readonly details: readonly string[];
+}
+interface ReconcileHarness {
+    readonly assignTask: (taskId: TaskItemId, workerId: AgentId) => Promise<Result<void, KoiError>>;
+    readonly completeTask: (taskId: TaskItemId, result: {
+        readonly taskId: TaskItemId;
+        readonly output: string;
+        readonly durationMs: number;
+    }) => Promise<Result<void, KoiError>>;
+    readonly failTask: (taskId: TaskItemId, error: KoiError) => Promise<Result<void, KoiError>>;
+    readonly status: () => {
+        readonly taskBoard: TaskBoardSnapshot;
+    };
+}
+/**
+ * Reconcile harness board against bridge board (ground truth).
+ *
+ * Handles these drift scenarios:
+ * 1. Task completed in bridge but stuck as "assigned" or "pending" in harness
+ * 2. Task failed in bridge but stuck as "assigned" or "pending" in harness
+ * 3. Task assigned in bridge but still "pending" in harness (assign failed)
+ *
+ * Each fix is idempotent: if the harness already agrees with the bridge,
+ * no action is taken.
+ */
+declare function reconcileTaskBoard(bridgeBoard: TaskBoard, harness: ReconcileHarness, logger?: AutonomousLogger | undefined): Promise<ReconcileResult>;
+
+export { type AgentInstantiateConfig, type AgentInstantiateResult, type AutonomousAgent, type AutonomousAgentParts, type AutonomousLogger, type CompletionNotifierCallbacks, type CompletionNotifierConfig, type ReconcileResult, type RetrySendConfig, type SpawnFitnessWrapperConfig, type SpawnHealthRecorder, createAgentFromBrick, createAutonomousAgent, createCompletionNotifier, createSpawnFitnessWrapper, createStderrLogger, embedBrickId, reconcileTaskBoard, sendWithRetry };
+"
+`;

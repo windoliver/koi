@@ -1,0 +1,283 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/forge-integrity API surface . has stable type surface 1`] = `
+"import { DataClassification, ContentMarker, BrickId, EvolutionKind, ForgeProvenance, SigningBackend, BrickKind, TrustTier, BrickSignature, Result, ForgeStore, BrickArtifact, InTotoStatementV1 } from '@koi/core';
+import { ForgeInput, ForgeContext, VerificationReport, ForgeConfig, ForgeError } from '@koi/forge-types';
+import { Ed25519KeyPair } from '@koi/crypto-utils';
+export { Ed25519KeyPair } from '@koi/crypto-utils';
+
+/**
+ * Forge attestation — provenance creation, signing, and verification.
+ *
+ * Builds ForgeProvenance from pipeline outputs, signs attestations
+ * with a pluggable SigningBackend, and verifies attestation integrity.
+ */
+
+declare function canonicalJsonSerialize(value: unknown): string;
+interface CreateProvenanceOptions {
+    readonly input: ForgeInput;
+    readonly context: ForgeContext;
+    readonly report: VerificationReport;
+    readonly config: ForgeConfig;
+    readonly contentHash: string;
+    readonly invocationId: string;
+    readonly startedAt: number;
+    readonly finishedAt: number;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+    readonly parentBrickId?: BrickId | undefined;
+    readonly evolutionKind?: EvolutionKind | undefined;
+}
+/**
+ * Build a ForgeProvenance struct from forge pipeline outputs.
+ */
+declare function createForgeProvenance(options: CreateProvenanceOptions): ForgeProvenance;
+/**
+ * Sign a provenance record with a SigningBackend.
+ *
+ * Returns a new ForgeProvenance with the \`attestation\` field populated.
+ * The signature covers canonical JSON of all fields except \`attestation\`.
+ */
+declare function signAttestation(provenance: ForgeProvenance, signer: SigningBackend): Promise<ForgeProvenance>;
+/**
+ * Verify a provenance record's attestation signature.
+ *
+ * Re-serializes provenance (without attestation field) to canonical JSON,
+ * then verifies the signature with the provided SigningBackend.
+ */
+declare function verifyAttestation(provenance: ForgeProvenance, signer: SigningBackend): Promise<boolean>;
+
+/**
+ * Attestation verification cache — avoids re-verifying the same content hash.
+ *
+ * Keyed by content hash (SHA-256 hex). Invalidated on store change events.
+ * Uses an LRU eviction policy to prevent unbounded memory growth in
+ * long-running agents with many brick versions.
+ */
+interface CacheEntry {
+    readonly valid: boolean;
+    readonly verifiedAt: number;
+}
+interface AttestationCache {
+    readonly get: (contentHash: string) => CacheEntry | undefined;
+    readonly set: (contentHash: string, valid: boolean) => void;
+    readonly invalidate: (contentHash: string) => void;
+    readonly clear: () => void;
+    readonly size: () => number;
+}
+/**
+ * Create an LRU-capped attestation verification cache.
+ * Defaults to DEFAULT_ATTESTATION_CACHE_CAP entries; oldest entries
+ * are evicted when capacity is reached.
+ */
+declare function createAttestationCache(capacity?: number): AttestationCache;
+
+/**
+ * Shared brick content extraction — maps brick kind to hashable primary content.
+ *
+ * Used by both integrity verification and forge pipeline for content-addressed ID computation.
+ */
+
+/**
+ * Minimal shape needed for content extraction — works for full BrickArtifact
+ * and provenance-less builder output.
+ */
+interface HasKindAndContent {
+    readonly kind: BrickKind;
+    readonly implementation?: string;
+    readonly content?: string;
+    readonly manifestYaml?: string;
+    readonly steps?: readonly {
+        readonly brickId: string;
+    }[];
+}
+/**
+ * Extract the primary content string from a brick artifact for hashing.
+ */
+declare function extractBrickContent(brick: HasKindAndContent): {
+    readonly kind: string;
+    readonly content: string;
+};
+
+/**
+ * Brick signing and verification — Ed25519 cryptographic signatures for
+ * forge brick trust model.
+ *
+ * Uses @koi/crypto-utils for the underlying Ed25519 primitives and
+ * @koi/crypto-utils canonicalize for deterministic payload serialization.
+ *
+ * Trust tiers:
+ * - "local"     — No signature, user's own forged brick.
+ * - "community" — Signed by the brick author's Ed25519 key.
+ * - "verified"  — Signed by a registry-trusted public key.
+ */
+
+/** Minimal brick identity fields included in the signed payload. */
+interface BrickIdentityPayload {
+    readonly contentHash: string;
+    readonly kind: string;
+    readonly name: string;
+}
+interface BrickSigningError {
+    readonly code: "SIGNING_FAILED";
+    readonly message: string;
+}
+type BrickVerificationResult = {
+    readonly ok: true;
+    readonly trustTier: TrustTier;
+} | {
+    readonly ok: false;
+    readonly reason: string;
+};
+/**
+ * Generate a fresh Ed25519 key pair for brick signing.
+ * Public key is SPKI DER base64, private key is PKCS8 DER base64.
+ */
+declare function generateBrickSigningKeyPair(): Ed25519KeyPair;
+/**
+ * Build the canonical payload string from brick identity fields.
+ * Uses sorted-key JSON serialization for determinism.
+ */
+declare function computeSigningPayload(brick: BrickIdentityPayload): string;
+/**
+ * Sign a brick's identity payload with an Ed25519 private key.
+ *
+ * @param brick - The brick identity fields to sign.
+ * @param privateKeyDer - Base64-encoded PKCS8 DER private key.
+ * @param publicKeyDer - Base64-encoded SPKI DER public key (included in signature metadata).
+ * @returns Result with BrickSignature on success, BrickSigningError on failure.
+ */
+declare function signBrick(brick: BrickIdentityPayload, privateKeyDer: string, publicKeyDer: string): Result<BrickSignature, BrickSigningError>;
+/**
+ * Verify a brick's Ed25519 signature against its identity payload.
+ *
+ * @param brick - The brick identity fields that were signed.
+ * @param signature - The BrickSignature to verify.
+ * @returns Verification result with the determined trust tier.
+ */
+declare function verifyBrickSignature(brick: BrickIdentityPayload, signature: BrickSignature): BrickVerificationResult;
+/**
+ * Determine the trust tier for a brick based on its signature and a set
+ * of registry-trusted public keys.
+ *
+ * **Note:** The "verified" tier is only meaningful once key lifecycle
+ * infrastructure (rotation, revocation, distribution) is in place.
+ * See the TODO(key-lifecycle) comment above.
+ *
+ * @param signature - The brick's signature (undefined = unsigned = "local").
+ * @param brick - The brick identity fields.
+ * @param trustedKeys - Set of base64-encoded SPKI DER public keys trusted by the registry.
+ * @returns The resolved trust tier.
+ */
+declare function classifyTrustTier(signature: BrickSignature | undefined, brick: BrickIdentityPayload, trustedKeys: ReadonlySet<string>): TrustTier;
+
+/**
+ * Content integrity verification — recomputes content-addressed BrickId
+ * and compares to the stored \`id\`. Identity IS integrity.
+ */
+
+interface IntegrityOk {
+    readonly kind: "ok";
+    readonly ok: true;
+    readonly brickId: BrickId;
+    readonly id: BrickId;
+}
+interface IntegrityContentMismatch {
+    readonly kind: "content_mismatch";
+    readonly ok: false;
+    readonly brickId: BrickId;
+    readonly expectedId: BrickId;
+    readonly actualId: BrickId;
+}
+interface IntegrityAttestationFailed {
+    readonly kind: "attestation_failed";
+    readonly ok: false;
+    readonly brickId: BrickId;
+    readonly reason: "missing" | "invalid" | "algorithm_mismatch";
+}
+type IntegrityResult = IntegrityOk | IntegrityContentMismatch | IntegrityAttestationFailed;
+/**
+ * Verifies that a brick's content has not been tampered with by recomputing
+ * the content-addressed BrickId and comparing it to the stored \`id\`.
+ */
+declare function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult;
+/**
+ * Verifies both content hash integrity AND attestation signature.
+ *
+ * Returns the integrity result. If the brick has an attestation and a signer
+ * is provided, also verifies the cryptographic signature.
+ */
+declare function verifyBrickAttestation(brick: BrickArtifact, signer: SigningBackend): Promise<IntegrityResult>;
+/**
+ * Loads a brick from the store and verifies its content integrity.
+ *
+ * Returns the brick alongside the integrity result even when integrity fails.
+ * Only store-level failures produce a \`ForgeError\`.
+ */
+declare function loadAndVerify(store: ForgeStore, id: BrickId): Promise<Result<{
+    readonly brick: BrickArtifact;
+    readonly integrity: IntegrityResult;
+}, ForgeError>>;
+
+/**
+ * SLSA v1.0 serializer — maps Koi-native ForgeProvenance to SLSA predicate.
+ *
+ * Koi uses its own vocabulary internally; this serializer produces
+ * SLSA-compatible JSON for external consumption and audit trails.
+ */
+
+interface SlsaBuildDefinition {
+    readonly buildType: string;
+    readonly externalParameters: Readonly<Record<string, unknown>>;
+    readonly internalParameters?: Readonly<Record<string, unknown>>;
+    readonly resolvedDependencies?: readonly SlsaResourceDescriptor[];
+}
+interface SlsaResourceDescriptor {
+    readonly uri: string;
+    readonly digest?: Readonly<Record<string, string>>;
+    readonly name?: string;
+}
+interface SlsaBuilder {
+    readonly id: string;
+    readonly version?: Readonly<Record<string, string>>;
+}
+interface SlsaBuildMetadata {
+    readonly invocationId: string;
+    readonly startedOn?: string;
+    readonly finishedOn?: string;
+}
+interface SlsaRunDetails {
+    readonly builder: SlsaBuilder;
+    readonly metadata?: SlsaBuildMetadata;
+}
+interface SlsaProvenanceV1 {
+    readonly buildDefinition: SlsaBuildDefinition;
+    readonly runDetails: SlsaRunDetails;
+}
+/** Koi vendor extensions appended to the SLSA predicate. */
+interface SlsaKoiExtensions {
+    readonly koi_classification: string;
+    readonly koi_contentMarkers: readonly string[];
+    readonly koi_verification: {
+        readonly passed: boolean;
+        readonly sandbox: string;
+        readonly totalDurationMs: number;
+    };
+}
+/** SLSA predicate with Koi vendor extensions. */
+type SlsaProvenanceV1WithExtensions = SlsaProvenanceV1 & SlsaKoiExtensions;
+/**
+ * Map Koi ForgeProvenance to SLSA v1.0 predicate structure.
+ */
+declare function mapProvenanceToSlsa(provenance: ForgeProvenance): SlsaProvenanceV1;
+/**
+ * Wrap Koi ForgeProvenance in a full in-toto Statement v1 envelope.
+ *
+ * The subject is the brick identified by its content-addressed BrickId.
+ * Includes Koi vendor extensions (classification, content markers, verification summary).
+ */
+declare function mapProvenanceToStatement(provenance: ForgeProvenance, brickId: BrickId): InTotoStatementV1<SlsaProvenanceV1WithExtensions>;
+
+export { type AttestationCache, type BrickIdentityPayload, type BrickSigningError, type BrickVerificationResult, type CreateProvenanceOptions, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, canonicalJsonSerialize, classifyTrustTier, computeSigningPayload, createAttestationCache, createForgeProvenance, extractBrickContent, generateBrickSigningKeyPair, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, signAttestation, signBrick, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifyBrickSignature };
+"
+`;

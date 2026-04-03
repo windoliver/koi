@@ -32,7 +32,16 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "@koi/engine-compose";
+import type {
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugTurnTrace,
+  IterationLimits,
+  LoopDetectionConfig,
+  SpawnPolicy,
+  ToolExecutionConfig,
+} from "@koi/engine-compose";
 import type { GovernanceConfig } from "@koi/engine-reconcile";
 import type { AssemblyConflict } from "./agent-entity.js";
 
@@ -88,6 +97,8 @@ export interface CreateKoiOptions {
   readonly loopDetection?: Partial<LoopDetectionConfig> | false;
   /** Spawn governance policy. Defaults to DEFAULT_SPAWN_POLICY. */
   readonly spawn?: Partial<SpawnPolicy>;
+  /** Tool execution config (abort propagation + per-tool timeouts). Set to false to disable. */
+  readonly toolExecution?: Partial<ToolExecutionConfig> | false;
   /**
    * Kernel extensions for pluggable guards, lifecycle validation, and assembly validation.
    * Extensions are composed with the default guard extension (created from limits/loopDetection/spawn).
@@ -124,19 +135,34 @@ export interface CreateKoiOptions {
   readonly userId?: string;
   /** Channel adapter package name (e.g. "@koi/channel-telegram"). Injected into SessionContext. */
   readonly channelId?: string;
+  /** Stable conversation ID that spans multiple runtime.run() calls. Injected into SessionContext. */
+  readonly conversationId?: string;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
+  /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
+  readonly debug?: DebugInstrumentationConfig | undefined;
 }
 
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
+  /** The session ID assigned to this runtime instance. */
+  readonly sessionId: string;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
   /** Run the agent with the given input. Returns an async iterable of engine events. */
   readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
+  /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */
+  readonly debug?:
+    | {
+        /** Get the trace for a specific turn. Returns undefined if not found. */
+        readonly getTrace: (turnIndex: number) => DebugTurnTrace | undefined;
+        /** Build a snapshot of all registered middleware, tools, and other components. */
+        readonly getInventory: (extraItems?: readonly DebugInventoryItem[]) => DebugInventory;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +241,26 @@ export interface SpawnChildOptions {
    * Takes precedence over manifest.delivery when resolving the effective policy.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+
+  // ---------------------------------------------------------------------------
+  // Sub-agent constraints (hook agents, sandboxed spawns)
+  // ---------------------------------------------------------------------------
+
+  /** Tool names to exclude from the child's tool set (filters inherited + additional tools). */
+  readonly toolDenylist?: readonly string[] | undefined;
+  /** Additional tool descriptors to inject into the child's tool set. */
+  readonly additionalTools?: readonly ToolDescriptor[] | undefined;
+  /**
+   * When true, the child runs non-interactively — approval prompts are
+   * auto-denied and AskUser-style tools are stripped. Used by hook agents.
+   */
+  readonly nonInteractive?: boolean | undefined;
+  /**
+   * Name of a tool that must be called before the agent can complete.
+   * When set, a structured output guard middleware is injected that
+   * re-prompts the agent if it tries to finish without calling this tool.
+   */
+  readonly requiredOutputTool?: string | undefined;
 }
 
 /**

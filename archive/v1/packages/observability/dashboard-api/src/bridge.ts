@@ -1,0 +1,997 @@
+/**
+ * createAdminPanelBridge — adapts live CLI runtime state into
+ * DashboardHandlerOptions for the admin panel HTTP handler.
+ *
+ * The bridge accepts a minimal set of inputs from the CLI runtime and
+ * exposes them through the DashboardDataSource interface. It tracks
+ * a single primary agent with its channels and skills, providing
+ * system metrics from the Bun runtime.
+ *
+ * This is designed for CLI-hosted agents where there is exactly one
+ * agent running. For multi-agent deployments, use the engine registry
+ * directly with a full data source implementation.
+ */
+
+import type {
+  AgentId,
+  DataSourceDescriptor,
+  FileSystemBackend,
+  KoiError,
+  ProcessState,
+  Result,
+} from "@koi/core";
+import { agentId } from "@koi/core";
+import type {
+  AgentCostEntry,
+  AgentProcfs,
+  CommandDispatcher,
+  CostSnapshot,
+  DashboardAgentDetail,
+  DashboardAgentSummary,
+  DashboardChannelSummary,
+  DashboardDataSource,
+  DashboardEvent,
+  DashboardSchemaColumn,
+  DashboardSchemaTable,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
+  DataSourceDetail,
+  DataSourceFitnessSummary,
+  DataSourceSummary,
+  GatewayTopology,
+  MiddlewareChain,
+  ProcessTreeSnapshot,
+  RuntimeViewDataSource,
+  WorkspaceContextResponse,
+} from "@koi/dashboard-types";
+import type { DashboardHandlerOptions } from "./handler.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface BridgeOptions {
+  /** Display name of the agent (from manifest). */
+  readonly agentName: string;
+  /** Agent type: copilot or worker. */
+  readonly agentType: "copilot" | "worker";
+  /** Model name (e.g. "anthropic:claude-sonnet-4-5-20250929"). */
+  readonly model?: string | undefined;
+  /** Channel type names (e.g. ["cli", "telegram"]). */
+  readonly channels: readonly string[];
+  /** Skill names (e.g. ["web-search", "code-review"]). */
+  readonly skills: readonly string[];
+  /** Optional filesystem backend for file browsing in the admin panel. */
+  readonly fileSystem?: FileSystemBackend | undefined;
+  /** Optional orchestration view sources to merge into runtimeViews. */
+  readonly orchestration?:
+    | {
+        readonly temporal?: RuntimeViewDataSource["temporal"];
+        readonly scheduler?: RuntimeViewDataSource["scheduler"];
+        readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
+        readonly harness?: RuntimeViewDataSource["harness"];
+      }
+    | undefined;
+  /** Optional forge view data source for self-improvement observability. */
+  readonly forge?: RuntimeViewDataSource["forge"] | undefined;
+  /** Optional cost data source for the cost view (budget, cascade, circuit breaker). */
+  readonly cost?: RuntimeViewDataSource["cost"] | undefined;
+  /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
+  readonly debug?:
+    | {
+        readonly getInventory: NonNullable<RuntimeViewDataSource["debug"]>["getInventory"];
+        readonly getTrace: NonNullable<RuntimeViewDataSource["debug"]>["getTrace"];
+        readonly getContributions?: NonNullable<RuntimeViewDataSource["debug"]>["getContributions"];
+      }
+    | undefined;
+  /** Tool inventory for AgentProcfs (name + origin). */
+  readonly toolInventory?:
+    | readonly { readonly name: string; readonly origin: string }[]
+    | undefined;
+  /** Skill inventory for AgentProcfs (name + source). */
+  readonly skillInventory?:
+    | readonly { readonly name: string; readonly source: string }[]
+    | undefined;
+  /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
+  readonly orchestrationCommands?:
+    | Pick<
+        CommandDispatcher,
+        | "signalWorkflow"
+        | "terminateWorkflow"
+        | "pauseSchedule"
+        | "resumeSchedule"
+        | "deleteSchedule"
+        | "retrySchedulerDeadLetter"
+        | "pauseHarness"
+        | "resumeHarness"
+      >
+    | undefined;
+  /** Discovered data sources to expose via the dashboard API. */
+  readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
+  /** Full data source descriptors — used for schema/detail endpoint responses. */
+  readonly dataSourceDescriptors?: readonly DataSourceDescriptor[] | undefined;
+  /** Executor callback for schema probing (SQL/HTTP/GraphQL queries). */
+  readonly dataSourceExecutor?:
+    | ((
+        source: DataSourceDescriptor,
+        query: unknown,
+        credential: string | undefined,
+      ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
+    | undefined;
+  /** Credential resolver — maps auth.ref to credential string. */
+  readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
+  /** Per-source fitness metrics — keyed by source name. */
+  readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
+  /** Callback to probe environment for new data sources (injected to avoid L2→L2 import). */
+  readonly probeEnvForSources?:
+    | (() => readonly {
+        readonly descriptor: DataSourceDescriptor;
+      }[])
+    | undefined;
+  /** Optional agent dispatch implementation (e.g. from AgentHost). */
+  readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
+  /** Called when a dispatched agent is terminated — disposes the runtime. */
+  readonly onTerminateAgent?: ((id: AgentId) => Promise<void> | void) | undefined;
+  /** Optional governance queue/review methods (from governance stack). */
+  readonly governanceCommands?:
+    | Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance">
+    | undefined;
+  /** Optional forge brick lifecycle commands (promote, demote, quarantine). */
+  readonly forgeCommands?:
+    | Pick<CommandDispatcher, "promoteBrick" | "demoteBrick" | "quarantineBrick">
+    | undefined;
+  /** Optional workspace context for debugging (cwd, paths, ports). */
+  readonly workspaceContext?: WorkspaceContextResponse | undefined;
+}
+
+/** Registration entry for a dispatched agent. */
+export interface DispatchedAgentEntry {
+  readonly agentId: AgentId;
+  readonly name: string;
+  readonly agentType: "copilot" | "worker";
+  readonly model?: string;
+  readonly startedAt: number;
+}
+
+export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
+  /** Synthetic agent ID used by the bridge (e.g. `cli:<name>:<ts>`). */
+  readonly agentId: AgentId;
+  /** Emit a dashboard event to all subscribers. */
+  readonly emitEvent: (event: DashboardEvent) => void;
+  /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */
+  readonly updateMetrics: (metrics: {
+    readonly turns: number;
+    readonly totalTokens: number;
+  }) => void;
+  /** Register a dispatched agent so it appears in listAgents/getAgent. */
+  readonly registerDispatchedAgent: (entry: DispatchedAgentEntry) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridgeResult {
+  const primaryAgentId = agentId(`cli:${options.agentName}:${Date.now()}`);
+  const startedAt = Date.now();
+  const listeners = new Set<(event: DashboardEvent) => void>();
+
+  // Mutable data source state — updated by rescan
+  // let justified: rescan adds newly discovered sources at runtime
+  let currentSources: readonly DataSourceSummary[] = options.discoveredSources ?? [];
+  // let justified: rescan adds newly discovered descriptors for schema detail
+  let currentDescriptors: readonly DataSourceDescriptor[] = options.dataSourceDescriptors ?? [];
+
+  // Schema cache: name → { detail, expiresAt }  (60s TTL)
+  const SCHEMA_CACHE_TTL_MS = 60_000;
+  const schemaCache = new Map<
+    string,
+    { readonly detail: DataSourceDetail; readonly expiresAt: number }
+  >();
+
+  // Mutable agent state — tracks lifecycle transitions
+  // let justified: state changes on terminate, read by list/get/terminate
+  let agentState: ProcessState = "running";
+  // let justified: updated by CLI via updateMetrics(), read by list/get
+  let currentTurns = 0;
+  // let justified: updated by CLI via updateMetrics(), read by get
+  let currentTokenCount = 0;
+
+  // Registry for dispatched agents (created via admin panel dispatch dialog)
+  const dispatchedAgents = new Map<
+    string,
+    { readonly entry: DispatchedAgentEntry; state: ProcessState }
+  >();
+
+  const emitEvent = (event: DashboardEvent): void => {
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
+
+  const buildSummary = (): DashboardAgentSummary => ({
+    agentId: primaryAgentId,
+    name: options.agentName,
+    agentType: options.agentType,
+    state: agentState,
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    channels: [...options.channels],
+    turns: currentTurns,
+    startedAt,
+    lastActivityAt: Date.now(),
+  });
+
+  const buildDetail = (): DashboardAgentDetail => ({
+    ...buildSummary(),
+    skills: [...options.skills],
+    tokenCount: currentTokenCount,
+    metadata: {},
+  });
+
+  /** Build a summary for a dispatched agent. */
+  function buildDispatchedSummary(d: {
+    readonly entry: DispatchedAgentEntry;
+    readonly state: ProcessState;
+  }): DashboardAgentSummary {
+    return {
+      agentId: d.entry.agentId,
+      name: d.entry.name,
+      agentType: d.entry.agentType,
+      state: d.state,
+      ...(d.entry.model !== undefined ? { model: d.entry.model } : {}),
+      channels: [],
+      turns: 0,
+      startedAt: d.entry.startedAt,
+      lastActivityAt: Date.now(),
+    };
+  }
+
+  const dataSource: DashboardDataSource = {
+    listAgents(): readonly DashboardAgentSummary[] {
+      const dispatched = [...dispatchedAgents.values()].map(buildDispatchedSummary);
+      return [buildSummary(), ...dispatched];
+    },
+
+    getAgent(id: AgentId): DashboardAgentDetail | undefined {
+      if (id === primaryAgentId) return buildDetail();
+      const d = dispatchedAgents.get(id);
+      if (d === undefined) return undefined;
+      return { ...buildDispatchedSummary(d), skills: [], tokenCount: 0, metadata: {} };
+    },
+
+    terminateAgent(id: AgentId): Result<void, KoiError> | Promise<Result<void, KoiError>> {
+      // Handle dispatched agents
+      const dispatched = dispatchedAgents.get(id);
+      if (dispatched !== undefined) {
+        if (dispatched.state === "terminated") {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Agent ${id} is already terminated`,
+              retryable: false,
+            },
+          };
+        }
+        const prev = dispatched.state;
+        dispatched.state = "terminated";
+        emitEvent({
+          kind: "agent",
+          subKind: "status_changed",
+          agentId: id,
+          from: prev,
+          to: "terminated",
+          timestamp: Date.now(),
+        });
+        // Actually dispose the runtime if callback provided
+        if (options.onTerminateAgent !== undefined) {
+          const result = options.onTerminateAgent(id);
+          if (result instanceof Promise) {
+            return result.then(() => ({ ok: true as const, value: undefined }));
+          }
+        }
+        return { ok: true, value: undefined };
+      }
+
+      if (id !== primaryAgentId) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Agent ${id} not found`,
+            retryable: false,
+          },
+        };
+      }
+
+      if (agentState === "terminated") {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Agent ${id} is already terminated`,
+            retryable: false,
+          },
+        };
+      }
+
+      const previousState = agentState;
+      agentState = "terminated";
+
+      emitEvent({
+        kind: "agent",
+        subKind: "status_changed",
+        agentId: primaryAgentId,
+        from: previousState,
+        to: "terminated",
+        timestamp: Date.now(),
+      });
+
+      return { ok: true, value: undefined };
+    },
+
+    listChannels(): readonly DashboardChannelSummary[] {
+      return options.channels.map((channelType, index) => ({
+        channelId: `${channelType}:${String(index)}`,
+        channelType,
+        agentId: primaryAgentId,
+        connected: true,
+        messageCount: 0,
+        connectedAt: startedAt,
+      }));
+    },
+
+    listSkills(): readonly DashboardSkillSummary[] {
+      return options.skills.map((name) => ({
+        name,
+        description: "",
+        tags: [],
+        agentId: primaryAgentId,
+      }));
+    },
+
+    getSystemMetrics(): DashboardSystemMetrics {
+      const { heapUsed, heapTotal } = process.memoryUsage();
+
+      return {
+        uptimeMs: Date.now() - startedAt,
+        heapUsedMb: Math.round((heapUsed / 1024 / 1024) * 100) / 100,
+        heapTotalMb: Math.round((heapTotal / 1024 / 1024) * 100) / 100,
+        activeAgents: 1 + dispatchedAgents.size,
+        totalAgents: 1 + dispatchedAgents.size,
+        activeChannels: options.channels.length,
+      };
+    },
+
+    subscribe(listener: (event: DashboardEvent) => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+
+    // Data source discovery — always defined so routes return real data
+    // let justified: mutable so rescan can add newly discovered sources
+    listDataSources(): readonly DataSourceSummary[] {
+      if (options.dataSourceFitness === undefined) return currentSources;
+      return currentSources.map((s) => {
+        const fitness = options.dataSourceFitness?.get(s.name);
+        return fitness !== undefined ? { ...s, fitness } : s;
+      });
+    },
+    approveDataSource(name: string): Result<void, KoiError> {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
+          },
+        };
+      }
+      const source = currentSources[idx];
+      if (source === undefined) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "Source not found", retryable: false },
+        };
+      }
+      if (source.status === "approved") {
+        return { ok: true, value: undefined };
+      }
+      // Transition to approved and emit activation events
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "approved" as const } : s,
+      );
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_forged",
+        name: source.name,
+        protocol: source.protocol,
+        timestamp: Date.now(),
+      });
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_health_update",
+        name: source.name,
+        healthy: true,
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+    rejectDataSource(name: string): Result<void, KoiError> {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
+          },
+        };
+      }
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "rejected" as const } : s,
+      );
+      return { ok: true, value: undefined };
+    },
+    async getDataSourceSchema(name: string): Promise<DataSourceDetail | undefined> {
+      // Check cache first
+      const cached = schemaCache.get(name);
+      if (cached !== undefined && cached.expiresAt > Date.now()) return cached.detail;
+
+      const summary = currentSources.find((s) => s.name === name);
+      if (summary === undefined) return undefined;
+      const descriptor = currentDescriptors.find((d) => d.name === name);
+      const fitness = options.dataSourceFitness?.get(name);
+
+      // Attempt real schema probing if executor is available
+      let tables: readonly DashboardSchemaTable[] | undefined;
+      if (descriptor !== undefined && options.dataSourceExecutor !== undefined) {
+        const probeQuery = getSchemaProbeQuery(descriptor.protocol);
+        if (probeQuery !== undefined) {
+          const credential =
+            descriptor.auth !== undefined
+              ? options.dataSourceCredentials?.get(descriptor.auth.ref)
+              : undefined;
+          try {
+            const result = await options.dataSourceExecutor(descriptor, probeQuery, credential);
+            if (result.ok && result.data !== undefined) {
+              tables = parseSchemaRows(result.data);
+            }
+          } catch {
+            // Schema probing is non-fatal
+          }
+        }
+      }
+
+      const detail: DataSourceDetail = {
+        name: descriptor?.name ?? summary.name,
+        protocol: descriptor?.protocol ?? summary.protocol,
+        status: summary.status,
+        source: summary.source,
+        ...(descriptor?.description !== undefined ? { description: descriptor.description } : {}),
+        ...(descriptor?.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
+        ...(tables !== undefined ? { tables } : {}),
+        ...(fitness !== undefined ? { fitness } : {}),
+      };
+
+      schemaCache.set(name, { detail, expiresAt: Date.now() + SCHEMA_CACHE_TTL_MS });
+      return detail;
+    },
+    rescanDataSources(): readonly DataSourceSummary[] {
+      if (options.probeEnvForSources === undefined) return currentSources;
+      try {
+        const results = options.probeEnvForSources();
+        const existingNames = new Set(currentSources.map((s) => s.name));
+        for (const r of results) {
+          if (!existingNames.has(r.descriptor.name)) {
+            const summary: DataSourceSummary = {
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              status: "pending",
+              source: "env",
+            };
+            currentSources = [...currentSources, summary];
+            currentDescriptors = [...currentDescriptors, r.descriptor];
+            emitEvent({
+              kind: "datasource",
+              subKind: "data_source_discovered",
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              source: "env",
+              timestamp: Date.now(),
+            });
+          }
+        }
+      } catch {
+        // probeEnv not available — non-fatal
+      }
+      return currentSources;
+    },
+  };
+
+  const runtimeViews: RuntimeViewDataSource = {
+    getProcessTree(): ProcessTreeSnapshot {
+      return {
+        roots: [
+          {
+            agentId: primaryAgentId,
+            name: options.agentName,
+            state: agentState,
+            agentType: options.agentType,
+            depth: 0,
+            children: [],
+          },
+        ],
+        totalAgents: 1 + dispatchedAgents.size,
+        timestamp: Date.now(),
+      };
+    },
+
+    getAgentProcfs(id: AgentId): AgentProcfs | undefined {
+      if (id !== primaryAgentId) return undefined;
+
+      return {
+        agentId: primaryAgentId,
+        name: options.agentName,
+        state: agentState,
+        agentType: options.agentType,
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        channels: [...options.channels],
+        turns: currentTurns,
+        tokenCount: currentTokenCount,
+        startedAt,
+        lastActivityAt: Date.now(),
+        childCount: 0,
+        ...(options.toolInventory !== undefined ? { tools: options.toolInventory } : {}),
+        ...(options.skillInventory !== undefined ? { skills: options.skillInventory } : {}),
+      };
+    },
+
+    getMiddlewareChain(id: AgentId): MiddlewareChain {
+      return {
+        agentId: id,
+        entries: [],
+      };
+    },
+
+    getGatewayTopology(): GatewayTopology {
+      return {
+        connections: options.channels.map((channelType, index) => ({
+          channelId: `${channelType}:${String(index)}`,
+          channelType,
+          agentId: primaryAgentId,
+          connected: true,
+          connectedAt: startedAt,
+        })),
+        nodeCount: options.channels.length,
+        timestamp: Date.now(),
+      };
+    },
+
+    // Phase 2 orchestration sources (pass-through from caller)
+    ...(options.orchestration?.temporal !== undefined
+      ? { temporal: options.orchestration.temporal }
+      : {}),
+    ...(options.orchestration?.scheduler !== undefined
+      ? { scheduler: options.orchestration.scheduler }
+      : {}),
+    ...(options.orchestration?.taskBoard !== undefined
+      ? { taskBoard: options.orchestration.taskBoard }
+      : {}),
+    ...(options.orchestration?.harness !== undefined
+      ? { harness: options.orchestration.harness }
+      : {}),
+    ...(options.forge !== undefined ? { forge: options.forge } : {}),
+    // Cost view: use external source if provided, otherwise auto-compute from bridge state
+    cost: options.cost ?? {
+      getSnapshot(): CostSnapshot {
+        const modelName = options.model ?? "unknown";
+        // Rough per-token rates (USD) — same as createDefaultCostCalculator defaults
+        const INPUT_RATE = 0.000003;
+        const OUTPUT_RATE = 0.000015;
+        // Estimate 80% input, 20% output for token split
+        const inputTokens = Math.round(currentTokenCount * 0.8);
+        const outputTokens = currentTokenCount - inputTokens;
+        const primaryCost = inputTokens * INPUT_RATE + outputTokens * OUTPUT_RATE;
+        const DEFAULT_BUDGET = 2.0;
+
+        const agents: readonly AgentCostEntry[] = [
+          {
+            agentId: primaryAgentId,
+            name: options.agentName,
+            model: modelName,
+            turns: currentTurns,
+            costUsd: primaryCost,
+            budgetUsed: primaryCost,
+            budgetLimit: DEFAULT_BUDGET,
+          },
+          ...[...dispatchedAgents.values()].map(
+            (d): AgentCostEntry => ({
+              agentId: d.entry.agentId,
+              name: d.entry.name,
+              model: d.entry.model ?? modelName,
+              turns: 0,
+              costUsd: 0,
+              budgetUsed: 0,
+              budgetLimit: DEFAULT_BUDGET,
+            }),
+          ),
+        ];
+
+        const totalCost = agents.reduce((sum, a) => sum + a.costUsd, 0);
+
+        return {
+          sessionBudget: { used: totalCost, limit: 2.0 },
+          dailyBudget: { used: totalCost, limit: 10.0 },
+          monthlyBudget: { used: totalCost, limit: 50.0 },
+          agents,
+          cascade: { tiers: [], savingsUsd: 0, baselineModel: "sonnet" },
+          circuitBreaker: { state: "CLOSED", failures: 0, threshold: 5, windowMs: 60_000 },
+          timestamp: Date.now(),
+        };
+      },
+    },
+    ...(options.debug !== undefined
+      ? (() => {
+          const dbg = options.debug;
+          return {
+            debug: {
+              // Guard: only serve debug data for the primary agent.
+              // Non-primary agents (dispatched workers) get empty results.
+              getInventory: (id: AgentId) => {
+                if (id !== primaryAgentId) {
+                  return { agentId: String(id), items: [], timestamp: Date.now() };
+                }
+                return dbg.getInventory(id);
+              },
+              getTrace: (id: AgentId, turnIndex: number) => {
+                if (id !== primaryAgentId) return undefined;
+                return dbg.getTrace(id, turnIndex);
+              },
+              ...(dbg.getContributions !== undefined
+                ? { getContributions: dbg.getContributions }
+                : {}),
+            },
+          };
+        })()
+      : {}),
+  };
+
+  // Command dispatcher for the single-agent bridge.
+  // Merges core agent lifecycle commands with optional orchestration commands.
+  const orchCmds = options.orchestrationCommands;
+
+  /** Wraps an async orchestration command to emit a DashboardEvent on success. */
+  function withEvent<A extends unknown[]>(
+    fn: (...args: A) => Promise<Result<void, KoiError>>,
+    makeEvent: (...args: A) => DashboardEvent,
+  ): (...args: A) => Promise<Result<void, KoiError>> {
+    return async (...args: A): Promise<Result<void, KoiError>> => {
+      const result = await fn(...args);
+      if (result.ok) emitEvent(makeEvent(...args));
+      return result;
+    };
+  }
+
+  // Wrap dispatchAgent to auto-register in data source and emit SSE event
+  const rawDispatch = options.dispatchAgent;
+  const wrappedDispatchAgent: NonNullable<CommandDispatcher["dispatchAgent"]> | undefined =
+    rawDispatch !== undefined
+      ? async (request) => {
+          const result = await rawDispatch(request);
+          if (result.ok) {
+            const resolvedType = request.agentType ?? "copilot";
+            const entry: DispatchedAgentEntry = {
+              agentId: result.value.agentId,
+              name: result.value.name,
+              agentType: resolvedType,
+              startedAt: Date.now(),
+            };
+            dispatchedAgents.set(result.value.agentId, { entry, state: "running" });
+            emitEvent({
+              kind: "agent",
+              subKind: "dispatched",
+              agentId: result.value.agentId,
+              name: result.value.name,
+              agentType: resolvedType,
+              timestamp: Date.now(),
+            });
+          }
+          return result;
+        }
+      : undefined;
+
+  const commands: CommandDispatcher = {
+    // Agent dispatch — wrapped to auto-register + emit SSE event
+    ...(wrappedDispatchAgent !== undefined ? { dispatchAgent: wrappedDispatchAgent } : {}),
+
+    suspendAgent(id: AgentId): Result<void, KoiError> {
+      if (id !== primaryAgentId) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: `Agent ${id} not found`, retryable: false },
+        };
+      }
+      if (agentState !== "running") {
+        return {
+          ok: false,
+          error: { code: "CONFLICT", message: `Agent ${id} is not running`, retryable: false },
+        };
+      }
+      const prev = agentState;
+      agentState = "suspended";
+      emitEvent({
+        kind: "agent",
+        subKind: "status_changed",
+        agentId: primaryAgentId,
+        from: prev,
+        to: "suspended",
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+
+    resumeAgent(id: AgentId): Result<void, KoiError> {
+      if (id !== primaryAgentId) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: `Agent ${id} not found`, retryable: false },
+        };
+      }
+      if (agentState !== "suspended") {
+        return {
+          ok: false,
+          error: { code: "CONFLICT", message: `Agent ${id} is not suspended`, retryable: false },
+        };
+      }
+      const prev = agentState;
+      agentState = "running";
+      emitEvent({
+        kind: "agent",
+        subKind: "status_changed",
+        agentId: primaryAgentId,
+        from: prev,
+        to: "running",
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+
+    terminateAgent(id: AgentId): Result<void, KoiError> | Promise<Result<void, KoiError>> {
+      return dataSource.terminateAgent(id);
+    },
+
+    // Phase 2 orchestration commands — wrapped to emit SSE events on success
+    ...(orchCmds?.signalWorkflow !== undefined
+      ? {
+          signalWorkflow: withEvent(orchCmds.signalWorkflow, (id, signal) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Workflow ${id} signaled: ${signal}`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.terminateWorkflow !== undefined
+      ? {
+          terminateWorkflow: withEvent(orchCmds.terminateWorkflow, (id) => ({
+            kind: "temporal",
+            subKind: "workflow_completed",
+            workflowId: id,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.pauseSchedule !== undefined
+      ? {
+          pauseSchedule: withEvent(orchCmds.pauseSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} paused`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.resumeSchedule !== undefined
+      ? {
+          resumeSchedule: withEvent(orchCmds.resumeSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} resumed`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.deleteSchedule !== undefined
+      ? {
+          deleteSchedule: withEvent(orchCmds.deleteSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} deleted`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.retrySchedulerDeadLetter !== undefined
+      ? {
+          retrySchedulerDeadLetter: withEvent(orchCmds.retrySchedulerDeadLetter, (id) => ({
+            kind: "scheduler",
+            subKind: "task_submitted",
+            taskId: id,
+            agentId: primaryAgentId,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.pauseHarness !== undefined
+      ? {
+          pauseHarness: withEvent(orchCmds.pauseHarness, () => ({
+            kind: "harness",
+            subKind: "phase_changed",
+            from: "running",
+            to: "paused",
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.resumeHarness !== undefined
+      ? {
+          resumeHarness: withEvent(orchCmds.resumeHarness, () => ({
+            kind: "harness",
+            subKind: "phase_changed",
+            from: "paused",
+            to: "running",
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+
+    // Governance queue commands
+    ...(options.governanceCommands?.listGovernanceQueue !== undefined
+      ? { listGovernanceQueue: options.governanceCommands.listGovernanceQueue }
+      : {}),
+    ...(options.governanceCommands?.reviewGovernance !== undefined
+      ? { reviewGovernance: options.governanceCommands.reviewGovernance }
+      : {}),
+
+    // Forge brick lifecycle commands
+    ...(options.forgeCommands?.promoteBrick !== undefined
+      ? { promoteBrick: options.forgeCommands.promoteBrick }
+      : {}),
+    ...(options.forgeCommands?.demoteBrick !== undefined
+      ? { demoteBrick: options.forgeCommands.demoteBrick }
+      : {}),
+    ...(options.forgeCommands?.quarantineBrick !== undefined
+      ? { quarantineBrick: options.forgeCommands.quarantineBrick }
+      : {}),
+  };
+
+  const updateMetrics = (metrics: {
+    readonly turns: number;
+    readonly totalTokens: number;
+  }): void => {
+    currentTurns = metrics.turns;
+    currentTokenCount = metrics.totalTokens;
+
+    emitEvent({
+      kind: "agent",
+      subKind: "metrics_updated",
+      agentId: primaryAgentId,
+      turns: metrics.turns,
+      tokenCount: metrics.totalTokens,
+      timestamp: Date.now(),
+    });
+  };
+
+  // Emit data source lifecycle events for initial sources (deferred to next tick
+  // so SSE subscribers are connected before events fire)
+  if (currentSources.length > 0) {
+    queueMicrotask(() => {
+      for (const source of currentSources) {
+        emitEvent({
+          kind: "datasource",
+          subKind: "data_source_discovered",
+          name: source.name,
+          protocol: source.protocol,
+          source: source.source,
+          timestamp: Date.now(),
+        });
+        // Approved sources have their connectors forged
+        if (source.status === "approved") {
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_forged",
+            name: source.name,
+            protocol: source.protocol,
+            timestamp: Date.now(),
+          });
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_health_update",
+            name: source.name,
+            healthy: true,
+            timestamp: Date.now(),
+          });
+        }
+      }
+    });
+  }
+
+  return {
+    agentId: primaryAgentId,
+    dataSource,
+    runtimeViews,
+    commands,
+    ...(options.fileSystem !== undefined ? { fileSystem: options.fileSystem } : {}),
+    ...(options.workspaceContext !== undefined
+      ? { workspaceContext: options.workspaceContext }
+      : {}),
+    emitEvent,
+    updateMetrics,
+    registerDispatchedAgent: (entry: DispatchedAgentEntry): void => {
+      dispatchedAgents.set(entry.agentId, { entry, state: "running" });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Schema probing helpers
+// ---------------------------------------------------------------------------
+
+/** Returns a protocol-specific probe query for information_schema, or undefined. */
+function getSchemaProbeQuery(protocol: string): unknown | undefined {
+  if (protocol === "sql" || protocol === "postgres" || protocol === "mysql") {
+    return {
+      protocol: "sql",
+      query:
+        "SELECT table_schema, table_name, column_name, data_type, is_nullable " +
+        "FROM information_schema.columns " +
+        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') " +
+        "ORDER BY table_schema, table_name, ordinal_position",
+    };
+  }
+  return undefined;
+}
+
+/** Parses information_schema rows into DashboardSchemaTable[]. */
+function parseSchemaRows(data: unknown): readonly DashboardSchemaTable[] {
+  if (typeof data !== "object" || data === null) return [];
+  const obj = data as Readonly<Record<string, unknown>>;
+  const rows = obj.rows;
+  if (!Array.isArray(rows)) return [];
+
+  const tableMap = new Map<string, { readonly schema: string; columns: DashboardSchemaColumn[] }>();
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const r = row as Readonly<Record<string, unknown>>;
+    const tableName = String(r.table_name ?? "");
+    const schema = String(r.table_schema ?? "public");
+    const key = `${schema}.${tableName}`;
+    let entry = tableMap.get(key);
+    if (entry === undefined) {
+      entry = { schema, columns: [] };
+      tableMap.set(key, entry);
+    }
+    entry.columns.push({
+      name: String(r.column_name ?? ""),
+      type: String(r.data_type ?? "unknown"),
+      nullable: String(r.is_nullable ?? "YES") === "YES",
+    });
+  }
+
+  const tables: DashboardSchemaTable[] = [];
+  for (const [key, entry] of tableMap) {
+    const dotIdx = key.indexOf(".");
+    tables.push({
+      name: key.slice(dotIdx + 1),
+      schema: entry.schema,
+      columns: entry.columns,
+    });
+  }
+  return tables;
+}

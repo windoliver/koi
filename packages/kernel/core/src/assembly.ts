@@ -123,6 +123,24 @@ export interface CapabilityConfig {
   readonly requiresPoP?: boolean;
 }
 
+/** Cross-session sandbox persistence configuration. */
+export interface ManifestSandboxPersistence {
+  /**
+   * Scope key for sandbox reuse.
+   *
+   * Sandboxes with the same scope are reattached across sessions instead of
+   * being destroyed. The bridge calls `adapter.findOrCreate(scope, profile)`
+   * and `instance.detach()` instead of `destroy()` on dispose.
+   */
+  readonly scope: string;
+  /** Human-readable label for the persistent sandbox (e.g., "my-dev-sandbox"). */
+  readonly label?: string | undefined;
+  /** Auto-destroy after this many ms of idle time. Overrides stack-level idleTtlMs. */
+  readonly idleTtlMs?: number | undefined;
+  /** Hard upper bound on sandbox lifetime in ms. Sandbox is destroyed after this regardless of activity. */
+  readonly maxLifetimeMs?: number | undefined;
+}
+
 /**
  * Declarative sandbox configuration for agent manifests.
  *
@@ -139,6 +157,8 @@ export interface ManifestSandboxConfig {
   readonly network?: NetworkPolicy | undefined;
   /** Resource limit overrides. */
   readonly resources?: ResourceLimits | undefined;
+  /** Cross-session persistence. When set, sandbox is detached instead of destroyed. */
+  readonly persistence?: ManifestSandboxPersistence | undefined;
 }
 
 export interface AgentManifest {

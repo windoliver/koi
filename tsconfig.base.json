@@ -1,11 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
+    // Temporary: tsup DTS builds set baseUrl internally, which is deprecated in TS 6.
+    // Remove once tsup ships a fix. Must be removed before upgrading to TS 7.
+    "ignoreDeprecations": "6.0",
     "strict": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "lib": ["ES2023", "esnext.disposable"],
+    "lib": ["ES2025", "esnext.disposable"],
     "types": ["bun"],
     "declaration": true,
     "declarationMap": true,
@@ -14,6 +17,7 @@
     "isolatedModules": true,
     "isolatedDeclarations": true,
     "noUncheckedIndexedAccess": true,
+    "noUncheckedSideEffectImports": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
@@ -23,7 +27,6 @@
     "skipLibCheck": true,
     "composite": true,
     "resolvePackageJsonExports": true,
-    "resolvePackageJsonImports": true,
-    "esModuleInterop": false
+    "resolvePackageJsonImports": true
   }
 }

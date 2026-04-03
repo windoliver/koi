@@ -265,13 +265,25 @@ describe("createGovernanceController", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("error rate check fails when rate at threshold", async () => {
-    const ctrl = createGovernanceController({ errorRate: { windowMs: 60000, threshold: 0.5 } });
+  test("error rate check fails when rate at threshold (above minSampleSize)", async () => {
+    const ctrl = createGovernanceController({
+      errorRate: { windowMs: 60000, threshold: 0.5, minSampleSize: 2 },
+    });
     ctrl.record({ kind: "tool_error", toolName: "t" });
     ctrl.record({ kind: "tool_success", toolName: "t" });
-    // 1/2 = 0.5 >= 0.5
+    // 1/2 = 0.5 >= 0.5, and 2 >= minSampleSize(2)
     const result = await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE);
     expect(result.ok).toBe(false);
+  });
+
+  test("error rate check passes when below minSampleSize", async () => {
+    const ctrl = createGovernanceController({
+      errorRate: { windowMs: 60000, threshold: 0.5, minSampleSize: 3 },
+    });
+    ctrl.record({ kind: "tool_error", toolName: "t" });
+    // 1/1 = 1.0 >= 0.5, but only 1 call < minSampleSize(3) → passes
+    const result = await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE);
+    expect(result.ok).toBe(true);
   });
 
   test("error rate uses windowed denominator, not lifetime total", () => {

@@ -1,45 +1,26 @@
 /**
- * End-to-end tests using a real MCP server + client via InMemoryTransport.
+ * End-to-end tests using real MCP SDK server + client.
  *
- * Verifies the full MCP protocol round-trip: server registers tools,
- * client discovers them, adapter layers wrap them as Koi components,
- * and tool execution produces real results.
- *
- * No mocks — this exercises the actual MCP SDK protocol.
+ * No mocks — exercises the actual MCP protocol via InMemoryTransport,
+ * validates the full pipeline: .mcp.json → config → connection → tools.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
-import type { AttachResult, JsonObject, Tool } from "@koi/core";
-import { agentId, isAttachResult, toolToken } from "@koi/core";
+import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { McpClientManager, McpToolInfo } from "../client-manager.js";
-import { createMcpComponentProvider } from "../component-provider.js";
-import type { ResolvedMcpServerConfig } from "../config.js";
-import { createMcpResolver } from "../resolver.js";
-import { mapMcpToolToKoi } from "../tool-adapter.js";
-
-function extractMap(
-  result: AttachResult | ReadonlyMap<string, unknown>,
-): ReadonlyMap<string, unknown> {
-  return isAttachResult(result) ? result.components : result;
-}
+import { resolveServerConfig } from "../config.js";
+import { createMcpConnection } from "../connection.js";
+import { loadMcpJsonString, normalizeMcpServers } from "../index.js";
 
 // ---------------------------------------------------------------------------
-// Test server setup
+// Test MCP server
 // ---------------------------------------------------------------------------
 
-interface TestServerPair {
-  readonly server: Server;
-  readonly client: Client;
-  readonly close: () => Promise<void>;
-}
-
-async function createTestServerPair(): Promise<TestServerPair> {
+function createTestMcpServer(): Server {
   const server = new Server(
-    { name: "e2e-test-server", version: "1.0.0" },
+    { name: "e2e-server", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -47,7 +28,7 @@ async function createTestServerPair(): Promise<TestServerPair> {
     tools: [
       {
         name: "echo",
-        description: "Echoes the input message back",
+        description: "Echoes the input",
         inputSchema: {
           type: "object" as const,
           properties: { message: { type: "string" } },
@@ -56,41 +37,30 @@ async function createTestServerPair(): Promise<TestServerPair> {
       },
       {
         name: "add",
-        description: "Adds two numbers together",
+        description: "Adds two numbers",
         inputSchema: {
           type: "object" as const,
-          properties: {
-            a: { type: "number" },
-            b: { type: "number" },
-          },
+          properties: { a: { type: "number" }, b: { type: "number" } },
           required: ["a", "b"],
         },
       },
       {
         name: "fail",
-        description: "Always returns an error",
+        description: "Always fails",
         inputSchema: { type: "object" as const },
       },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name;
+    const { name } = request.params;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-
     switch (name) {
       case "echo":
-        return {
-          content: [{ type: "text" as const, text: String(args.message) }],
-        };
+        return { content: [{ type: "text" as const, text: String(args.message) }] };
       case "add":
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: String(Number(args.a) + Number(args.b)),
-            },
-          ],
+          content: [{ type: "text" as const, text: String(Number(args.a) + Number(args.b)) }],
         };
       case "fail":
         return {
@@ -102,282 +72,364 @@ async function createTestServerPair(): Promise<TestServerPair> {
     }
   });
 
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-
-  await server.connect(serverTransport);
-
-  const client = new Client({ name: "e2e-test-client", version: "1.0.0" });
-  await client.connect(clientTransport);
-
-  const close = async (): Promise<void> => {
-    await client.close();
-    await server.close();
-  };
-
-  return { server, client, close };
+  return server;
 }
 
 /**
- * Wraps a real MCP SDK Client as an McpClientManager.
- * Used to bridge the E2E client with the Koi adapter layers.
+ * Creates DI deps that wire McpConnection to a real MCP server via InMemoryTransport.
+ * Each call to createClient returns a fresh, unconnected SDK Client.
+ * The transport's sdkTransport is the client-side of an InMemoryTransport linked to the server.
  */
-function wrapClientAsManager(sdkClient: Client, name: string): McpClientManager {
-  let connected = true;
+/**
+ * Creates a fresh MCP server + DI deps per call.
+ * Each invocation returns an isolated server/transport pair.
+ */
+function createE2eFixture() {
+  const server = createTestMcpServer();
 
-  return {
-    connect: async () => ({ ok: true as const, value: undefined }),
-    listTools: async () => {
-      try {
-        const response = await sdkClient.listTools();
-        const tools: readonly McpToolInfo[] = response.tools.map((t) => ({
-          name: t.name,
-          description: t.description ?? "",
-          inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
-        }));
-        return { ok: true as const, value: tools };
-      } catch (error: unknown) {
-        return {
-          ok: false as const,
-          error: {
-            code: "EXTERNAL" as const,
-            message: String(error),
-            retryable: false,
-          },
-        };
-      }
+  const deps = {
+    createClient: () => new Client({ name: "e2e-client", version: "1.0.0" }) as never,
+    createTransport: () => {
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      void server.connect(serverSide);
+      return {
+        start: async () => {},
+        close: async () => {
+          await clientSide.close();
+        },
+        sdkTransport: clientSide,
+        get sessionId() {
+          return undefined;
+        },
+        onEvent: () => () => {},
+      };
     },
-    callTool: async (toolName, args) => {
-      try {
-        const result = await sdkClient.callTool({
-          name: toolName,
-          arguments: args as Record<string, unknown>,
-        });
-        const content = result.content as readonly Record<string, unknown>[];
-
-        if (result.isError === true) {
-          const errorText = content
-            .filter(
-              (
-                c,
-              ): c is Record<string, unknown> & {
-                readonly type: "text";
-                readonly text: string;
-              } => c.type === "text" && typeof c.text === "string",
-            )
-            .map((c) => c.text)
-            .join("\n");
-          return {
-            ok: false as const,
-            error: {
-              code: "EXTERNAL" as const,
-              message: errorText || "unknown error",
-              retryable: false,
-            },
-          };
-        }
-
-        return { ok: true as const, value: content };
-      } catch (error: unknown) {
-        return {
-          ok: false as const,
-          error: {
-            code: "EXTERNAL" as const,
-            message: String(error),
-            retryable: false,
-          },
-        };
-      }
-    },
-    close: async () => {
-      connected = false;
-    },
-    isConnected: () => connected,
-    serverName: () => name,
   };
+
+  const cleanup = async (): Promise<void> => {
+    try {
+      await server.close();
+    } catch {
+      // best-effort
+    }
+  };
+
+  return { server, deps, cleanup };
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// E2E: Raw MCP protocol
 // ---------------------------------------------------------------------------
 
-let activePair: TestServerPair | undefined;
+describe("E2E: raw MCP protocol via InMemoryTransport", () => {
+  test("list tools returns all server tools", async () => {
+    const server = createTestMcpServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    await client.connect(clientTransport);
 
-afterEach(async () => {
-  if (activePair !== undefined) {
-    await activePair.close();
-    activePair = undefined;
-  }
-});
-
-describe("E2E: real MCP protocol via InMemoryTransport", () => {
-  test("SDK client lists tools from real server", async () => {
-    activePair = await createTestServerPair();
-
-    const result = await activePair.client.listTools();
+    const result = await client.listTools();
     expect(result.tools).toHaveLength(3);
-    expect(result.tools.map((t) => t.name)).toContain("echo");
-    expect(result.tools.map((t) => t.name)).toContain("add");
-    expect(result.tools.map((t) => t.name)).toContain("fail");
+    expect(result.tools.map((t) => t.name).sort()).toEqual(["add", "echo", "fail"]);
+
+    await client.close();
+    await server.close();
   });
 
-  test("SDK client calls echo tool on real server", async () => {
-    activePair = await createTestServerPair();
+  test("call echo tool returns input", async () => {
+    const server = createTestMcpServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    await client.connect(clientTransport);
 
-    const result = await activePair.client.callTool({
-      name: "echo",
-      arguments: { message: "Hello, MCP!" },
-    });
+    const result = await client.callTool({ name: "echo", arguments: { message: "Hello!" } });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toBe("Hello!");
 
-    expect(result.isError).toBeFalsy();
-    const content = result.content as readonly { type: string; text: string }[];
-    expect(content).toHaveLength(1);
-    expect(content[0]?.text).toBe("Hello, MCP!");
+    await client.close();
+    await server.close();
   });
 
-  test("SDK client calls add tool on real server", async () => {
-    activePair = await createTestServerPair();
+  test("call add tool computes sum", async () => {
+    const server = createTestMcpServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    await client.connect(clientTransport);
 
-    const result = await activePair.client.callTool({
-      name: "add",
-      arguments: { a: 17, b: 25 },
-    });
+    const result = await client.callTool({ name: "add", arguments: { a: 3, b: 7 } });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toBe("10");
 
-    expect(result.isError).toBeFalsy();
-    const content = result.content as readonly { type: string; text: string }[];
-    expect(content[0]?.text).toBe("42");
+    await client.close();
+    await server.close();
   });
 
-  test("SDK client receives isError from failing tool", async () => {
-    activePair = await createTestServerPair();
+  test("call fail tool returns isError", async () => {
+    const server = createTestMcpServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    await client.connect(clientTransport);
 
-    const result = await activePair.client.callTool({
-      name: "fail",
-      arguments: {},
-    });
-
+    const result = await client.callTool({ name: "fail", arguments: {} });
     expect(result.isError).toBe(true);
-    const content = result.content as readonly { type: string; text: string }[];
-    expect(content[0]?.text).toBe("Something went wrong");
+
+    await client.close();
+    await server.close();
   });
 });
 
-describe("E2E: Koi adapter layers with real MCP server", () => {
-  test("mapMcpToolToKoi wraps real MCP tool and executes it", async () => {
-    activePair = await createTestServerPair();
-    const manager = wrapClientAsManager(activePair.client, "e2e-server");
+// ---------------------------------------------------------------------------
+// E2E: McpConnection with real MCP server
+// ---------------------------------------------------------------------------
 
-    const toolsResult = await manager.listTools();
-    expect(toolsResult.ok).toBe(true);
-    if (!toolsResult.ok) return;
-
-    const echoInfo = toolsResult.value.find((t) => t.name === "echo");
-    expect(echoInfo).toBeDefined();
-    if (echoInfo === undefined) return;
-
-    const tool = mapMcpToolToKoi(echoInfo, manager, "e2e-server");
-    expect(tool.descriptor.name).toBe("mcp/e2e-server/echo");
-    expect(tool.policy.sandbox).toBe(false);
-
-    const result = await tool.execute({ message: "E2E test" });
-    expect(result).toEqual([{ type: "text", text: "E2E test" }]);
-  });
-
-  test("mapMcpToolToKoi returns error for failing tool", async () => {
-    activePair = await createTestServerPair();
-    const manager = wrapClientAsManager(activePair.client, "e2e-server");
-
-    const toolsResult = await manager.listTools();
-    if (!toolsResult.ok) return;
-
-    const failInfo = toolsResult.value.find((t) => t.name === "fail");
-    if (failInfo === undefined) return;
-
-    const tool = mapMcpToolToKoi(failInfo, manager, "e2e-server");
-    const result = (await tool.execute({})) as { ok: boolean };
-    expect(result.ok).toBe(false);
-  });
-
-  test("createMcpResolver discovers and loads real MCP tools", async () => {
-    activePair = await createTestServerPair();
-    const manager = wrapClientAsManager(activePair.client, "e2e-server");
-
-    const resolver = createMcpResolver([manager]);
-
-    // Discover
-    const descriptors = await resolver.discover();
-    expect(descriptors).toHaveLength(3);
-    expect(descriptors.map((d) => d.name)).toContain("mcp/e2e-server/echo");
-    expect(descriptors.map((d) => d.name)).toContain("mcp/e2e-server/add");
-    expect(descriptors.map((d) => d.name)).toContain("mcp/e2e-server/fail");
-
-    // Load and execute
-    const loadResult = await resolver.load("mcp/e2e-server/add");
-    expect(loadResult.ok).toBe(true);
-    if (!loadResult.ok) return;
-
-    const execResult = await loadResult.value.execute({ a: 10, b: 32 });
-    expect(execResult).toEqual([{ type: "text", text: "42" }]);
-  });
-
-  test("createMcpComponentProvider attaches real tools via DI", async () => {
-    activePair = await createTestServerPair();
-    const manager = wrapClientAsManager(activePair.client, "e2e-test");
-
-    // Use createManager DI to inject the real client wrapper
-    const createManager = (
-      _config: ResolvedMcpServerConfig,
-      _timeout: number,
-      _attempts: number,
-    ): McpClientManager => manager;
-
-    const result = await createMcpComponentProvider(
-      {
-        servers: [
-          {
-            name: "e2e-test",
-            transport: "stdio",
-            command: "unused",
-            mode: "tools",
-          },
-        ],
-      },
-      createManager,
+describe("E2E: McpConnection with real MCP server", () => {
+  test("connect + listTools returns real tools", async () => {
+    const { deps, cleanup } = createE2eFixture();
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "e2e", command: "echo" }),
+      undefined,
+      deps,
     );
 
-    expect(result.failures).toHaveLength(0);
-    expect(result.clients).toHaveLength(1);
+    const connectResult = await conn.connect();
+    expect(connectResult.ok).toBe(true);
+    expect(conn.state.kind).toBe("connected");
 
-    const agent = {
-      pid: { id: agentId("e2e-1"), name: "e2e", type: "worker" as const, depth: 0 },
-      manifest: {
-        name: "e2e-agent",
-        version: "1.0.0",
-        model: { name: "test" },
-        tools: [],
-        channels: [],
-        middleware: [],
+    const toolsResult = await conn.listTools();
+    expect(toolsResult.ok).toBe(true);
+    if (toolsResult.ok) {
+      expect(toolsResult.value).toHaveLength(3);
+      expect(toolsResult.value.map((t) => t.name).sort()).toEqual(["add", "echo", "fail"]);
+    }
+
+    await conn.close();
+    await cleanup();
+  });
+
+  test("callTool executes real tool and returns result", async () => {
+    const { deps, cleanup } = createE2eFixture();
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "e2e", command: "echo" }),
+      undefined,
+      deps,
+    );
+
+    await conn.connect();
+    const result = await conn.callTool("add", { a: 10, b: 20 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const content = result.value as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toBe("30");
+    }
+
+    await conn.close();
+    await cleanup();
+  });
+
+  test("callTool with isError returns error result", async () => {
+    const { deps, cleanup } = createE2eFixture();
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "e2e", command: "echo" }),
+      undefined,
+      deps,
+    );
+
+    await conn.connect();
+    const result = await conn.callTool("fail", {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("Something went wrong");
+    }
+
+    await conn.close();
+    await cleanup();
+  });
+
+  test("state transitions fire during full lifecycle", async () => {
+    const { deps, cleanup } = createE2eFixture();
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "e2e", command: "echo" }),
+      undefined,
+      deps,
+    );
+
+    const states: string[] = [];
+    conn.onStateChange((s) => states.push(s.kind));
+
+    await conn.connect();
+    await conn.close();
+
+    expect(states).toContain("connecting");
+    expect(states).toContain("connected");
+    expect(states).toContain("closed");
+    await cleanup();
+  });
+
+  test("close prevents further operations", async () => {
+    const { deps, cleanup } = createE2eFixture();
+    const conn = createMcpConnection(
+      resolveServerConfig({ kind: "stdio", name: "e2e", command: "echo" }),
+      undefined,
+      deps,
+    );
+
+    await conn.connect();
+    await conn.close();
+    expect(conn.state.kind).toBe("closed");
+
+    const result = await conn.listTools();
+    expect(result.ok).toBe(false);
+    await cleanup();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E2E: Full .mcp.json pipeline
+// ---------------------------------------------------------------------------
+
+describe("E2E: .mcp.json → normalize → resolve → connect → tool call", () => {
+  test("full pipeline from CC-format JSON to tool call", async () => {
+    const { deps, cleanup } = createE2eFixture();
+
+    // Step 1: Parse CC-format .mcp.json
+    const loadResult = loadMcpJsonString(
+      JSON.stringify({
+        mcpServers: {
+          "test-server": { command: "echo", args: ["hello"] },
+          "remote-server": { type: "http", url: "https://example.com/mcp" },
+        },
+      }),
+    );
+    expect(loadResult.ok).toBe(true);
+    if (!loadResult.ok) return;
+    expect(loadResult.value.servers).toHaveLength(2);
+
+    // Step 2: Resolve the stdio server
+    const stdioServer = loadResult.value.servers.find((s) => s.name === "test-server");
+    expect(stdioServer).toBeDefined();
+    const resolved = resolveServerConfig(stdioServer!);
+    expect(resolved.timeoutMs).toBe(30_000);
+
+    // Step 3: Connect (using InMemoryTransport DI to wire to real server)
+    const conn = createMcpConnection(resolved, undefined, deps);
+    const connectResult = await conn.connect();
+    expect(connectResult.ok).toBe(true);
+
+    // Step 4: List tools
+    const toolsResult = await conn.listTools();
+    expect(toolsResult.ok).toBe(true);
+    if (toolsResult.ok) {
+      expect(toolsResult.value).toHaveLength(3);
+    }
+
+    // Step 5: Call a tool
+    const callResult = await conn.callTool("add", { a: 100, b: 200 });
+    expect(callResult.ok).toBe(true);
+    if (callResult.ok) {
+      const content = callResult.value as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toBe("300");
+    }
+
+    await conn.close();
+    await cleanup();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E2E: .mcp.json normalization (no server needed)
+// ---------------------------------------------------------------------------
+
+describe("E2E: CC config normalization", () => {
+  test("real-world sentry + local + corridor config", () => {
+    const { servers, unsupported } = normalizeMcpServers({
+      sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" },
+      "my-local-server": {
+        command: "npx",
+        args: ["my-mcp-server"],
+        env: { API_KEY: "test-key" },
       },
-      state: "running" as const,
-      component: () => undefined,
-      has: () => false,
-      hasAll: () => false,
-      query: () => new Map(),
-      components: () => new Map(),
-    };
+      corridor: {
+        type: "http",
+        url: "https://app.corridor.dev/api/mcp",
+        headers: { Authorization: "Bearer tok123" },
+      },
+    });
 
-    const components = extractMap(await result.provider.attach(agent));
-    expect(components.size).toBe(3);
+    expect(servers).toHaveLength(3);
+    expect(unsupported).toHaveLength(0);
 
-    // Execute echo tool through the component
-    const echoTool = components.get(toolToken("mcp/e2e-test/echo") as string) as Tool;
-    expect(echoTool).toBeDefined();
+    const sentry = servers.find((s) => s.name === "sentry");
+    expect(sentry?.kind).toBe("http");
+    if (sentry?.kind === "http") expect(sentry.url).toBe("https://mcp.sentry.dev/mcp");
 
-    const echoResult = await echoTool.execute({ message: "Real E2E!" });
-    expect(echoResult).toEqual([{ type: "text", text: "Real E2E!" }]);
+    const local = servers.find((s) => s.name === "my-local-server");
+    expect(local?.kind).toBe("stdio");
+    if (local?.kind === "stdio") {
+      expect(local.command).toBe("npx");
+      expect(local.args).toEqual(["my-mcp-server"]);
+      expect(local.env).toEqual({ API_KEY: "test-key" });
+    }
+  });
 
-    // Execute add tool through the component
-    const addTool = components.get(toolToken("mcp/e2e-test/add") as string) as Tool;
-    const addResult = await addTool.execute({ a: 100, b: 23 });
-    expect(addResult).toEqual([{ type: "text", text: "123" }]);
+  test("mixed supported/unsupported types", () => {
+    const result = loadMcpJsonString(
+      JSON.stringify({
+        mcpServers: {
+          good: { type: "http", url: "https://example.com" },
+          ws: { type: "ws", url: "wss://example.com" },
+          sdk: { type: "sdk", name: "vscode" },
+          "also-good": { command: "npx", args: ["my-server"] },
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.servers).toHaveLength(2);
+      expect(result.value.unsupported).toHaveLength(2);
+    }
+  });
+
+  test("env var expansion with ${VAR:-default}", () => {
+    process.env.E2E_MCP_URL = "https://real.example.com";
+    delete process.env.E2E_MISSING;
+    try {
+      const result = loadMcpJsonString(
+        JSON.stringify({
+          mcpServers: {
+            a: { type: "http", url: "${E2E_MCP_URL}" },
+            b: { type: "http", url: "https://${E2E_MISSING:-fallback.com}/mcp" },
+          },
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const a = result.value.servers.find((s) => s.name === "a");
+        const b = result.value.servers.find((s) => s.name === "b");
+        if (a?.kind === "http") expect(a.url).toBe("https://real.example.com");
+        if (b?.kind === "http") expect(b.url).toBe("https://fallback.com/mcp");
+      }
+    } finally {
+      delete process.env.E2E_MCP_URL;
+    }
+  });
+
+  test("headersHelper and oauth are rejected with clear error", () => {
+    const { servers, rejected } = normalizeMcpServers({
+      "oauth-server": {
+        type: "http",
+        url: "https://example.com",
+        headersHelper: "/path/to/helper.sh",
+        oauth: { clientId: "my-client", callbackPort: 8080 },
+      },
+    });
+    // Server is rejected — not silently accepted
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("headersHelper");
   });
 });

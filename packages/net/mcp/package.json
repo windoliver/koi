@@ -1,6 +1,6 @@
 {
   "name": "@koi/mcp",
-  "description": "Bridge MCP tool servers and attach discovered tools as Koi components",
+  "description": "MCP transport layer, connection lifecycle, and state management",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -23,5 +23,9 @@
     "@koi/validation": "workspace:*",
     "@modelcontextprotocol/sdk": "1.12.1",
     "zod": "4.3.6"
+  },
+  "devDependencies": {},
+  "koi": {
+    "optional": true
   }
 }

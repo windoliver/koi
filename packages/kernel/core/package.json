@@ -81,9 +81,17 @@
       "types": "./dist/health.d.ts",
       "import": "./dist/health.js"
     },
+    "./hook": {
+      "types": "./dist/hook.d.ts",
+      "import": "./dist/hook.js"
+    },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"
+    },
+    "./model-adapter": {
+      "types": "./dist/model-adapter.d.ts",
+      "import": "./dist/model-adapter.js"
     },
     "./model-provider": {
       "types": "./dist/model-provider.d.ts",
@@ -92,6 +100,10 @@
     "./resolver": {
       "types": "./dist/resolver.d.ts",
       "import": "./dist/resolver.js"
+    },
+    "./rich-trajectory": {
+      "types": "./dist/rich-trajectory.d.ts",
+      "import": "./dist/rich-trajectory.js"
     },
     "./brick-snapshot": {
       "types": "./dist/brick-snapshot.d.ts",
@@ -164,6 +176,14 @@
     "./user-model": {
       "types": "./dist/user-model.d.ts",
       "import": "./dist/user-model.js"
+    },
+    "./replacement": {
+      "types": "./dist/replacement.d.ts",
+      "import": "./dist/replacement.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
     }
   },
   "scripts": {

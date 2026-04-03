@@ -2,7 +2,6 @@
  * API surface stability tests.
  *
  * Snapshots .d.ts files for all exports. Requires a prior build.
- * Package name is read dynamically from package.json.
  */
 
 import { describe, expect, test } from "bun:test";

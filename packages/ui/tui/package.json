@@ -1,6 +1,6 @@
 {
   "name": "@koi/tui",
-  "description": "Admin-panel-connected terminal console for operators",
+  "description": "Ink-based terminal UI for Koi agent conversations",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,25 +8,22 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./state": {
+      "types": "./dist/state/index.d.ts",
+      "import": "./dist/state/index.js"
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/dashboard-client": "workspace:*",
-    "@koi/dashboard-types": "workspace:*",
-    "@koi/setup-core": "workspace:*",
-    "@opentui/core": "0.1.87",
-    "@opentui/react": "0.1.87",
-    "react": "19.1.0"
-  },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*",
-    "@types/react": "19"
+    "@koi/core": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
+  },
+  "koi": {
+    "optional": true
   }
 }
