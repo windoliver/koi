@@ -41,6 +41,8 @@ export interface TurnContext {
   readonly requestApproval?: ApprovalHandler;
   /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
+  /** True when this turn was ended by a stop-gate veto, not normal completion. */
+  readonly stopBlocked?: true;
 }
 
 export interface ModelRequest {
@@ -124,6 +126,7 @@ export interface ApprovalRequest {
 
 export type ApprovalDecision =
   | { readonly kind: "allow" }
+  | { readonly kind: "always-allow"; readonly scope: "session" }
   | { readonly kind: "modify"; readonly updatedInput: JsonObject }
   | { readonly kind: "deny"; readonly reason: string };
 
@@ -155,6 +158,24 @@ export interface CapabilityFragment {
  */
 export type MiddlewarePhase = "intercept" | "resolve" | "observe";
 
+// ---------------------------------------------------------------------------
+// Stop gate — blocking completion verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a stop gate check. Returned by `onBeforeStop` middleware hooks.
+ *
+ * - `continue` — allow the agent to complete normally
+ * - `block` — prevent completion; reason is injected back to the model
+ */
+export type StopGateResult =
+  | { readonly kind: "continue" }
+  | { readonly kind: "block"; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// Middleware interface
+// ---------------------------------------------------------------------------
+
 export interface KoiMiddleware {
   readonly name: string;
   /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
@@ -180,6 +201,13 @@ export interface KoiMiddleware {
   readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
   /** Called after each turn completes. */
   readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
+  /**
+   * Called before the engine emits "done" when stopReason is "completed".
+   * If any middleware returns `{ kind: "block", reason }`, the engine
+   * injects the reason into the model transcript and re-prompts instead
+   * of completing. Capped by `maxStopRetries` to prevent infinite loops.
+   */
+  readonly onBeforeStop?: (ctx: TurnContext) => Promise<StopGateResult>;
   /** Onion wrapper for model calls. Call `next(req)` to continue the chain. */
   readonly wrapModelCall?: (
     ctx: TurnContext,

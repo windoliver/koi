@@ -7,6 +7,7 @@ import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
 import type { DeliveryPolicy } from "./delivery.js";
+import type { HookConfig } from "./hook.js";
 import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
@@ -187,11 +188,8 @@ export interface AgentManifest {
   readonly supervision?: SupervisionConfig;
   readonly skills?: readonly SkillConfig[];
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
-  // NOTE: AgentManifest.hooks is intentionally omitted until engine-level
-  // hook dispatch is wired. Hook types exist in @koi/core/hook and the
-  // loader/registry/executor live in @koi/hooks (L2), but adding the field
-  // here would imply runtime support that doesn't exist yet — causing silent
-  // non-execution for users who configure hooks in their manifests.
+  /** Lifecycle hooks — command, http, prompt, or agent hooks triggered by engine events. */
+  readonly hooks?: readonly HookConfig[] | undefined;
   /**
    * Lifecycle behavior declaration — "copilot" survives parent death,
    * "worker" is cascade-terminated with parent.

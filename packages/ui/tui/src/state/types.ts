@@ -5,8 +5,10 @@
  * This is a rendering concern only — not a data store or persistence layer.
  */
 
+import type { JsonObject } from "@koi/core/common";
 import type { EngineEvent } from "@koi/core/engine";
 import type { ContentBlock } from "@koi/core/message";
+import type { ApprovalDecision } from "@koi/core/middleware";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,11 +30,24 @@ export const MAX_TOOL_OUTPUT_CHARS = 50_000;
 /** Screen-level views — one active at a time. */
 export type TuiView = "conversation" | "sessions" | "doctor" | "help";
 
-/** Permission prompt data passed through from the engine. */
+/** Risk level for permission prompts — computed by permissions middleware. */
+export type PermissionRiskLevel = "low" | "medium" | "high";
+
+/** Permission prompt data passed through from the engine.
+ *  Field names align with @koi/core ApprovalRequest for zero-mapping DRY. */
 export interface PermissionPromptData {
-  readonly toolName: string;
-  readonly args: unknown;
-  readonly message: string;
+  /** Unique identifier for correlating response → resolve in the bridge. */
+  readonly requestId: string;
+  /** Tool identifier (matches ApprovalRequest.toolId). */
+  readonly toolId: string;
+  /** Tool call input (matches ApprovalRequest.input). */
+  readonly input: JsonObject;
+  /** Human-readable reason for the prompt (matches ApprovalRequest.reason). */
+  readonly reason: string;
+  /** Risk level indicator for visual emphasis. */
+  readonly riskLevel: PermissionRiskLevel;
+  /** Optional metadata from the ApprovalRequest. */
+  readonly metadata?: JsonObject | undefined;
 }
 
 /** Transient overlay that preserves the underlying view. */
@@ -132,4 +147,9 @@ export type TuiAction =
       readonly code: string;
       readonly message: string;
     }
-  | { readonly kind: "clear_messages" };
+  | { readonly kind: "clear_messages" }
+  | {
+      readonly kind: "permission_response";
+      readonly requestId: string;
+      readonly decision: ApprovalDecision;
+    };

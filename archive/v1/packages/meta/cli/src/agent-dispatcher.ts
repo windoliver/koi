@@ -202,7 +202,9 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       const deps = await getDeps();
 
       // 1. Load manifest
-      const loadResult = await deps.loadManifest(manifestPath);
+      const loadResult = await deps.loadManifest(manifestPath, undefined, {
+        rejectUnsupportedHooks: true,
+      });
       if (!loadResult.ok) {
         return {
           ok: false,

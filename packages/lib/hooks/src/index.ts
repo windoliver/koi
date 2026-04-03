@@ -35,4 +35,5 @@ export {
   hookConfigSchema,
   hookFilterSchema,
   httpHookSchema,
+  promptHookSchema,
 } from "./schema.js";

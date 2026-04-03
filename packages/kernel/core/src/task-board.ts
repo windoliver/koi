@@ -12,6 +12,7 @@
  * are pure functions/constants operating only on L0 types.
  */
 
+import type { ChangeNotifier } from "./change-notifier.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationGrant } from "./delegation.js";
 import type { AgentId } from "./ecs.js";
@@ -116,6 +117,8 @@ export interface Task {
   readonly assignedTo?: AgentId | undefined;
   /** Board-managed retry count. Incremented by the board on retryable failure. */
   readonly retries: number;
+  /** Board-managed version. Incremented on every mutation for optimistic concurrency. */
+  readonly version: number;
   readonly error?: KoiError | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;
@@ -189,7 +192,15 @@ export interface TaskBoardSnapshot {
 
 export interface TaskBoardConfig {
   readonly maxRetries?: number | undefined;
+  /**
+   * Max in-progress tasks per assignee. undefined = unlimited.
+   * Enforced per board instance — multiple boards sharing a store
+   * do not coordinate on this limit.
+   */
+  readonly maxInProgressPerOwner?: number | undefined;
   readonly onEvent?: ((event: TaskBoardEvent) => void) | undefined;
+  /** Called when onEvent throws. Errors still swallowed — mutations never fail from handlers. */
+  readonly onEventError?: ((error: unknown, event: TaskBoardEvent) => void) | undefined;
 }
 
 export const DEFAULT_TASK_BOARD_CONFIG: TaskBoardConfig = Object.freeze({
@@ -239,6 +250,58 @@ export interface TaskBoard {
   readonly dependentsOf: (taskId: TaskItemId) => readonly Task[];
   readonly all: () => readonly Task[];
   readonly size: () => number;
+}
+
+// ---------------------------------------------------------------------------
+// TaskBoardStore — pluggable persistence backend for task board items
+// ---------------------------------------------------------------------------
+
+/** Filter criteria for listing tasks. */
+export interface TaskBoardStoreFilter {
+  readonly status?: TaskStatus | undefined;
+  readonly assignedTo?: AgentId | undefined;
+}
+
+/** Events emitted by the task board store on mutations. */
+export type TaskBoardStoreEvent =
+  | { readonly kind: "put"; readonly item: Task }
+  | { readonly kind: "deleted"; readonly id: TaskItemId };
+
+/** Task board store change notifier (specialized ChangeNotifier). */
+export type TaskBoardStoreNotifier = ChangeNotifier<TaskBoardStoreEvent>;
+
+/**
+ * Pluggable persistence backend for task board items.
+ *
+ * **Single-writer**: each store instance is designed for use by one writer
+ * (typically one `ManagedTaskBoard`). Multi-process coordination requires
+ * an external lock or a store with atomic conditional writes (e.g., Nexus).
+ *
+ * Implementations may be sync (in-memory) or async (file-based, network).
+ * Callers must always `await` the result — `await` on a non-Promise is a no-op.
+ *
+ * ID generation is owned by the store (monotonic integer counter with high
+ * water mark that survives deletion and restart).
+ */
+export interface TaskBoardStore extends AsyncDisposable {
+  /** Retrieve a task by ID. Returns undefined if not found. */
+  readonly get: (id: TaskItemId) => Task | undefined | Promise<Task | undefined>;
+  /**
+   * Persist a task. Throws if `item.version` is ≤ the stored task's version
+   * (stale-write guard). New tasks (no existing entry) are always accepted.
+   * This is a single-writer safety net, not multi-process CAS.
+   */
+  readonly put: (item: Task) => void | Promise<void>;
+  /** Delete a task by ID. No-op if not found. */
+  readonly delete: (id: TaskItemId) => void | Promise<void>;
+  /** List tasks, optionally filtered by status or assignee. */
+  readonly list: (filter?: TaskBoardStoreFilter) => readonly Task[] | Promise<readonly Task[]>;
+  /** Generate the next unique task item ID. Monotonic, never reuses after deletion. */
+  readonly nextId: () => TaskItemId | Promise<TaskItemId>;
+  /** Subscribe to store mutation events. Returns unsubscribe function. */
+  readonly watch: (listener: (event: TaskBoardStoreEvent) => void) => () => void;
+  /** Clear all tasks. High water mark is preserved (IDs are never reused). */
+  readonly reset: () => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

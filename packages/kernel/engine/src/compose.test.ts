@@ -28,6 +28,7 @@ import {
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
+  runStopGate,
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
@@ -483,6 +484,75 @@ describe("runTurnHooks", () => {
     };
     await runTurnHooks([mw1, mw2], "onAfterTurn", mockTurnContext());
     expect(order).toEqual(["first", "second"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runStopGate
+// ---------------------------------------------------------------------------
+
+describe("runStopGate", () => {
+  test("returns continue when no middleware has onBeforeStop", async () => {
+    const mw: KoiMiddleware = {
+      name: "no-stop",
+      describeCapabilities: () => undefined,
+    };
+    const result = await runStopGate([mw], mockTurnContext());
+    expect(result).toEqual({ kind: "continue" });
+  });
+
+  test("returns continue when all middleware return continue", async () => {
+    const mw1: KoiMiddleware = {
+      name: "allow-1",
+      describeCapabilities: () => undefined,
+      onBeforeStop: async () => ({ kind: "continue" }),
+    };
+    const mw2: KoiMiddleware = {
+      name: "allow-2",
+      describeCapabilities: () => undefined,
+      onBeforeStop: async () => ({ kind: "continue" }),
+    };
+    const result = await runStopGate([mw1, mw2], mockTurnContext());
+    expect(result).toEqual({ kind: "continue" });
+  });
+
+  test("returns block from first blocking middleware", async () => {
+    const order: string[] = [];
+    const mw1: KoiMiddleware = {
+      name: "blocker",
+      describeCapabilities: () => undefined,
+      onBeforeStop: async () => {
+        order.push("blocker");
+        return { kind: "block", reason: "tests failing" };
+      },
+    };
+    const mw2: KoiMiddleware = {
+      name: "never-called",
+      describeCapabilities: () => undefined,
+      onBeforeStop: async () => {
+        order.push("never-called");
+        return { kind: "continue" };
+      },
+    };
+    const result = await runStopGate([mw1, mw2], mockTurnContext());
+    expect(result).toEqual({ kind: "block", reason: "tests failing" });
+    // Second middleware should not be called (short-circuit)
+    expect(order).toEqual(["blocker"]);
+  });
+
+  test("skips middleware without onBeforeStop", async () => {
+    const mw1: KoiMiddleware = {
+      name: "no-hook",
+      describeCapabilities: () => undefined,
+      // no onBeforeStop
+    };
+    const mw2: KoiMiddleware = {
+      name: "blocker",
+      describeCapabilities: () => undefined,
+      onBeforeStop: async () => ({ kind: "block", reason: "blocked" }),
+    };
+    const result = await runStopGate([mw1, mw2], mockTurnContext());
+    expect(result).toEqual({ kind: "block", reason: "blocked" });
   });
 });
 

@@ -18,6 +18,7 @@
     "@koi/event-trace": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
+    "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
@@ -26,9 +27,11 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/query-engine": "workspace:*",
+    "@koi/tasks": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tools-core": "workspace:*",
     "@koi/tools-web": "workspace:*",
+    "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },
   "devDependencies": {

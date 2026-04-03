@@ -22,6 +22,7 @@ export {
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
+  runStopGate,
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "./compose.js";
