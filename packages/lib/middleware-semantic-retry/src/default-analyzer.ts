@@ -111,7 +111,10 @@ export function createDefaultFailureAnalyzer(
     },
 
     selectAction(failure: FailureClass, records: readonly RetryRecord[]): RetryAction {
-      const priorRetries = records.length;
+      // Count retries for this specific failure class (not global total)
+      // to match the middleware's per-class budget model
+      const classRecords = records.filter((r) => r.failureClass.kind === failure.kind);
+      const priorRetries = classRecords.length;
 
       // Special case: scope_drift always triggers decompose on first attempt
       if (failure.kind === "scope_drift" && priorRetries < abortThreshold) {
@@ -135,7 +138,7 @@ export function createDefaultFailureAnalyzer(
       }
 
       // priorRetries === 2: escalate or redirect depending on pattern
-      if (isRepeatingClass(failure, records)) {
+      if (isRepeatingClass(failure, classRecords)) {
         return { kind: "escalate_model", targetModel: DEFAULT_ESCALATION_MODEL };
       }
 

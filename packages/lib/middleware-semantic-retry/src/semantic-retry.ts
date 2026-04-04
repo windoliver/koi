@@ -13,8 +13,10 @@
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolRequest,
   ToolResponse,
@@ -360,6 +362,74 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         }
         signalWriter?.clearRetrySignal(sessionId);
         return response;
+      } catch (e: unknown) {
+        await handleFailure(sessionId, state, e, request, ctx.turnIndex);
+        throw e;
+      }
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const sessionId = ctx.session.sessionId as string;
+      const state = getSession(sessionId);
+      if (state === undefined) {
+        yield* next(request);
+        return;
+      }
+
+      // Determine effective request (apply pending rewrite or abort)
+      let effectiveRequest = request; // let: may be rewritten
+      if (state.pendingAction !== undefined) {
+        if (state.pendingAction.kind === "abort") {
+          const reason = state.pendingAction.reason;
+          state.pendingAction = undefined;
+          signalWriter?.clearRetrySignal(sessionId);
+          throw new Error(`Semantic retry aborted: ${reason}`);
+        }
+
+        const lastClass =
+          state.records[state.records.length - 1]?.failureClass ?? FALLBACK_FAILURE_CLASS;
+        const rewriteCtx: RewriteContext = {
+          failureClass: lastClass,
+          records: state.records,
+          turnIndex: ctx.turnIndex,
+        };
+        effectiveRequest = await rewriteWithFallback(
+          rewriter,
+          request,
+          state.pendingAction,
+          rewriteCtx,
+          rewriterTimeoutMs,
+        );
+        state.pendingAction = undefined;
+      }
+
+      // Stream with failure detection
+      let succeeded = false; // let: set true on done chunk
+      try {
+        for await (const chunk of next(effectiveRequest)) {
+          if (chunk.kind === "done") {
+            succeeded = true;
+          }
+          yield chunk;
+        }
+        // Mark successful retry
+        if (succeeded && state.records.length > 0) {
+          const lastIdx = state.records.length - 1;
+          const lastRecord = state.records[lastIdx];
+          if (lastRecord !== undefined && !lastRecord.succeeded) {
+            state.records = [
+              ...state.records.slice(0, lastIdx),
+              { ...lastRecord, succeeded: true },
+            ];
+          }
+        }
+        if (succeeded) {
+          signalWriter?.clearRetrySignal(sessionId);
+        }
       } catch (e: unknown) {
         await handleFailure(sessionId, state, e, request, ctx.turnIndex);
         throw e;
