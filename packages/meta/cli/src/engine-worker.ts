@@ -40,7 +40,7 @@ import type { MainToWorkerMessage, WorkerToMainMessage } from "@koi/core/worker-
  * in #1459. While false, any stream_start is rejected immediately with
  * engine_error so the worker never silently enters a broken streaming state.
  */
-const IS_CONFIGURED = false;
+const _IS_CONFIGURED = false;
 
 /**
  * Create the engine adapter this worker will use.
@@ -87,14 +87,12 @@ function post(msg: WorkerToMainMessage): void {
 let activeAbortController: AbortController | null = null;
 
 // ---------------------------------------------------------------------------
-// Startup — signal readiness before waiting for any messages
+// Startup — always post ready, always install a message handler
 // ---------------------------------------------------------------------------
 
-// Per the documented protocol in @koi/core/worker-protocol, the main thread
-// waits for `ready` before sending `stream_start`. Post it immediately so the
-// caller does not deadlock.
-// Note: if IS_CONFIGURED is false, the worker still posts `ready` — the first
-// `stream_start` will then immediately respond with `engine_error`.
+// Post ready unconditionally: the protocol requires it and callers wait for it.
+// stream_start is rejected below when IS_CONFIGURED is false; shutdown is always
+// handled so the worker can be terminated cleanly regardless of config state.
 post({ kind: "ready" });
 
 // ---------------------------------------------------------------------------
@@ -106,15 +104,6 @@ self.onmessage = async (e: MessageEvent<MainToWorkerMessage>): Promise<void> => 
 
   switch (msg.kind) {
     case "stream_start": {
-      // Fail fast if the worker is not yet wired to a real runtime (#1459).
-      if (!IS_CONFIGURED) {
-        post({
-          kind: "engine_error",
-          message: "Engine worker not configured — wire createRuntime() in #1459 before use.",
-        });
-        return;
-      }
-
       if (activeAbortController !== null) {
         // Already streaming — reject the duplicate so the caller receives
         // an explicit terminal signal and does not wait forever.

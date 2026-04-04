@@ -42,7 +42,7 @@
   },
   "devDependencies": {},
   "scripts": {
-    "build": "tsup",
+    "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
