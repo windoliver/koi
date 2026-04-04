@@ -160,7 +160,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       outcome: result.ok ? ("success" as const) : ("failure" as const),
       durationMs: result.durationMs,
       request: { text: `${triggerEvent} → ${result.hookName}` },
-      ...(!result.ok ? { error: { text: result.error } } : {}),
+      ...(!result.ok ? { error: { text: `hook error (${result.error.length} chars)` } } : {}),
       metadata: {
         type: "hook_execution",
         triggerEvent,
