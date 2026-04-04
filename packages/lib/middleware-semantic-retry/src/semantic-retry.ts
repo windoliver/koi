@@ -258,7 +258,11 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     };
     state.records = trimToRecent([...state.records, record], maxHistorySize);
     state.pendingAction = action;
-    onRetry?.(record);
+    try {
+      onRetry?.(record);
+    } catch {
+      // Observer callback must not mask the original failure
+    }
 
     // Emit retry signal for event-trace coordination
     if (signalWriter !== undefined && action.kind !== "abort") {

@@ -34,10 +34,10 @@ const DEFAULT_PATTERNS: readonly PatternEntry[] = [
     kind: "constraint",
     pattern: /\b(?:must\s+not|must\b|require[ds]?\b|mandatory|shall\b|forbidden)\b/i,
   },
-  { kind: "preference", pattern: /\b(?:prefer[rs]?\b|rather\b|instead\b|opt(?:ed|ing)?\s+for)\b/i },
+  { kind: "preference", pattern: /\b(?:prefer[rs]?|rather|instead|opt(?:ed|ing)?\s+for)\b/i },
   {
     kind: "rationale",
-    pattern: /\b(?:because\b|reason\b|rationale\b|justification\b|due\s+to\b|in\s+order\s+to\b)\b/i,
+    pattern: /\b(?:because|reason|rationale|justification|due\s+to|in\s+order\s+to)\b/i,
   },
 ] as const;
 
