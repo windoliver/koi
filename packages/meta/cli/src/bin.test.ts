@@ -171,6 +171,25 @@ describe("bin.ts", () => {
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("--port");
     });
+
+    // Regression: parseInt("123abc") silently returned 123 before full-string validation
+    test("--port with trailing junk (e.g. '123abc') exits 1, not port 123", async () => {
+      const r = await runBin(["serve", "--port", "123abc"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--port");
+    });
+
+    test("--port with scientific notation (e.g. '1e3') exits 1", async () => {
+      const r = await runBin(["serve", "--port", "1e3"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--port");
+    });
+
+    test("--lines with trailing junk (e.g. '50foo') exits 1", async () => {
+      const r = await runBin(["logs", "--lines", "50foo"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--lines");
+    });
   });
 
   describe("--log-format validation", () => {

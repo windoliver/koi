@@ -46,9 +46,18 @@ if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
 }
 
 // Lazy-load args module now that fast-path is cleared.
-const { COMMAND_NAMES, isKnownCommand, parseArgs } = await import("./args.js");
+const { COMMAND_NAMES, isKnownCommand, parseArgs, ParseError } = await import("./args.js");
 
-const flags = parseArgs(rawArgv);
+let flags;
+try {
+  flags = parseArgs(rawArgv);
+} catch (e: unknown) {
+  if (e instanceof ParseError) {
+    process.stderr.write(`error: ${e.message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
 
 if (flags.help) {
   process.stdout.write(HELP);

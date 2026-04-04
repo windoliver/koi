@@ -12,6 +12,19 @@
 import { parseArgs as nodeParseArgs } from "node:util";
 
 // ---------------------------------------------------------------------------
+// Parse error — thrown by parser helpers; caught and translated to process.exit
+// by bin.ts. Using a class here is intentional: it provides an instanceof check
+// that lets embedders distinguish expected parse failures from unexpected errors.
+// ---------------------------------------------------------------------------
+
+export class ParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ParseError";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Flag types
 // ---------------------------------------------------------------------------
 
@@ -144,8 +157,8 @@ type OptionConfig = {
  * API (complex overloads + tokens: true return type). All callers get fully
  * typed values via T with zero scattered casts.
  *
- * Also enforces unknown-flag rejection: any flag not in config.options causes
- * an error message to stderr and process.exit(1).
+ * Also enforces unknown-flag rejection: throws ParseError for any flag not in
+ * config.options. Callers (bin.ts) are responsible for catching and exiting.
  */
 function typedParseArgs<T extends Record<string, string | boolean | string[] | undefined>>(
   config: {
@@ -173,32 +186,40 @@ function typedParseArgs<T extends Record<string, string | boolean | string[] | u
   const knownFlags = new Set(Object.keys(config.options));
   for (const token of parseResult.tokens) {
     if (token.kind === "option" && !knownFlags.has(token.name)) {
-      process.stderr.write(`error: unknown flag ${token.rawName} for 'koi ${command}'\n`);
-      process.exit(1);
+      throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
     }
   }
 
   return { values: parseResult.values as T, positionals: parseResult.positionals };
 }
 
-/** Validates a numeric CLI flag. Writes error and exits 1 on failure. */
+/**
+ * Validates a numeric CLI flag. Throws ParseError on any non-integer string,
+ * trailing junk (e.g. "123abc"), scientific notation (e.g. "1e3"), or out-of-range value.
+ * Callers (bin.ts) are responsible for catching and exiting.
+ */
 function parseIntFlag(name: string, value: string, min: number, max: number): number {
-  const n = Number.parseInt(value, 10);
   const range = max === Number.MAX_SAFE_INTEGER ? `≥ ${min}` : `${min}–${max}`;
-  if (!Number.isFinite(n) || n < min || n > max) {
-    process.stderr.write(`error: --${name} must be an integer (${range}), got '${value}'\n`);
-    process.exit(1);
+  // Full-string integer check: rejects "123abc", "1.5", "1e3", whitespace, etc.
+  if (!/^-?\d+$/.test(value)) {
+    throw new ParseError(`--${name} must be an integer (${range}), got '${value}'`);
+  }
+  const n = Number.parseInt(value, 10);
+  if (n < min || n > max) {
+    throw new ParseError(`--${name} must be an integer (${range}), got '${value}'`);
   }
   return n;
 }
 
-/** Resolves log format from flag value or LOG_FORMAT env var. Errors on invalid values. */
+/**
+ * Resolves log format from flag value or LOG_FORMAT env var.
+ * Throws ParseError on invalid values. Callers (bin.ts) catch and exit.
+ */
 function resolveLogFormat(flagValue: string | undefined): "text" | "json" {
   const raw = flagValue ?? process.env.LOG_FORMAT;
   if (raw === undefined || raw === "text") return "text";
   if (raw === "json") return "json";
-  process.stderr.write(`error: --log-format must be 'text' or 'json', got '${raw}'\n`);
-  process.exit(1);
+  throw new ParseError(`--log-format must be 'text' or 'json', got '${raw}'`);
 }
 
 function detectGlobalFlags(argv: readonly string[]): {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { CliFlags } from "./args.js";
 import {
+  ParseError,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -404,6 +405,50 @@ describe("parseArgs", () => {
 
     test("returns false for undefined", () => {
       expect(isKnownCommand(undefined)).toBe(false);
+    });
+  });
+
+  describe("ParseError — thrown on invalid input, catchable by embedders", () => {
+    // Regression: before this fix, parsers called process.exit(1) directly,
+    // making it impossible for library consumers to catch validation errors.
+
+    test("unknown flag throws ParseError (not process.exit)", () => {
+      expect(() => parseArgs(["start", "--typo"])).toThrow(ParseError);
+    });
+
+    test("invalid --port value throws ParseError", () => {
+      expect(() => parseArgs(["serve", "--port", "abc"])).toThrow(ParseError);
+    });
+
+    test("--port with trailing junk throws ParseError (regression: parseInt truncation)", () => {
+      // Before fix: parseInt("123abc") → 123 (accepted). Now throws.
+      expect(() => parseArgs(["serve", "--port", "123abc"])).toThrow(ParseError);
+    });
+
+    test("--port with scientific notation throws ParseError", () => {
+      // Before fix: parseInt("1e3") → 1 (accepted). Now throws.
+      expect(() => parseArgs(["serve", "--port", "1e3"])).toThrow(ParseError);
+    });
+
+    test("invalid --log-format throws ParseError", () => {
+      expect(() => parseArgs(["start", "--log-format", "xml"])).toThrow(ParseError);
+    });
+
+    test("ParseError message is descriptive", () => {
+      expect(() => parseArgs(["serve", "--port", "abc"])).toThrow(
+        "--port must be an integer",
+      );
+    });
+
+    test("ParseError is catchable without killing the process", () => {
+      let caught: unknown;
+      try {
+        parseArgs(["start", "--typo"]);
+      } catch (e: unknown) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ParseError);
+      expect(caught instanceof ParseError && caught.message).toContain("unknown flag");
     });
   });
 });
