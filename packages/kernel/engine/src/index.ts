@@ -136,6 +136,8 @@ export {
 
 // ── Own exports (engine-specific) ──────────────────────────────────────────
 
+// SpawnInheritanceConfig moved to @koi/core (L0) — re-export for backwards compatibility
+export type { SpawnInheritanceConfig } from "@koi/core";
 // errors
 export { KoiRuntimeError } from "@koi/errors";
 // agent entity
@@ -200,5 +202,4 @@ export type {
   KoiRuntime,
   SpawnChildOptions,
   SpawnChildResult,
-  SpawnInheritanceConfig,
 } from "./types.js";

@@ -3,13 +3,17 @@ import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
 import { toTaskSummary } from "../project.js";
-import type { TaskOutputResponse } from "../types.js";
+import type { ResultSchema, TaskOutputResponse, TaskToolsConfig } from "../types.js";
 
 const schema = z.object({
   task_id: z.string().min(1).describe("ID of the task to retrieve output for"),
 });
 
-export function createTaskOutputTool(board: ManagedTaskBoard, agentId: AgentId): Tool {
+export function createTaskOutputTool(
+  board: ManagedTaskBoard,
+  agentId: AgentId,
+  config: Pick<TaskToolsConfig, "resultSchemas">,
+): Tool {
   return {
     descriptor: {
       name: "task_output",
@@ -75,6 +79,24 @@ export function createTaskOutputTool(board: ManagedTaskBoard, agentId: AgentId):
                 "Configure resultsDir in ManagedTaskBoardConfig to retain results across restarts.",
             };
             return response;
+          }
+          // Opt-in result schema validation — keyed by task.metadata.kind
+          if (result.results !== undefined && config.resultSchemas !== undefined) {
+            const kind = task.metadata?.kind;
+            if (typeof kind === "string") {
+              const resultSchema: ResultSchema | undefined = config.resultSchemas[kind];
+              if (resultSchema !== undefined) {
+                const v = resultSchema.safeParse(result.results);
+                if (!v.success) {
+                  const response: TaskOutputResponse = {
+                    kind: "completed",
+                    result,
+                    resultsValidationError: v.error.message,
+                  };
+                  return response;
+                }
+              }
+            }
           }
           const response: TaskOutputResponse = { kind: "completed", result };
           return response;

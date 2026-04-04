@@ -22,7 +22,7 @@ import type {
   SpawnResult,
   TaskableAgent,
 } from "@koi/core";
-import { INBOX } from "@koi/core";
+import { INBOX, validateSpawnRequest } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { runWithAgentContext } from "@koi/execution-context";
 
@@ -99,6 +99,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
   const { resolver, base, adapter, manifestTemplate, inheritedMiddleware } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
+    // Capture absolute deadline immediately so setup time (slot acquisition, assembly)
+    // is deducted from the child's budget regardless of the delivery mode.
+    // Callers that already set absoluteDeadlineMs (e.g. the Spawn tool) are respected;
+    // callers that only set timeoutMs get the same guarantee via this fallback.
+    const effectiveDeadlineMs: number | undefined =
+      request.absoluteDeadlineMs ??
+      (request.timeoutMs !== undefined && request.timeoutMs > 0
+        ? Date.now() + request.timeoutMs
+        : undefined);
+
     // 1. Resolve agent definition (or use inline manifest)
     let manifest: AgentManifest;
     let systemPrompt: string | undefined = request.systemPrompt;
@@ -147,11 +157,25 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
-    //    Attach a fresh spawn provider for the child when a factory is provided —
-    //    this enables recursive delegation without circular imports (the factory
-    //    is passed in by createSpawnToolProvider, not imported here directly).
+    //    Attach a fresh Spawn provider for the child only when the effective tool ceiling
+    //    allows it. If the parent manifest denylists "Spawn" or uses an allowlist that
+    //    does not include "Spawn", do not attach a fresh provider — the child cannot
+    //    delegate further. This closes the recursive-spawn bypass.
+    const spawnAllowedByManifest = isSpawnAllowedByManifest(
+      base.parentAgent.manifest.spawn,
+      request.toolDenylist,
+      request.toolAllowlist,
+    );
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined ? [options.spawnProviderFactory()] : [];
+      options.spawnProviderFactory !== undefined && spawnAllowedByManifest
+        ? [options.spawnProviderFactory()]
+        : [];
+
+    // Fail fast on conflicting list fields before building child options.
+    const validation = validateSpawnRequest(request);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
+    }
 
     const spawnOptions: SpawnChildOptions = {
       ...base,
@@ -160,6 +184,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       signal: request.signal,
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
+      ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
       ...(request.additionalTools !== undefined
         ? { additionalTools: request.additionalTools }
         : {}),
@@ -239,11 +264,29 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         // lifetime from the parent tool call. request.signal (which may fire when
         // the Spawn tool call times out or the parent cancels) must NOT interrupt a
         // deferred/on_demand child that is supposed to outlive the tool invocation.
+        // However, the wall-clock deadline IS honored. Use absoluteDeadlineMs (set at
+        // call time) to compute remaining budget rather than starting a fresh full-duration
+        // timer here — this prevents giving the child a double budget for setup overhead.
         const childController = new AbortController();
+        let childSignal = childController.signal;
+        // Use effectiveDeadlineMs (captured at request start) so elapsed setup time
+        // (slot wait, assembly) is deducted from the remaining budget.
+        if (effectiveDeadlineMs !== undefined) {
+          const remainingMs = effectiveDeadlineMs - Date.now();
+          if (remainingMs <= 0) {
+            // Deadline already elapsed during setup — abort immediately
+            childController.abort();
+          } else {
+            childSignal = AbortSignal.any([
+              childController.signal,
+              AbortSignal.timeout(remainingMs),
+            ]);
+          }
+        }
         const input: EngineInput = {
           kind: "text",
           text: request.description,
-          signal: childController.signal,
+          signal: childSignal,
         };
         void (async (): Promise<void> => {
           try {
@@ -332,10 +375,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 8b. Streaming (default): run synchronously, collect output inline.
+    // Compose the deadline into the streaming signal too — same wall-clock budget
+    // applies regardless of delivery mode.
+    const streamingSignal =
+      effectiveDeadlineMs !== undefined
+        ? AbortSignal.any([
+            request.signal,
+            AbortSignal.timeout(Math.max(0, effectiveDeadlineMs - Date.now())),
+          ])
+        : request.signal;
     return runWithAgentContext(agentContext, () =>
       runSpawnedAgent({
         spawnOptions,
-        input: { kind: "text", text: request.description, signal: request.signal },
+        input: { kind: "text", text: request.description, signal: streamingSignal },
         collector: createTextCollector(),
       }),
     );
@@ -345,6 +397,38 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the effective tool ceiling allows the child to use Spawn.
+ * Checks manifest allowlist/denylist and per-request allowlist/denylist.
+ * When false, the spawnProviderFactory is not called — the child cannot delegate further.
+ */
+function isSpawnAllowedByManifest(
+  manifestSpawn: AgentManifest["spawn"],
+  requestDenylist: readonly string[] | undefined,
+  requestAllowlist: readonly string[] | undefined,
+): boolean {
+  // Runtime denylist explicitly blocks Spawn
+  if (requestDenylist?.includes("Spawn")) return false;
+
+  // Runtime allowlist present but doesn't include Spawn
+  if (requestAllowlist !== undefined && !requestAllowlist.includes("Spawn")) return false;
+
+  // Manifest denylist blocks Spawn
+  if (manifestSpawn?.tools?.policy === "denylist" && manifestSpawn.tools.list?.includes("Spawn")) {
+    return false;
+  }
+
+  // Manifest allowlist doesn't include Spawn
+  if (
+    manifestSpawn?.tools?.policy === "allowlist" &&
+    !manifestSpawn.tools.list?.includes("Spawn")
+  ) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Extract systemPrompt from a TaskableAgent if it has one.

@@ -22,6 +22,13 @@ const schema = z.object({
     .string()
     .optional()
     .describe("Required when status = 'completed'. Summary of what was accomplished."),
+  results: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Optional when status = 'completed'. Structured result data (e.g. { count: 5, files: [...] }). " +
+        "Validated against resultSchemas[task.metadata.kind] if configured.",
+    ),
   reason: z
     .string()
     .optional()
@@ -54,7 +61,8 @@ export function createTaskUpdateTool(
         return { ok: false, error: parsed.error.message };
       }
 
-      const { task_id, subject, description, active_form, status, output, reason } = parsed.data;
+      const { task_id, subject, description, active_form, status, output, results, reason } =
+        parsed.data;
       const id = taskItemId(task_id);
       const snapshot = board.snapshot();
       const task = snapshot.get(id);
@@ -118,7 +126,12 @@ export function createTaskUpdateTool(
           // durationMs: time since the task's last state change (when it became in_progress).
           // task.updatedAt reflects the most recent transition — the in_progress assignment.
           const durationMs = Math.max(0, Date.now() - task.updatedAt);
-          const taskResult = { taskId: id, output, durationMs };
+          const taskResult = {
+            taskId: id,
+            output,
+            durationMs,
+            ...(results !== undefined ? { results } : {}),
+          };
           // completeOwnedTask: atomically re-checks ownership inside the lock
           const completeResult = await board.completeOwnedTask(id, agentId, taskResult);
           if (!completeResult.ok) {

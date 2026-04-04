@@ -20,5 +20,11 @@ exports[`getBuiltInAgents structural snapshot: agentType, tools, model 1`] = `
     "source": "built-in",
     "tools": [],
   },
+  {
+    "agentType": "coordinator",
+    "model": "opus",
+    "source": "built-in",
+    "tools": [],
+  },
 ]
 `;

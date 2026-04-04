@@ -46,6 +46,7 @@ import type {
   ModelChunk,
   PermissionBackend,
   Result,
+  SpawnFn,
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
@@ -74,6 +75,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
@@ -99,10 +101,27 @@ if (!API_KEY) {
 const MODEL = "google/gemini-2.0-flash-001";
 const FIXTURES = `${import.meta.dirname}/../fixtures`;
 
+// Set FORCE_RECORD=true to re-record cassettes that already exist.
+// By default, existing cassettes are skipped — this prevents recordedAt +
+// callId churn in every PR that happens to run the script, which causes
+// spurious merge conflicts on fixture files.
+const FORCE_RECORD = process.env.FORCE_RECORD === "true";
+
 const modelAdapter = createOpenAICompatAdapter({
   apiKey: API_KEY,
   baseUrl: "https://openrouter.ai/api/v1",
   model: MODEL,
+  retry: { maxRetries: 1 },
+});
+
+// Sonnet 4.6 adapter — used for cassettes that need reliable multi-step
+// tool call streaming (Gemini 2.0 Flash drops function name tokens on the
+// 3rd+ tool call in a sequence, producing "unknown" in ATIF trajectories).
+const SONNET_MODEL = "anthropic/claude-sonnet-4-6";
+const sonnetAdapter = createOpenAICompatAdapter({
+  apiKey: API_KEY,
+  baseUrl: "https://openrouter.ai/api/v1",
+  model: SONNET_MODEL,
   retry: { maxRetries: 1 },
 });
 
@@ -217,7 +236,7 @@ if (!taskListResult.ok) {
 const taskListTool = taskListResult.value;
 
 // ---------------------------------------------------------------------------
-// @koi/task-tools — full tool surface (6 tools via createTaskTools)
+// @koi/task-tools — full tool surface (7 tools via createTaskTools)
 // ---------------------------------------------------------------------------
 
 const taskToolsBoard = await createManagedTaskBoard({
@@ -227,8 +246,9 @@ const taskToolsAll = createTaskTools({
   board: taskToolsBoard,
   agentId: "golden-recorder" as import("@koi/core").AgentId,
 });
-// createTaskTools returns [create, get, update, list, stop, output]
-const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
+// createTaskTools returns [create, get, update, list, stop, output, delegate]
+const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput, ttDelegate] = taskToolsAll as [
+  import("@koi/core").Tool,
   import("@koi/core").Tool,
   import("@koi/core").Tool,
   import("@koi/core").Tool,
@@ -236,6 +256,27 @@ const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
   import("@koi/core").Tool,
   import("@koi/core").Tool,
 ];
+
+// ---------------------------------------------------------------------------
+// @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+// Stub returns immediately without launching a real child agent.
+// The cassette captures the LLM's tool-call interaction pattern.
+// ---------------------------------------------------------------------------
+
+const stubSpawnFn: SpawnFn = async (request) => ({
+  ok: true,
+  output: `Task delegated to ${request.agentName}: ${request.description} — result: done`,
+});
+
+const spawnToolsAbortController = new AbortController();
+const spawnToolsAll = createSpawnTools({
+  spawnFn: stubSpawnFn,
+  board: taskToolsBoard, // shares the task board for full coordinator flow
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+  signal: spawnToolsAbortController.signal,
+});
+// createSpawnTools returns [agent_spawn]
+const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -451,14 +492,23 @@ const memoryRecallTool = memoryRecallResult.value;
 async function recordCassette(
   name: string,
   factory: () => AsyncIterable<ModelChunk>,
+  options: { readonly model?: string } = {},
 ): Promise<void> {
-  console.log(`Recording ${name}.cassette.json...`);
+  const path = `${FIXTURES}/${name}.cassette.json`;
+  if (!FORCE_RECORD && (await Bun.file(path).exists())) {
+    console.log(
+      `Skipping ${name}.cassette.json (already exists — set FORCE_RECORD=true to re-record)`,
+    );
+    return;
+  }
+  const cassModel = options.model ?? MODEL;
+  console.log(`Recording ${name}.cassette.json (model: ${cassModel})...`);
   const chunks: ModelChunk[] = [];
   for await (const c of factory()) chunks.push(c);
   await Bun.write(
-    `${FIXTURES}/${name}.cassette.json`,
+    path,
     JSON.stringify(
-      { name, model: MODEL, recordedAt: Date.now(), chunks } satisfies Cassette,
+      { name, model: cassModel, recordedAt: Date.now(), chunks } satisfies Cassette,
       null,
       2,
     ),
@@ -492,6 +542,25 @@ interface QueryConfig {
   readonly permissionBackend?: PermissionBackend;
   /** Denial escalation config for permissions middleware. */
   readonly denialEscalation?: boolean | DenialEscalationConfig;
+  /** Override model adapter for this query's trajectory recording. Defaults to global modelAdapter. */
+  readonly modelAdapter?: ReturnType<typeof createOpenAICompatAdapter>;
+  /** Model name to use when modelAdapter is overridden. Defaults to MODEL constant. */
+  readonly modelName?: string;
+  /**
+   * Optional factory called after the ATIF store is created.
+   * Replaces `providers` for queries that need to inject store-aware middleware
+   * into child agents (e.g., spawn inheritance with shared trajectory store).
+   * When provided, `providers` is ignored.
+   */
+  readonly providerFactory?: (
+    store: ReturnType<typeof createAtifDocumentStore>,
+    docId: string,
+  ) => readonly ComponentProvider[];
+  /**
+   * Optional parent manifest overrides merged into the default `{ name, version, model }`.
+   * Use to set manifest.spawn ceiling on the parent agent for manifest-ceiling queries.
+   */
+  readonly parentManifestOverrides?: import("@koi/core").AgentManifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +569,13 @@ interface QueryConfig {
 
 async function recordTrajectory(config: QueryConfig): Promise<void> {
   const { name, prompt } = config;
+  const path = `${FIXTURES}/${name}.trajectory.json`;
+  if (!FORCE_RECORD && (await Bun.file(path).exists())) {
+    console.log(
+      `Skipping ${name}.trajectory.json (already exists — set FORCE_RECORD=true to re-record)`,
+    );
+    return;
+  }
   console.log(`\nRecording ${name}.trajectory.json (full-stack, all L2)...`);
 
   const trajDir = `/tmp/koi-record-${name}-${Date.now()}`;
@@ -566,11 +642,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   mcpSm.transition({ kind: "connecting", attempt: 1 });
   mcpSm.transition({ kind: "connected" });
 
-  // Bridge adapter
+  // Bridge adapter — use per-query override if provided (e.g. Sonnet for multi-step tool calls)
+  const queryModelAdapter = config.modelAdapter ?? modelAdapter;
+  const queryModel = config.modelName ?? MODEL;
   const bridge: EngineAdapter = {
     engineId: `golden-${name}`,
     capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    terminals: { modelCall: queryModelAdapter.complete, modelStream: queryModelAdapter.stream },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const h = input.callHandlers;
       if (!h)
@@ -602,10 +680,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
           let done: EngineEvent | undefined;
           for await (const e of consumeModelStream(
             h.modelStream
-              ? h.modelStream({ messages: msgs, model: MODEL })
+              ? h.modelStream({ messages: msgs, model: queryModel })
               : (async function* (): AsyncIterable<ModelChunk> {
-                  const r = await h.modelCall({ messages: msgs, model: MODEL });
-                  yield { kind: "done" as const, response: { content: r.content, model: MODEL } };
+                  const r = await h.modelCall({ messages: msgs, model: queryModel });
+                  yield {
+                    kind: "done" as const,
+                    response: { content: r.content, model: queryModel },
+                  };
                 })(),
             input.signal,
           )) {
@@ -627,12 +708,19 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             if (!r.parsedArgs) continue;
             // Use the real callId from the model, not the tool name
             const realCallId = tc.callId as string;
-            // Append assistant message (the tool-use intent)
+            // Append assistant message (the tool-use intent).
+            // Include both callName (request-mapper session-repair) and toolName
+            // (legacy key) so both Gemini and Sonnet can reconstruct tool_calls.
             msgs.push({
               senderId: "assistant",
               timestamp: Date.now(),
               content: [{ kind: "text", text: "" }],
-              metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+              metadata: {
+                callId: realCallId,
+                callName: r.toolName,
+                callArgs: JSON.stringify(r.parsedArgs ?? {}),
+                toolName: r.toolName,
+              } as JsonObject,
             });
             try {
               const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
@@ -643,7 +731,12 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
                 senderId: "tool",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: out }],
-                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+                // callId + toolCallId: both keys so any provider path finds the linkage.
+                metadata: {
+                  callId: realCallId,
+                  toolCallId: realCallId,
+                  toolName: r.toolName,
+                } as JsonObject,
               });
             } catch (toolErr: unknown) {
               const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -687,11 +780,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     semanticRetryMw,
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
+  // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
+  // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
+  // so the child's model calls appear in the same ATIF document with their own identity).
+  const resolvedProviders =
+    config.providerFactory !== undefined ? config.providerFactory(store, docId) : config.providers;
+
   const runtime = await createKoi({
-    manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
+    manifest: {
+      name: `golden-${name}`,
+      version: "0.1.0",
+      model: { name: queryModel },
+      ...config.parentManifestOverrides,
+    },
     adapter: bridge,
     middleware: tracedMiddleware,
-    providers: [...config.providers],
+    providers: [...resolvedProviders],
     loopDetection: false,
   });
 
@@ -780,39 +884,47 @@ const webProvider = createWebProvider({
 let nexusTransport: { readonly close: () => void } | undefined;
 let nexusFsProvider: ComponentProvider | undefined;
 
-// Only set up nexus-fs if nexus-fs Python package is available
+// Only set up nexus-fs if nexus-fs Python package is available AND transport starts cleanly
 const nexusFsCheck = Bun.spawnSync(["python3", "-c", "import nexus.fs"]);
 if (nexusFsCheck.exitCode === 0) {
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
+  try {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
 
-  const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
-  const transport = await createLocalTransport({
-    mountUri: `local://${nexusTmpDir}`,
-    startupTimeoutMs: 15_000,
-  });
-  nexusTransport = transport;
+    const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
+    const transport = await createLocalTransport({
+      mountUri: `local://${nexusTmpDir}`,
+      startupTimeoutMs: 15_000,
+    });
+    nexusTransport = transport;
 
-  const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
-  const backend = createNexusFileSystem({
-    url: "local://unused",
-    mountPoint: nexusMountPoint,
-    transport,
-  });
+    const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
+    const backend = createNexusFileSystem({
+      url: "local://unused",
+      mountPoint: nexusMountPoint,
+      transport,
+    });
 
-  // Pre-seed a file for the LLM to read
-  await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
+    // Pre-seed a file for the LLM to read
+    await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
 
-  const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
+    const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
 
-  nexusFsProvider = createSingleToolProvider({
-    name: "nexus-fs",
-    toolName: "nexus_read",
-    createTool: () => readTool,
-  });
+    nexusFsProvider = createSingleToolProvider({
+      name: "nexus-fs",
+      toolName: "nexus_read",
+      createTool: () => readTool,
+    });
 
-  console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+    console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+  } catch (err: unknown) {
+    console.log(
+      `nexus-fs transport failed (${err instanceof Error ? err.message : String(err)}) — skipping`,
+    );
+    nexusTransport = undefined;
+    nexusFsProvider = undefined;
+  }
 } else {
   console.log("nexus-fs not available — skipping nexus-fs golden query");
 }
@@ -1370,7 +1482,143 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
 
-  // 14. task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
+  // 14. spawn-allowlist: toolAllowlist via Spawn tool (#1425)
+  //     Parent has Glob + Grep + ToolSearch + Spawn.
+  //     Parent spawns researcher with toolAllowlist=['Grep'] — child gets ONLY Grep + Spawn.
+  //     Glob and ToolSearch absent from child's ModelRequest.tools proves allowlist enforcement.
+  {
+    name: "spawn-allowlist",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolAllowlist=['Grep'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 15. spawn-manifest-ceiling: manifest.spawn.tools.policy=allowlist (#1425)
+  //     Parent manifest declares spawn.tools.policy=allowlist, list=['Grep'].
+  //     LLM calls Spawn with NO toolAllowlist — manifest ceiling enforced by engine alone.
+  //     Child model step should show only [Grep] (Glob and ToolSearch absent).
+  //     Proves ceiling is enforced at the engine level, not by caller discipline.
+  {
+    name: "spawn-manifest-ceiling",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    // Parent manifest declares the ceiling — only Grep allowed for children
+    parentManifestOverrides: {
+      name: "golden-spawn-manifest-ceiling",
+      version: "0.1.0",
+      model: { name: MODEL },
+      spawn: { tools: { policy: "allowlist", list: ["Grep"] } },
+    },
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 17. spawn-inheritance: tool narrowing via toolDenylist (#1425)
+  //     Parent has Glob + Grep + ToolSearch (builtin search) + Spawn.
+  //     Parent spawns researcher with toolDenylist=['Glob'] — child inherits Grep + ToolSearch
+  //     but NOT Glob, and gets a fresh Spawn. Child's model call appears in the shared ATIF
+  //     document with agentName="researcher", proving Glob is absent at the model-request level.
+  {
+    name: "spawn-inheritance",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolDenylist=['Glob'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      // Child event trace: same store + docId as parent, child's own identity.
+      // Child steps appear in the trajectory tagged "researcher", making
+      // ModelRequest.tools visible — Glob absent proves denylist enforcement.
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        // Parent has Glob + Grep + ToolSearch so the denylist has something to deny
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
   //     Exercises create → list → update(in_progress) → update(completed) flow.
   {
     name: "task-tools",
@@ -1422,8 +1670,53 @@ const queries: readonly QueryConfig[] = [
         toolName: "task_output",
         createTool: () => ttOutput,
       }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
     ],
     maxTurns: 5,
+  },
+
+  // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+  //     Coordinator creates a task, delegates it, then spawns a child agent.
+  //     Stub SpawnFn returns immediately (no real child agent launched).
+  {
+    name: "spawn-tools",
+    prompt:
+      "You are a coordinator. Do the following steps in order: " +
+      "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+      "2) Use task_delegate to assign that task to agent 'researcher'. " +
+      "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+      "Report the researcher's output.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+      createSingleToolProvider({
+        name: "agent-spawn",
+        toolName: "agent_spawn",
+        createTool: () => stAgentSpawn,
+      }),
+    ],
+    maxTurns: 4,
+    // Use Sonnet 4.6 for trajectory recording — Gemini 2.0 Flash drops the
+    // function name token on the 3rd+ tool call in a sequence (completion_tokens: 1),
+    // causing agent_spawn to resolve as "unknown" in the ATIF.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
   },
 ];
 
@@ -1517,8 +1810,37 @@ await recordCassette("task-tools", () =>
       ttList.descriptor,
       ttStop.descriptor,
       ttOutput.descriptor,
+      ttDelegate.descriptor,
     ],
   }),
+);
+
+// spawn-tools uses Sonnet 4.6 — Gemini 2.0 Flash drops function name tokens
+// on the 3rd+ tool call in a sequence, causing agent_spawn to emit as "unknown".
+await recordCassette(
+  "spawn-tools",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                "You are a coordinator. Do the following steps in order: " +
+                "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+                "2) Use task_delegate to assign that task to agent 'researcher'. " +
+                "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+                "Report the researcher's output.",
+            },
+          ],
+        },
+      ],
+      tools: [ttCreate.descriptor, ttDelegate.descriptor, stAgentSpawn.descriptor],
+    }),
+  { model: SONNET_MODEL },
 );
 
 await recordCassette("memory-store", () =>
@@ -1619,9 +1941,11 @@ for (const q of queries) {
 await mcpSetup.cleanup();
 nexusTransport?.close();
 
-console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
+console.log("  fixtures/task-tools.cassette.json");
+console.log("  fixtures/spawn-tools.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);

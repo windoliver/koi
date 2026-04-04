@@ -295,9 +295,9 @@ describe("Golden: @koi/agent-runtime", () => {
     const registry = createAgentDefinitionRegistry(builtIn, []);
     const resolver = createDefinitionResolver(registry);
 
-    // All 3 built-ins discoverable (await for T | Promise<T> L0 interface)
+    // All 4 built-ins discoverable (await for T | Promise<T> L0 interface)
     const list = await resolver.list();
-    expect(list.length).toBe(3);
+    expect(list.length).toBe(4);
 
     // Each resolves successfully with correct shape
     for (const summary of list) {

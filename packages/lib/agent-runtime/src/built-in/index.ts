@@ -11,6 +11,7 @@ import type { AgentDefinition } from "@koi/core";
 import { deepFreezeDefinition } from "../freeze.js";
 import { parseAgentDefinition } from "../parse-agent-definition.js";
 import { CODER_MD } from "./coder.js";
+import { COORDINATOR_MD } from "./coordinator.js";
 import { RESEARCHER_MD } from "./researcher.js";
 import { REVIEWER_MD } from "./reviewer.js";
 
@@ -23,6 +24,7 @@ const BUILT_IN_ENTRIES: readonly BuiltInEntry[] = [
   { name: "researcher", content: RESEARCHER_MD },
   { name: "coder", content: CODER_MD },
   { name: "reviewer", content: REVIEWER_MD },
+  { name: "coordinator", content: COORDINATOR_MD },
 ];
 
 let cached: readonly AgentDefinition[] | undefined;

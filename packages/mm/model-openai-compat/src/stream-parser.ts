@@ -213,12 +213,24 @@ function processThinkingDelta(
 // ---------------------------------------------------------------------------
 
 function closeOneToolCall(
-  active: { readonly id: string; readonly name: string; readonly argBuffer: string },
+  active: {
+    readonly id: string;
+    readonly name: string;
+    readonly argBuffer: string;
+    readonly startEmitted: boolean;
+  },
   acc: MutableAccumulator,
 ): readonly ModelChunk[] {
-  // Reject tool calls with empty function name — cannot be dispatched safely
+  // Reject tool calls with empty function name — cannot be dispatched safely.
+  // Emit a deferred tool_call_start first (if not yet emitted) so that
+  // consume-stream's accumulator map has an entry for this callId, preventing
+  // the "unknown" fallback when tool_call_end arrives for an untracked call.
   if (active.name === "") {
+    const prefix: readonly ModelChunk[] = active.startEmitted
+      ? []
+      : [{ kind: "tool_call_start", toolName: "", callId: toolCallId(active.id) }];
     return [
+      ...prefix,
       {
         kind: "error",
         message: `Tool call "${active.id}" has no function name — cannot dispatch`,
@@ -226,6 +238,12 @@ function closeOneToolCall(
       },
     ];
   }
+
+  // If tool_call_start was deferred but name arrived via a later delta
+  // (startEmitted is still false here), emit it now before closing.
+  const prefix: readonly ModelChunk[] = active.startEmitted
+    ? []
+    : [{ kind: "tool_call_start", toolName: active.name, callId: toolCallId(active.id) }];
 
   const result = parseToolArguments(active.argBuffer);
   if (result.ok) {
@@ -235,10 +253,11 @@ function closeOneToolCall(
       name: active.name,
       arguments: result.args,
     });
-    return [{ kind: "tool_call_end", callId: toolCallId(active.id) }];
+    return [...prefix, { kind: "tool_call_end", callId: toolCallId(active.id) }];
   }
   // Invalid arguments — emit ONLY error, no tool_call_end.
   return [
+    ...prefix,
     {
       kind: "error",
       message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
