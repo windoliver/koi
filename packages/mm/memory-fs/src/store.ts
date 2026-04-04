@@ -5,7 +5,7 @@
  * A MEMORY.md index is rebuilt on every mutation (write/update/delete).
  */
 
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   MemoryRecord,
@@ -108,7 +108,8 @@ async function writeRecord(
     updatedAt: fileStat.mtimeMs,
   };
 
-  await tryRebuildIndex(dir, [...existing, record]);
+  // Fresh scan for index rebuild — avoids stale snapshot from concurrent mutations
+  await tryRebuildIndexFromDisk(dir);
   return { action: "created", record };
 }
 
@@ -138,8 +139,11 @@ async function updateRecord(
     throw new Error("Failed to serialize updated memory record");
   }
 
+  // Atomic update: write temp file then rename over original
   const filePath = join(dir, existing.filePath);
-  await writeFile(filePath, serialized, "utf-8");
+  const tmpPath = join(dir, `.${existing.filePath}.tmp`);
+  await writeFile(tmpPath, serialized, "utf-8");
+  await rename(tmpPath, filePath);
   const fileStat = await stat(filePath);
 
   // Re-parse to return sanitized values matching what's on disk
@@ -155,8 +159,7 @@ async function updateRecord(
     updatedAt: fileStat.mtimeMs,
   };
 
-  const updatedRecords = records.map((r) => (r.id === id ? record : r));
-  await tryRebuildIndex(dir, updatedRecords);
+  await tryRebuildIndexFromDisk(dir);
   return record;
 }
 
@@ -172,8 +175,7 @@ async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
     if (!isEnoent(e)) throw e;
   }
 
-  const remaining = records.filter((r) => r.id !== id);
-  await tryRebuildIndex(dir, remaining);
+  await tryRebuildIndexFromDisk(dir);
   return true;
 }
 
@@ -209,7 +211,12 @@ async function scanRecords(dir: string): Promise<readonly MemoryRecord[]> {
 async function recordFromFile(dir: string, filename: string): Promise<MemoryRecord | undefined> {
   try {
     const filePath = join(dir, filename);
-    const [content, fileStat] = await Promise.all([readFile(filePath, "utf-8"), stat(filePath)]);
+
+    // Reject symlinks — store must not escape its directory boundary
+    const linkStat = await lstat(filePath);
+    if (linkStat.isSymbolicLink()) return undefined;
+
+    const content = await readFile(filePath, "utf-8");
 
     const parsed = parseMemoryFrontmatter(content);
     if (parsed === undefined) return undefined;
@@ -221,8 +228,8 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
       type: parsed.frontmatter.type,
       content: parsed.content,
       filePath: filename,
-      createdAt: fileStat.birthtimeMs,
-      updatedAt: fileStat.mtimeMs,
+      createdAt: linkStat.birthtimeMs,
+      updatedAt: linkStat.mtimeMs,
     };
   } catch (e: unknown) {
     // File vanished between readdir and read — skip it
@@ -237,12 +244,13 @@ function filenameToId(filename: string): string {
 }
 
 /**
- * Best-effort index rebuild — record mutations are the source of truth.
- * If index rebuild fails, the index self-heals on the next successful mutation.
+ * Best-effort index rebuild from fresh disk scan.
+ * Avoids stale snapshots from concurrent mutations.
  */
-async function tryRebuildIndex(dir: string, records: readonly MemoryRecord[]): Promise<void> {
+async function tryRebuildIndexFromDisk(dir: string): Promise<void> {
   try {
-    await rebuildIndex(dir, records);
+    const freshRecords = await scanRecords(dir);
+    await rebuildIndex(dir, freshRecords);
   } catch {
     // Index write failed — record mutation already committed.
     // Index will be rebuilt on the next successful mutation.
@@ -273,9 +281,9 @@ async function writeExclusive(dir: string, name: string, content: string): Promi
     }
   }
 
-  // Fallback: timestamp-based unique name
-  const fallback = `${slugifyMemoryName(name)}-${Date.now()}.md`;
-  await writeFile(join(dir, fallback), content, "utf-8");
+  // Fallback: random suffix, still exclusive
+  const fallback = `${slugifyMemoryName(name)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`;
+  await writeFile(join(dir, fallback), content, { encoding: "utf-8", flag: "wx" });
   return fallback;
 }
 
