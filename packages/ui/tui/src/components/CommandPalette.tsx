@@ -2,23 +2,25 @@
  * CommandPalette — Ctrl+P fuzzy-search overlay for commands.
  *
  * Architecture:
- *  - Query state is local (transient; not persisted to TuiState).
- *  - useKeyboard captures printable chars + Backspace to update query.
- *    Arrow keys and Enter are NOT prevented → passed through to <select>.
+ *  - Query is sourced from modal state (`TuiModal.query`) so it survives
+ *    interruptions (e.g., a permission prompt taking over the modal slot).
+ *  - useKeyboard captures printable chars + Backspace to update query;
+ *    each change is also persisted back to the store via set_modal.
+ *  - Arrow keys and Enter are NOT prevented → passed through to <select>.
  *  - Progressive disclosure filtering is memoised on sessionCount.
  *  - Fuzzy scoring runs per-keystroke (15 items: negligible cost).
  */
 
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useMemo, useState } from "react";
+import React, { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   COMMAND_DEFINITIONS,
   filterCommands,
   type CommandDef,
 } from "../commands/command-definitions.js";
 import { fuzzyFilter } from "../commands/fuzzy-match.js";
-import { useTuiStore } from "../store-context.js";
+import { StoreContext, useTuiStore } from "../store-context.js";
 import { SelectOverlay } from "./SelectOverlay.js";
 
 // ---------------------------------------------------------------------------
@@ -49,8 +51,45 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = m
   function CommandPalette(props: CommandPaletteProps): React.ReactNode {
     const { onSelect, onClose, focused } = props;
 
+    const store = useContext(StoreContext);
     const sessionCount = useTuiStore((s) => s.sessions.length);
-    const [query, setQuery] = useState("");
+
+    // Source the initial query from modal state so a restored palette has the
+    // query that was active before a permission-prompt interruption.
+    const storedQuery = useTuiStore((s) =>
+      s.modal?.kind === "command-palette" ? s.modal.query : "",
+    );
+
+    // queryRef is the synchronous source of truth for rapid keystroke sequences.
+    // Updating the ref + store happens immediately in the key handler, so the
+    // permission bridge (which reads store state synchronously) always sees the
+    // latest query when snapshotting before a permission-prompt takeover.
+    const queryRef = useRef(storedQuery);
+    const [query, setQuery] = useState(storedQuery);
+
+    // When the bridge restores the modal (e.g., after a permission-prompt
+    // clears and the palette is re-shown with a stored query), resync local
+    // state so the displayed query matches the restored value.
+    useEffect(() => {
+      if (storedQuery !== queryRef.current) {
+        queryRef.current = storedQuery;
+        setQuery(storedQuery);
+      }
+    }, [storedQuery]);
+
+    const updateQuery = useCallback(
+      (next: string) => {
+        queryRef.current = next; // synchronous — no React batching
+        setQuery(next);          // trigger re-render
+        // Guard: only write to the modal slot when we still own it.
+        // A permission prompt may have taken over between keystrokes; never
+        // let a stale keystroke replace an active approval dialog.
+        if (store?.getState().modal?.kind === "command-palette") {
+          store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: next } });
+        }
+      },
+      [store],
+    );
 
     // Memoised: recomputes only when sessionCount changes (not on every keystroke)
     const sessionFiltered = useMemo(
@@ -65,6 +104,8 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = m
         : fuzzyFilter(sessionFiltered, query, getCommandLabel);
 
     // Capture printable chars + Backspace to build the query.
+    // queryRef.current (not the render-time `query`) is used to compute the next
+    // value so bursty key events sequence correctly even before a re-render commits.
     // Arrow keys and Enter are NOT prevented so <select> handles navigation.
     useKeyboard(
       useCallback(
@@ -77,16 +118,16 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = m
           }
           if (key.name === "backspace") {
             key.preventDefault();
-            setQuery((prev: string) => prev.slice(0, -1));
+            updateQuery(queryRef.current.slice(0, -1));
             return;
           }
           // Single printable character (no Ctrl, no Meta modifier)
           if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
             key.preventDefault();
-            setQuery((prev: string) => prev + key.sequence);
+            updateQuery(queryRef.current + key.sequence);
           }
         },
-        [focused, onClose],
+        [focused, onClose, updateQuery],
       ),
     );
 

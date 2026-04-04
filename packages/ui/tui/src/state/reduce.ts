@@ -221,7 +221,15 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         totalTokens: prev.totalTokens + m.totalTokens,
         inputTokens: prev.inputTokens + m.inputTokens,
         outputTokens: prev.outputTokens + m.outputTokens,
-        turns: prev.turns + 1,
+        // Count as a user round trip only when the engine actually ran at least one
+        // model call. Interrupted/no-op completions emit done with m.turns === 0
+        // and should not inflate the session counter.
+        turns: m.turns > 0 ? prev.turns + 1 : prev.turns,
+        // Default prev.engineTurns to prev.turns (conservative floor): each
+        // historical user turn required at least one model call, so engineTurns
+        // should never migrate below the existing turn count. This keeps the
+        // status bar amplification signal honest for restored legacy sessions.
+        engineTurns: (prev.engineTurns ?? prev.turns) + m.turns,
         costUsd: m.costUsd !== undefined ? (prev.costUsd ?? 0) + m.costUsd : prev.costUsd,
       };
       const base = { ...state, cumulativeMetrics, agentStatus: "idle" as const };

@@ -74,9 +74,15 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(functi
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
   const turns = useTuiStore((s) => s.cumulativeMetrics.turns);
+  const engineTurns = useTuiStore((s) => s.cumulativeMetrics.engineTurns);
 
   // Compact mode: skip metrics chip when terminal is narrow
   const showMetrics = width >= 60;
+
+  // Show "T3" when model calls = user turns (normal), "T1·5" when a run had
+  // internal tool-loop/retry amplification (engineTurns > turns).
+  const turnsLabel =
+    engineTurns > turns ? `T${turns}·${engineTurns}` : `T${turns}`;
 
   return (
     <box
@@ -91,7 +97,7 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(functi
       {showMetrics ? <MetricsChip metrics={cumulativeMetrics} /> : null}
       <box flexGrow={1} />
       <AgentStatusChip status={agentStatus} />
-      <text fg="#64748B">{`T${turns}`}</text>
+      <text fg="#64748B">{turnsLabel}</text>
     </box>
   );
 });

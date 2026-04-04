@@ -1522,12 +1522,103 @@ describe("reduce — cumulative metrics on 'done'", () => {
     expect(next.cumulativeMetrics.costUsd).toBeCloseTo(0.02);
   });
 
-  test("turns counter increments by 1 per done event", () => {
+  test("turns accumulate from m.turns (single-turn runs: m.turns=1 each)", () => {
     let state = createInitialState();
     for (let i = 0; i < 5; i++) {
       state = reduce(state, doneWith({ totalTokens: 10, inputTokens: 8, outputTokens: 2 }));
     }
     expect(state.cumulativeMetrics.turns).toBe(5);
+  });
+
+  test("done with legacy state missing engineTurns: floors at prev.turns, no NaN (backward compat)", () => {
+    // Simulate a state restored from before engineTurns was added to the schema.
+    // The ?? prev.turns floor preserves history: each prior user turn had ≥1 model call.
+    const legacyMetrics = {
+      totalTokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      turns: 3,
+      // engineTurns deliberately absent — pre-migration state
+      costUsd: null,
+    };
+    const state = stateWith({
+      // Cast: simulate a legacy state object that predates engineTurns
+      cumulativeMetrics: legacyMetrics as unknown as import("./types.js").CumulativeMetrics,
+    });
+    const next = reduce(state, doneWith({ totalTokens: 50, inputTokens: 40, outputTokens: 10 }));
+    expect(Number.isNaN(next.cumulativeMetrics.engineTurns)).toBe(false);
+    // Floor is prev.turns (3), not 0. After one more single-turn run: 3 + 1 = 4.
+    expect(next.cumulativeMetrics.engineTurns).toBe(4);
+    expect(next.cumulativeMetrics.turns).toBe(4);
+    // engineTurns === turns → no false amplification shown in status bar
+    expect(next.cumulativeMetrics.engineTurns).toBe(next.cumulativeMetrics.turns);
+  });
+
+  test("done with legacy state: subsequent tool-loop run still shows amplification signal", () => {
+    // After restoring a legacy session (engineTurns defaults to turns=3),
+    // a multi-turn tool-loop run should surface in the status bar.
+    const legacyMetrics = {
+      totalTokens: 100, inputTokens: 80, outputTokens: 20, turns: 3, costUsd: null,
+    };
+    const state = stateWith({
+      cumulativeMetrics: legacyMetrics as unknown as import("./types.js").CumulativeMetrics,
+    });
+    // Tool-loop run: m.turns = 4 (4 model calls for 1 user request)
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: { totalTokens: 400, inputTokens: 320, outputTokens: 80, turns: 4, durationMs: 800 },
+        },
+      }),
+    );
+    expect(next.cumulativeMetrics.turns).toBe(4);       // 3 prior + 1 new user turn
+    expect(next.cumulativeMetrics.engineTurns).toBe(7); // 3 (floor) + 4 (tool loop)
+    // engineTurns > turns → status bar shows amplification signal
+    expect(next.cumulativeMetrics.engineTurns).toBeGreaterThan(next.cumulativeMetrics.turns);
+  });
+
+  test("done with m.turns === 0: user turns unchanged (interrupted/no-op run)", () => {
+    // Engine emits done with turns=0 when interrupted before first model call
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "interrupted",
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 5 },
+        },
+      }),
+    );
+    // No model calls → should not count as a completed user turn
+    expect(next.cumulativeMetrics.turns).toBe(0);
+    expect(next.cumulativeMetrics.engineTurns).toBe(0);
+  });
+
+  test("done with m.turns > 1: user turns = 1, engineTurns = m.turns (multi-turn tool-loop run)", () => {
+    // A single user request that caused 3 internal engine turns (tool-call loop)
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: { totalTokens: 300, inputTokens: 240, outputTokens: 60, turns: 3, durationMs: 500 },
+        },
+      }),
+    );
+    // User round trips: always 1 per done event
+    expect(next.cumulativeMetrics.turns).toBe(1);
+    // Engine-internal turns: accumulates m.turns (3 model calls for this run)
+    expect(next.cumulativeMetrics.engineTurns).toBe(3);
+    expect(next.cumulativeMetrics.totalTokens).toBe(300);
   });
 
   test("done sets agentStatus to idle", () => {

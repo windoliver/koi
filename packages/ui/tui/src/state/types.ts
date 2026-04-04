@@ -63,13 +63,26 @@ export type TuiModal =
 // Session & Metrics
 // ---------------------------------------------------------------------------
 
-/** Cumulative token and cost metrics accumulated across all turns in a session. */
+/**
+ * Cumulative token and cost metrics accumulated across all engine runs in a session.
+ *
+ * ## Stable contracts (do not repurpose in place):
+ * - `turns` — user→agent round trips that involved at least one model call.
+ *   Increments by 1 per `done` event when `EngineMetrics.turns > 0`.
+ *   Zero-model-call completions (interrupted runs) do not increment this.
+ * - `engineTurns` — total model calls across all runs, from `EngineMetrics.turns`.
+ *   Includes tool-call loops and stop-retries within a single user request.
+ *   Exposed in the status bar as `T{turns}·{engineTurns}` when amplified.
+ *
+ * Backward compatibility: `engineTurns` was added after initial rollout.
+ * The reducer defaults it with `?? 0` when reading pre-migration state objects.
+ */
 export interface CumulativeMetrics {
   readonly totalTokens: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
-  /** Count of user→agent round trips (increments on each 'done' event). */
   readonly turns: number;
+  readonly engineTurns: number;
   /** Null until at least one turn provides costUsd. */
   readonly costUsd: number | null;
 }

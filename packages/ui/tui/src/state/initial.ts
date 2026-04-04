@@ -9,6 +9,7 @@ const INITIAL_METRICS: CumulativeMetrics = {
   inputTokens: 0,
   outputTokens: 0,
   turns: 0,
+  engineTurns: 0,
   costUsd: null,
 };
 
