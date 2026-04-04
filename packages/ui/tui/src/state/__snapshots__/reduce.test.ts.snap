@@ -3,10 +3,20 @@
 exports[`createInitialState initial state shape 1`] = `
 {
   "activeView": "conversation",
+  "agentStatus": "idle",
   "connectionStatus": "disconnected",
+  "cumulativeMetrics": {
+    "costUsd": null,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "turns": 0,
+  },
   "layoutTier": "normal",
   "messages": [],
   "modal": null,
+  "sessionInfo": null,
+  "sessions": [],
   "zoomLevel": 1,
 }
 `;
