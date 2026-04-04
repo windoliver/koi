@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:10.823Z",
+      "timestamp": "2026-04-04T08:04:54.837Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:10.829Z",
+      "timestamp": "2026-04-04T08:04:54.838Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,7 +38,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:34:10.988Z",
+      "timestamp": "2026-04-04T08:04:54.866Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Answer with just the number.",
       "observation": {
@@ -52,7 +52,7 @@
         "prompt_tokens": 96,
         "completion_tokens": 2
       },
-      "duration_ms": 631,
+      "duration_ms": 490,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -63,10 +63,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:11.663Z",
+      "timestamp": "2026-04-04T08:04:55.360Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-model-done\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 706.3450830000002,
+      "duration_ms": 494.23112499999934,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -80,10 +80,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:11.664Z",
+      "timestamp": "2026-04-04T08:04:55.360Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-model-done\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 718.275834,
+      "duration_ms": 501.61712499999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -97,10 +97,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:11.664Z",
+      "timestamp": "2026-04-04T08:04:55.360Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-model-done\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is 2+2? Answer with just the number.",
-      "duration_ms": 732.139000000001,
+      "duration_ms": 503.68566699999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -114,15 +114,18 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T07:34:11.697Z",
+      "timestamp": "2026-04-04T08:04:55.361Z",
       "model_name": "hook:on-model-done",
       "message": "turn.ended → on-model-done",
-      "duration_ms": 49.18941700000141,
+      "duration_ms": 2.168792000000394,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "turn.ended",
-        "hookName": "on-model-done"
+        "hookName": "on-model-done",
+        "decision": {
+          "kind": "continue"
+        }
       }
     }
   ]
