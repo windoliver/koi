@@ -45,7 +45,8 @@ export async function rebuildIndex(dir: string, records: readonly MemoryRecord[]
 /**
  * Read and parse the MEMORY.md index file.
  *
- * Returns an empty index if the file does not exist or is empty.
+ * Returns an empty index if the file does not exist.
+ * Propagates permission and I/O errors.
  */
 export async function readIndex(dir: string): Promise<MemoryIndex> {
   try {
@@ -55,7 +56,15 @@ export async function readIndex(dir: string): Promise<MemoryIndex> {
       .map(parseMemoryIndexEntry)
       .filter((e): e is NonNullable<typeof e> => e !== undefined);
     return { entries };
-  } catch {
-    return { entries: [] };
+  } catch (e: unknown) {
+    if (
+      typeof e === "object" &&
+      e !== null &&
+      "code" in e &&
+      (e as { readonly code: string }).code === "ENOENT"
+    ) {
+      return { entries: [] };
+    }
+    throw e;
   }
 }

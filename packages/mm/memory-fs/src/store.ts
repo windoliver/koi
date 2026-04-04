@@ -37,6 +37,10 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
   const { dir } = config;
   const threshold = config.dedupThreshold ?? DEFAULT_DEDUP_THRESHOLD;
 
+  if (threshold < 0 || threshold > 1) {
+    throw new Error(`dedupThreshold must be between 0 and 1, got ${String(threshold)}`);
+  }
+
   return {
     read: (id) => readRecord(dir, id),
     write: (input) => writeRecord(dir, input, threshold),
@@ -94,12 +98,14 @@ async function writeRecord(
   await writeFile(filePath, serialized, "utf-8");
   const fileStat = await stat(filePath);
 
+  // Re-parse to return sanitized values matching what's on disk
+  const persisted = parseMemoryFrontmatter(serialized);
   const record: MemoryRecord = {
     id: memoryRecordId(filenameToId(filename)),
-    name: input.name,
-    description: input.description,
-    type: input.type,
-    content: input.content,
+    name: persisted?.frontmatter.name ?? input.name,
+    description: persisted?.frontmatter.description ?? input.description,
+    type: persisted?.frontmatter.type ?? input.type,
+    content: persisted?.content ?? input.content,
     filePath: filename,
     createdAt: fileStat.birthtimeMs,
     updatedAt: fileStat.mtimeMs,
@@ -139,12 +145,14 @@ async function updateRecord(
   await writeFile(filePath, serialized, "utf-8");
   const fileStat = await stat(filePath);
 
+  // Re-parse to return sanitized values matching what's on disk
+  const persisted = parseMemoryFrontmatter(serialized);
   const record: MemoryRecord = {
     id: existing.id,
-    name: updated.name,
-    description: updated.description,
-    type: updated.type,
-    content: updated.content,
+    name: persisted?.frontmatter.name ?? updated.name,
+    description: persisted?.frontmatter.description ?? updated.description,
+    type: persisted?.frontmatter.type ?? updated.type,
+    content: persisted?.content ?? updated.content,
     filePath: existing.filePath,
     createdAt: existing.createdAt,
     updatedAt: fileStat.mtimeMs,
@@ -162,8 +170,10 @@ async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
 
   try {
     await unlink(join(dir, existing.filePath));
-  } catch {
-    return false;
+  } catch (e: unknown) {
+    // File already gone — treat as successful delete
+    if (isEnoent(e)) return false;
+    throw e;
   }
 
   const remaining = records.filter((r) => r.id !== id);
@@ -193,8 +203,10 @@ async function scanRecords(dir: string): Promise<readonly MemoryRecord[]> {
 
     const results = await Promise.all(mdFiles.map((f) => recordFromFile(dir, f)));
     return results.filter((r): r is NonNullable<typeof r> => r !== undefined);
-  } catch {
-    return [];
+  } catch (e: unknown) {
+    // Only treat missing directory as empty — propagate permission and I/O errors
+    if (isEnoent(e)) return [];
+    throw e;
   }
 }
 
@@ -224,4 +236,14 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
 /** Strip `.md` extension to get the record ID. */
 function filenameToId(filename: string): string {
   return filename.endsWith(".md") ? filename.slice(0, -3) : filename;
+}
+
+/** Check if an error is a filesystem ENOENT (file/dir not found). */
+function isEnoent(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "code" in e &&
+    (e as { readonly code: string }).code === "ENOENT"
+  );
 }
