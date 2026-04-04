@@ -88,8 +88,6 @@ export const InputArea: React.NamedExoticComponent<InputAreaProps> = memo(functi
           break;
         }
         case "noop":
-        case "history-prev":
-        case "history-next":
           break;
       }
     },

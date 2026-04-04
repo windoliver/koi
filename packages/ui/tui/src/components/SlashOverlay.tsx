@@ -3,7 +3,7 @@
  * commands when the user types "/" at the start of input.
  *
  * Uses OpenTUI <select> for the filtered dropdown with keyboard navigation.
- * Absolute-positioned overlay (zIndex: 10) so it floats above content.
+ * Rendered inline above the input area by the parent layout.
  */
 
 import type { KeyEvent } from "@opentui/core";
@@ -32,7 +32,11 @@ export interface SlashOverlayProps {
 // Key handling (pure, exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Process a key for the slash overlay. Returns true if consumed. */
+/**
+ * Pure key handler for testing. In the live component, Enter/Tab are handled
+ * natively by OpenTUI <select> via its onSelect callback; only Escape is
+ * intercepted by useKeyboard. Returns true if consumed.
+ */
 export function handleSlashOverlayKey(
   key: KeyEvent,
   callbacks: {

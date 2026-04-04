@@ -23,6 +23,7 @@
  *   @koi/middleware-permissions — permission gating MW
  *   @koi/tools-core           — buildTool()
  *   @koi/tools-builtin        — Glob/Grep/ToolSearch
+ *   @koi/fs-local             — local filesystem backend
  */
 
 import {
@@ -47,6 +48,7 @@ import {
 } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
 import {
@@ -616,6 +618,29 @@ if (nexusFsCheck.exitCode === 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Local filesystem (@koi/fs-local — no Nexus server needed)
+// ---------------------------------------------------------------------------
+
+const { mkdtempSync } = await import("node:fs");
+const { tmpdir: tmpDirFn } = await import("node:os");
+const { join: joinPath } = await import("node:path");
+
+const localFsTmpDir = mkdtempSync(joinPath(tmpDirFn(), "koi-golden-local-fs-"));
+const localFsBackend = createLocalFileSystem(localFsTmpDir);
+
+// Pre-seed a file for the LLM to read
+await localFsBackend.write("golden-local.txt", "The local filesystem answer is 7.");
+
+const localReadTool = createFsReadTool(localFsBackend, "local_fs", { sandbox: false });
+const localFsProvider = createSingleToolProvider({
+  name: "local-fs",
+  toolName: "local_fs_read",
+  createTool: () => localReadTool,
+});
+
+console.log(`Local-fs golden query: dir=${localFsTmpDir}, seeded golden-local.txt`);
+
+// ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
 // ---------------------------------------------------------------------------
 
@@ -1040,6 +1065,25 @@ const queries: readonly QueryConfig[] = [
         },
       ]
     : []),
+
+  // 8. local-fs: @koi/fs-local exercised via real local filesystem
+  {
+    name: "local-fs-read",
+    prompt:
+      'Use the local_fs_read tool to read the file at path "golden-local.txt". Tell me what the file says.',
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-local-fs-tool",
+        cmd: ["echo", "local-fs-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [localFsProvider],
+  },
 
   // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
   {

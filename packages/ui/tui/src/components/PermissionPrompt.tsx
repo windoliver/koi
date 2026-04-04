@@ -52,7 +52,7 @@ export interface PermissionPromptProps {
 
 /** Map a key name to an ApprovalDecision, or null if not a valid response. */
 export function processPermissionKey(keyName: string): ApprovalDecision | null {
-  switch (keyName) {
+  switch (keyName.toLowerCase()) {
     case "y":
       return { kind: "allow" };
     case "n":

@@ -40,6 +40,7 @@ export type {
   CapabilityConfig,
   ChannelConfig,
   ChannelIdentity,
+  FileSystemConfig,
   FilesystemSkillSource,
   ForgedSkillSource,
   ManifestSandboxConfig,

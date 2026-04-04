@@ -1,6 +1,6 @@
 # @koi/tui — State Layer
 
-> TUI rendering state: types, reducer, and store for the Ink-based terminal UI.
+> TUI rendering state: types, reducer, and store for the OpenTUI-based terminal UI.
 
 **Layer:** UI (depends on `@koi/core` only)
 **Location:** `packages/ui/tui/src/state/`
@@ -108,6 +108,7 @@ type TuiAction =
   | { kind: "set_zoom"; level: number }
   | { kind: "add_error"; code: string; message: string }
   | { kind: "clear_messages" }
+  | { kind: "permission_response"; requestId: string }
 ```
 
 `engine_event` wraps the full `EngineEvent` discriminated union from `@koi/core`.
@@ -189,7 +190,7 @@ packages/ui/tui/src/
 
 ## Components
 
-Six core components built on OpenTUI primitives:
+Ten core components built on OpenTUI primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
@@ -199,6 +200,11 @@ Six core components built on OpenTUI primitives:
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `React.memo` — only re-renders when message reference changes |
 | `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
+| `InputArea` | Text input | `<textarea>` with slash detection; Enter submits, Ctrl+J for newline |
+| `SlashOverlay` | Slash completion | Fuzzy-filtered `<select>` dropdown; Escape dismisses |
+| `PermissionPrompt` | HITL approval | Single-key (y/n/a/Esc) with risk-level color coding |
+| `AskUserDialog` | Agent question | Multi-line `<textarea>`; Enter submits, Escape dismisses |
+| `ConfirmDialog` | Yes/no prompt | Single-key (y/n/Esc) confirmation modal |
 
 ## Store Hook
 

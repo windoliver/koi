@@ -5,6 +5,8 @@ import type {
   ChannelCapabilities,
   ComponentProvider,
   EngineAdapter,
+  FileSystemBackend,
+  FileSystemConfig,
   KoiMiddleware,
   ReportStore,
   SpawnLedger,
@@ -96,6 +98,23 @@ export interface RuntimeConfig {
    * When omitted the DEFAULT_SPAWN_POLICY is used.
    */
   readonly spawnPolicy?: SpawnPolicy | undefined;
+
+  /**
+   * Filesystem backend configuration. Controls which FileSystemBackend
+   * implementation is used.
+   *
+   * - `undefined`: falls back to `manifest.filesystem` if a manifest is provided.
+   * - `FileSystemConfig`: explicitly configures the backend.
+   * - `false`: explicitly disables filesystem, overriding any manifest config.
+   *   Use this to prevent manifest-supplied filesystem grants from taking effect.
+   */
+  readonly filesystem?: FileSystemConfig | false | undefined;
+
+  /**
+   * Working directory for the local filesystem backend. Required when
+   * filesystem.backend is "local" (or absent). Defaults to process.cwd().
+   */
+  readonly cwd?: string | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
@@ -157,6 +176,19 @@ export interface RuntimeHandle {
    * the `Spawn` tool and enable agent-to-agent delegation for that agent.
    */
   readonly spawnProvider: ComponentProvider | undefined;
+
+  /**
+   * Resolved filesystem backend. Only populated when filesystem is explicitly
+   * configured via config.filesystem or manifest.filesystem (opt-in).
+   */
+  readonly filesystemBackend: FileSystemBackend | undefined;
+
+  /**
+   * Filesystem ComponentProvider — registers the backend under FILESYSTEM token
+   * and creates fs_read, fs_write, fs_edit tools. Pass to createKoi() providers.
+   * Only populated when filesystem is explicitly configured.
+   */
+  readonly filesystemProvider: ComponentProvider | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

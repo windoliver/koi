@@ -147,6 +147,16 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/fs-local": {
+      "name": "@koi/fs-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
+      },
+    },
     "packages/lib/fs-nexus": {
       "name": "@koi/fs-nexus",
       "version": "0.0.0",
@@ -270,6 +280,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -285,6 +296,7 @@
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
         "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "1.12.1",
@@ -597,6 +609,8 @@
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
+
+    "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
 
