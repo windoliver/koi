@@ -1,0 +1,758 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "task-tools",
+  "agent": {
+    "name": "golden-task-tools",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "task_create",
+        "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+      },
+      {
+        "name": "task_get",
+        "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+      },
+      {
+        "name": "task_update",
+        "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+      },
+      {
+        "name": "task_list",
+        "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+      },
+      {
+        "name": "task_stop",
+        "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+      },
+      {
+        "name": "task_output",
+        "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:32.720Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:32.720Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-04T05:04:32.720Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally use task_update to set it to 'completed' with output 'Login flow implemented successfully'. Report the final task status.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 715,
+        "completion_tokens": 14
+      },
+      "duration_ms": 686,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 6,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_update",
+            "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_stop",
+            "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.407Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 686.515542000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.407Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 687.0799589999951,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.410Z",
+      "model_name": "hook:on-task-tool",
+      "message": "tool.succeeded:task_create → on-task-tool",
+      "duration_ms": 2.62724999999773,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:task_create",
+        "hookName": "on-task-tool"
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.433Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build the OAuth2 login flow\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 27.40429199999926,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-04T05:04:33.406Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_create_7",
+          "function_name": "task_create",
+          "arguments": {
+            "subject": "Implement login flow",
+            "description": "Build the OAuth2 login flow"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_create_7",
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 27,
+      "outcome": "success"
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.436Z",
+      "model_name": "middleware:hooks",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build the OAuth2 login flow\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 29.55845799999952,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:33.436Z",
+      "model_name": "middleware:permissions",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build the OAuth2 login flow\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 29.623333000003186,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "agent",
+      "timestamp": "2026-04-04T05:04:33.436Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 751,
+        "completion_tokens": 3
+      },
+      "duration_ms": 683,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 4,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 6,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_update",
+            "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_stop",
+            "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.120Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 684.3856250000026,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.120Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 684.469041999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.122Z",
+      "model_name": "hook:on-task-tool",
+      "message": "tool.succeeded:task_list → on-task-tool",
+      "duration_ms": 2.4647079999995185,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:task_list",
+        "hookName": "on-task-tool"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.130Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 10.455042000001413,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "tool",
+      "timestamp": "2026-04-04T05:04:34.119Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_list_15",
+          "function_name": "task_list",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_list_15",
+            "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 11,
+      "outcome": "success"
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.132Z",
+      "model_name": "middleware:hooks",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 12.523374999997031,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.132Z",
+      "model_name": "middleware:permissions",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 12.589292000004207,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "agent",
+      "timestamp": "2026-04-04T05:04:34.132Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 787,
+        "completion_tokens": 1
+      },
+      "duration_ms": 618,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 6,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 6,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_update",
+            "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_stop",
+            "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 618.8067079999964,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "unknown({})",
+      "duration_ms": 0.24479199999768753,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "tool",
+      "timestamp": "2026-04-04T05:04:34.750Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_unknown_21",
+          "function_name": "unknown",
+          "arguments": {}
+        }
+      ],
+      "duration_ms": 1,
+      "outcome": "failure"
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "middleware:hooks",
+      "message": "unknown({})",
+      "duration_ms": 0.35975000000325963,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 619.0512920000037,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "middleware:permissions",
+      "message": "unknown({})",
+      "duration_ms": 0.5114160000011907,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "agent",
+      "timestamp": "2026-04-04T05:04:34.751Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "error: Tool not found: \"unknown\"",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 815,
+        "completion_tokens": 1
+      },
+      "duration_ms": 621,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 8,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 6,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_update",
+            "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_stop",
+            "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 621.4491249999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "unknown({})",
+      "duration_ms": 0.07170899999618996,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "tool",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_unknown_28",
+          "function_name": "unknown",
+          "arguments": {}
+        }
+      ],
+      "duration_ms": 0,
+      "outcome": "failure"
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "model_name": "middleware:hooks",
+      "message": "unknown({})",
+      "duration_ms": 0.12016700000094716,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-task-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with subject 'Implement login flow' and description 'Build the OAuth2 login flow'. Then use task_list to confirm it was created. Then use task_update to set its status to 'in_progress' with active_form 'Building login flow'. Finally …",
+      "duration_ms": 621.5452080000032,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-04-04T05:04:35.372Z",
+      "model_name": "middleware:permissions",
+      "message": "unknown({})",
+      "duration_ms": 0.18633299999783048,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    }
+  ]
+}

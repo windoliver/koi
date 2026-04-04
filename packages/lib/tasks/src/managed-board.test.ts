@@ -270,3 +270,34 @@ describe("createManagedTaskBoard", () => {
     expect(managed2.snapshot().result(taskItemId("task_1"))).toBeUndefined();
   });
 });
+
+describe("nextId", () => {
+  test("returns a valid TaskItemId", async () => {
+    const store = createMemoryTaskBoardStore();
+    const managed = await createManagedTaskBoard({ store });
+    const id = await managed.nextId();
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+  });
+
+  test("consecutive calls return distinct IDs", async () => {
+    const store = createMemoryTaskBoardStore();
+    const managed = await createManagedTaskBoard({ store });
+    const id1 = await managed.nextId();
+    const id2 = await managed.nextId();
+    const id3 = await managed.nextId();
+    expect(id1).not.toBe(id2);
+    expect(id2).not.toBe(id3);
+    expect(id1).not.toBe(id3);
+  });
+
+  test("ID returned by nextId() is usable in add() without conflict", async () => {
+    const store = createMemoryTaskBoardStore();
+    const managed = await createManagedTaskBoard({ store });
+    const id = await managed.nextId();
+    const r = await managed.add({ id, description: "Test task" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.get(id)).toBeDefined();
+  });
+});

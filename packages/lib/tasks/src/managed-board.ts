@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type {
   AgentId,
   KoiError,
+  ManagedTaskBoard,
   Result,
   Task,
   TaskBoard,
@@ -42,36 +43,9 @@ export interface ManagedTaskBoardConfig {
   readonly resultsDir?: string | undefined;
 }
 
-export interface ManagedTaskBoard extends AsyncDisposable {
-  /** Current immutable board snapshot. */
-  readonly snapshot: () => TaskBoard;
-  /** Add a task — validates via board, persists to store. */
-  readonly add: (input: TaskInput) => Promise<Result<TaskBoard, KoiError>>;
-  /** Add multiple tasks atomically — validates via board, persists to store. */
-  readonly addAll: (inputs: readonly TaskInput[]) => Promise<Result<TaskBoard, KoiError>>;
-  /** Assign a task to an agent — validates via board, persists to store. */
-  readonly assign: (
-    taskId: TaskItemId,
-    agentId: AgentId,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Complete a task — validates via board, persists to store. */
-  readonly complete: (
-    taskId: TaskItemId,
-    result: TaskResult,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Fail a task — validates via board, persists to store. */
-  readonly fail: (
-    taskId: TaskItemId,
-    error: KoiError,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Kill a task — validates via board, persists to store. */
-  readonly kill: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
-  /** Update task metadata — validates via board, persists to store. */
-  readonly update: (
-    taskId: TaskItemId,
-    patch: TaskPatch,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-}
+// ManagedTaskBoard interface is defined in @koi/core so L2 packages can
+// depend on it without importing the L2 implementation (@koi/tasks).
+export type { ManagedTaskBoard } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Result persistence helpers
@@ -248,11 +222,33 @@ export async function createManagedTaskBoard(
   return {
     snapshot: () => board,
 
+    nextId: () => Promise.resolve(store.nextId()),
+
+    hasResultPersistence: () => resultsDir !== undefined,
+
     add: (input) => applyMutation((b) => b.add(input)),
 
     addAll: (inputs) => applyMutation((b) => b.addAll(inputs)),
 
     assign: (taskId, agentId) => applyMutation((b) => b.assign(taskId, agentId)),
+
+    startTask: (taskId, agentId) =>
+      applyMutation((b) => {
+        const inProgress = b.inProgress();
+        if (inProgress.length > 0) {
+          const blocking = inProgress[0];
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot start task '${taskId}': task '${blocking?.id ?? "unknown"}' is already in_progress. Complete or stop the current task first.`,
+              retryable: false,
+              context: { blockingTaskId: blocking?.id ?? "unknown" },
+            },
+          };
+        }
+        return b.assign(taskId, agentId);
+      }),
 
     complete: (taskId, taskResult) =>
       applyMutation(
@@ -262,11 +258,105 @@ export async function createManagedTaskBoard(
           : undefined,
       ),
 
+    completeOwnedTask: (taskId, agentId, taskResult) =>
+      applyMutation(
+        (b) => {
+          const task = b.get(taskId);
+          if (task === undefined) {
+            return {
+              ok: false,
+              error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+            };
+          }
+          if (task.status === "in_progress" && task.assignedTo !== agentId) {
+            return {
+              ok: false,
+              error: {
+                code: "CONFLICT",
+                message: `Cannot complete task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+                retryable: false,
+              },
+            };
+          }
+          return b.complete(taskId, taskResult);
+        },
+        resultsDir !== undefined
+          ? async () => persistResult(resultsDir, taskResult)
+          : undefined,
+      ),
+
     fail: (taskId, error) => applyMutation((b) => b.fail(taskId, error)),
+
+    failOwnedTask: (taskId, agentId, error) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot fail task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.fail(taskId, error);
+      }),
 
     kill: (taskId) => applyMutation((b) => b.kill(taskId)),
 
+    killOwnedTask: (taskId, agentId) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot kill task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.kill(taskId);
+      }),
+
     update: (taskId, patch) => applyMutation((b) => b.update(taskId, patch)),
+
+    updateOwned: (taskId, agentId, patch) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        // Reject cross-agent metadata writes on in_progress tasks
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot update task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.update(taskId, patch);
+      }),
 
     [Symbol.asyncDispose]: async () => {
       await store[Symbol.asyncDispose]();
