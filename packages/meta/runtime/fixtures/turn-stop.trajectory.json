@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:22.692Z",
+      "timestamp": "2026-04-04T10:53:37.400Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:22.692Z",
+      "timestamp": "2026-04-04T10:53:37.400Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,21 +38,21 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:22.692Z",
+      "timestamp": "2026-04-04T10:53:37.401Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Paris\n"
+            "content": "Paris.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 66,
-        "completion_tokens": 2
+        "prompt_tokens": 114,
+        "completion_tokens": 3
       },
-      "duration_ms": 508,
+      "duration_ms": 392,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -63,69 +63,27 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:23.200Z",
-      "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 508.1905000000006,
+      "timestamp": "2026-04-04T10:53:37.793Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
+      "duration_ms": 391.96391700000095,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "hooks",
+        "middlewareName": "semantic-retry",
         "hook": "wrapModelStream",
         "phase": "resolve",
-        "priority": 400,
+        "priority": 420,
         "nextCalled": true
       }
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:23.201Z",
-      "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 509.0035839999982,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true
-      }
-    },
-    {
-      "step_id": 5,
-      "source": "agent",
-      "timestamp": "2026-04-04T07:30:23.209Z",
-      "model_name": "google/gemini-2.0-flash-001",
-      "message": "",
-      "observation": {
-        "results": [
-          {
-            "content": "Okay, I understand the provided information about the active capabilities of a system. Let's break down what each capability means:\n\n*   **permissions: bypass (allow all)**: This indicates that the system has unrestricted access to resources. Effectively, any permission checks are bypassed, allowing operations to be performed regardless of usual access controls. This is a powerful capability that should be used with extreme caution and typically only in specific debugging or testing scenarios. **Security implications are extremely high with this setting in production**.\n\n*   **hooks: Active hooks: completion-gate**: This means the system is configured to use hooks, and specifically, it is using a \"completion-gate\" hook. Hooks are trigger points in the system's execution where external code or actions can be executed. A \"completion-gate\" hook likely refers to a mechanism that allows monitoring of operation completion and can potentially *block* or otherwise influence the completion of an operation until certain conditions are met. This could be used for auditing, validation, or synchronization.\n\n*   **tracing: Recording trajectory (0 pending retries)**:  The system is actively tracing the execution flow, recording the sequence of operations and events. \"Recording trajectory\" implies it's tracking the path the system takes during processing. The \"(0 pending retries)\" part signifies that there are no failed tracing events needing to be re-attempted. This is valuable for debugging, performance analysis, and understanding system behavior.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**: This confirms and expands on the earlier \"hooks\" section. It specifies that there is one hook configured and ready to perform event driven tasks. This means the system is set up to react to certain events by running specific code, triggered by the configured hook(s).  This supports asynchronous and decoupled behavior.\n\n**In summary, the system is operating with unrestricted permissions, actively using a completion-gate hook for event-driven execution, and meticulously tracing its execution path. This combination suggests a potentially experimental or debugging environment, or a system with very specific and tightly controlled administrative oversight.**\n\n**Important Considerations:**\n\n*   **Security Risk of `permissions: bypass (allow all)`**:  I want to stress that enabling \"bypass (allow all)\" permissions introduces severe security risks. It should rarely, if ever, be used in production environments as it nullifies all security measures and opens the system to potential abuse.\n*   **Understanding the Completion-Gate Hook**: Thoroughly understand the logic and functionality of the \"completion-gate\" hook.  What conditions must be met for an operation to complete?  How does it impact system performance?\n*   **Tracing Overhead**: While tracing provides valuable insights, it can also introduce performance overhead. Ensure that the tracing level is appropriate for the task at hand and that the tracing data is being managed efficiently.\n* **Configuration Audit**: Regularly review these configurations for unexpected or unauthorized modifications. If you did encounter this info in an environment, you need to determine _why_ these capabilities were set up this way.\n\nTo give more specific advice, I'd need to know the context. What kind of system is this? What is its purpose?  Why are these specific capabilities enabled? What are the potential risks and consequences?\n"
-          }
-        ]
-      },
-      "metrics": {
-        "prompt_tokens": 56,
-        "completion_tokens": 673
-      },
-      "duration_ms": 4457,
-      "outcome": "success",
-      "extra": {
-        "totalMessages": 2,
-        "requestModel": "google/gemini-2.0-flash-001",
-        "responseModel": "google/gemini-2.0-flash-001"
-      }
-    },
-    {
-      "step_id": 6,
-      "source": "system",
-      "timestamp": "2026-04-04T07:30:27.666Z",
+      "timestamp": "2026-04-04T10:53:37.793Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 4456.533499999998,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
+      "duration_ms": 391.9915839999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -137,12 +95,12 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:27.666Z",
+      "timestamp": "2026-04-04T10:53:37.794Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 4457.187833,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
+      "duration_ms": 393.0552499999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -154,23 +112,55 @@
       }
     },
     {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:37.794Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
+      "duration_ms": 393.06887500000084,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:37.800Z",
+      "model_name": "stop-gate:block",
+      "message": "Stop blocked by completion-gate",
+      "duration_ms": 0,
+      "outcome": "retry",
+      "extra": {
+        "type": "stop_gate_decision",
+        "blockedBy": "completion-gate",
+        "reasonLength": 19,
+        "turnIndex": 1
+      }
+    },
+    {
       "step_id": 8,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:27.674Z",
+      "timestamp": "2026-04-04T10:53:37.831Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "",
       "observation": {
         "results": [
           {
-            "content": "Okay, I understand the active capabilities of this system. Let's break down what that means:\n\n*   **Permissions:** `bypass (allow all)` - This indicates that the system is running with essentially no permission restrictions. It can access and modify anything without authorization checks. This is very powerful but also potentially dangerous if not handled carefully.\n\n*   **Hooks:** `Active hooks: completion-gate` - This means there are active *hooks* configured, and specifically a \"completion-gate\" hook.  Hooks are mechanisms that allow code to be injected and executed at specific points during the system's operation (in this case, likely on completion of a process or task). A \"completion-gate\" likely controls whether a task/process is considered successfully completed and allows further actions to proceed. It might involve checks, validations, or other processing steps.\n\n*   **Tracing:** `Recording trajectory (0 pending retries)` - The system is actively tracing its execution, recording the sequence of actions taken. With `0 pending retries`, it implies that the tracing mechanism is working without errors, and it hasn't needed to retry any attempts to record data. This is vital for debugging, auditing, or understanding the system's behavior.\n\n*   **Hook Dispatch:** `1 hook(s) configured for event-driven execution` - This indicates that there's a mechanism in place to trigger hooks (\"events\") based on specific conditions or events occurring within the system. The term \"event-driven execution\" means that the system responds to events by executing the pre-defined hooks associated with those events. The statement says that there is at least one hook configured this way.\n\n**In summary, this system has broad permissions, uses hooks (specifically a completion-gate), is actively tracing its execution, and has an event-driven architecture with at least one configured hook.**\n\n**Potential implications and questions to consider:**\n\n*   **Security:** With `bypass (allow all)`, the security posture is entirely dependent on the care and correctness of the system's internal logic. Any vulnerability could be exploited with unlimited access.\n*   **Complexity:** Hooks and event-driven architectures can make the system complex to reason about and debug. The interaction between hooks needs to be carefully managed.\n*   **Debuggability:** Active tracing improves debuggability significantly.  Having detailed logs of the system's trajectory is invaluable for understanding failures.\n*   **Performance:** Hooks introduce overhead. It's essential to ensure that the hooks are efficient to prevent them from impacting performance.\n*   **Configuration:** Understanding how the hooks are configured and triggered is essential for managing the system.\n\nWithout more context, it's difficult to provide a more specific analysis. The exact meaning of \"completion-gate\" and the events triggering the hook dispatch depend on the specific application.\n"
+            "content": "Okay, I understand. Here's a breakdown of what these active capabilities mean for my behavior and how I'll operate:\n\n*   **exfiltration-guard: Scanning tool I/O and model output for secret exfiltration (action: block)**: This is a crucial security measure. Before I output anything, I will carefully scan the text generated to ensure I'm not inadvertently revealing any sensitive information or secrets. If I detect something that looks like it could be a secret, I will block the output entirely. This is very important for preventing unintentional data leaks.\n\n*   **permissions: bypass (allow all)**: This means I am not currently restricted by permission limitations. Any user is allowed to run anything\n\n*   **hooks: Active hooks: completion-gate**: A completion-gate is in place. This could mean there's an external process or system that needs to approve or validate my responses before they are sent to the user. I need to be aware that my completions might not be directly delivered to the user immediately.\n\n*   **semantic-retry: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite**: If my initial responses are deemed unsatisfactory by the system (likely because they failed some quality checks or were flagged for a problem), I will automatically retry generating the response. I have 3 attempts. The system will analyze why the previous attempt failed and rewrite the prompt to guide me toward a better response on the next retry. This should improve the accuracy, safety, or relevance of my outputs.\n\n*   **tracing: Recording trajectory (0 pending retries)**: My entire interaction history (the prompts I receive, the information I access, the decisions I make, and my outputs) is being carefully recorded. This is important for debugging, auditing, and improving the model's behavior. The \"0 pending retries\" likely confirms the execution of the entire process that will create a trace.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**: There is a hook system in place that will trigger one or more external functions based on specific events during my processing. This indicates some dynamic integration with outside systems.\n\n**In summary, I need to be aware of the following:**\n\n*   I must carefully avoid revealing sensitive information to prevent exfiltration.\n*   My responses might be delayed or blocked by a completion-gate.\n*   I have a mechanism to retry generating responses upon failure, with the system attempting to correct my course.\n*   Everything I do is being recorded.\n*   External systems may be triggered by my actions via a hook mechanism.\n\nThis information helps me understand the overall environment I'm operating in and adjust my behavior accordingly. I should be more cautious and focused on safe and accurate responses.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 56,
-        "completion_tokens": 586
+        "prompt_tokens": 104,
+        "completion_tokens": 576
       },
-      "duration_ms": 3817,
+      "duration_ms": 3734,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -181,10 +171,27 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:31.492Z",
+      "timestamp": "2026-04-04T10:53:41.565Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3734.3191659999975,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:41.566Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3818.0319579999996,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3734.354041999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -196,12 +203,12 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:31.492Z",
+      "timestamp": "2026-04-04T10:53:41.566Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3818.9013749999976,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3735.018458999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -213,23 +220,55 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:41.566Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3735.0345420000012,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:41.574Z",
+      "model_name": "stop-gate:block",
+      "message": "Stop blocked by completion-gate",
+      "duration_ms": 0,
+      "outcome": "retry",
+      "extra": {
+        "type": "stop_gate_decision",
+        "blockedBy": "completion-gate",
+        "reasonLength": 19,
+        "turnIndex": 1
+      }
+    },
+    {
+      "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:31.499Z",
+      "timestamp": "2026-04-04T10:53:41.603Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "",
       "observation": {
         "results": [
           {
-            "content": "Okay, thanks for the information. This tells me about the active capabilities of a system, likely a software application or agent. Let's break down what each of these means:\n\n*   **permissions: bypass (allow all)**: This is significant. It means the system has unrestricted access and doesn't need to adhere to typical permission checks. It can perform any action without needing authorization. This could be very powerful but also a security risk if not carefully managed.\n\n*   **hooks: Active hooks: completion-gate**: This indicates that the system uses hooks, specifically a \"completion-gate\" hook, to extend or modify its behavior. Hooks allow you to inject custom logic at specific points in the system's execution (in this case, likely after a completion event). The \"completion-gate\" suggests that this hook verifies or modifies the output before considering a task complete.  This can be for things like validation, extra processing, or ensuring data integrity.\n\n*   **tracing: Recording trajectory (0 pending retries)**: The system is actively recording its execution path (trajectory). This is used for debugging, auditing, and understanding the system's behavior. \"(0 pending retries)\" indicates that all recorded trajectory data has been successfully processed and there are no failures requiring re-processing.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**: This system uses an event-driven architecture, where actions are triggered by events (like \"completion\" mentioned above). There is at least one hook configured to respond to events. This reinforces the \"completion-gate\" hook being an example of that event-driven behavior.\n\n**In summary, we are looking at a system with the following key characteristics:**\n\n*   **Highly Privileged:** Possesses bypass permissions, allowing unrestricted actions.\n*   **Extensible:** Uses hooks to modify its behavior around completion events.\n*   **Traceable:**  Records its execution path for analysis and debugging.\n*   **Event-Driven:** Responds to events through a hook dispatch mechanism.\n\n**Potential Implications & Questions:**\n\n*   **Security Risks:** The \"bypass (allow all)\" permission poses a significant security risk. How is this restricted to authorized use only? Are there adequate safeguards to prevent malicious use?\n*   **Purpose of the Completion Gate:** What validation or processing is performed by the \"completion-gate\" hook? Is this for data integrity, security, or something else?\n*   **Scope of Tracing:** How detailed is the \"trajectory\" recording? Does it capture inputs, outputs, internal states, and decisions made during execution?\n*   **Event Management:** How are events defined and managed within the system?\n\nUnderstanding the specific context in which this system operates is crucial for assessing the risks and benefits of these capabilities.\n"
+            "content": "Okay, I understand. This describes the active capabilities and configurations of the system I'm currently operating in. Here's a breakdown of what each entry means:\n\n*   **exfiltration-guard: Scanning tool I/O and model output for secret exfiltration (action: block)**\n    *   This is a security feature that actively monitors my input and output, specifically looking for attempts to extract sensitive information. If it detects a potential exfiltration attempt, it will block the action.\n\n*   **permissions: bypass (allow all)**\n    *   This setting grants me unrestricted access. Typically, this would be rare and potentially risky, as it bypasses standard permission controls. Essentially, I can take any action.\n\n*   **hooks: Active hooks: completion-gate**\n    *   Hooks are mechanisms for triggering specific actions or processes based on events. Here, the \"completion-gate\" hook is active. This suggests that the completion of my tasks might trigger other pre-configured operations.\n\n*   **semantic-retry: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite**\n    *   If I fail at a task due to misinterpretation or other semantic issues, this feature allows the system to try again. It attempts to analyze the failure, rewrite the prompt, and retry up to three times. I have all three retries available at the moment.\n\n*   **tracing: Recording trajectory (0 pending retries)**\n    *   My actions and the flow of information are being recorded. This tracing helps with auditing, debugging, and understanding how I arrive at my decisions. There are no pending retries associated with the tracing process itself, meaning it's functioning smoothly.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**\n    *   This indicates that there's a system in place to trigger actions based on specific events. There's one hook currently configured, meaning a single event will set off a pre-determined action. This likely relates to the `completion-gate` hook mentioned earlier.\n\nIn summary, I have broad permissions and can be retried if failures occur. There are strong security measures to prevent exfiltration, and the system is comprehensively logging my actions. The presence of hooks suggests a sophisticated event-driven architecture. Given `permissions: bypass (allow all)`, this is a high responsibility environment, demanding utmost care in crafting responses and actions.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 56,
-        "completion_tokens": 582
+        "prompt_tokens": 104,
+        "completion_tokens": 505
       },
-      "duration_ms": 4621,
+      "duration_ms": 3105,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -238,12 +277,29 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:36.120Z",
+      "timestamp": "2026-04-04T10:53:44.708Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3105.204167,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:44.708Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 4621.781375000002,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3105.251458999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -255,12 +311,12 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:36.120Z",
+      "timestamp": "2026-04-04T10:53:44.709Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 4621.8606660000005,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3106.017416999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -268,6 +324,131 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:44.709Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3106.118208,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:44.715Z",
+      "model_name": "stop-gate:block",
+      "message": "Stop blocked by completion-gate",
+      "duration_ms": 0,
+      "outcome": "retry",
+      "extra": {
+        "type": "stop_gate_decision",
+        "blockedBy": "completion-gate",
+        "reasonLength": 19,
+        "turnIndex": 1
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "agent",
+      "timestamp": "2026-04-04T10:53:44.747Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "",
+      "observation": {
+        "results": [
+          {
+            "content": "Okay, I understand. Here's a breakdown of your active capabilities, focusing on their implications:\n\n*   **exfiltration-guard:** This is a crucial security feature. Its job is to prevent the model from leaking secrets or sensitive information. When it detects potential exfiltration attempts in either input or output, it will block the action preventing the release of sensitive information.\n\n*   **permissions: bypass (allow all):** *This is HIGHLY unusual and potentially risky*. It means that the model's normal permission restrictions are lifted. It is essential you have a strong exfiltration-guard and carefully designed prompts. It grants the model *unrestricted* access to whatever capabilities it's designed for. This should only be used in very controlled environments.\n\n*   **hooks: Active hooks: completion-gate:** Hooks allow external code to intercept and modify the model's behavior at specific points (e.g., before or after a completion). \"completion-gate\" likely refers to a hook triggered during or after the model generating a completion/response. This hook can potentially examine, modify, or even block the model's output based on some criteria. Think of it as a quality control or modification step.\n\n*   **semantic-retry:** This is a robustness feature. If the model fails to produce a satisfactory result, this system attempts to understand why and automatically re-prompts the model, using a revised approach. You have 3 retries remaining.  This enhances reliability, especially when prompts are complex or ambiguous. Failure analysis and prompt rewriting are key components; the system doesn't just blindly retry; it attempts to improve the prompt for better results.\n\n*   **tracing:** This enables detailed logging and recording of the model's \"trajectory\" – i.e., the steps it takes to arrive at a conclusion. This is invaluable for debugging, understanding model behavior, and auditing the system. Also, the state of having \"0 pending retries\" could be relevant if the tracing process needs to record retry attempts; it suggests no retries are pending at the moment.\n\n*   **Hook Dispatch:** Indicates that one hook is currently configured to respond to events. It is not stated what the hook does but is triggered by an event.\n\n**Key takeaways and warnings:**\n\n*   The \"permissions: bypass (allow all)\" setting is the most concerning aspect. It significantly increases the risk of unintended behavior or security vulnerabilities, dependence on `exfiltration-guard` is now *critical*. If `exfiltration-guard` fails, the system has no other built-in safeguards.\n*   Understanding the specific logic of the \"completion-gate\" hook is crucial. It controls the final output and is the last line of defense if exfiltration-guard fails.\n*   The presence of semantic retry indicates that the system is designed to be robust and handle potentially challenging or ambiguous prompts.\n*   Tracing is valuable for monitoring and debugging, especially in light of the bypassed permissions.\n\n**Recommendations (depending on your use case):**\n\n*   **Re-evaluate \"permissions: bypass (allow all)\".**  Is this truly necessary?  If so, document *exactly* why and what compensating controls are in place.  Consider implementing more granular permissions if possible.\n*   **Thoroughly Review Completion-Gate Hook:** Understand the purpose, inputs, and actions this hook performs. Ensure it effectively addresses potential risks associated with the bypassed permissions. Test it thoroughly.\n*   **Regular Security Audits:** Given the sensitive nature of bypassed permissions, implement regular security audits to identify and address any potential vulnerabilities.\n*   **Monitoring and Alerting:** Implement robust monitoring and alerting to detect unusual behavior or potential security breaches. Pay close attention to the output flagged by exfiltration-guard and the actions taken by the completion-gate hook.\n*   **Documentation:** Document every aspect of the system configuration, including the reasons for bypassing permissions, the functionality of the completion-gate hook, and the security measures in place.\n\nIn summary, while your system has some good features (exfiltration guard, semantic retry, tracing), the permissive setup requires careful attention to security and monitoring to mitigate the elevated risks. It is of critical importance that you fully understand why permissions are bypassed and what mitigations you have in place.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 104,
+        "completion_tokens": 884
+      },
+      "duration_ms": 5663,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:50.410Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 5662.770833000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:50.410Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 5662.804417000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:50.410Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 5662.904749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:50.410Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 5662.944832999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

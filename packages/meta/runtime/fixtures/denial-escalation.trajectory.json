@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:12.440Z",
+      "timestamp": "2026-04-04T10:53:27.192Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:12.440Z",
+      "timestamp": "2026-04-04T10:53:27.192Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,7 +56,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:12.441Z",
+      "timestamp": "2026-04-04T10:53:27.193Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
       "observation": {
@@ -67,10 +67,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 399,
+        "prompt_tokens": 447,
         "completion_tokens": 7
       },
-      "duration_ms": 588,
+      "duration_ms": 498,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:13.029Z",
+      "timestamp": "2026-04-04T10:53:27.691Z",
       "model_name": "middleware:permissions",
       "message": "add_numbers({\"a\":3,\"b\":4})",
-      "duration_ms": 0.19987500000024738,
+      "duration_ms": 0.2508330000000569,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,44 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:13.029Z",
+      "timestamp": "2026-04-04T10:53:27.691Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"a\":3,\"b\":4})",
+      "duration_ms": 0.28054100000008475,
+      "outcome": "failure",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:27.692Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 498.3267080000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:27.692Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 588.4191659999997,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 498.36762499999895,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -132,12 +166,12 @@
       }
     },
     {
-      "step_id": 5,
+      "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:13.030Z",
+      "timestamp": "2026-04-04T10:53:27.692Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 588.5582919999997,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 498.6252910000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -149,23 +183,40 @@
       }
     },
     {
-      "step_id": 6,
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:27.692Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 498.6631669999988,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 9,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:13.030Z",
+      "timestamp": "2026-04-04T10:53:27.692Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "error: Policy denies add_numbers",
       "observation": {
         "results": [
           {
-            "content": "The tool add_numbers is unavailable due to policy restrictions. I am unable to call it.\n"
+            "content": "I am unable to call the `add_numbers` tool, as it is not permitted by the current policy.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 413,
-        "completion_tokens": 20
+        "prompt_tokens": 462,
+        "completion_tokens": 24
       },
-      "duration_ms": 663,
+      "duration_ms": 616,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -189,12 +240,29 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:13.693Z",
+      "timestamp": "2026-04-04T10:53:28.308Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 616.4453750000011,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:28.308Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: Policy denies add_numbers",
-      "duration_ms": 663.1650840000002,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 616.4783750000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -206,12 +274,12 @@
       }
     },
     {
-      "step_id": 8,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:13.693Z",
+      "timestamp": "2026-04-04T10:53:28.308Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: Policy denies add_numbers",
-      "duration_ms": 663.259333,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 616.5856660000009,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -219,6 +287,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:28.308Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the re…",
+      "duration_ms": 616.6067920000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }
