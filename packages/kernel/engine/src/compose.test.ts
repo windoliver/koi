@@ -523,7 +523,7 @@ describe("runStopGate", () => {
       describeCapabilities: () => undefined,
       onBeforeStop: async () => {
         order.push("blocker");
-        return { kind: "block", reason: "tests failing" };
+        return { kind: "block", reason: "tests failing", blockedBy: "blocker" };
       },
     };
     const mw2: KoiMiddleware = {
@@ -535,7 +535,7 @@ describe("runStopGate", () => {
       },
     };
     const result = await runStopGate([mw1, mw2], mockTurnContext());
-    expect(result).toEqual({ kind: "block", reason: "tests failing" });
+    expect(result).toEqual({ kind: "block", reason: "tests failing", blockedBy: "blocker" });
     // Second middleware should not be called (short-circuit)
     expect(order).toEqual(["blocker"]);
   });
@@ -549,10 +549,10 @@ describe("runStopGate", () => {
     const mw2: KoiMiddleware = {
       name: "blocker",
       describeCapabilities: () => undefined,
-      onBeforeStop: async () => ({ kind: "block", reason: "blocked" }),
+      onBeforeStop: async () => ({ kind: "block", reason: "blocked", blockedBy: "blocker" }),
     };
     const result = await runStopGate([mw1, mw2], mockTurnContext());
-    expect(result).toEqual({ kind: "block", reason: "blocked" });
+    expect(result).toEqual({ kind: "block", reason: "blocked", blockedBy: "blocker" });
   });
 });
 

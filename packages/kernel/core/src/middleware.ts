@@ -43,6 +43,10 @@ export interface TurnContext {
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
   /** True when this turn was ended by a stop-gate veto, not normal completion. */
   readonly stopBlocked?: true;
+  /** The reason given by the middleware that blocked completion via stop gate. */
+  readonly stopGateReason?: string;
+  /** Name of the middleware that blocked completion via stop gate. */
+  readonly stopGateBlockedBy?: string;
 }
 
 export interface ModelRequest {
@@ -170,7 +174,7 @@ export type MiddlewarePhase = "intercept" | "resolve" | "observe";
  */
 export type StopGateResult =
   | { readonly kind: "continue" }
-  | { readonly kind: "block"; readonly reason: string };
+  | { readonly kind: "block"; readonly reason: string; readonly blockedBy?: string };
 
 // ---------------------------------------------------------------------------
 // Middleware interface
