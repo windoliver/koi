@@ -12,7 +12,11 @@ export {
   createPermissionBridge,
   DEFAULT_PERMISSION_TIMEOUT_MS,
 } from "./bridge/permission-bridge.js";
-// Commands
+// Commands — palette definitions + fuzzy matching
+export type { CommandCategory, CommandDef } from "./commands/command-definitions.js";
+export { COMMAND_DEFINITIONS, filterCommands } from "./commands/command-definitions.js";
+export { fuzzyFilter, fuzzyScore } from "./commands/fuzzy-match.js";
+// Commands — slash detection
 export type { SlashCommand, SlashMatch, SlashParseResult } from "./commands/slash-detection.js";
 export { detectSlashPrefix, matchCommands, parseSlashCommand } from "./commands/slash-detection.js";
 // Pure key handling (framework-agnostic — no React/OpenTUI import)

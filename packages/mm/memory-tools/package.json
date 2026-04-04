@@ -1,0 +1,23 @@
+{
+  "name": "@koi/memory-tools",
+  "description": "Memory tools for LLM agent execution — store, recall, search, delete",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/tools-core": "workspace:*"
+  }
+}

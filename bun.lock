@@ -224,6 +224,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/task-tools": {
+      "name": "@koi/task-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/tasks": "workspace:*",
+      },
+    },
     "packages/lib/tasks": {
       "name": "@koi/tasks",
       "version": "0.0.0",
@@ -285,12 +296,15 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
+        "@koi/memory": "workspace:*",
+        "@koi/memory-tools": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
@@ -300,6 +314,22 @@
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "1.12.1",
+      },
+    },
+    "packages/mm/memory": {
+      "name": "@koi/memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/mm/memory-tools": {
+      "name": "@koi/memory-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
       },
     },
     "packages/mm/model-openai-compat": {
@@ -624,6 +654,10 @@
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
+    "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
+
+    "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
+
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
@@ -645,6 +679,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
+
+    "@koi/task-tools": ["@koi/task-tools@workspace:packages/lib/task-tools"],
 
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 

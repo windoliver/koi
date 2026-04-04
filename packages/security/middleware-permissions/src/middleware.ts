@@ -26,6 +26,7 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import {
   type CircuitBreaker,
   createCircuitBreaker,
@@ -360,7 +361,7 @@ function buildPrincipal(agentId: string, userId: string, sessionId: string): str
 const PKG = "@koi/middleware-permissions";
 
 export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware {
-  const { backend, auditSink, description } = config;
+  const { backend, auditSink, description, onApprovalStep } = config;
   const clock = config.clock ?? Date.now;
   const approvalTimeoutMs = config.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
 
@@ -514,12 +515,108 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         phase: "execute",
         resource,
         effect: decision.effect,
+        userId: ctx.session.userId ?? "__anonymous__",
         ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
       },
     };
     void sink.log(entry).catch((e: unknown) => {
       swallowError(e, { package: PKG, operation: "audit" });
     });
+  }
+
+  /** Validated approval decision — structural type matching validateApprovalDecision return. */
+  type ValidatedApproval =
+    | { readonly kind: "allow" }
+    | { readonly kind: "always-allow"; readonly scope: "session" }
+    | { readonly kind: "deny"; readonly reason: string }
+    | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> };
+
+  /** Audit an approval outcome after the human responds. */
+  function auditApprovalOutcome(
+    ctx: TurnContext,
+    resource: string,
+    approval: ValidatedApproval,
+    originalInput: JsonObject,
+    durationMs: number,
+    sink: AuditSink,
+    coalesced = false,
+  ): void {
+    const meta: Record<string, unknown> = {
+      permissionCheck: true,
+      phase: "approval_outcome",
+      resource,
+      approvalDecision: approval.kind,
+      userId: ctx.session.userId ?? "__anonymous__",
+      ...(coalesced ? { coalesced: true } : {}),
+    };
+    if (approval.kind === "deny") {
+      meta.denyReason = approval.reason;
+    }
+    if (approval.kind === "modify") {
+      // Log key names only — raw inputs may contain secrets or sensitive data.
+      // Full payload capture requires a dedicated secure-audit mode.
+      meta.originalInputKeys = Object.keys(originalInput).sort();
+      meta.modifiedInputKeys = Object.keys(approval.updatedInput).sort();
+      meta.inputModified = true;
+    }
+    if (approval.kind === "always-allow") {
+      meta.scope = approval.scope;
+    }
+    const entry: AuditEntry = {
+      timestamp: clock(),
+      sessionId: ctx.session.sessionId as string,
+      agentId: ctx.session.agentId,
+      turnIndex: ctx.turnIndex,
+      kind: "tool_call",
+      durationMs,
+      metadata: meta as JsonObject,
+    };
+    void sink.log(entry).catch((e: unknown) => {
+      swallowError(e, { package: PKG, operation: "audit-approval" });
+    });
+  }
+
+  /** Emit a source:"user" trajectory step for an approval decision. */
+  function emitApprovalStep(
+    ctx: TurnContext,
+    toolId: string,
+    approval: ValidatedApproval,
+    originalInput: JsonObject,
+    startMs: number,
+    coalesced = false,
+  ): void {
+    if (onApprovalStep === undefined) return;
+    const meta: Record<string, unknown> = {
+      approvalDecision: approval.kind,
+      userId: ctx.session.userId ?? "__anonymous__",
+      ...(coalesced ? { coalesced: true } : {}),
+    };
+    if (approval.kind === "modify") {
+      meta.inputModified = true;
+      meta.originalInputKeys = Object.keys(originalInput).sort();
+      meta.modifiedInputKeys = Object.keys(approval.updatedInput).sort();
+    }
+    if (approval.kind === "deny") {
+      meta.denyReason = approval.reason;
+    }
+    if (approval.kind === "always-allow") {
+      meta.scope = approval.scope;
+    }
+    const step: RichTrajectoryStep = {
+      stepIndex: -1,
+      timestamp: startMs,
+      source: "user",
+      kind: "tool_call",
+      identifier: toolId,
+      outcome: approval.kind === "deny" ? "failure" : "success",
+      durationMs: clock() - startMs,
+      metadata: meta as JsonObject,
+    };
+    try {
+      onApprovalStep(ctx.session.sessionId as string, step);
+    } catch (e: unknown) {
+      swallowError(e, { package: PKG, operation: "approval-step" });
+    }
   }
 
   /** Audit a permission decision at model-time filtering (wrapModelCall). */
@@ -957,8 +1054,29 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const inflight = inflightApprovals.get(dedupKey);
       if (inflight !== undefined) {
         // Another call is already waiting for approval — wait for its result
+        const coalescedStartMs = clock();
         const rawResult = await inflight;
         const result = validateApprovalDecision(rawResult);
+
+        // Emit approval-outcome audit + trajectory for this coalesced caller.
+        // Marked coalesced: true so downstream systems know this reused an existing
+        // human decision rather than prompting a new one.
+        const coalescedDurationMs = clock() - coalescedStartMs;
+        if (result !== undefined && auditSink !== undefined) {
+          auditApprovalOutcome(
+            ctx,
+            request.toolId,
+            result,
+            request.input,
+            coalescedDurationMs,
+            auditSink,
+            true,
+          );
+        }
+        if (result !== undefined) {
+          emitApprovalStep(ctx, request.toolId, result, request.input, coalescedStartMs, true);
+        }
+
         if (result === undefined || result.kind === "deny") {
           throw new KoiRuntimeError({
             code: "PERMISSION",
@@ -974,6 +1092,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     }
 
     // Request approval with timeout
+    const approvalStartMs = clock();
     const ac = new AbortController();
 
     const approvalPromise = Promise.race([
@@ -1017,6 +1136,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           retryable: false,
         });
       }
+
+      // Emit second audit entry and trajectory step for the approval outcome
+      const approvalDurationMs = clock() - approvalStartMs;
+      if (auditSink !== undefined) {
+        auditApprovalOutcome(
+          ctx,
+          request.toolId,
+          approvalResult,
+          request.input,
+          approvalDurationMs,
+          auditSink,
+        );
+      }
+      emitApprovalStep(ctx, request.toolId, approvalResult, request.input, approvalStartMs);
 
       if (approvalResult.kind === "deny") {
         getTracker(ctx.session.sessionId as string).record({

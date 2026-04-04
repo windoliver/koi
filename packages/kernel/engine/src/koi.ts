@@ -18,6 +18,7 @@ import type {
   InboundMessage,
   InboxComponent,
   InboxItem,
+  JsonObject,
   KoiMiddleware,
   ModelChunk,
   ModelRequest,
@@ -167,7 +168,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       request.input,
       request.signal !== undefined ? { signal: request.signal } : undefined,
     );
-    return request.metadata !== undefined ? { output, metadata: request.metadata } : { output };
+
+    // Enrich response metadata with provenance when the tool has a server origin (#1464)
+    const serverName = tool.descriptor.server;
+    const toolOrigin = tool.descriptor.origin ?? tool.origin;
+    const provenance =
+      serverName !== undefined
+        ? {
+            provenance: {
+              system: toolOrigin === "operator" ? ("mcp" as const) : ("builtin" as const),
+              server: serverName,
+            },
+          }
+        : {};
+    const merged = {
+      ...(request.metadata !== undefined ? (request.metadata as Record<string, unknown>) : {}),
+      ...provenance,
+    } as Record<string, unknown>;
+    return Object.keys(merged).length > 0 ? { output, metadata: merged as JsonObject } : { output };
   };
 
   // --- 5. Track disposal ---

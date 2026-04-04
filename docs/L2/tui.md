@@ -1,10 +1,10 @@
-# @koi/tui — State Layer
+# @koi/tui — State Layer + UI Components
 
-> TUI rendering state: types, reducer, and store for the OpenTUI-based terminal UI.
+> TUI rendering state, reducer, command palette, status bar, and session picker.
 
 **Layer:** UI (depends on `@koi/core` only)
-**Location:** `packages/ui/tui/src/state/`
-**Issue:** #1265 (Phase 2j-1)
+**Location:** `packages/ui/tui/src/`
+**Issues:** #1265 (Phase 2j-1), #1268 (Phase 2j-4)
 
 ## Purpose
 
@@ -48,10 +48,16 @@ interface TuiState {
   readonly connectionStatus: ConnectionStatus;
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
+  // Status bar data (Phase 2j-4)
+  readonly sessionInfo: SessionInfo | null;       // set by host on session start
+  readonly cumulativeMetrics: CumulativeMetrics;  // accumulated across all turns
+  readonly agentStatus: AgentStatus;              // idle | processing | error
+  // Session picker data (Phase 2j-4)
+  readonly sessions: readonly SessionSummary[];   // sorted most-recent-first, max 50
 }
 ```
 
-Six flat fields. No nesting, no grouping. Rule of Three: group only at 12+ fields.
+Ten flat fields. Rule of Three: group only at 12+ fields.
 
 ## Message Model
 
@@ -91,7 +97,7 @@ Two-layer navigation: persistent **views** and transient **modals**.
 | Type | Members | Behavior |
 |------|---------|----------|
 | View | `conversation`, `sessions`, `doctor`, `help` | Screen-level, one active |
-| Modal | `command-palette`, `permission-prompt` | Overlay, preserves underlying view |
+| Modal | `command-palette`, `permission-prompt`, `session-picker` | Overlay, preserves underlying view |
 
 Modals are nullable. Dismissing returns to the underlying view without state loss.
 
@@ -108,11 +114,17 @@ type TuiAction =
   | { kind: "set_zoom"; level: number }
   | { kind: "add_error"; code: string; message: string }
   | { kind: "clear_messages" }
-  | { kind: "permission_response"; requestId: string }
+  | { kind: "permission_response"; requestId: string; decision: ApprovalDecision }
+  // Phase 2j-4 — dispatched by host on session start; TUI never does I/O
+  | { kind: "set_session_info"; modelName: string; provider: string; sessionName: string }
+  | { kind: "set_session_list"; sessions: readonly SessionSummary[] }
 ```
 
 `engine_event` wraps the full `EngineEvent` discriminated union from `@koi/core`.
 The reducer internally switches on `event.kind`. No duplication of event variants.
+
+`set_session_info` and `set_session_list` are injected by the CLI host. The TUI
+package has zero file I/O and zero persistence — it is a pure rendering layer.
 
 ## Compaction
 
@@ -164,6 +176,10 @@ dispatch skips notification entirely.
 | Duplicate `callId` | Update existing tool block |
 | `add_error` without assistant | Creates implicit assistant + error block |
 | `set_modal(null)` when already `null` | No-op (same reference) |
+| `done` without `costUsd` | `cumulativeMetrics.costUsd` stays null |
+| `done` with `costUsd` after null-cost turns | Treats prior null as 0, begins accumulating |
+| `set_session_list` > 50 items | Truncated to 50 most-recent (`MAX_SESSIONS`) |
+| `set_session_list` out-of-order | Sorted by `lastActivityAt` desc before storage |
 
 ## File Organization
 
@@ -190,7 +206,7 @@ packages/ui/tui/src/
 
 ## Components
 
-Ten core components built on OpenTUI primitives:
+Fifteen components built on OpenTUI primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
@@ -205,6 +221,29 @@ Ten core components built on OpenTUI primitives:
 | `PermissionPrompt` | HITL approval | Single-key (y/n/a/Esc) with risk-level color coding |
 | `AskUserDialog` | Agent question | Multi-line `<textarea>`; Enter submits, Escape dismisses |
 | `ConfirmDialog` | Yes/no prompt | Single-key (y/n/Esc) confirmation modal |
+| `StatusBar` | Top/bottom info line | Model, tokens, cost, agentStatus, turn counter |
+| `CommandPalette` | Ctrl+P fuzzy search | 15 commands, progressive disclosure, query via useKeyboard |
+| `SessionPicker` | Session browser | Sorted list from `TuiState.sessions`, max 50 items |
+| `SelectOverlay<T>` | Generic list selector | Shared primitive for palette and session picker |
+
+### Phase 2j-4: Status bar data flow
+
+The status bar never re-renders on every streaming chunk:
+- `useTuiStore(s => s.sessionInfo)` — stable reference, set once on session start
+- `useTuiStore(s => s.cumulativeMetrics)` — updates only on `done` event (once per turn)
+- `useTuiStore(s => s.agentStatus)` — updates on `turn_start`/`turn_end`/`done`/`add_error`
+
+Token counts update at turn boundaries, not per-chunk. A `"streaming…"` label is
+shown when `agentStatus === "processing"` to communicate that more tokens are pending.
+
+### Phase 2j-4: Command palette
+
+Progressive disclosure: commands with `minSessionCount > sessions.length` are hidden.
+The `filterCommands(commands, sessionCount)` function is memoised on `sessionCount` in
+the component — the expensive policy filter runs O(1 per new session), not per keystroke.
+Fuzzy scoring (subsequence) runs per-keystroke against the already-filtered list (15 items, negligible cost).
+
+Host wires `Ctrl+P` → `dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: "" } })`.
 
 ## Store Hook
 
