@@ -37,10 +37,13 @@ const DEFAULT_ABORT_THRESHOLD = 3;
 export interface DefaultFailureAnalyzerConfig {
   /** Abort threshold — abort after this many prior retries (default: 3). */
   readonly abortThreshold?: number;
+  /**
+   * Model ID to escalate to on repeated same-class failures.
+   * Must match the model namespace of the active provider/adapter.
+   * Default: undefined (escalation action is skipped, redirect is used instead).
+   */
+  readonly escalationModel?: string;
 }
-
-/** Default model to escalate to when repeated failures of the same class occur. */
-const DEFAULT_ESCALATION_MODEL = "claude-sonnet-4-5-20250514";
 
 // ---------------------------------------------------------------------------
 // classify helpers
@@ -102,6 +105,7 @@ export function createDefaultFailureAnalyzer(
   config?: DefaultFailureAnalyzerConfig,
 ): FailureAnalyzer {
   const abortThreshold = config?.abortThreshold ?? DEFAULT_ABORT_THRESHOLD;
+  const escalationModel = config?.escalationModel;
   return {
     classify(ctx: FailureContext): FailureClass {
       // Order: specific code match → request shape → fallback
@@ -137,10 +141,11 @@ export function createDefaultFailureAnalyzer(
         return { kind: "narrow_scope", focusArea: "the specific failing operation" };
       }
 
-      // priorRetries === 2: escalate if most recent failure (any class) was same kind,
-      // otherwise redirect. Uses full history so redirect is reachable when classes alternate.
-      if (isRepeatingClass(failure, records)) {
-        return { kind: "escalate_model", targetModel: DEFAULT_ESCALATION_MODEL };
+      // priorRetries === 2: escalate if most recent failure (any class) was same kind
+      // AND an escalation model is configured. Otherwise redirect.
+      // Uses full history so redirect is reachable when classes alternate.
+      if (isRepeatingClass(failure, records) && escalationModel !== undefined) {
+        return { kind: "escalate_model", targetModel: escalationModel };
       }
 
       return { kind: "redirect", newApproach: "Try a fundamentally different strategy" };
