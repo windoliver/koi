@@ -12,8 +12,10 @@
  */
 
 import type {
+  AgentEnv,
   AgentId,
   ChannelAdapter,
+  ChannelInheritMode,
   ChildCompletionResult,
   ChildHandle,
   ChildLifecycleEvent,
@@ -22,6 +24,7 @@ import type {
   DelegationId,
   EngineEvent,
   EngineInput,
+  SpawnChannelPolicy,
   Tool,
 } from "@koi/core";
 import {
@@ -165,20 +168,46 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 4a. Env inheritance
+  // 4a. Env inheritance — apply manifest ceiling (spawn.env.exclude) before runtime overrides.
+  // Manifest exclusions remove keys from the child env unconditionally; runtime overrides
+  // further modify the result. Keys in spawn.env.exclude that don't exist in the parent env
+  // are silently ignored (they're already absent — no violation to report).
   const parentHasEnv = options.parentAgent.has(ENV);
   if (parentHasEnv) {
-    const envOverrides = inheritance.env?.overrides;
+    const parentEnvValues = options.parentAgent.component<AgentEnv>(ENV)?.values ?? {};
+    const parentEnvKeys = new Set(Object.keys(parentEnvValues));
+
+    // Translate manifest env exclusions to undefined overrides (only for keys that exist)
+    const manifestExcludeOverrides: Record<string, undefined> = {};
+    for (const key of manifestSpawn?.env?.exclude ?? []) {
+      if (parentEnvKeys.has(key)) {
+        manifestExcludeOverrides[key] = undefined;
+      }
+    }
+
+    // Merge: manifest exclusions applied first, then runtime overrides (runtime wins on conflict)
+    const mergedOverrides: Readonly<Record<string, string | undefined>> = {
+      ...manifestExcludeOverrides,
+      ...(inheritance.env?.overrides ?? {}),
+    };
+    const hasOverrides = Object.keys(mergedOverrides).length > 0;
+
     inheritanceProviders.push(
       createAgentEnvProvider({
         parent: options.parentAgent,
-        ...(envOverrides !== undefined ? { overrides: envOverrides } : {}),
+        ...(hasOverrides ? { overrides: mergedOverrides } : {}),
       }),
     );
   }
 
-  // 4b. Channel inheritance
-  const channelPolicy = inheritance.channels ?? DEFAULT_SPAWN_CHANNEL_POLICY;
+  // 4b. Channel inheritance — apply manifest ceiling (spawn.channels) before runtime policy.
+  // The manifest declares the most permissive channel mode allowed; runtime policy may
+  // further restrict it. If manifest says "none", child gets no channels regardless of runtime.
+  const runtimeChannelPolicy = inheritance.channels ?? DEFAULT_SPAWN_CHANNEL_POLICY;
+  const channelPolicy =
+    manifestSpawn?.channels !== undefined
+      ? applyChannelCeiling(manifestSpawn.channels, runtimeChannelPolicy)
+      : runtimeChannelPolicy;
   if (channelPolicy.mode !== "none") {
     const parentChannels = options.parentAgent.query("channel:");
     for (const [tokenKey, channel] of parentChannels) {
@@ -452,6 +481,21 @@ function expandDenylistForNonInteractive(
     merged.add(tool);
   }
   return merged;
+}
+
+/**
+ * Apply the manifest's channel ceiling to the runtime channel policy.
+ * The manifest declares the most permissive mode allowed; the runtime may only restrict further.
+ * Mode restrictiveness order: none > output-only > all.
+ */
+function applyChannelCeiling(
+  ceiling: SpawnChannelPolicy,
+  runtime: SpawnChannelPolicy,
+): SpawnChannelPolicy {
+  const RESTRICTIVENESS: Record<ChannelInheritMode, number> = { none: 2, "output-only": 1, all: 0 };
+  const effectiveMode =
+    RESTRICTIVENESS[ceiling.mode] >= RESTRICTIVENESS[runtime.mode] ? ceiling.mode : runtime.mode;
+  return effectiveMode === runtime.mode ? runtime : { ...runtime, mode: effectiveMode };
 }
 
 /** Returns a new Set containing only elements present in both sets. */

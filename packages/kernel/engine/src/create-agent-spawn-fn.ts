@@ -239,11 +239,17 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         // lifetime from the parent tool call. request.signal (which may fire when
         // the Spawn tool call times out or the parent cancels) must NOT interrupt a
         // deferred/on_demand child that is supposed to outlive the tool invocation.
+        // However, request.timeoutMs is a child-lifetime deadline and IS honored here:
+        // it bounds the background job regardless of the parent's signal lifetime.
         const childController = new AbortController();
+        const childSignal =
+          request.timeoutMs !== undefined && request.timeoutMs > 0
+            ? AbortSignal.any([childController.signal, AbortSignal.timeout(request.timeoutMs)])
+            : childController.signal;
         const input: EngineInput = {
           kind: "text",
           text: request.description,
-          signal: childController.signal,
+          signal: childSignal,
         };
         void (async (): Promise<void> => {
           try {
