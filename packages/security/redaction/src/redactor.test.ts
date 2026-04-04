@@ -49,16 +49,48 @@ describe("createRedactor", () => {
     expect(result.secretCount).toBe(1);
   });
 
-  test("fail-closed on redactObject error", () => {
+  test("config-time rejection: pattern that throws on probe inputs is rejected", () => {
+    // A detector that always throws is rejected at config time (not at runtime).
+    // This prevents the trivial bypass: throw on known probe inputs, hang on real traffic.
+    const errors: unknown[] = [];
+    expect(() =>
+      createRedactor({
+        onError: (e) => errors.push(e),
+        patterns: [
+          {
+            name: "boom",
+            kind: "boom",
+            detect() {
+              throw new Error("detector crash");
+            },
+          },
+        ],
+      }),
+    ).toThrow("Invalid redaction config");
+    // onError also called with the validation failure
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("fail-closed on redactObject error at runtime (probe-passing but real-input-crashing pattern)", () => {
+    // A pattern that passes probes but crashes on actual real-world inputs
+    // still triggers fail-closed at redaction time.
+    const probeInputs = new Set([
+      "a".repeat(50),
+      "a]a]a]a]a]a]a]a]a]a]".repeat(5),
+      `-----BEGIN a PRIVATE KEY-----${"x".repeat(50)}`,
+      `eyJ${".".repeat(50)}`,
+    ]);
     const errors: unknown[] = [];
     const r = createRedactor({
       onError: (e) => errors.push(e),
       patterns: [
         {
-          name: "boom",
-          kind: "boom",
-          detect() {
-            throw new Error("detector crash");
+          name: "runtime-boom",
+          kind: "runtime-boom",
+          detect(input: string) {
+            // Passes probes, crashes on everything else
+            if (probeInputs.has(input)) return undefined;
+            throw new Error("runtime crash on real input");
           },
         },
       ],
@@ -67,24 +99,31 @@ describe("createRedactor", () => {
     expect(result.changed).toBe(true);
     expect(result.value as unknown).toBe("[REDACTION_FAILED]");
     expect(result.secretCount).toBe(-1);
-    expect(errors.length).toBe(1);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("fail-closed on redactString error", () => {
+  test("fail-closed on redactString error at runtime (probe-passing pattern)", () => {
+    const probeInputs = new Set([
+      "a".repeat(50),
+      "a]a]a]a]a]a]a]a]a]a]".repeat(5),
+      `-----BEGIN a PRIVATE KEY-----${"x".repeat(50)}`,
+      `eyJ${".".repeat(50)}`,
+    ]);
     const errors: unknown[] = [];
     const r = createRedactor({
       onError: (e) => errors.push(e),
       patterns: [
         {
-          name: "boom",
-          kind: "boom",
-          detect() {
-            throw new Error("detector crash");
+          name: "runtime-boom",
+          kind: "runtime-boom",
+          detect(input: string) {
+            if (probeInputs.has(input)) return undefined;
+            throw new Error("runtime crash");
           },
         },
       ],
     });
-    const result = r.redactString("test");
+    const result = r.redactString("actual-secret");
     expect(result.changed).toBe(true);
     expect(result.text).toBe("[REDACTION_FAILED]");
     expect(result.matchCount).toBe(-1);

@@ -117,12 +117,22 @@ export function validateRedactionConfig(
   for (const pattern of userSuppliedPatterns.filter((p) => !isTrustedPattern(p))) {
     for (const adversarial of ADVERSARIAL_INPUTS) {
       const start = performance.now();
+      let threw = false;
       try {
         pattern.detect(adversarial);
       } catch {
-        // Throwing detectors are not a ReDoS concern — they will be caught
-        // fail-closed at redaction time. Skip timing check for this input.
-        continue;
+        threw = true;
+      }
+      // Fail-closed: a detector that throws on probe inputs is rejected.
+      // Throwing on the known probe corpus is a trivial bypass — the detector
+      // can branch around our fixed inputs and still hang on real traffic.
+      if (threw) {
+        const message = `Pattern "${pattern.name}" threw an exception on a probe input — detectors must be exception-safe`;
+        merged.onError?.(new Error(message));
+        return {
+          ok: false,
+          error: { code: "VALIDATION" as const, message, retryable: false },
+        };
       }
       const elapsed = performance.now() - start;
       if (elapsed > REDOS_THRESHOLD_MS) {
