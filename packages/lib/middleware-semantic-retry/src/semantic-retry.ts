@@ -177,15 +177,36 @@ async function rewriteWithFallback(
 }
 
 // ---------------------------------------------------------------------------
+// Response failure detection
+// ---------------------------------------------------------------------------
+
+/** Non-success stop reasons that indicate a model call failure, not a completion. */
+const NON_SUCCESS_STOP_REASONS = new Set(["error", "hook_blocked"]);
+
+/**
+ * Check if a ModelResponse represents a failure (non-success stop reason).
+ * These responses are returned normally (not thrown) but should be treated
+ * as failures for retry purposes.
+ */
+function isFailedResponse(response: ModelResponse): boolean {
+  return response.stopReason !== undefined && NON_SUCCESS_STOP_REASONS.has(response.stopReason);
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export function createSemanticRetryMiddleware(config: SemanticRetryConfig): SemanticRetryHandle {
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const analyzer: FailureAnalyzer =
-    config.analyzer ?? createDefaultFailureAnalyzer({ abortThreshold: maxRetries });
-  const rewriter = config.rewriter ?? createDefaultPromptRewriter();
   const budgetOverrides = config.budgetOverrides ?? {};
+  // Abort threshold must accommodate the largest per-class budget override
+  // so the analyzer doesn't abort early for classes with extended budgets.
+  const overrideValues = Object.values(budgetOverrides).filter((v): v is number => v !== undefined);
+  const effectiveAbortThreshold =
+    overrideValues.length > 0 ? Math.max(maxRetries, ...overrideValues) : maxRetries;
+  const analyzer: FailureAnalyzer =
+    config.analyzer ?? createDefaultFailureAnalyzer({ abortThreshold: effectiveAbortThreshold });
+  const rewriter = config.rewriter ?? createDefaultPromptRewriter();
   const maxHistorySize = config.maxHistorySize ?? DEFAULT_MAX_HISTORY_SIZE;
   const analyzerTimeoutMs = config.analyzerTimeoutMs ?? DEFAULT_ANALYZER_TIMEOUT_MS;
   const rewriterTimeoutMs = config.rewriterTimeoutMs ?? DEFAULT_REWRITER_TIMEOUT_MS;
@@ -332,7 +353,13 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       // Guard clause: fast path when no pending action
       if (state.pendingAction === undefined) {
         try {
-          return await next(request);
+          const response = await next(request);
+          // Non-success stop reasons are failures surfaced as returned responses
+          if (isFailedResponse(response)) {
+            const failError = new Error(`Model call failed: stopReason=${response.stopReason}`);
+            await handleFailure(sessionId, state, failError, request, ctx.turnIndex);
+          }
+          return response;
         } catch (e: unknown) {
           await handleFailure(sessionId, state, e, request, ctx.turnIndex);
           throw e;
@@ -366,6 +393,16 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
 
       try {
         const response = await next(modifiedRequest);
+
+        // Non-success stop reasons on the retry path are still failures
+        if (isFailedResponse(response)) {
+          const failError = new Error(
+            `Retried model call failed: stopReason=${response.stopReason}`,
+          );
+          await handleFailure(sessionId, state, failError, modifiedRequest, ctx.turnIndex);
+          return response;
+        }
+
         // Successful retry — mark last record as succeeded and clear signal
         if (state.records.length > 0) {
           const lastIdx = state.records.length - 1;

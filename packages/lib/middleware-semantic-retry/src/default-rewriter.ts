@@ -8,9 +8,9 @@
 import type { InboundMessage, ModelRequest } from "@koi/core";
 import type { PromptRewriter, RetryAction, RewriteContext } from "./types.js";
 
-// Use canonical "system" sender so event-trace's extractLastUserMessage()
-// correctly skips injected retry guidance when capturing request content.
-const SENDER_ID = "system";
+// Use "system:" prefix so both the request mapper (maps system:* → system role)
+// and event-trace (skips system/assistant senders) treat this as system guidance.
+const SENDER_ID = "system:semantic-retry";
 
 // ---------------------------------------------------------------------------
 // Message injection helper

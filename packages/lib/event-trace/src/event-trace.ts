@@ -178,7 +178,12 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg === undefined) continue;
-      if (msg.senderId === "assistant" || msg.senderId === "system") continue;
+      if (
+        msg.senderId === "assistant" ||
+        msg.senderId === "system" ||
+        msg.senderId.startsWith("system:")
+      )
+        continue;
 
       const textBlock = msg.content.find((block) => block.kind === "text");
       if (textBlock !== undefined && textBlock.kind === "text") {
