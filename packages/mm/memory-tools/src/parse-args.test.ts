@@ -204,4 +204,14 @@ describe("parseOptionalTimestamp", () => {
     const result = parseOptionalTimestamp({ d: "2026-03-15" }, "d");
     expect(result.ok).toBe(true);
   });
+
+  test("rejects timezone-less datetime (host-local ambiguity)", () => {
+    const result = parseOptionalTimestamp({ d: "2026-01-01T00:00:00" }, "d");
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects timezone-less datetime without seconds", () => {
+    const result = parseOptionalTimestamp({ d: "2026-01-01T12:30" }, "d");
+    expect(result.ok).toBe(false);
+  });
 });

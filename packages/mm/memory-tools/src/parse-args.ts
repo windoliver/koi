@@ -129,10 +129,13 @@ export function parseOptionalEnum<const T extends string>(
 
 /**
  * Strict ISO 8601 shape check — rejects locale-ish strings that Date.parse
- * would accept (e.g. "March 5, 2026"). Accepts YYYY-MM-DD with optional
- * time, timezone offset, or trailing Z.
+ * would accept (e.g. "March 5, 2026"). Accepts:
+ * - Date only: YYYY-MM-DD (interpreted as UTC midnight)
+ * - Date + time: YYYY-MM-DDTHH:MM[:SS[.fff]] with REQUIRED timezone (Z or +/-HH:MM)
+ *
+ * Timezone is required on date-time inputs to avoid host-local interpretation.
  */
-const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
 
 export function parseOptionalTimestamp(
   args: JsonObject,
