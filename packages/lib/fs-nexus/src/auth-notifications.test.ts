@@ -45,6 +45,7 @@ describe("createAuthNotificationHandler", () => {
         user_email: "user@example.com",
         auth_url: "https://accounts.google.com/auth?test=1",
         message: "Authorize Google Drive to continue",
+        mode: "local",
       },
     };
 
@@ -118,6 +119,7 @@ describe("createAuthNotificationHandler", () => {
         user_email: "",
         auth_url: "https://accounts.google.com/auth",
         message: "Authorize",
+        mode: "local",
       },
     };
 
