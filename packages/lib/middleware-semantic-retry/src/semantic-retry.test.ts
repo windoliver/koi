@@ -135,6 +135,38 @@ describe("createSemanticRetryMiddleware", () => {
       expect(broker.getRetrySignal("s1")).toBeUndefined();
     });
 
+    it("marks last record as succeeded after successful retry", async () => {
+      const broker = createRetrySignalBroker();
+      const handle = createSemanticRetryMiddleware({ signalWriter: broker });
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      // First call fails
+      try {
+        await handle.middleware.wrapModelCall?.(
+          createMinimalTurnCtx("s1"),
+          createMinimalRequest(),
+          async () => {
+            throw new Error("fail");
+          },
+        );
+      } catch {
+        // expected
+      }
+
+      // Records show failure
+      expect(handle.getRecords("s1")[0]?.succeeded).toBe(false);
+
+      // Second call succeeds (retry)
+      await handle.middleware.wrapModelCall?.(
+        createMinimalTurnCtx("s1", 1),
+        createMinimalRequest(),
+        async () => createMinimalResponse(),
+      );
+
+      // Record should now show success
+      expect(handle.getRecords("s1")[0]?.succeeded).toBe(true);
+    });
+
     it("clears signal on session end", async () => {
       const broker = createRetrySignalBroker();
       const handle = createSemanticRetryMiddleware({ signalWriter: broker });
@@ -242,7 +274,7 @@ describe("createSemanticRetryMiddleware", () => {
       // Manually set a signal to test reset behavior
       broker.setRetrySignal("s1", {
         retrying: true,
-        originalStepIndex: 0,
+        originTurnIndex: 0,
         reason: "test",
         failureClass: "unknown",
         attemptNumber: 1,

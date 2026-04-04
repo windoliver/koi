@@ -15,7 +15,7 @@ describe("createRetrySignalBroker", () => {
     const broker = createRetrySignalBroker();
     const signal = {
       retrying: true,
-      originalStepIndex: 5,
+      originTurnIndex: 5,
       reason: "tool_misuse",
       failureClass: "tool_misuse",
       attemptNumber: 1,
@@ -29,7 +29,7 @@ describe("createRetrySignalBroker", () => {
     const broker = createRetrySignalBroker();
     broker.setRetrySignal("session-1", {
       retrying: true,
-      originalStepIndex: 0,
+      originTurnIndex: 0,
       reason: "test",
       failureClass: "unknown",
       attemptNumber: 1,
@@ -43,14 +43,14 @@ describe("createRetrySignalBroker", () => {
     const broker = createRetrySignalBroker();
     const signal1 = {
       retrying: true,
-      originalStepIndex: 1,
+      originTurnIndex: 1,
       reason: "reason-1",
       failureClass: "api_error",
       attemptNumber: 1,
     } as const;
     const signal2 = {
       retrying: true,
-      originalStepIndex: 2,
+      originTurnIndex: 2,
       reason: "reason-2",
       failureClass: "tool_misuse",
       attemptNumber: 2,
@@ -71,7 +71,7 @@ describe("createRetrySignalBroker", () => {
     const broker = createRetrySignalBroker();
     broker.setRetrySignal("session-1", {
       retrying: true,
-      originalStepIndex: 1,
+      originTurnIndex: 1,
       reason: "first",
       failureClass: "unknown",
       attemptNumber: 1,
@@ -79,7 +79,7 @@ describe("createRetrySignalBroker", () => {
 
     const updated = {
       retrying: true,
-      originalStepIndex: 1,
+      originTurnIndex: 1,
       reason: "second",
       failureClass: "api_error",
       attemptNumber: 2,

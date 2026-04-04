@@ -9,6 +9,7 @@
  * Emits retry signals via RetrySignalWriter for event-trace trajectory annotation.
  */
 
+export type { DefaultFailureAnalyzerConfig } from "./default-analyzer.js";
 export { createDefaultFailureAnalyzer } from "./default-analyzer.js";
 export { createDefaultPromptRewriter } from "./default-rewriter.js";
 export { createRetrySignalBroker } from "./retry-signal-broker.js";

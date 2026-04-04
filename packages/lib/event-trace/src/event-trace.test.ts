@@ -1700,7 +1700,7 @@ describe("retry signal coordination", () => {
         if (sessionId === "test-session") {
           return {
             retrying: true,
-            originalStepIndex: 0,
+            originTurnIndex: 0,
             reason: "tool_misuse: invalid arguments",
             failureClass: "tool_misuse",
             attemptNumber: 1,
@@ -1725,7 +1725,7 @@ describe("retry signal coordination", () => {
     const steps = mockStore.steps.flat();
     expect(steps.length).toBe(1);
     expect(steps[0]?.outcome).toBe("retry");
-    expect(steps[0]?.metadata?.retryOf).toBe(0);
+    expect(steps[0]?.metadata?.retryOfTurn).toBe(0);
     expect(steps[0]?.metadata?.retryAttempt).toBe(1);
     expect(steps[0]?.metadata?.retryReason).toBe("tool_misuse: invalid arguments");
     expect(steps[0]?.metadata?.retryFailureClass).toBe("tool_misuse");
@@ -1736,7 +1736,7 @@ describe("retry signal coordination", () => {
     const signalReader = {
       getRetrySignal: () => ({
         retrying: true,
-        originalStepIndex: 2,
+        originTurnIndex: 2,
         reason: "api_error: timeout",
         failureClass: "api_error",
         attemptNumber: 3,
@@ -1758,7 +1758,7 @@ describe("retry signal coordination", () => {
     const steps = mockStore.steps.flat();
     expect(steps.length).toBe(1);
     expect(steps[0]?.outcome).toBe("retry");
-    expect(steps[0]?.metadata?.retryOf).toBe(2);
+    expect(steps[0]?.metadata?.retryOfTurn).toBe(2);
     expect(steps[0]?.metadata?.retryAttempt).toBe(3);
   });
 
@@ -1783,7 +1783,7 @@ describe("retry signal coordination", () => {
     const steps = mockStore.steps.flat();
     expect(steps.length).toBe(1);
     expect(steps[0]?.outcome).toBe("success");
-    expect(steps[0]?.metadata?.retryOf).toBeUndefined();
+    expect(steps[0]?.metadata?.retryOfTurn).toBeUndefined();
   });
 
   test("works without signalReader configured", async () => {

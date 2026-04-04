@@ -179,9 +179,10 @@ async function rewriteWithFallback(
 // ---------------------------------------------------------------------------
 
 export function createSemanticRetryMiddleware(config: SemanticRetryConfig): SemanticRetryHandle {
-  const analyzer: FailureAnalyzer = config.analyzer ?? createDefaultFailureAnalyzer();
-  const rewriter = config.rewriter ?? createDefaultPromptRewriter();
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const analyzer: FailureAnalyzer =
+    config.analyzer ?? createDefaultFailureAnalyzer({ abortThreshold: maxRetries });
+  const rewriter = config.rewriter ?? createDefaultPromptRewriter();
   const budgetOverrides = config.budgetOverrides ?? {};
   const maxHistorySize = config.maxHistorySize ?? DEFAULT_MAX_HISTORY_SIZE;
   const analyzerTimeoutMs = config.analyzerTimeoutMs ?? DEFAULT_ANALYZER_TIMEOUT_MS;
@@ -219,7 +220,6 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     error: unknown,
     request: ModelRequest | ToolFailureRequest,
     turnIndex: number,
-    stepIndex: number,
   ): Promise<void> {
     const ctx: FailureContext = { error, request, records: state.records, turnIndex };
     const { failureClass, classifyFailed } = await classifyWithFallback(
@@ -228,22 +228,23 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       analyzerTimeoutMs,
     );
 
-    const classBudget = state.budgets[failureClass.kind];
+    const classBudget = state.budgets[failureClass.kind] ?? 0;
     // Guard: skip once budget for this failure class is exhausted
-    if (classBudget !== undefined && classBudget <= 0) return;
+    if (classBudget <= 0) return;
 
-    state.budgets[failureClass.kind] = (classBudget ?? 0) - 1;
-    const remainingBudget = state.budgets[failureClass.kind] ?? 0;
+    // Select action BEFORE decrementing so maxRetries:1 allows one retry
     const effectiveMax = budgetOverrides[failureClass.kind] ?? maxRetries;
     const action = selectActionWithFallback(
       analyzer,
       failureClass,
       state.records,
-      remainingBudget,
+      classBudget,
       effectiveMax,
       error,
       classifyFailed,
     );
+
+    state.budgets[failureClass.kind] = classBudget - 1;
 
     const record: RetryRecord = {
       timestamp: Date.now(),
@@ -259,7 +260,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     if (signalWriter !== undefined && action.kind !== "abort") {
       signalWriter.setRetrySignal(sessionId, {
         retrying: true,
-        originalStepIndex: stepIndex,
+        originTurnIndex: turnIndex,
         reason: failureClass.reason,
         failureClass: failureClass.kind,
         attemptNumber: state.records.length,
@@ -306,7 +307,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         try {
           return await next(request);
         } catch (e: unknown) {
-          await handleFailure(sessionId, state, e, request, ctx.turnIndex, ctx.turnIndex);
+          await handleFailure(sessionId, state, e, request, ctx.turnIndex);
           throw e;
         }
       }
@@ -338,11 +339,21 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
 
       try {
         const response = await next(modifiedRequest);
-        // Successful retry — clear the signal
+        // Successful retry — mark last record as succeeded and clear signal
+        if (state.records.length > 0) {
+          const lastIdx = state.records.length - 1;
+          const lastRecord = state.records[lastIdx];
+          if (lastRecord !== undefined) {
+            state.records = [
+              ...state.records.slice(0, lastIdx),
+              { ...lastRecord, succeeded: true },
+            ];
+          }
+        }
         signalWriter?.clearRetrySignal(sessionId);
         return response;
       } catch (e: unknown) {
-        await handleFailure(sessionId, state, e, request, ctx.turnIndex, ctx.turnIndex);
+        await handleFailure(sessionId, state, e, request, ctx.turnIndex);
         throw e;
       }
     },
@@ -363,7 +374,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
             toolId: request.toolId,
             input: request.input,
           };
-          await handleFailure(sessionId, state, e, toolFailure, ctx.turnIndex, ctx.turnIndex);
+          await handleFailure(sessionId, state, e, toolFailure, ctx.turnIndex);
         }
         throw e;
       }

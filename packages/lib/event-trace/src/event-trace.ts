@@ -279,7 +279,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       outcome: "retry",
       metadata: {
         ...baseMetadata,
-        retryOf: signal.originalStepIndex,
+        retryOfTurn: signal.originTurnIndex,
         retryAttempt: signal.attemptNumber,
         retryReason: signal.reason,
         retryFailureClass: signal.failureClass,

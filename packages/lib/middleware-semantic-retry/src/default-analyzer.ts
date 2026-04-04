@@ -33,6 +33,12 @@ const ERROR_CODE_MAP: Readonly<Record<string, FailureClassKind>> = {
 /** Default escalation ladder threshold — abort after this many prior retries. */
 const DEFAULT_ABORT_THRESHOLD = 3;
 
+/** Configuration for the default failure analyzer. */
+export interface DefaultFailureAnalyzerConfig {
+  /** Abort threshold — abort after this many prior retries (default: 3). */
+  readonly abortThreshold?: number;
+}
+
 /** Default model to escalate to when repeated failures of the same class occur. */
 const DEFAULT_ESCALATION_MODEL = "claude-sonnet-4-5-20250514";
 
@@ -92,7 +98,10 @@ function isRepeatingClass(current: FailureClass, records: readonly RetryRecord[]
  * Creates a default FailureAnalyzer with pattern-matching classification
  * and an escalation ladder for action selection.
  */
-export function createDefaultFailureAnalyzer(): FailureAnalyzer {
+export function createDefaultFailureAnalyzer(
+  config?: DefaultFailureAnalyzerConfig,
+): FailureAnalyzer {
+  const abortThreshold = config?.abortThreshold ?? DEFAULT_ABORT_THRESHOLD;
   return {
     classify(ctx: FailureContext): FailureClass {
       // Order: specific code match → request shape → fallback
@@ -105,7 +114,7 @@ export function createDefaultFailureAnalyzer(): FailureAnalyzer {
       const priorRetries = records.length;
 
       // Special case: scope_drift always triggers decompose on first attempt
-      if (failure.kind === "scope_drift" && priorRetries < DEFAULT_ABORT_THRESHOLD) {
+      if (failure.kind === "scope_drift" && priorRetries < abortThreshold) {
         return {
           kind: "decompose",
           subtasks: ["Re-read the original requirements", "Focus on one subtask at a time"],
@@ -113,7 +122,7 @@ export function createDefaultFailureAnalyzer(): FailureAnalyzer {
       }
 
       // Escalation ladder based on retry count
-      if (priorRetries >= DEFAULT_ABORT_THRESHOLD) {
+      if (priorRetries >= abortThreshold) {
         return { kind: "abort", reason: `Retry budget exhausted after ${priorRetries} attempts` };
       }
 

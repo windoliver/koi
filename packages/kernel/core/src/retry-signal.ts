@@ -22,8 +22,13 @@
 export interface RetrySignal {
   /** Whether a retry is currently in progress. */
   readonly retrying: boolean;
-  /** Step index of the original (failed) call being retried. */
-  readonly originalStepIndex: number;
+  /**
+   * Turn index where the original failure occurred.
+   * Note: this is the turn index, not the trajectory step index, because
+   * the retry middleware (L2) does not have access to event-trace's step counter.
+   * Event-trace records this as `metadata.retryOfTurn` for correlation.
+   */
+  readonly originTurnIndex: number;
   /** Human-readable reason for the retry (from failure analysis). */
   readonly reason: string;
   /** Failure class that triggered the retry (e.g., "tool_misuse", "api_error"). */
