@@ -46,6 +46,7 @@ import type {
   ModelChunk,
   PermissionBackend,
   Result,
+  SpawnFn,
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
@@ -69,6 +70,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
@@ -191,7 +193,7 @@ if (!taskListResult.ok) {
 const taskListTool = taskListResult.value;
 
 // ---------------------------------------------------------------------------
-// @koi/task-tools — full tool surface (6 tools via createTaskTools)
+// @koi/task-tools — full tool surface (7 tools via createTaskTools)
 // ---------------------------------------------------------------------------
 
 const taskToolsBoard = await createManagedTaskBoard({
@@ -201,8 +203,9 @@ const taskToolsAll = createTaskTools({
   board: taskToolsBoard,
   agentId: "golden-recorder" as import("@koi/core").AgentId,
 });
-// createTaskTools returns [create, get, update, list, stop, output]
-const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
+// createTaskTools returns [create, get, update, list, stop, output, delegate]
+const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput, ttDelegate] = taskToolsAll as [
+  import("@koi/core").Tool,
   import("@koi/core").Tool,
   import("@koi/core").Tool,
   import("@koi/core").Tool,
@@ -210,6 +213,27 @@ const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
   import("@koi/core").Tool,
   import("@koi/core").Tool,
 ];
+
+// ---------------------------------------------------------------------------
+// @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+// Stub returns immediately without launching a real child agent.
+// The cassette captures the LLM's tool-call interaction pattern.
+// ---------------------------------------------------------------------------
+
+const stubSpawnFn: SpawnFn = async (request) => ({
+  ok: true,
+  output: `Task delegated to ${request.agentName}: ${request.description} — result: done`,
+});
+
+const spawnToolsAbortController = new AbortController();
+const spawnToolsAll = createSpawnTools({
+  spawnFn: stubSpawnFn,
+  board: taskToolsBoard, // shares the task board for full coordinator flow
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+  signal: spawnToolsAbortController.signal,
+});
+// createSpawnTools returns [agent_spawn]
+const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -745,31 +769,42 @@ if (nexusFsCheck.exitCode === 0) {
   const { join } = await import("node:path");
 
   const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
-  const transport = await createLocalTransport({
-    mountUri: `local://${nexusTmpDir}`,
-    startupTimeoutMs: 15_000,
-  });
-  nexusTransport = transport;
+  let transport: Awaited<ReturnType<typeof createLocalTransport>> | undefined;
+  try {
+    transport = await createLocalTransport({
+      mountUri: `local://${nexusTmpDir}`,
+      startupTimeoutMs: 15_000,
+    });
+  } catch (e: unknown) {
+    console.log(
+      `nexus-fs transport failed to start — skipping nexus-fs golden query: ${String(e)}`,
+    );
+  }
+  if (transport === undefined) {
+    // Transport failed — skip nexus-fs setup
+  } else {
+    nexusTransport = transport;
 
-  const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
-  const backend = createNexusFileSystem({
-    url: "local://unused",
-    mountPoint: nexusMountPoint,
-    transport,
-  });
+    const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
+    const backend = createNexusFileSystem({
+      url: "local://unused",
+      mountPoint: nexusMountPoint,
+      transport,
+    });
 
-  // Pre-seed a file for the LLM to read
-  await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
+    // Pre-seed a file for the LLM to read
+    await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
 
-  const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
+    const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
 
-  nexusFsProvider = createSingleToolProvider({
-    name: "nexus-fs",
-    toolName: "nexus_read",
-    createTool: () => readTool,
-  });
+    nexusFsProvider = createSingleToolProvider({
+      name: "nexus-fs",
+      toolName: "nexus_read",
+      createTool: () => readTool,
+    });
 
-  console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+    console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+  } // end transport !== undefined
 } else {
   console.log("nexus-fs not available — skipping nexus-fs golden query");
 }
@@ -1355,8 +1390,48 @@ const queries: readonly QueryConfig[] = [
         toolName: "task_output",
         createTool: () => ttOutput,
       }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
     ],
     maxTurns: 5,
+  },
+
+  // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+  //     Coordinator creates a task, delegates it, then spawns a child agent.
+  //     Stub SpawnFn returns immediately (no real child agent launched).
+  {
+    name: "spawn-tools",
+    prompt:
+      "You are a coordinator. Do the following steps in order: " +
+      "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+      "2) Use task_delegate to assign that task to agent 'researcher'. " +
+      "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+      "Report the researcher's output.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+      createSingleToolProvider({
+        name: "agent-spawn",
+        toolName: "agent_spawn",
+        createTool: () => stAgentSpawn,
+      }),
+    ],
+    maxTurns: 4,
   },
 ];
 
@@ -1450,7 +1525,31 @@ await recordCassette("task-tools", () =>
       ttList.descriptor,
       ttStop.descriptor,
       ttOutput.descriptor,
+      ttDelegate.descriptor,
     ],
+  }),
+);
+
+await recordCassette("spawn-tools", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "You are a coordinator. Do the following steps in order: " +
+              "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+              "2) Use task_delegate to assign that task to agent 'researcher'. " +
+              "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+              "Report the researcher's output.",
+          },
+        ],
+      },
+    ],
+    tools: [ttCreate.descriptor, ttDelegate.descriptor, stAgentSpawn.descriptor],
   }),
 );
 
@@ -1552,9 +1651,11 @@ for (const q of queries) {
 await mcpSetup.cleanup();
 nexusTransport?.close();
 
-console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
+console.log("  fixtures/task-tools.cassette.json");
+console.log("  fixtures/spawn-tools.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);

@@ -1,31 +1,69 @@
 {
   "name": "task-tools",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775279041109,
+  "recordedAt": 1775296960078,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_NlRsB1cXpoQtE7XtlYOD"
+      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_NlRsB1cXpoQtE7XtlYOD",
+      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_NlRsB1cXpoQtE7XtlYOD",
-      "delta": "{\"subject\":\"Implement login flow\",\"description\":\"Build the OAuth2 login flow\"}"
+      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
+      "delta": "{\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "task_create",
+      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
+      "delta": "{\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "task_list",
+      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+      "delta": "{}"
     },
     {
       "kind": "usage",
-      "inputTokens": 657,
-      "outputTokens": 14
+      "inputTokens": 809,
+      "outputTokens": 25
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_NlRsB1cXpoQtE7XtlYOD"
+      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD"
     },
     {
       "kind": "done",
@@ -33,21 +71,36 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775279040-0RISkj6slfhwx8GsZWxw",
+        "responseId": "gen-1775296959-eWWJPQFJ3B7LwDZSmLLP",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_NlRsB1cXpoQtE7XtlYOD",
+            "id": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
             "name": "task_create",
             "arguments": {
-              "subject": "Implement login flow",
-              "description": "Build the OAuth2 login flow"
+              "description": "Build OAuth2",
+              "subject": "Implement login flow"
             }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
+            "name": "task_create",
+            "arguments": {
+              "subject": "Write API tests",
+              "description": "Add integration tests"
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+            "name": "task_list",
+            "arguments": {}
           }
         ],
         "usage": {
-          "inputTokens": 657,
-          "outputTokens": 14
+          "inputTokens": 809,
+          "outputTokens": 25
         }
       }
     }

@@ -30,6 +30,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/query-engine": "workspace:*",
+    "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
     "@koi/tools-builtin": "workspace:*",

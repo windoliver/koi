@@ -16,6 +16,7 @@
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/query-engine" },
+    { "path": "../../lib/spawn-tools" },
     { "path": "../../lib/task-tools" },
     { "path": "../../lib/tasks" },
     { "path": "../../lib/tools-builtin" },
