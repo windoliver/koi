@@ -76,6 +76,6 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     updateTool,
     createTaskListTool(board),
     createTaskStopTool(board, agentId),
-    createTaskOutputTool(board),
+    createTaskOutputTool(board, agentId),
   ];
 }

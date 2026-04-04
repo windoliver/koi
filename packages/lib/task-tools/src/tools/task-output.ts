@@ -1,4 +1,4 @@
-import type { JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
+import type { AgentId, JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
@@ -9,7 +9,7 @@ const schema = z.object({
   task_id: z.string().min(1).describe("ID of the task to retrieve output for"),
 });
 
-export function createTaskOutputTool(board: ManagedTaskBoard): Tool {
+export function createTaskOutputTool(board: ManagedTaskBoard, agentId: AgentId): Tool {
   return {
     descriptor: {
       name: "task_output",
@@ -35,6 +35,16 @@ export function createTaskOutputTool(board: ManagedTaskBoard): Tool {
       if (task === undefined) {
         const response: TaskOutputResponse = { kind: "not_found", taskId: id };
         return response;
+      }
+
+      // Read authorization: reject cross-agent reads when assignedTo is explicitly
+      // set to a different agent. If assignedTo is undefined (pending, or cleared
+      // on failure/retry), allow the read — we cannot determine the prior owner.
+      if (task.assignedTo !== undefined && task.assignedTo !== agentId) {
+        return {
+          ok: false,
+          error: `Cannot read task '${parsed.data.task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+        };
       }
 
       // Exhaustive switch — TS enforces all TaskStatus cases are handled

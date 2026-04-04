@@ -115,7 +115,10 @@ export function createTaskUpdateTool(
                 "status 'completed' requires a non-empty 'output' field summarizing what was accomplished",
             };
           }
-          const taskResult = { taskId: id, output, durationMs: 0 };
+          // durationMs: time since the task's last state change (when it became in_progress).
+          // task.updatedAt reflects the most recent transition — the in_progress assignment.
+          const durationMs = Math.max(0, Date.now() - task.updatedAt);
+          const taskResult = { taskId: id, output, durationMs };
           // completeOwnedTask: atomically re-checks ownership inside the lock
           const completeResult = await board.completeOwnedTask(id, agentId, taskResult);
           if (!completeResult.ok) {
