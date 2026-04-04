@@ -99,6 +99,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
   const { resolver, base, adapter, manifestTemplate, inheritedMiddleware } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
+    // Capture absolute deadline immediately so setup time (slot acquisition, assembly)
+    // is deducted from the child's budget regardless of the delivery mode.
+    // Callers that already set absoluteDeadlineMs (e.g. the Spawn tool) are respected;
+    // callers that only set timeoutMs get the same guarantee via this fallback.
+    const effectiveDeadlineMs: number | undefined =
+      request.absoluteDeadlineMs ??
+      (request.timeoutMs !== undefined && request.timeoutMs > 0
+        ? Date.now() + request.timeoutMs
+        : undefined);
+
     // 1. Resolve agent definition (or use inline manifest)
     let manifest: AgentManifest;
     let systemPrompt: string | undefined = request.systemPrompt;
@@ -244,8 +254,10 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         // timer here — this prevents giving the child a double budget for setup overhead.
         const childController = new AbortController();
         let childSignal = childController.signal;
-        if (request.absoluteDeadlineMs !== undefined) {
-          const remainingMs = request.absoluteDeadlineMs - Date.now();
+        // Use effectiveDeadlineMs (captured at request start) so elapsed setup time
+        // (slot wait, assembly) is deducted from the remaining budget.
+        if (effectiveDeadlineMs !== undefined) {
+          const remainingMs = effectiveDeadlineMs - Date.now();
           if (remainingMs <= 0) {
             // Deadline already elapsed during setup — abort immediately
             childController.abort();
@@ -255,11 +267,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
               AbortSignal.timeout(remainingMs),
             ]);
           }
-        } else if (request.timeoutMs !== undefined && request.timeoutMs > 0) {
-          childSignal = AbortSignal.any([
-            childController.signal,
-            AbortSignal.timeout(request.timeoutMs),
-          ]);
         }
         const input: EngineInput = {
           kind: "text",

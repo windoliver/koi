@@ -215,15 +215,19 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     for (const [tokenKey, channel] of parentChannels) {
       const tokenStr = tokenKey as string;
       const channelName = tokenStr.slice("channel:".length);
-      const proxy = createInheritedChannel(
-        channel as ChannelAdapter,
-        options.parentAgent.pid,
-        channelPolicy,
-      );
-      // Wrap as a simple component provider
+      const capturedChannel = channel as ChannelAdapter;
+      // Create the proxy inside attach() so the child's own PID is used for attribution.
+      // The child PID is only known after createKoi() assembles the agent; attach() is
+      // called during that assembly, making agent.pid the correct child identity.
       const channelProvider: ComponentProvider = {
         name: `inherited-channel:${channelName}`,
-        attach: async () => new Map([[channelToken(channelName) as string, proxy]]),
+        attach: async (agent) =>
+          new Map([
+            [
+              channelToken(channelName) as string,
+              createInheritedChannel(capturedChannel, agent.pid, channelPolicy),
+            ],
+          ]),
       };
       inheritanceProviders.push(channelProvider);
     }
