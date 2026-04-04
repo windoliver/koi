@@ -479,11 +479,14 @@ async def handle_request(fs, request):
             return {"jsonrpc": "2.0", "id": req_id, "error": {"code": VALIDATION_ERROR, "message": str(e)}}
 
         except Exception as e:
-            # Check for AuthenticationError from nexus-fs (requires nexus-fs >= auth-inline).
-            # AuthenticationError must provide: .provider, .user_email, .auth_url
-            auth_exc_type = getattr(
-                sys.modules.get("nexus.fs", None), "AuthenticationError", None
-            )
+            # Check for AuthenticationError from nexus-fs.
+            # Lives in nexus.contracts.exceptions (not on nexus.fs directly).
+            # AuthenticationError provides: .provider, .user_email, .auth_url
+            try:
+                from nexus.contracts.exceptions import AuthenticationError as _AuthErr
+                auth_exc_type: type | None = _AuthErr
+            except ImportError:
+                auth_exc_type = None
             is_auth_error = (
                 auth_exc_type is not None and isinstance(e, auth_exc_type)
             )
