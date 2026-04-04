@@ -84,6 +84,9 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "delivery.ts",
   "replacement.ts",
   "memory.ts",
+  // spawn.ts: validateSpawnRequest() is a pure validation helper (no side effects,
+  // operates only on L0 types) — same category as validation-utils.ts.
+  "spawn.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

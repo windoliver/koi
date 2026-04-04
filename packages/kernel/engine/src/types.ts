@@ -26,7 +26,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
-  SpawnChannelPolicy,
+  SpawnInheritanceConfig,
   SpawnLedger,
   StoreChangeEvent,
   Tool,
@@ -163,27 +163,6 @@ export interface KoiRuntime {
         readonly getInventory: (extraItems?: readonly DebugInventoryItem[]) => DebugInventory;
       }
     | undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Spawn inheritance config
-// ---------------------------------------------------------------------------
-
-/** Unified inheritance configuration for spawned child agents. */
-export interface SpawnInheritanceConfig {
-  /** Tool scope filtering for inherited tools. */
-  readonly tools?: {
-    readonly scopeChecker?: (toolName: string) => ForgeScope | undefined;
-  };
-  /** Channel inheritance policy. */
-  readonly channels?: SpawnChannelPolicy;
-  /** Environment variable inheritance with overrides. */
-  readonly env?: {
-    /** Key-value overrides. Set value to undefined to narrow (remove) a parent key. */
-    readonly overrides?: Readonly<Record<string, string | undefined>>;
-  };
-  /** Priority for the child agent (0-39, default 10). */
-  readonly priority?: number;
 }
 
 // ---------------------------------------------------------------------------

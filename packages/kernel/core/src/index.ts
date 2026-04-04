@@ -45,6 +45,7 @@ export type {
   ForgedSkillSource,
   ManifestSandboxConfig,
   ManifestSandboxPersistence,
+  ManifestSpawnConfig,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
@@ -992,7 +993,13 @@ export type {
 } from "./snapshot-time-travel.js";
 export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
 // spawn — unified spawn types for all agent-spawning patterns
-export type { SpawnFn, SpawnRequest, SpawnResult } from "./spawn.js";
+export type {
+  SpawnFn,
+  SpawnInheritanceConfig,
+  SpawnRequest,
+  SpawnResult,
+} from "./spawn.js";
+export { validateSpawnRequest } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
   ChildSpec,

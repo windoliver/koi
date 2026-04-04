@@ -3,6 +3,7 @@
  */
 
 import type { BrickId } from "./brick-snapshot.js";
+import type { SpawnChannelPolicy } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
@@ -174,6 +175,42 @@ export interface FileSystemConfig {
   readonly operations?: readonly ("read" | "write" | "edit")[];
 }
 
+/**
+ * Declarative spawn inheritance policy for agent manifests.
+ *
+ * Declares the ceiling for capabilities this agent may grant to its children.
+ * Runtime spawn options (SpawnRequest.toolDenylist etc.) operate within this
+ * ceiling — they can further restrict but never escalate beyond it.
+ *
+ * When absent, behavior falls back to the runtime spawn policy defaults
+ * (currently denylist mode: all parent tools inherited unless explicitly excluded).
+ */
+export interface ManifestSpawnConfig {
+  /** Default tool narrowing policy when this agent spawns children. */
+  readonly tools?: {
+    /**
+     * "allowlist" — child gets only the tools in `list`. Start-from-zero; explicit grants.
+     * "denylist"  — child gets all parent tools except the tools in `list`. Default.
+     *
+     * Prefer "allowlist" for agents that spawn untrusted or narrowly-scoped children.
+     * The "denylist" default preserves existing behavior for unrestricted spawn callers.
+     */
+    readonly policy?: "allowlist" | "denylist";
+    /** Tool names to include (allowlist) or exclude (denylist). */
+    readonly list?: readonly string[];
+  };
+  /**
+   * Env vars to exclude from child env by default.
+   * Applies before any per-spawn runtime overrides.
+   * Useful for preventing credential leakage to narrow-scoped children.
+   */
+  readonly env?: {
+    readonly exclude?: readonly string[];
+  };
+  /** Default channel inheritance policy when spawning children. */
+  readonly channels?: SpawnChannelPolicy;
+}
+
 export interface AgentManifest {
   readonly name: string;
   readonly version: string;
@@ -233,4 +270,14 @@ export interface AgentManifest {
    * Can be overridden per-spawn via SpawnRequest.delivery.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+  /**
+   * Declarative spawn inheritance policy.
+   *
+   * Declares the ceiling for capabilities this agent grants to children it spawns.
+   * Per-spawn runtime options (toolDenylist, toolAllowlist, etc.) operate within
+   * this ceiling — they can further restrict, but never escalate beyond it.
+   *
+   * When absent, the runtime's default spawn policy applies.
+   */
+  readonly spawn?: ManifestSpawnConfig | undefined;
 }

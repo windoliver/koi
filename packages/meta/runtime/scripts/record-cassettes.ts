@@ -492,6 +492,21 @@ interface QueryConfig {
   readonly permissionBackend?: PermissionBackend;
   /** Denial escalation config for permissions middleware. */
   readonly denialEscalation?: boolean | DenialEscalationConfig;
+  /**
+   * Optional factory called after the ATIF store is created.
+   * Replaces `providers` for queries that need to inject store-aware middleware
+   * into child agents (e.g., spawn inheritance with shared trajectory store).
+   * When provided, `providers` is ignored.
+   */
+  readonly providerFactory?: (
+    store: ReturnType<typeof createAtifDocumentStore>,
+    docId: string,
+  ) => readonly ComponentProvider[];
+  /**
+   * Optional parent manifest overrides merged into the default `{ name, version, model }`.
+   * Use to set manifest.spawn ceiling on the parent agent for manifest-ceiling queries.
+   */
+  readonly parentManifestOverrides?: import("@koi/core").AgentManifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -687,11 +702,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     semanticRetryMw,
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
+  // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
+  // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
+  // so the child's model calls appear in the same ATIF document with their own identity).
+  const resolvedProviders =
+    config.providerFactory !== undefined ? config.providerFactory(store, docId) : config.providers;
+
   const runtime = await createKoi({
-    manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
+    manifest: {
+      name: `golden-${name}`,
+      version: "0.1.0",
+      model: { name: MODEL },
+      ...config.parentManifestOverrides,
+    },
     adapter: bridge,
     middleware: tracedMiddleware,
-    providers: [...config.providers],
+    providers: [...resolvedProviders],
     loopDetection: false,
   });
 
@@ -780,39 +806,47 @@ const webProvider = createWebProvider({
 let nexusTransport: { readonly close: () => void } | undefined;
 let nexusFsProvider: ComponentProvider | undefined;
 
-// Only set up nexus-fs if nexus-fs Python package is available
+// Only set up nexus-fs if nexus-fs Python package is available AND transport starts cleanly
 const nexusFsCheck = Bun.spawnSync(["python3", "-c", "import nexus.fs"]);
 if (nexusFsCheck.exitCode === 0) {
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
+  try {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
 
-  const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
-  const transport = await createLocalTransport({
-    mountUri: `local://${nexusTmpDir}`,
-    startupTimeoutMs: 15_000,
-  });
-  nexusTransport = transport;
+    const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
+    const transport = await createLocalTransport({
+      mountUri: `local://${nexusTmpDir}`,
+      startupTimeoutMs: 15_000,
+    });
+    nexusTransport = transport;
 
-  const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
-  const backend = createNexusFileSystem({
-    url: "local://unused",
-    mountPoint: nexusMountPoint,
-    transport,
-  });
+    const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
+    const backend = createNexusFileSystem({
+      url: "local://unused",
+      mountPoint: nexusMountPoint,
+      transport,
+    });
 
-  // Pre-seed a file for the LLM to read
-  await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
+    // Pre-seed a file for the LLM to read
+    await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
 
-  const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
+    const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
 
-  nexusFsProvider = createSingleToolProvider({
-    name: "nexus-fs",
-    toolName: "nexus_read",
-    createTool: () => readTool,
-  });
+    nexusFsProvider = createSingleToolProvider({
+      name: "nexus-fs",
+      toolName: "nexus_read",
+      createTool: () => readTool,
+    });
 
-  console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+    console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+  } catch (err: unknown) {
+    console.log(
+      `nexus-fs transport failed (${err instanceof Error ? err.message : String(err)}) — skipping`,
+    );
+    nexusTransport = undefined;
+    nexusFsProvider = undefined;
+  }
 } else {
   console.log("nexus-fs not available — skipping nexus-fs golden query");
 }
@@ -1370,7 +1404,143 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
 
-  // 14. task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
+  // 14. spawn-allowlist: toolAllowlist via Spawn tool (#1425)
+  //     Parent has Glob + Grep + ToolSearch + Spawn.
+  //     Parent spawns researcher with toolAllowlist=['Grep'] — child gets ONLY Grep + Spawn.
+  //     Glob and ToolSearch absent from child's ModelRequest.tools proves allowlist enforcement.
+  {
+    name: "spawn-allowlist",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolAllowlist=['Grep'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 15. spawn-manifest-ceiling: manifest.spawn.tools.policy=allowlist (#1425)
+  //     Parent manifest declares spawn.tools.policy=allowlist, list=['Grep'].
+  //     LLM calls Spawn with NO toolAllowlist — manifest ceiling enforced by engine alone.
+  //     Child model step should show only [Grep] (Glob and ToolSearch absent).
+  //     Proves ceiling is enforced at the engine level, not by caller discipline.
+  {
+    name: "spawn-manifest-ceiling",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    // Parent manifest declares the ceiling — only Grep allowed for children
+    parentManifestOverrides: {
+      name: "golden-spawn-manifest-ceiling",
+      version: "0.1.0",
+      model: { name: MODEL },
+      spawn: { tools: { policy: "allowlist", list: ["Grep"] } },
+    },
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 17. spawn-inheritance: tool narrowing via toolDenylist (#1425)
+  //     Parent has Glob + Grep + ToolSearch (builtin search) + Spawn.
+  //     Parent spawns researcher with toolDenylist=['Glob'] — child inherits Grep + ToolSearch
+  //     but NOT Glob, and gets a fresh Spawn. Child's model call appears in the shared ATIF
+  //     document with agentName="researcher", proving Glob is absent at the model-request level.
+  {
+    name: "spawn-inheritance",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolDenylist=['Glob'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      // Child event trace: same store + docId as parent, child's own identity.
+      // Child steps appear in the trajectory tagged "researcher", making
+      // ModelRequest.tools visible — Glob absent proves denylist enforcement.
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        // Parent has Glob + Grep + ToolSearch so the denylist has something to deny
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
   //     Exercises create → list → update(in_progress) → update(completed) flow.
   {
     name: "task-tools",

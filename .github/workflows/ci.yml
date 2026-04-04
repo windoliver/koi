@@ -48,6 +48,9 @@ jobs:
       - name: Check doc gate
         run: bun run check:doc-gate
 
+      - name: Check doc wiring (L2→L3 deps have up-to-date docs)
+        run: bun run check:doc-wiring
+
       - name: Check complexity
         run: bun run check:complexity
 
