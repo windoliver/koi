@@ -12,7 +12,7 @@ const TRUSTED_PATTERN: unique symbol = Symbol("koi.redaction.trusted");
 
 /** Check whether a pattern was produced by the built-in factory. */
 export function isTrustedPattern(p: SecretPattern): boolean {
-  return (p as Record<symbol, unknown>)[TRUSTED_PATTERN] === true;
+  return TRUSTED_PATTERN in p;
 }
 
 /** Stamp a pattern as trusted (non-enumerable, invisible to serialisation). */
