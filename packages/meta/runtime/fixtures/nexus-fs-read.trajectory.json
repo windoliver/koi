@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.060Z",
+      "timestamp": "2026-04-04T12:18:25.905Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.060Z",
+      "timestamp": "2026-04-04T12:18:25.905Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:03:13.073Z",
+      "timestamp": "2026-04-04T12:18:25.906Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 146,
         "completion_tokens": 10
       },
-      "duration_ms": 610,
+      "duration_ms": 618,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.685Z",
+      "timestamp": "2026-04-04T12:18:26.525Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 611.8125,
+      "duration_ms": 619.0167089999995,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.685Z",
+      "timestamp": "2026-04-04T12:18:26.525Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 619.5165000000052,
+      "duration_ms": 619.1384170000019,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.697Z",
+      "timestamp": "2026-04-04T12:18:26.533Z",
       "model_name": "hook:on-fs-tool",
       "message": "tool.succeeded:nexus_read → on-fs-tool",
-      "duration_ms": 3.1516669999982696,
+      "duration_ms": 4.309665999997378,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -124,17 +124,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.697Z",
+      "timestamp": "2026-04-04T12:18:26.554Z",
       "model_name": "middleware:hook-dispatch",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
           }
         ]
       },
-      "duration_ms": 13.625583000000915,
+      "duration_ms": 29.02470799999719,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -148,7 +148,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T07:03:13.684Z",
+      "timestamp": "2026-04-04T12:18:26.525Z",
       "tool_calls": [
         {
           "tool_call_id": "call_nexus_read_7",
@@ -162,27 +162,27 @@
         "results": [
           {
             "source_call_id": "call_nexus_read_7",
-            "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
           }
         ]
       },
-      "duration_ms": 14,
+      "duration_ms": 29,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.699Z",
+      "timestamp": "2026-04-04T12:18:26.556Z",
       "model_name": "middleware:hooks",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
           }
         ]
       },
-      "duration_ms": 15.659915999996883,
+      "duration_ms": 31.281832999997278,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -196,17 +196,17 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:13.699Z",
+      "timestamp": "2026-04-04T12:18:26.556Z",
       "model_name": "middleware:permissions",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
           }
         ]
       },
-      "duration_ms": 16.03874999999971,
+      "duration_ms": 31.402916000002733,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,21 +220,21 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T07:03:13.700Z",
+      "timestamp": "2026-04-04T12:18:26.556Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
+      "message": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}",
       "observation": {
         "results": [
           {
-            "content": "The file at path \"/golden-test.txt\" says: \"The answer to the golden query is 42.\"\n"
+            "content": "An error occurred while reading the file. I will try again.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 186,
-        "completion_tokens": 26
+        "prompt_tokens": 192,
+        "completion_tokens": 24
       },
-      "duration_ms": 557,
+      "duration_ms": 570,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -252,10 +252,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:14.258Z",
+      "timestamp": "2026-04-04T12:18:27.126Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 558.0454160000008,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}",
+      "duration_ms": 570.3636250000018,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -269,15 +269,125 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T07:03:14.258Z",
+      "timestamp": "2026-04-04T12:18:27.126Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 558.2584999999963,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}",
+      "duration_ms": 570.4566669999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
         "middlewareName": "permissions",
         "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:27.129Z",
+      "model_name": "hook:on-fs-tool",
+      "message": "tool.succeeded:nexus_read → on-fs-tool",
+      "duration_ms": 2.092917000001762,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:nexus_read",
+        "hookName": "on-fs-tool"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:27.160Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
+          }
+        ]
+      },
+      "duration_ms": 34.08708300000217,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "tool",
+      "timestamp": "2026-04-04T12:18:27.126Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_nexus_read_15",
+          "function_name": "nexus_read",
+          "arguments": {
+            "path": "/golden-test.txt"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_nexus_read_15",
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
+          }
+        ]
+      },
+      "duration_ms": 34,
+      "outcome": "success"
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:27.163Z",
+      "model_name": "middleware:hooks",
+      "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
+          }
+        ]
+      },
+      "duration_ms": 36.83749999999782,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:27.163Z",
+      "model_name": "middleware:permissions",
+      "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"error\":\"'NoneType' object has no attribute 'trie_lookup'\",\"code\":\"EXTERNAL\"}"
+          }
+        ]
+      },
+      "duration_ms": 36.90249999999651,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true
