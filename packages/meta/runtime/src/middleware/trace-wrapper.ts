@@ -82,8 +82,17 @@ export function wrapMiddlewareWithTrace(
           const start = performance.now();
           // let: mutable — tracks whether next() was called and captures modified request
           let nextCalled = false;
-          // Snapshot before middleware for value-based delta detection
-          const beforeSnapshot = captureDeltas === true ? snapshotModelRequest(request) : undefined;
+          // Snapshot before middleware for value-based delta detection.
+          // Fail-open: if snapshotting throws (circular ref, BigInt), skip deltas.
+          // let: mutable ��� set in try block
+          let beforeSnapshot: ModelRequestSnapshot | undefined;
+          if (captureDeltas === true) {
+            try {
+              beforeSnapshot = snapshotModelRequest(request);
+            } catch {
+              // Non-cloneable request — delta capture skipped
+            }
+          }
           let capturedRequest: ModelRequest | undefined;
           const trackedNext: ModelHandler = async (req) => {
             nextCalled = true;
@@ -160,10 +169,18 @@ export function wrapMiddlewareWithTrace(
           // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
           // Snapshot before middleware for value-based delta detection.
-          // Deep-clone input via structured clone so nested in-place mutations are detectable.
-          const beforeInputCopy =
-            captureDeltas === true ? (structuredClone(request.input) as JsonObject) : undefined;
-          const beforeInputHash = captureDeltas === true ? safeSnapshot(request.input) : undefined;
+          // Fail-open: if cloning throws (circular ref, BigInt), skip deltas.
+          // let: mutable — set in try block
+          let beforeInputCopy: JsonObject | undefined;
+          let beforeInputHash: string | undefined;
+          if (captureDeltas === true) {
+            try {
+              beforeInputCopy = structuredClone(request.input) as JsonObject;
+              beforeInputHash = safeSnapshot(request.input);
+            } catch {
+              // Non-cloneable input — delta capture skipped
+            }
+          }
           let capturedInput: JsonObject | undefined;
           const trackedNext: ToolHandler = async (req) => {
             nextCalled = true;
@@ -251,9 +268,17 @@ export function wrapMiddlewareWithTrace(
           const requestPreview = extractModelRequestText(request);
           const start = performance.now();
 
-          // Track modified request for delta capture in stream path
-          const beforeStreamSnapshot =
-            captureDeltas === true ? snapshotModelRequest(request) : undefined;
+          // Track modified request for delta capture in stream path.
+          // Fail-open: if snapshotting throws, skip deltas.
+          // let: mutable — set in try block
+          let beforeStreamSnapshot: ModelRequestSnapshot | undefined;
+          if (captureDeltas === true) {
+            try {
+              beforeStreamSnapshot = snapshotModelRequest(request);
+            } catch {
+              // Non-cloneable request — delta capture skipped
+            }
+          }
           let capturedStreamRequest: ModelRequest | undefined;
           const trackedStreamNext: ModelStreamHandler = (req) => {
             if (captureDeltas === true) capturedStreamRequest = req;
