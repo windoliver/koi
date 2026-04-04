@@ -48,6 +48,7 @@ export function createWebSearchTool(
       }
       return {
         query: args.query.trim(),
+        provider: executor.providerName ?? "unknown",
         results: result.value.slice(0, maxResults),
         count: Math.min(result.value.length, maxResults),
       };

@@ -89,6 +89,14 @@ export interface EventTraceHandle {
 // Per-session state
 // ---------------------------------------------------------------------------
 
+/** Provenance entry for a single external system consulted during a turn. */
+interface ProvenanceEntry {
+  readonly system: string;
+  readonly server?: string;
+  readonly tools: string[];
+  count: number;
+}
+
 interface SessionState {
   /** Step counter within this session. */
   nextLocalIndex: number;
@@ -96,6 +104,8 @@ interface SessionState {
   turnStartTime: number;
   /** Steps that failed to write — retried on next recordStep call. */
   readonly retryQueue: RichTrajectoryStep[];
+  /** Provenance entries accumulated during the current turn, keyed by system+server. */
+  readonly turnProvenance: Map<string, ProvenanceEntry>;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +317,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         nextLocalIndex: 0,
         turnStartTime: 0,
         retryQueue: [],
+        turnProvenance: new Map(),
       });
     },
 
@@ -465,6 +476,22 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             (response.metadata as Record<string, unknown>).blockedByHook === true;
           const toolOutcome = response === undefined || blockedByHook ? "failure" : "success";
 
+          // Extract provenance from response metadata (#1464)
+          const responseMeta =
+            response?.metadata !== undefined
+              ? (response.metadata as Record<string, unknown>)
+              : undefined;
+          const provenance = responseMeta?.provenance as
+            | { readonly system: string; readonly server?: string }
+            | undefined;
+
+          // Build step metadata: include blockedByHook or provenance info
+          const stepMeta = blockedByHook
+            ? (response?.metadata as JsonObject)
+            : provenance !== undefined
+              ? ({ provenance } as JsonObject)
+              : undefined;
+
           const step: RichTrajectoryStep = {
             stepIndex,
             timestamp: startTime,
@@ -477,13 +504,66 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             ...pickDefined({
               response: response !== undefined ? captureToolOutput(response.output) : undefined,
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
-              metadata: blockedByHook ? (response?.metadata as JsonObject) : undefined,
+              metadata: stepMeta,
             }),
           };
           recordStep(state, step);
+
+          // Accumulate provenance for per-turn summary (#1464)
+          if (provenance !== undefined) {
+            const key = provenance.server ?? provenance.system;
+            const existing = state.turnProvenance.get(key);
+            if (existing !== undefined) {
+              existing.tools.push(request.toolId);
+              existing.count += 1;
+            } else {
+              state.turnProvenance.set(key, {
+                system: provenance.system,
+                ...(provenance.server !== undefined ? { server: provenance.server } : {}),
+                tools: [request.toolId],
+                count: 1,
+              });
+            }
+          }
         } catch {
           // Trace capture failed
         }
+      }
+    },
+
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      const state = getState(ctx.session.sessionId as string);
+      if (state === undefined) return;
+
+      // Emit per-turn provenance summary if any systems were consulted (#1464)
+      if (state.turnProvenance.size > 0) {
+        try {
+          const stepIndex = state.nextLocalIndex;
+          state.nextLocalIndex += 1;
+          const summaryStep: RichTrajectoryStep = {
+            stepIndex,
+            timestamp: clock(),
+            source: "system",
+            kind: "tool_call",
+            identifier: "provenance:turn_summary",
+            outcome: "success",
+            durationMs: 0,
+            metadata: {
+              type: "provenance_summary",
+              turnIndex: ctx.turnIndex,
+              systemsConsulted: [...state.turnProvenance.values()].map((entry) => ({
+                system: entry.system,
+                ...(entry.server !== undefined ? { server: entry.server } : {}),
+                tools: entry.tools,
+                count: entry.count,
+              })),
+            } as JsonObject,
+          };
+          recordStep(state, summaryStep);
+        } catch {
+          // Trace capture failed
+        }
+        state.turnProvenance.clear();
       }
     },
   };
