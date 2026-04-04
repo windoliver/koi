@@ -70,6 +70,67 @@ export interface HookDispatchConfig {
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
   const { hooks, store, docId, signal, registry, registrySessionId } = config;
 
+  /**
+   * Summarize a JsonObject payload for trace metadata. Records field names
+   * and value types/sizes but never raw values — prevents sensitive data
+   * (e.g. from redaction hooks) from leaking into trajectory storage.
+   */
+  function summarizePayload(obj: JsonObject): JsonObject {
+    const fields: Record<string, string> = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val === null || val === undefined) {
+        fields[key] = "null";
+      } else if (Array.isArray(val)) {
+        fields[key] = `array(${val.length})`;
+      } else if (typeof val === "object") {
+        fields[key] = `object(${Object.keys(val as Record<string, unknown>).length} keys)`;
+      } else {
+        fields[key] = typeof val;
+      }
+    }
+    return { fieldCount: Object.keys(obj).length, fields } as JsonObject;
+  }
+
+  /**
+   * Extract a structured decision record from a hook execution result.
+   * Fail-safe: serialization errors produce a fallback so tracing never
+   * interrupts the hook enforcement or tool execution path.
+   */
+  function extractDecision(result: HookExecutionResult): JsonObject {
+    try {
+      if (!result.ok) {
+        return { kind: "error", reasonLength: result.error.length } as JsonObject;
+      }
+      const { decision } = result;
+      const base = (() => {
+        switch (decision.kind) {
+          case "block":
+            return { kind: "block", reasonLength: decision.reason.length } as JsonObject;
+          case "modify":
+            return { kind: "modify", patch: summarizePayload(decision.patch) } as JsonObject;
+          case "transform":
+            return {
+              kind: "transform",
+              outputPatch: summarizePayload(decision.outputPatch),
+              ...(decision.metadata !== undefined
+                ? { metadata: summarizePayload(decision.metadata) }
+                : {}),
+            } as JsonObject;
+          case "continue":
+            return { kind: "continue" } as JsonObject;
+        }
+      })();
+      if (result.executionFailed === true) {
+        return { ...base, executionFailed: true } as JsonObject;
+      }
+      return base;
+    } catch {
+      // Fail-safe: non-serializable payloads (BigInt, circular, etc.)
+      return { kind: "unserializable" } as JsonObject;
+    }
+  }
+
   /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
   async function dispatchHooks(
     event: HookEvent,
@@ -99,11 +160,12 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       outcome: result.ok ? ("success" as const) : ("failure" as const),
       durationMs: result.durationMs,
       request: { text: `${triggerEvent} → ${result.hookName}` },
-      ...(!result.ok ? { error: { text: result.error } } : {}),
+      ...(!result.ok ? { error: { text: `hook error (${result.error.length} chars)` } } : {}),
       metadata: {
         type: "hook_execution",
         triggerEvent,
         hookName: result.hookName,
+        decision: extractDecision(result),
       } as JsonObject,
     }));
 
@@ -172,9 +234,32 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     // wrapModelStream fire per model invocation, but turn.ended should fire
     // exactly once per user turn.
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      // Skip turn.ended dispatch for stop-gate vetoes — the turn was blocked,
-      // not completed. Avoids duplicate external side effects on retry.
-      if (ctx.stopBlocked === true) return;
+      // Record stop-gate block as a trajectory step before skipping turn.ended.
+      if (ctx.stopBlocked === true) {
+        if (store !== undefined && docId !== undefined) {
+          const step: RichTrajectoryStep = {
+            stepIndex: 0,
+            timestamp: Date.now(),
+            source: "system" as const,
+            kind: "model_call" as const,
+            identifier: "stop-gate:block",
+            outcome: "retry" as const,
+            durationMs: 0,
+            request: { text: `Stop blocked by ${ctx.stopGateBlockedBy ?? "unknown"}` },
+            metadata: {
+              type: "stop_gate_decision",
+              blockedBy: ctx.stopGateBlockedBy ?? "unknown",
+              reasonLength: (ctx.stopGateReason ?? "").length,
+              turnIndex: ctx.turnIndex,
+            } as JsonObject,
+          };
+          // Await with error swallowing — same pattern as recordHookResults.
+          // Ensures ordering (veto step indexed before retry) without stalling
+          // on store errors (catch swallows).
+          await store.append(docId, [step]).catch(() => {});
+        }
+        return;
+      }
       try {
         const event: HookEvent = {
           event: "turn.ended",

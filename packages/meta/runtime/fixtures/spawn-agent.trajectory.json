@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:51.857Z",
+      "timestamp": "2026-04-04T08:05:33.195Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:51.857Z",
+      "timestamp": "2026-04-04T08:05:33.195Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:51.862Z",
+      "timestamp": "2026-04-04T08:05:33.225Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
       "observation": {
@@ -55,10 +55,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 225,
+        "prompt_tokens": 250,
         "completion_tokens": 19
       },
-      "duration_ms": 568,
+      "duration_ms": 648,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:52.433Z",
+      "timestamp": "2026-04-04T08:05:33.876Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 570.8424169999998,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 650.926959000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:52.434Z",
+      "timestamp": "2026-04-04T08:05:33.876Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 572.0816249999989,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 651.7405829999989,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,7 +110,24 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:53.015Z",
+      "timestamp": "2026-04-04T08:05:33.876Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 651.8418749999983,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:34.356Z",
       "model_name": "middleware:hook-dispatch",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
@@ -120,7 +137,7 @@
           }
         ]
       },
-      "duration_ms": 584.8968339999992,
+      "duration_ms": 482.6711249999935,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -132,12 +149,12 @@
       }
     },
     {
-      "step_id": 6,
+      "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T06:11:52.430Z",
+      "timestamp": "2026-04-04T08:05:33.873Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_Spawn_6",
+          "tool_call_id": "call_Spawn_7",
           "function_name": "Spawn",
           "arguments": {
             "description": "What is the Fibonacci sequence? Provide a one-sentence definition.",
@@ -148,18 +165,18 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_Spawn_6",
+            "source_call_id": "call_Spawn_7",
             "content": "{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 585,
+      "duration_ms": 483,
       "outcome": "success"
     },
     {
-      "step_id": 7,
+      "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:53.015Z",
+      "timestamp": "2026-04-04T08:05:34.357Z",
       "model_name": "middleware:hooks",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
@@ -169,7 +186,7 @@
           }
         ]
       },
-      "duration_ms": 585.1494170000005,
+      "duration_ms": 483.6192499999961,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -181,9 +198,9 @@
       }
     },
     {
-      "step_id": 8,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:53.015Z",
+      "timestamp": "2026-04-04T08:05:34.357Z",
       "model_name": "middleware:permissions",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
@@ -193,7 +210,7 @@
           }
         ]
       },
-      "duration_ms": 585.3949169999978,
+      "duration_ms": 483.97099999999773,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,9 +222,33 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:34.357Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 484.0635409999959,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:53.015Z",
+      "timestamp": "2026-04-04T08:05:34.358Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
       "observation": {
@@ -218,10 +259,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 272,
+        "prompt_tokens": 299,
         "completion_tokens": 38
       },
-      "duration_ms": 555,
+      "duration_ms": 758,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -237,12 +278,12 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:53.570Z",
+      "timestamp": "2026-04-04T08:05:35.116Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.\n\n{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting…",
-      "duration_ms": 554.9644590000025,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.\n\n{\"output\":\"The Fibonacci seq…",
+      "duration_ms": 758.4341669999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -254,12 +295,12 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:53.570Z",
+      "timestamp": "2026-04-04T08:05:35.116Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.\n\n{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting…",
-      "duration_ms": 555.1392500000002,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.\n\n{\"output\":\"The Fibonacci seq…",
+      "duration_ms": 758.6567500000019,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -267,6 +308,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:35.116Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.\n\n{\"output\":\"The Fibonacci seq…",
+      "duration_ms": 758.7518749999945,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

@@ -11,6 +11,42 @@
 
 import type { JsonObject } from "./common.js";
 
+// ---------------------------------------------------------------------------
+// Decision signals — extracted from messages before compaction drops them
+// ---------------------------------------------------------------------------
+
+/** Kind of decision captured from a message about to be compacted. */
+export type DecisionSignalKind =
+  | "approval"
+  | "pricing"
+  | "constraint"
+  | "preference"
+  | "rationale"
+  | "custom";
+
+/**
+ * A decision signal extracted from a message before compaction drops it.
+ *
+ * Used by the pre-compaction extraction pipeline to preserve decision-relevant
+ * facts that would otherwise be permanently lost from the prompt.
+ */
+export interface DecisionSignal {
+  /** Category of the decision. */
+  readonly kind: DecisionSignalKind;
+  /** Human-readable summary of the decision fact. */
+  readonly summary: string;
+  /** Index of the source message in the original message array. */
+  readonly sourceMessageIndex: number;
+  /** Timestamp when the signal was extracted (ms since epoch). */
+  readonly timestamp: number;
+  /** Opaque extension data for domain-specific fields. */
+  readonly metadata?: JsonObject;
+}
+
+// ---------------------------------------------------------------------------
+// Rich content & metrics
+// ---------------------------------------------------------------------------
+
 /** Content payload with optional truncation metadata. */
 export interface RichContent {
   readonly text?: string;

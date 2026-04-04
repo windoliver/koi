@@ -3613,7 +3613,7 @@ function blockingStopMiddleware(blockUntilCall: number): {
     onBeforeStop: async () => {
       callCount++;
       if (callCount <= blockUntilCall) {
-        return { kind: "block", reason: `blocked attempt ${callCount}` };
+        return { kind: "block", reason: `blocked attempt ${callCount}`, blockedBy: "stop-blocker" };
       }
       return { kind: "continue" };
     },
@@ -3873,5 +3873,248 @@ describe("createKoi stop gate", () => {
     // Block reason also in stream input (guaranteed delivery path)
     expect(capturedMessages[1]?.length).toBe(1);
     expect(JSON.stringify(capturedMessages[1])).toContain("[Completion blocked]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1: defaultToolTerminal provenance enrichment (#1464)
+// ---------------------------------------------------------------------------
+
+describe("defaultToolTerminal provenance metadata", () => {
+  test("adds provenance metadata when tool descriptor has server field", async () => {
+    // let justified: captured response from middleware
+    let capturedResponse: import("@koi/core").ToolResponse | undefined;
+    const executeMock = mock(() => Promise.resolve("mcp-result"));
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "provenance-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                await input.callHandlers.toolCall({
+                  toolId: "crm__get_customer",
+                  input: { id: "123" },
+                });
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const captureMiddleware: KoiMiddleware = {
+      name: "capture-provenance",
+      phase: "observe" as const,
+      describeCapabilities: () => undefined,
+      wrapToolCall: async (_ctx, req, next) => {
+        const response = await next(req);
+        capturedResponse = response;
+        return response;
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      middleware: [captureMiddleware],
+      providers: [
+        {
+          name: "mcp-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("crm__get_customer") as string,
+                {
+                  descriptor: {
+                    name: "crm__get_customer",
+                    description: "Get CRM customer",
+                    inputSchema: {},
+                    server: "crm",
+                  },
+                  origin: "operator" as const,
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
+                  execute: executeMock,
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(capturedResponse).toBeDefined();
+    expect(capturedResponse?.metadata).toBeDefined();
+    const provenance = (capturedResponse?.metadata as Record<string, unknown>)?.provenance as
+      | Record<string, unknown>
+      | undefined;
+    expect(provenance).toBeDefined();
+    expect(provenance?.system).toBe("mcp");
+    expect(provenance?.server).toBe("crm");
+  });
+
+  test("does not add provenance when tool descriptor has no server field", async () => {
+    let capturedResponse: import("@koi/core").ToolResponse | undefined;
+    const executeMock = mock(() => Promise.resolve("local-result"));
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "no-provenance-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                await input.callHandlers.toolCall({
+                  toolId: "local_tool",
+                  input: {},
+                });
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const captureMiddleware: KoiMiddleware = {
+      name: "capture-no-provenance",
+      phase: "observe" as const,
+      describeCapabilities: () => undefined,
+      wrapToolCall: async (_ctx, req, next) => {
+        const response = await next(req);
+        capturedResponse = response;
+        return response;
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      middleware: [captureMiddleware],
+      providers: [
+        {
+          name: "local-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("local_tool") as string,
+                {
+                  descriptor: {
+                    name: "local_tool",
+                    description: "Local tool",
+                    inputSchema: {},
+                  },
+                  origin: "primordial" as const,
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
+                  execute: executeMock,
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(capturedResponse).toBeDefined();
+    // No provenance metadata should be present
+    const provenance = (capturedResponse?.metadata as Record<string, unknown> | undefined)
+      ?.provenance;
+    expect(provenance).toBeUndefined();
+  });
+
+  test("preserves existing request metadata alongside provenance", async () => {
+    let capturedResponse: import("@koi/core").ToolResponse | undefined;
+    const executeMock = mock(() => Promise.resolve("result"));
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "merge-metadata-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                await input.callHandlers.toolCall({
+                  toolId: "billing__get_invoice",
+                  input: {},
+                  metadata: { traceId: "abc-123" },
+                });
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const captureMiddleware: KoiMiddleware = {
+      name: "capture-merge",
+      phase: "observe" as const,
+      describeCapabilities: () => undefined,
+      wrapToolCall: async (_ctx, req, next) => {
+        const response = await next(req);
+        capturedResponse = response;
+        return response;
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      middleware: [captureMiddleware],
+      providers: [
+        {
+          name: "billing-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("billing__get_invoice") as string,
+                {
+                  descriptor: {
+                    name: "billing__get_invoice",
+                    description: "Get invoice",
+                    inputSchema: {},
+                    server: "billing",
+                  },
+                  origin: "operator" as const,
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
+                  execute: executeMock,
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(capturedResponse?.metadata).toBeDefined();
+    const meta = capturedResponse?.metadata as Record<string, unknown>;
+    // Existing request metadata preserved
+    expect(meta.traceId).toBe("abc-123");
+    // Provenance added
+    const provenance = meta.provenance as Record<string, unknown>;
+    expect(provenance?.system).toBe("mcp");
+    expect(provenance?.server).toBe("billing");
   });
 });

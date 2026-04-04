@@ -92,3 +92,35 @@ All types are in `@koi/core` (`packages/kernel/core/src/memory.ts`):
 - `validateMemoryFilePath()` — validate file path safety
 - `formatMemoryIndexEntry()` / `parseMemoryIndexEntry()` — index line formatting
 - `hasFrontmatterUnsafeChars()` — detect unsafe characters in field values
+
+## Session-Start Recall
+
+The `@koi/memory` L2 package (`packages/mm/memory/`) implements session-start recall:
+scan → score → budget-select → format.
+
+### Pipeline
+
+1. **Scan** — `scanMemoryDirectory(fs, config)` reads `.md` files via `FileSystemBackend`, parses frontmatter, returns `ScannedMemory[]` sorted by modification time (newest first)
+2. **Score** — `scoreMemories(memories, config, now)` applies exponential decay (`exp(-ln2/halfLife * ageDays)`, default 30-day half-life) and type relevance weights (feedback=1.2, user=1.0, project=1.0, reference=0.8), returns `ScoredMemory[]` sorted by composite salience
+3. **Budget** — `selectWithinBudget(scored, budget)` iterates by salience descending, accumulates tokens via `@koi/token-estimator`, skips memories that exceed remaining budget (no mid-content truncation)
+4. **Format** — `formatMemorySection(selected, options)` renders Markdown section with trusting-recall note ("Memories may be stale. Verify file paths and function names exist before recommending.")
+
+### Entry Point
+
+```typescript
+import { recallMemories } from "@koi/memory";
+
+const result = await recallMemories(fs, {
+  memoryDir: "/path/to/memory",
+  tokenBudget: 8000,   // default
+  now: Date.now(),      // injectable for tests
+});
+// result.formatted — inject into system prompt
+// result.selected  — scored memories included
+// result.truncated — true if budget was exceeded
+```
+
+### Dependencies
+
+- `@koi/core` (L0) — `FileSystemBackend`, `MemoryRecord`, `parseMemoryFrontmatter`
+- `@koi/token-estimator` (L0u) — `estimateTokens`

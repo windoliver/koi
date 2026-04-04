@@ -12,6 +12,7 @@ import type {
   ToolPolicy,
 } from "@koi/core";
 import { parseArray, parseOptionalBoolean, parseString } from "../parse-args.js";
+import type { FsToolOptions } from "./read.js";
 
 function countOccurrences(haystack: string, needle: string): number {
   let count = 0;
@@ -29,6 +30,7 @@ export function createFsEditTool(
   backend: FileSystemBackend,
   prefix: string,
   policy: ToolPolicy,
+  fsToolOptions?: FsToolOptions,
 ): Tool {
   return {
     descriptor: {
@@ -67,6 +69,14 @@ export function createFsEditTool(
 
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
+
+      if (fsToolOptions?.pathGuard !== undefined) {
+        const guardResult = fsToolOptions.pathGuard(pathResult.value);
+        if (!guardResult.ok) {
+          return { error: guardResult.reason, code: "CREDENTIAL_PATH_DENIED" };
+        }
+      }
+
       const editsResult = parseArray(args, "edits");
       if (!editsResult.ok) return editsResult.err;
       const dryRunResult = parseOptionalBoolean(args, "dryRun");

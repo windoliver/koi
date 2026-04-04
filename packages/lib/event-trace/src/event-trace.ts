@@ -17,10 +17,14 @@
  *   - Tool calls: name, arguments, result (truncated), duration
  *   - Errors: error message + type + cause chain
  *
+ * Retry support:
+ *   - When a RetrySignalReader is configured, steps recorded during active retry
+ *     signals get outcome: "retry" and metadata.retryOf/retryAttempt/retryReason
+ *   - Coordination with @koi/middleware-semantic-retry via L0 RetrySignalBroker
+ *
  * NOT captured here (belongs in L3 harness compose layer):
  *   - Per-middleware spans (name, duration, nextCalled) — see DebugSpanResponse in v1
  *   - Middleware request modification deltas
- *   - Retry attempts from retry middleware
  */
 
 import type { JsonObject } from "@koi/core/common";
@@ -38,6 +42,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import type { RetrySignalReader } from "@koi/core/retry-signal";
 import type {
   RichContent,
   RichStepMetrics,
@@ -67,6 +72,12 @@ export interface EventTraceConfig {
   readonly maxOutputBytes?: number;
   /** Called when trace data is dropped due to persistent store failures. */
   readonly onTraceLoss?: (stepCount: number, error: unknown) => void;
+  /**
+   * Optional retry signal reader for cross-middleware retry coordination.
+   * When provided, steps recorded while a retry signal is active will have
+   * `outcome: "retry"` and retry metadata (retryOf, retryAttempt, etc.).
+   */
+  readonly signalReader?: RetrySignalReader;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +100,14 @@ export interface EventTraceHandle {
 // Per-session state
 // ---------------------------------------------------------------------------
 
+/** Provenance entry for a single external system consulted during a turn. */
+interface ProvenanceEntry {
+  readonly system: string;
+  readonly server?: string;
+  readonly tools: string[];
+  count: number;
+}
+
 interface SessionState {
   /** Step counter within this session. */
   nextLocalIndex: number;
@@ -96,6 +115,8 @@ interface SessionState {
   turnStartTime: number;
   /** Steps that failed to write — retried on next recordStep call. */
   readonly retryQueue: RichTrajectoryStep[];
+  /** Provenance entries accumulated during the current turn, keyed by system+server. */
+  readonly turnProvenance: Map<string, ProvenanceEntry>;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +129,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   const clock = config.clock ?? Date.now;
   const maxOutputBytes = config.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const onTraceLoss = config.onTraceLoss;
+  const signalReader = config.signalReader;
 
   const sessions = new Map<string, SessionState>();
   /** In-flight write promises — awaited on session end to ensure all data lands. */
@@ -156,7 +178,12 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg === undefined) continue;
-      if (msg.senderId === "assistant" || msg.senderId === "system") continue;
+      if (
+        msg.senderId === "assistant" ||
+        msg.senderId === "system" ||
+        msg.senderId.startsWith("system:")
+      )
+        continue;
 
       const textBlock = msg.content.find((block) => block.kind === "text");
       if (textBlock !== undefined && textBlock.kind === "text") {
@@ -240,6 +267,38 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     return { text: String(error) };
   }
 
+  /**
+   * Check for an active retry signal and return retry-annotated outcome + metadata.
+   * Only applied to non-failure steps — failure steps are the original failing call,
+   * not the retry attempt. The retry middleware sets the signal during the failed
+   * call's catch handler, so the signal is already active when event-trace records
+   * the failure. We skip it to avoid mislabeling the failure as a retry.
+   */
+  function applyRetrySignal(
+    sessionId: string,
+    baseOutcome: "success" | "failure" | "retry",
+    baseMetadata: JsonObject,
+  ):
+    | { readonly outcome: "success" | "failure" | "retry"; readonly metadata: JsonObject }
+    | undefined {
+    // Don't override failure steps — they are the original failing call,
+    // not a retry attempt. The signal was set during this call's error handling.
+    if (baseOutcome === "failure") return undefined;
+    // Consume (read + clear atomically) so the signal applies to exactly one step
+    const signal = signalReader?.consumeRetrySignal(sessionId);
+    if (signal === undefined) return undefined;
+    return {
+      outcome: "retry",
+      metadata: {
+        ...baseMetadata,
+        retryOfTurn: signal.originTurnIndex,
+        retryAttempt: signal.attemptNumber,
+        retryReason: signal.reason,
+        retryFailureClass: signal.failureClass,
+      } as JsonObject,
+    };
+  }
+
   function buildModelStep(
     state: SessionState,
     startTime: number,
@@ -247,6 +306,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     response: ModelResponse | undefined,
     caughtError: unknown,
     reasoningContent: string | undefined,
+    sessionId?: string,
   ): RichTrajectoryStep {
     const durationMs = clock() - startTime;
     const stepIndex = state.nextLocalIndex;
@@ -264,7 +324,17 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       stopReason !== "stop" &&
       stopReason !== "length" &&
       stopReason !== "tool_use";
-    const outcome = response === undefined || isNonSuccessStop ? "failure" : "success";
+    const baseOutcome = response === undefined || isNonSuccessStop ? "failure" : "success";
+    const baseMetadata = {
+      ...metadata,
+      ...(isNonSuccessStop ? { modelStopReason: stopReason } : {}),
+    } as JsonObject;
+
+    // Apply retry signal if active — overrides outcome to "retry" and adds linking metadata
+    const retryOverride =
+      sessionId !== undefined ? applyRetrySignal(sessionId, baseOutcome, baseMetadata) : undefined;
+    const outcome = retryOverride?.outcome ?? baseOutcome;
+    const finalMetadata = retryOverride?.metadata ?? baseMetadata;
 
     return {
       stepIndex,
@@ -275,10 +345,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       outcome,
       durationMs,
       request: extractLastUserMessage(request),
-      metadata: {
-        ...metadata,
-        ...(isNonSuccessStop ? { modelStopReason: stopReason } : {}),
-      } as JsonObject,
+      metadata: finalMetadata,
       ...pickDefined({
         response: response !== undefined ? { text: response.content } : undefined,
         metrics: response !== undefined ? extractUsageMetrics(response) : undefined,
@@ -307,6 +374,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         nextLocalIndex: 0,
         turnStartTime: 0,
         retryQueue: [],
+        turnProvenance: new Map(),
       });
     },
 
@@ -353,7 +421,15 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         throw e;
       } finally {
         try {
-          const step = buildModelStep(state, startTime, request, response, caughtError, undefined);
+          const step = buildModelStep(
+            state,
+            startTime,
+            request,
+            response,
+            caughtError,
+            undefined,
+            ctx.session.sessionId as string,
+          );
           recordStep(state, step);
         } catch {
           // Trace capture failed
@@ -402,6 +478,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
                 response,
                 undefined,
                 reasoning,
+                ctx.session.sessionId as string,
               );
               recordStep(state, step);
               recorded = true;
@@ -426,6 +503,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
               undefined,
               caughtError,
               reasoning,
+              ctx.session.sessionId as string,
             );
             recordStep(state, step);
           } catch {
@@ -463,7 +541,39 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
           const blockedByHook =
             response?.metadata !== undefined &&
             (response.metadata as Record<string, unknown>).blockedByHook === true;
-          const toolOutcome = response === undefined || blockedByHook ? "failure" : "success";
+          const baseToolOutcome = response === undefined || blockedByHook ? "failure" : "success";
+          const baseToolMetadata = blockedByHook
+            ? ((response?.metadata ?? {}) as JsonObject)
+            : ({} as JsonObject);
+
+          // Apply retry signal if active
+          const toolRetryOverride = applyRetrySignal(
+            ctx.session.sessionId as string,
+            baseToolOutcome,
+            baseToolMetadata,
+          );
+          const toolOutcome = toolRetryOverride?.outcome ?? baseToolOutcome;
+          const toolMetadata = toolRetryOverride?.metadata ?? baseToolMetadata;
+          const hasMetadata = Object.keys(toolMetadata).length > 0;
+
+          // Extract provenance from response metadata (#1464)
+          const responseMeta =
+            response?.metadata !== undefined
+              ? (response.metadata as Record<string, unknown>)
+              : undefined;
+          const provenance = responseMeta?.provenance as
+            | { readonly system: string; readonly server?: string }
+            | undefined;
+
+          // Persist full response metadata (preserves provenance, correlation IDs, etc.)
+          const stepMeta =
+            response?.metadata !== undefined ? (response.metadata as JsonObject) : undefined;
+
+          // Merge retry metadata (if any) on top of full response metadata (preserves provenance)
+          const finalToolMetadata =
+            toolRetryOverride !== undefined
+              ? ({ ...(stepMeta ?? {}), ...toolRetryOverride.metadata } as JsonObject)
+              : stepMeta;
 
           const step: RichTrajectoryStep = {
             stepIndex,
@@ -477,13 +587,66 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             ...pickDefined({
               response: response !== undefined ? captureToolOutput(response.output) : undefined,
               error: caughtError !== undefined ? captureError(caughtError) : undefined,
-              metadata: blockedByHook ? (response?.metadata as JsonObject) : undefined,
+              metadata: finalToolMetadata,
             }),
           };
           recordStep(state, step);
+
+          // Accumulate provenance for per-turn summary (#1464)
+          if (provenance !== undefined) {
+            const key = `${provenance.system}:${provenance.server ?? ""}`;
+            const existing = state.turnProvenance.get(key);
+            if (existing !== undefined) {
+              existing.tools.push(request.toolId);
+              existing.count += 1;
+            } else {
+              state.turnProvenance.set(key, {
+                system: provenance.system,
+                ...(provenance.server !== undefined ? { server: provenance.server } : {}),
+                tools: [request.toolId],
+                count: 1,
+              });
+            }
+          }
         } catch {
           // Trace capture failed
         }
+      }
+    },
+
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      const state = getState(ctx.session.sessionId as string);
+      if (state === undefined) return;
+
+      // Emit per-turn provenance summary if any systems were consulted (#1464)
+      if (state.turnProvenance.size > 0) {
+        try {
+          const stepIndex = state.nextLocalIndex;
+          state.nextLocalIndex += 1;
+          const summaryStep: RichTrajectoryStep = {
+            stepIndex,
+            timestamp: clock(),
+            source: "system",
+            kind: "tool_call",
+            identifier: "provenance:turn_summary",
+            outcome: "success",
+            durationMs: 0,
+            metadata: {
+              type: "provenance_summary",
+              turnIndex: ctx.turnIndex,
+              systemsConsulted: [...state.turnProvenance.values()].map((entry) => ({
+                system: entry.system,
+                ...(entry.server !== undefined ? { server: entry.server } : {}),
+                tools: entry.tools,
+                count: entry.count,
+              })),
+            } as JsonObject,
+          };
+          recordStep(state, summaryStep);
+        } catch {
+          // Trace capture failed
+        }
+        state.turnProvenance.clear();
       }
     },
   };

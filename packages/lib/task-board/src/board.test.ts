@@ -1128,3 +1128,107 @@ describe("createTaskBoard", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// activeForm lifecycle
+// ---------------------------------------------------------------------------
+
+describe("activeForm", () => {
+  test("task created with activeForm retains it in pending state", () => {
+    const board = createTaskBoard();
+    const r = board.add({
+      id: taskItemId("a"),
+      description: "Task A",
+      activeForm: "Planning task A",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.get(taskItemId("a"))?.activeForm).toBe("Planning task A");
+  });
+
+  test("update() sets activeForm on a pending task", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.update(taskItemId("a"), { activeForm: "Working on A" });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.get(taskItemId("a"))?.activeForm).toBe("Working on A");
+  });
+
+  test("update() preserves activeForm when not mentioned in patch", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "Task A",
+      activeForm: "Planning task A",
+    });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.update(taskItemId("a"), { subject: "Updated subject" });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.get(taskItemId("a"))?.activeForm).toBe("Planning task A");
+  });
+
+  test("update() clears activeForm when patch.activeForm is explicitly undefined", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "Task A",
+      activeForm: "Planning task A",
+    });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    // Explicit undefined in patch clears the field
+    const r2 = r1.value.update(taskItemId("a"), { activeForm: undefined });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+
+  test("activeForm is cleared when task transitions to completed", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "Task A", activeForm: "Doing A" });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const r3 = r2.value.complete(taskItemId("a"), result("a"));
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+
+  test("activeForm is cleared when task is killed", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "Task A", activeForm: "Doing A" });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const r3 = r2.value.kill(taskItemId("a"));
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+
+  test("activeForm is cleared when task fails (terminal)", () => {
+    const board = createTaskBoard({ maxRetries: 0 });
+    const r1 = board.add({ id: taskItemId("a"), description: "Task A", activeForm: "Doing A" });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const err: KoiError = { code: "EXTERNAL", message: "crash", retryable: false };
+    const r3 = r2.value.fail(taskItemId("a"), err);
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.status).toBe("failed");
+    expect(r3.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+});

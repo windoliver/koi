@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.058Z",
+      "timestamp": "2026-04-04T08:05:23.549Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.059Z",
+      "timestamp": "2026-04-04T08:05:23.549Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:45.061Z",
+      "timestamp": "2026-04-04T08:05:23.552Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
       "observation": {
@@ -55,10 +55,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 146,
+        "prompt_tokens": 171,
         "completion_tokens": 10
       },
-      "duration_ms": 846,
+      "duration_ms": 592,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.908Z",
+      "timestamp": "2026-04-04T08:05:24.145Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 847.3764999999985,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
+      "duration_ms": 593.1536250000063,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.908Z",
+      "timestamp": "2026-04-04T08:05:24.145Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 847.6919579999958,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
+      "duration_ms": 593.4736669999984,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,21 +110,41 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.932Z",
-      "model_name": "hook:on-fs-tool",
-      "message": "tool.succeeded:nexus_read → on-fs-tool",
-      "duration_ms": 6.355125000001863,
+      "timestamp": "2026-04-04T08:05:24.145Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
+      "duration_ms": 593.5644580000007,
       "outcome": "success",
       "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded:nexus_read",
-        "hookName": "on-fs-tool"
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
       }
     },
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.932Z",
+      "timestamp": "2026-04-04T08:05:24.169Z",
+      "model_name": "hook:on-fs-tool",
+      "message": "tool.succeeded:nexus_read → on-fs-tool",
+      "duration_ms": 8.777499999996508,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:nexus_read",
+        "hookName": "on-fs-tool",
+        "decision": {
+          "kind": "continue"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:24.170Z",
       "model_name": "middleware:hook-dispatch",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -134,7 +154,7 @@
           }
         ]
       },
-      "duration_ms": 24.720124999999825,
+      "duration_ms": 25.221459000000323,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -146,12 +166,12 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 8,
       "source": "tool",
-      "timestamp": "2026-04-04T06:11:45.907Z",
+      "timestamp": "2026-04-04T08:05:24.144Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_nexus_read_7",
+          "tool_call_id": "call_nexus_read_8",
           "function_name": "nexus_read",
           "arguments": {
             "path": "/golden-test.txt"
@@ -161,18 +181,18 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_nexus_read_7",
+            "source_call_id": "call_nexus_read_8",
             "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
           }
         ]
       },
-      "duration_ms": 25,
+      "duration_ms": 26,
       "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.934Z",
+      "timestamp": "2026-04-04T08:05:24.173Z",
       "model_name": "middleware:hooks",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -182,7 +202,7 @@
           }
         ]
       },
-      "duration_ms": 27.01316699999734,
+      "duration_ms": 28.547124999997322,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -194,9 +214,9 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:45.934Z",
+      "timestamp": "2026-04-04T08:05:24.173Z",
       "model_name": "middleware:permissions",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -206,7 +226,7 @@
           }
         ]
       },
-      "duration_ms": 27.241125000000466,
+      "duration_ms": 28.763708999998926,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -218,23 +238,47 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:24.173Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}"
+          }
+        ]
+      },
+      "duration_ms": 28.92020799999591,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 12,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:45.935Z",
+      "timestamp": "2026-04-04T08:05:24.173Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
       "observation": {
         "results": [
           {
-            "content": "The file at \"/golden-test.txt\" says: \"The answer to the golden query is 42.\"\n"
+            "content": "The file says: \"The answer to the golden query is 42.\"\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 188,
-        "completion_tokens": 25
+        "prompt_tokens": 213,
+        "completion_tokens": 17
       },
-      "duration_ms": 599,
+      "duration_ms": 532,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -250,12 +294,12 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:46.534Z",
+      "timestamp": "2026-04-04T08:05:24.707Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 599.6498329999959,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"…",
+      "duration_ms": 534.1009580000027,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -267,12 +311,12 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:46.534Z",
+      "timestamp": "2026-04-04T08:05:24.708Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 599.8836250000022,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"…",
+      "duration_ms": 534.6405840000007,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -280,6 +324,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-04T08:05:24.708Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"…",
+      "duration_ms": 534.7109999999957,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

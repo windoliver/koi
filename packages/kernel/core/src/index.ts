@@ -828,8 +828,17 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// retry signal — cross-middleware retry coordination protocol
+export type {
+  RetrySignal,
+  RetrySignalBroker,
+  RetrySignalReader,
+  RetrySignalWriter,
+} from "./retry-signal.js";
 // rich trajectory — full execution traces for LLM reflection
 export type {
+  DecisionSignal,
+  DecisionSignalKind,
   RichContent,
   RichStepMetrics,
   RichTrajectoryStep,
@@ -999,6 +1008,7 @@ export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // `ScheduledTaskStatus`. This is an intentional v2 domain correction.
 // task-board — backward compat aliases (deprecated)
 export type {
+  ManagedTaskBoard,
   Task,
   TaskBoard,
   TaskBoardConfig,

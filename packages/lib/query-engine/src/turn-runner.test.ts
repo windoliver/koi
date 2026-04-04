@@ -963,7 +963,7 @@ describe("runTurn", () => {
           stopGate: async (_turnIndex: number) => {
             gateCallCount++;
             if (gateCallCount === 1) {
-              return { kind: "block", reason: "tests not passing" };
+              return { kind: "block", reason: "tests not passing", blockedBy: "test-gate" };
             }
             return { kind: "continue" };
           },
@@ -1005,7 +1005,7 @@ describe("runTurn", () => {
           maxStopRetries: 2,
           stopGate: async (_turnIndex: number) => {
             gateCallCount++;
-            return { kind: "block", reason: "always block" };
+            return { kind: "block", reason: "always block", blockedBy: "test-gate" };
           },
         }),
       );
@@ -1056,7 +1056,7 @@ describe("runTurn", () => {
           messages: [],
           stopGate: async (_turnIndex: number) => {
             gateCalled = true;
-            return { kind: "block", reason: "should not be called" };
+            return { kind: "block", reason: "should not be called", blockedBy: "test-gate" };
           },
         }),
       );

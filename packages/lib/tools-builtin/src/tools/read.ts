@@ -10,12 +10,20 @@ import type {
   ToolExecuteOptions,
   ToolPolicy,
 } from "@koi/core";
+import type { PathGuardResult } from "../credential-path-guard.js";
 import { parseOptionalNumber, parseOptionalString, parseString } from "../parse-args.js";
+
+/** Options for filesystem tool factories. */
+export interface FsToolOptions {
+  /** Optional path guard for credential directory protection. */
+  readonly pathGuard?: ((resolvedPath: string) => PathGuardResult) | undefined;
+}
 
 export function createFsReadTool(
   backend: FileSystemBackend,
   prefix: string,
   policy: ToolPolicy,
+  fsToolOptions?: FsToolOptions,
 ): Tool {
   return {
     descriptor: {
@@ -44,6 +52,14 @@ export function createFsReadTool(
 
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
+
+      if (fsToolOptions?.pathGuard !== undefined) {
+        const guardResult = fsToolOptions.pathGuard(pathResult.value);
+        if (!guardResult.ok) {
+          return { error: guardResult.reason, code: "CREDENTIAL_PATH_DENIED" };
+        }
+      }
+
       const offsetResult = parseOptionalNumber(args, "offset", { nonNegativeInteger: true });
       if (!offsetResult.ok) return offsetResult.err;
       const limitResult = parseOptionalNumber(args, "limit", { nonNegativeInteger: true });

@@ -36,11 +36,16 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileListResult,
+  FileReadResult,
+  FileSystemBackend,
   JsonObject,
+  KoiError,
   MemoryRecord,
   MemoryRecordInput,
   ModelChunk,
   PermissionBackend,
+  Result,
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
@@ -55,15 +60,22 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
+import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import {
+  createRetrySignalBroker,
+  createSemanticRetryMiddleware,
+} from "@koi/middleware-semantic-retry";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
-import { createMemoryTaskBoardStore } from "@koi/tasks";
+import { createTaskTools } from "@koi/task-tools";
+import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -101,6 +113,9 @@ const modelAdapter = createOpenAICompatAdapter({
 const MEMORY_STORE_PROMPT =
   'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_recall tool with query "testing" to retrieve it. Finally use the memory_search tool with type "feedback" to search for feedback memories.';
 
+const MEMORY_RECALL_PROMPT =
+  "Use the memory_recall tool to recall all persisted memories for session start. Report what memories were found, how many were selected, and whether the recall was truncated or degraded.";
+
 // ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
 // ---------------------------------------------------------------------------
@@ -123,6 +138,27 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// send_message — tool with a string field for exfiltration guard testing
+const sendMessageToolResult = buildTool({
+  name: "send_message",
+  description: "Send a message to the user",
+  inputSchema: {
+    type: "object",
+    properties: { message: { type: "string", description: "The message text to send" } },
+    required: ["message"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => ({
+    sent: true,
+    message: args.message,
+  }),
+});
+if (!sendMessageToolResult.ok) {
+  console.error(`buildTool failed: ${sendMessageToolResult.error.message}`);
+  process.exit(1);
+}
+const sendMessageTool = sendMessageToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -179,6 +215,27 @@ if (!taskListResult.ok) {
   process.exit(1);
 }
 const taskListTool = taskListResult.value;
+
+// ---------------------------------------------------------------------------
+// @koi/task-tools — full tool surface (6 tools via createTaskTools)
+// ---------------------------------------------------------------------------
+
+const taskToolsBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const taskToolsAll = createTaskTools({
+  board: taskToolsBoard,
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+});
+// createTaskTools returns [create, get, update, list, stop, output]
+const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+];
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -261,6 +318,132 @@ const memoryToolDescriptors = [...memoryComponents.values()]
   )
   .map((t) => t.descriptor);
 
+// ---------------------------------------------------------------------------
+// Memory recall tool (backed by @koi/memory recallMemories + in-memory FS)
+// ---------------------------------------------------------------------------
+
+const recallMemoryFiles = new Map<string, { content: string; modifiedAt: number }>([
+  [
+    "/memories/user_role.md",
+    {
+      content: [
+        "---",
+        "name: User role",
+        "description: Senior engineer with Go expertise",
+        "type: user",
+        "---",
+        "",
+        "Deep Go expertise, new to React and this project's frontend.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 2 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/testing_feedback.md",
+    {
+      content: [
+        "---",
+        "name: Testing feedback",
+        "description: always write failing tests first",
+        "type: feedback",
+        "---",
+        "",
+        "Rule: write failing tests before implementation.",
+        "**Why:** catches regressions early.",
+        "**How to apply:** TDD workflow for all new features.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 5 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/project_goal.md",
+    {
+      content: [
+        "---",
+        "name: Project goal",
+        "description: ship v2 by Q2 2026",
+        "type: project",
+        "---",
+        "",
+        "v2 rewrite targeting Q2 2026. Merge freeze begins 2026-03-05.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 10 * 86_400_000,
+    },
+  ],
+]);
+
+const recallMockFs: FileSystemBackend = {
+  name: "recall-mock-fs",
+  read(path): Result<FileReadResult, KoiError> {
+    const file = recallMemoryFiles.get(path);
+    if (!file) {
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: `not found: ${path}`, retryable: false },
+      };
+    }
+    return { ok: true, value: { content: file.content, path, size: file.content.length } };
+  },
+  list(path): Result<FileListResult, KoiError> {
+    const entries = [...recallMemoryFiles.entries()]
+      .filter(([p]) => p.startsWith(path) && p.endsWith(".md"))
+      .map(([p, f]) => ({
+        path: p,
+        kind: "file" as const,
+        size: f.content.length,
+        modifiedAt: f.modifiedAt,
+      }));
+    return { ok: true, value: { entries, truncated: false } };
+  },
+  write() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  edit() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  search() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+    };
+  },
+};
+
+const memoryRecallResult = buildTool({
+  name: "memory_recall",
+  description:
+    "Recall persisted memories for session start. Scans the memory directory, scores by salience, selects within token budget, and returns formatted memories.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const result = await recallMemories(recallMockFs, {
+      memoryDir: "/memories",
+      tokenBudget: 8000,
+      now: Date.now(),
+    });
+    return {
+      selected: result.selected.length,
+      totalScanned: result.totalScanned,
+      truncated: result.truncated,
+      degraded: result.degraded,
+      skippedFiles: result.skippedFiles,
+      totalTokens: result.totalTokens,
+      formatted: result.formatted,
+    };
+  },
+});
+if (!memoryRecallResult.ok) {
+  console.error(`buildTool(memory_recall) failed: ${memoryRecallResult.error.message}`);
+  process.exit(1);
+}
+const memoryRecallTool = memoryRecallResult.value;
+
 // =========================================================================
 // Recording helpers
 // =========================================================================
@@ -326,11 +509,15 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     createFsAtifDelegate(trajDir),
   );
 
+  // @koi/middleware-semantic-retry — broker created early so event-trace can read signals
+  const retryBroker = createRetrySignalBroker();
+
   // @koi/event-trace
   const { middleware: eventTrace } = createEventTraceMiddleware({
     store,
     docId,
     agentName: `golden-${name}`,
+    signalReader: retryBroker,
   });
 
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
@@ -483,9 +670,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     },
   };
 
-  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, permMiddleware].map((mw) =>
-    wrapMiddlewareWithTrace(mw, { store, docId }),
-  );
+  // @koi/middleware-exfiltration-guard — secret exfiltration scanning (priority 50, before permissions)
+  const exfiltrationGuard = createExfiltrationGuardMiddleware({ action: "block" });
+
+  // @koi/middleware-semantic-retry — writer side (broker created above with event-trace)
+  const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
+    signalWriter: retryBroker,
+  });
+
+  const tracedMiddleware = [
+    eventTrace,
+    coreHookMw,
+    hookMw,
+    exfiltrationGuard,
+    permMiddleware,
+    semanticRetryMw,
+  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
   const runtime = await createKoi({
     manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
@@ -1104,7 +1304,56 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 5,
   },
 
-  // 13. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
+  // 13. memory-recall: @koi/memory recallMemories exercised — scan, score, budget, format
+  {
+    name: "memory-recall",
+    prompt: MEMORY_RECALL_PROMPT,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "memory-recall",
+        toolName: "memory_recall",
+        createTool: () => memoryRecallTool,
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // 14. exfiltration-guard-block: @koi/middleware-exfiltration-guard blocks tool arg with encoded secret
+  {
+    name: "exfiltration-guard-block",
+    prompt: `Use the send_message tool with message set to exactly this string: ${btoa("AKIAIOSFODNN7EXAMPLE")}. Do not modify or decode it, just pass it as-is.`,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "send-message",
+        toolName: "send_message",
+        createTool: () => sendMessageTool,
+      }),
+    ],
+  },
+
+  // 15. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
   //     Parent delegates to built-in "researcher" agent via the Spawn tool.
   //     Trajectory: parent model call → Spawn tool → child researcher agent (real LLM) → result back.
   {
@@ -1119,6 +1368,62 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [spawnToolProvider],
     maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
+  },
+
+  // 14. task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
+  //     Exercises create → list → update(in_progress) → update(completed) flow.
+  {
+    name: "task-tools",
+    // Prompt intentionally limited to task_create + task_list only.
+    // Gemini 2.0 Flash generates malformed args for task_update in multi-step
+    // scenarios (parsedArgs → undefined → silently dropped by bridge adapter).
+    // The task_update/stop/output flows are tested in the 48 unit tests.
+    // This golden query validates that the tool pipeline is wired correctly.
+    prompt:
+      "Use the task_create tool to create two tasks: " +
+      "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+      "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+      "Then use task_list to show all tasks. Report how many tasks were created.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-task-tool",
+        cmd: ["echo", "task-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({ name: "task-get", toolName: "task_get", createTool: () => ttGet }),
+      createSingleToolProvider({
+        name: "task-update",
+        toolName: "task_update",
+        createTool: () => ttUpdate,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => ttList,
+      }),
+      createSingleToolProvider({
+        name: "task-stop",
+        toolName: "task_stop",
+        createTool: () => ttStop,
+      }),
+      createSingleToolProvider({
+        name: "task-output",
+        toolName: "task_output",
+        createTool: () => ttOutput,
+      }),
+    ],
+    maxTurns: 5,
   },
 ];
 
@@ -1187,6 +1492,35 @@ await recordCassette("hook-once", () =>
   }),
 );
 
+await recordCassette("task-tools", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "Use the task_create tool to create two tasks: " +
+              "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+              "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+              "Then use task_list to show all tasks. Report how many tasks were created.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      ttCreate.descriptor,
+      ttGet.descriptor,
+      ttUpdate.descriptor,
+      ttList.descriptor,
+      ttStop.descriptor,
+      ttOutput.descriptor,
+    ],
+  }),
+);
+
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
     messages: [
@@ -1202,6 +1536,24 @@ await recordCassette("memory-store", () =>
       },
     ],
     tools: memoryToolDescriptors,
+  }),
+);
+
+await recordCassette("memory-recall", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: MEMORY_RECALL_PROMPT,
+          },
+        ],
+      },
+    ],
+    tools: [memoryRecallTool.descriptor],
   }),
 );
 
