@@ -21,5 +21,10 @@ export function createRetrySignalBroker(): RetrySignalBroker {
     getRetrySignal(sessionId: string): RetrySignal | undefined {
       return signals.get(sessionId);
     },
+    consumeRetrySignal(sessionId: string): RetrySignal | undefined {
+      const signal = signals.get(sessionId);
+      if (signal !== undefined) signals.delete(sessionId);
+      return signal;
+    },
   };
 }

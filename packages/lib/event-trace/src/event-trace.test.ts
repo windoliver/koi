@@ -1695,19 +1695,17 @@ describe("provenance tracking", () => {
 describe("retry signal coordination", () => {
   test("model step gets outcome 'retry' when signal is active", async () => {
     const mockStore = makeMockStore();
+    const signal = {
+      retrying: true as const,
+      originTurnIndex: 0,
+      reason: "tool_misuse: invalid arguments",
+      failureClass: "tool_misuse",
+      attemptNumber: 1,
+    };
     const signalReader = {
-      getRetrySignal: (sessionId: string) => {
-        if (sessionId === "test-session") {
-          return {
-            retrying: true,
-            originTurnIndex: 0,
-            reason: "tool_misuse: invalid arguments",
-            failureClass: "tool_misuse",
-            attemptNumber: 1,
-          };
-        }
-        return undefined;
-      },
+      getRetrySignal: (sessionId: string) => (sessionId === "test-session" ? signal : undefined),
+      consumeRetrySignal: (sessionId: string) =>
+        sessionId === "test-session" ? signal : undefined,
     };
 
     const { middleware } = createEventTraceMiddleware({
@@ -1733,14 +1731,16 @@ describe("retry signal coordination", () => {
 
   test("tool step gets outcome 'retry' when signal is active", async () => {
     const mockStore = makeMockStore();
+    const toolSignal = {
+      retrying: true as const,
+      originTurnIndex: 2,
+      reason: "api_error: timeout",
+      failureClass: "api_error",
+      attemptNumber: 3,
+    };
     const signalReader = {
-      getRetrySignal: () => ({
-        retrying: true,
-        originTurnIndex: 2,
-        reason: "api_error: timeout",
-        failureClass: "api_error",
-        attemptNumber: 3,
-      }),
+      getRetrySignal: () => toolSignal,
+      consumeRetrySignal: () => toolSignal,
     };
 
     const { middleware } = createEventTraceMiddleware({
@@ -1766,6 +1766,7 @@ describe("retry signal coordination", () => {
     const mockStore = makeMockStore();
     const signalReader = {
       getRetrySignal: () => undefined,
+      consumeRetrySignal: () => undefined,
     };
 
     const { middleware } = createEventTraceMiddleware({

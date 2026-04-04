@@ -106,12 +106,12 @@ describe("createSemanticRetryMiddleware", () => {
       expect(signal?.attemptNumber).toBe(1);
     });
 
-    it("clears retry signal on successful retry", async () => {
+    it("signal available for consume after failure, gone after consume", async () => {
       const broker = createRetrySignalBroker();
       const handle = createSemanticRetryMiddleware({ signalWriter: broker });
       await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
 
-      // First call fails
+      // First call fails — signal set
       try {
         await handle.middleware.wrapModelCall?.(
           createMinimalTurnCtx("s1"),
@@ -123,15 +123,12 @@ describe("createSemanticRetryMiddleware", () => {
       } catch {
         // expected
       }
+      // Signal is available for reading
       expect(broker.getRetrySignal("s1")).toBeDefined();
 
-      // Second call succeeds (retry)
-      await handle.middleware.wrapModelCall?.(
-        createMinimalTurnCtx("s1", 1),
-        createMinimalRequest(),
-        async () => createMinimalResponse(),
-      );
-
+      // Consuming clears it atomically (simulates event-trace reading it)
+      const consumed = broker.consumeRetrySignal("s1");
+      expect(consumed).toBeDefined();
       expect(broker.getRetrySignal("s1")).toBeUndefined();
     });
 

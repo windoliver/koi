@@ -403,7 +403,9 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           return response;
         }
 
-        // Successful retry — mark last record as succeeded and clear signal
+        // Successful retry — mark last record as succeeded.
+        // Signal is NOT cleared here — deferred to start of next call so
+        // event-trace's finally block can read it for this step's annotation.
         if (state.records.length > 0) {
           const lastIdx = state.records.length - 1;
           const lastRecord = state.records[lastIdx];
@@ -414,7 +416,6 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
             ];
           }
         }
-        signalWriter?.clearRetrySignal(sessionId);
         return response;
       } catch (e: unknown) {
         await handleFailure(sessionId, state, e, modifiedRequest, ctx.turnIndex);
@@ -490,7 +491,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           await handleFailure(sessionId, state, streamError, effectiveRequest, ctx.turnIndex);
         }
 
-        // Mark successful retry
+        // Mark successful retry — signal NOT cleared here (deferred to next call start)
         if (succeeded && state.records.length > 0) {
           const lastIdx = state.records.length - 1;
           const lastRecord = state.records[lastIdx];
@@ -500,9 +501,6 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
               { ...lastRecord, succeeded: true },
             ];
           }
-        }
-        if (succeeded) {
-          signalWriter?.clearRetrySignal(sessionId);
         }
       } catch (e: unknown) {
         await handleFailure(sessionId, state, e, effectiveRequest, ctx.turnIndex);

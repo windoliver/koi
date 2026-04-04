@@ -306,8 +306,13 @@ export async function enforceBudget(
 
       // Fire onBeforeDrop callback before returning (gives caller a chance
       // to extract decision-relevant facts from the about-to-be-lost messages).
+      // Wrapped in try-catch: observer callback must not break budget enforcement.
       if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
-        await Promise.resolve(config.onBeforeDrop(droppedMessages));
+        try {
+          await Promise.resolve(config.onBeforeDrop(droppedMessages));
+        } catch {
+          // Observer callback failure must not prevent compaction from completing
+        }
       }
 
       return {
@@ -337,8 +342,13 @@ export async function enforceBudget(
   const droppedMessages = computeDroppedMessages(messages, splitIdx);
 
   // Fire onBeforeDrop callback before returning.
+  // Wrapped in try-catch: observer callback must not break budget enforcement.
   if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
-    await Promise.resolve(config.onBeforeDrop(droppedMessages));
+    try {
+      await Promise.resolve(config.onBeforeDrop(droppedMessages));
+    } catch {
+      // Observer callback failure must not prevent compaction from completing
+    }
   }
 
   return {

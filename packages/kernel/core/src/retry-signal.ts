@@ -53,6 +53,13 @@ export interface RetrySignalWriter {
 export interface RetrySignalReader {
   /** Get the active retry signal for a session, or undefined if none. */
   readonly getRetrySignal: (sessionId: string) => RetrySignal | undefined;
+  /**
+   * Atomically get and clear the retry signal for a session.
+   * Returns the signal if one was active, then removes it so subsequent
+   * reads return undefined. Used by event-trace to consume the signal
+   * exactly once when recording the retry step.
+   */
+  readonly consumeRetrySignal: (sessionId: string) => RetrySignal | undefined;
 }
 
 /** Combined broker interface — injected by the L3 runtime compose layer. */
