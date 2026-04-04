@@ -164,7 +164,7 @@ export function wrapMiddlewareWithTrace(
           const hook = mw.wrapToolCall;
           if (hook === undefined) return next(request);
 
-          const requestPreview = `${request.toolId}(${JSON.stringify(request.input).slice(0, 300)})`;
+          const requestPreview = `${request.toolId}(${safeStringify(request.input, 300)})`;
           const start = performance.now();
           // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
@@ -193,7 +193,7 @@ export function wrapMiddlewareWithTrace(
             const outputStr =
               typeof response.output === "string"
                 ? response.output
-                : JSON.stringify(response.output);
+                : safeStringify(response.output, 500);
             // let: mutable — computed in try block for fail-open safety
             let deltaMeta: JsonObject | undefined;
             try {
@@ -324,6 +324,16 @@ export function wrapMiddlewareWithTrace(
     ...(wrappedToolCall !== undefined ? { wrapToolCall: wrappedToolCall } : {}),
     ...(wrappedModelStream !== undefined ? { wrapModelStream: wrappedModelStream } : {}),
   };
+}
+
+/** Safe JSON.stringify that never throws. Returns fallback on circular/BigInt/etc. */
+function safeStringify(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
 }
 
 /** Extract readable text from a ModelRequest's messages. */
