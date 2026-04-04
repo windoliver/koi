@@ -189,4 +189,19 @@ describe("parseOptionalTimestamp", () => {
     const result = parseOptionalTimestamp({ d: "2026-04-31T00:00:00Z" }, "d");
     expect(result.ok).toBe(false);
   });
+
+  test("accepts valid positive offset that crosses UTC midnight", () => {
+    const result = parseOptionalTimestamp({ d: "2026-01-01T00:30:00+01:00" }, "d");
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts valid negative offset near midnight", () => {
+    const result = parseOptionalTimestamp({ d: "2026-01-01T23:30:00-02:00" }, "d");
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts date-only format", () => {
+    const result = parseOptionalTimestamp({ d: "2026-03-15" }, "d");
+    expect(result.ok).toBe(true);
+  });
 });

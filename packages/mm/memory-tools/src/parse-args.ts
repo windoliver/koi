@@ -152,21 +152,28 @@ export function parseOptionalTimestamp(
       err: { error: `${key} must be a valid ISO 8601 timestamp`, code: "VALIDATION" },
     };
   }
+  // Validate calendar date components directly — avoids UTC-day-boundary
+  // issues that a roundtrip check through Date would cause for offset timestamps
+  const year = Number.parseInt(value.slice(0, 4), 10);
+  const month = Number.parseInt(value.slice(5, 7), 10);
+  const day = Number.parseInt(value.slice(8, 10), 10);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return {
+      ok: false,
+      err: { error: `${key} must be a valid calendar date`, code: "VALIDATION" },
+    };
+  }
+
   const ms = Date.parse(value);
   if (Number.isNaN(ms)) {
     return {
       ok: false,
       err: { error: `${key} must be a valid ISO 8601 timestamp`, code: "VALIDATION" },
-    };
-  }
-  // Roundtrip check — reject impossible calendar dates like Feb 30
-  // that Date.parse silently rolls forward
-  const date = new Date(ms);
-  const inputDay = Number.parseInt(value.slice(8, 10), 10);
-  if (date.getUTCDate() !== inputDay) {
-    return {
-      ok: false,
-      err: { error: `${key} must be a valid calendar date`, code: "VALIDATION" },
     };
   }
   return { ok: true, value: ms };
