@@ -539,6 +539,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     originalInput: JsonObject,
     durationMs: number,
     sink: AuditSink,
+    coalesced = false,
   ): void {
     const meta: Record<string, unknown> = {
       permissionCheck: true,
@@ -546,6 +547,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       resource,
       approvalDecision: approval.kind,
       userId: ctx.session.userId ?? "__anonymous__",
+      ...(coalesced ? { coalesced: true } : {}),
     };
     if (approval.kind === "deny") {
       meta.denyReason = approval.reason;
@@ -581,11 +583,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     approval: ValidatedApproval,
     originalInput: JsonObject,
     startMs: number,
+    coalesced = false,
   ): void {
     if (onApprovalStep === undefined) return;
     const meta: Record<string, unknown> = {
       approvalDecision: approval.kind,
       userId: ctx.session.userId ?? "__anonymous__",
+      ...(coalesced ? { coalesced: true } : {}),
     };
     if (approval.kind === "modify") {
       meta.inputModified = true;
@@ -1054,7 +1058,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         const rawResult = await inflight;
         const result = validateApprovalDecision(rawResult);
 
-        // Emit approval-outcome audit + trajectory for this coalesced caller too
+        // Emit approval-outcome audit + trajectory for this coalesced caller.
+        // Marked coalesced: true so downstream systems know this reused an existing
+        // human decision rather than prompting a new one.
         const coalescedDurationMs = clock() - coalescedStartMs;
         if (result !== undefined && auditSink !== undefined) {
           auditApprovalOutcome(
@@ -1064,10 +1070,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
             request.input,
             coalescedDurationMs,
             auditSink,
+            true,
           );
         }
         if (result !== undefined) {
-          emitApprovalStep(ctx, request.toolId, result, request.input, coalescedStartMs);
+          emitApprovalStep(ctx, request.toolId, result, request.input, coalescedStartMs, true);
         }
 
         if (result === undefined || result.kind === "deny") {

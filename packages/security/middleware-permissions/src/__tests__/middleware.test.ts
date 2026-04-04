@@ -1586,6 +1586,12 @@ describe("createPermissionsMiddleware", () => {
         (e) => (e.metadata as Record<string, unknown>).phase === "approval_outcome",
       );
       expect(outcomeEntries.length).toBeGreaterThanOrEqual(2);
+
+      // The coalesced (follower) entry should be marked
+      const coalescedEntries = outcomeEntries.filter(
+        (e) => (e.metadata as Record<string, unknown>).coalesced === true,
+      );
+      expect(coalescedEntries).toHaveLength(1);
     });
   });
 
