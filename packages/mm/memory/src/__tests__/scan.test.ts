@@ -260,6 +260,59 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(1);
   });
 
+  test("rejects paths outside the memory directory", async () => {
+    const goodFile = makeMemoryFile("Good", "user", "valid", 0);
+    const baseFs = createMockFs([goodFile]);
+    const escapedFs: FileSystemBackend = {
+      ...baseFs,
+      list(path, options) {
+        const result = baseFs.list(path, options);
+        if (!("ok" in result) || !result.ok) return result;
+        return {
+          ok: true as const,
+          value: {
+            entries: [
+              ...result.value.entries,
+              {
+                path: "/other/secret.md",
+                kind: "file" as const,
+                size: 100,
+                modifiedAt: Date.now(),
+              },
+              {
+                path: "/memory/../etc/passwd.md",
+                kind: "file" as const,
+                size: 100,
+                modifiedAt: Date.now(),
+              },
+            ],
+            truncated: false,
+          },
+        };
+      },
+    };
+    const result = await scanMemoryDirectory(escapedFs, { memoryDir: "/memory" });
+    expect(result.memories.length).toBe(1);
+    expect(result.skipped.length).toBe(2);
+    expect(result.skipped[0]?.reason).toContain("outside memory directory");
+  });
+
+  test("caps read attempts to prevent unbounded I/O", async () => {
+    // Create many corrupt files — with maxFiles=2, read attempts capped at 2*3=6
+    const files: MockFile[] = Array.from({ length: 20 }, (_, i) => ({
+      path: `/memory/bad${i}.md`,
+      content: "corrupt",
+      size: 7,
+      modifiedAt: Date.now() - i * 1000,
+    }));
+    const fs = createMockFs(files);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory", maxFiles: 2 });
+
+    // Should have stopped after 6 read attempts (2 * 3 multiplier), not all 20
+    expect(result.skipped.length).toBeLessThanOrEqual(6);
+    expect(result.memories.length).toBe(0);
+  });
+
   test("cap applies to valid memories, not raw entries — skips corrupt and reaches older valid", async () => {
     // 2 newest files are corrupt, 2 older files are valid — maxFiles=2 should still find both valid
     const files: MockFile[] = [

@@ -44,6 +44,25 @@ export interface SkippedFile {
 }
 
 // ---------------------------------------------------------------------------
+// Path validation
+// ---------------------------------------------------------------------------
+
+/** Hard cap on read attempts to prevent unbounded I/O from poisoned directories. */
+const MAX_READ_ATTEMPTS_MULTIPLIER = 3;
+
+/**
+ * Returns true if `filePath` is a descendant of `baseDir` with no traversal.
+ * Both paths are normalized to forward slashes before comparison.
+ */
+function isDescendantPath(filePath: string, baseDir: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const normalizedBase = `${baseDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+  if (!normalizedPath.startsWith(normalizedBase)) return false;
+  const relative = normalizedPath.slice(normalizedBase.length);
+  return !relative.split("/").some((seg) => seg === "..");
+}
+
+// ---------------------------------------------------------------------------
 // Scan implementation
 // ---------------------------------------------------------------------------
 
@@ -75,13 +94,24 @@ export async function scanMemoryDirectory(
 
   // Step 3: Read and parse files until maxFiles valid memories are collected.
   // Continues past failed reads/parses so corrupt files at the top don't
-  // starve out older valid memories.
+  // starve out older valid memories. Hard-capped on read attempts to prevent
+  // unbounded I/O from poisoned directories.
   const memories: ScannedMemory[] = [];
   const skipped: SkippedFile[] = [];
+  const maxReadAttempts = maxFiles * MAX_READ_ATTEMPTS_MULTIPLIER;
+  let readAttempts = 0;
 
   for (const entry of sorted) {
     if (memories.length >= maxFiles) break;
+    if (readAttempts >= maxReadAttempts) break;
 
+    // Validate that the listed path is inside the requested memory directory
+    if (entry.kind !== "file" || !isDescendantPath(entry.path, config.memoryDir)) {
+      skipped.push({ filePath: entry.path, reason: "path outside memory directory or not a file" });
+      continue;
+    }
+
+    readAttempts += 1;
     const readResult = await fs.read(entry.path);
     if (!readResult.ok) {
       skipped.push({ filePath: entry.path, reason: `read failed: ${readResult.error.message}` });
