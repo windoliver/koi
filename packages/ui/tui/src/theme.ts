@@ -46,14 +46,14 @@ export const COLORS = {
  * as-const lookup table: zero allocation per render, compile-time exhaustive.
  * Components index directly: `CONNECTION_STATUS_CONFIG[status].color`.
  */
-export const CONNECTION_STATUS_CONFIG = {
+export const CONNECTION_STATUS_CONFIG: Record<
+  ConnectionStatus,
+  { readonly indicator: string; readonly color: string }
+> = {
   connected: { indicator: "● connected", color: COLORS.green },
   reconnecting: { indicator: "◌ reconnecting…", color: COLORS.yellow },
   disconnected: { indicator: "○ disconnected", color: COLORS.red },
-} as const satisfies Record<
-  ConnectionStatus,
-  { readonly indicator: string; readonly color: string }
->;
+};
 
 // ---------------------------------------------------------------------------
 // Layout helpers
