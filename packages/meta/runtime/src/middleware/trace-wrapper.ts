@@ -233,9 +233,22 @@ export function wrapMiddlewareWithTrace(
           const requestPreview = extractModelRequestText(request);
           const start = performance.now();
 
+          // Track modified request for delta capture in stream path
+          let capturedStreamRequest: ModelRequest | undefined;
+          const trackedStreamNext: ModelStreamHandler = (req) => {
+            if (captureDeltas === true) capturedStreamRequest = req;
+            return next(req);
+          };
+
           // Wrap the stream to record on completion, tracking success/failure/abort
-          const inner = hook(ctx, request, next);
+          const inner = hook(ctx, request, trackedStreamNext);
           return wrapStreamForTrace(inner, (outcome, errorMessage) => {
+            const deltaMeta =
+              captureDeltas === true &&
+              capturedStreamRequest !== undefined &&
+              capturedStreamRequest !== request
+                ? computeRequestDelta(request, capturedStreamRequest)
+                : undefined;
             recordStep({
               stepIndex: 0,
               timestamp: Date.now(),
@@ -253,6 +266,7 @@ export function wrapMiddlewareWithTrace(
                 priority: mw.priority ?? 500,
                 nextCalled: true,
                 ...(errorMessage !== undefined ? { error: errorMessage } : {}),
+                ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
               } as JsonObject,
             });
           });
@@ -318,8 +332,7 @@ function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefi
 
 /**
  * Compute request delta for ModelRequest. Diffs top-level scalar fields
- * (temperature, maxTokens, model, systemPrompt) — ignores messages array
- * since it's typically large and not modified by middleware.
+ * and summarizes message-level changes (count added/removed, truncated preview).
  */
 function computeRequestDelta(before: ModelRequest, after: ModelRequest): JsonObject | undefined {
   const beforeFlat: JsonObject = {
@@ -334,7 +347,22 @@ function computeRequestDelta(before: ModelRequest, after: ModelRequest): JsonObj
     ...(after.model !== undefined ? { model: after.model } : {}),
     ...(after.systemPrompt !== undefined ? { systemPrompt: after.systemPrompt } : {}),
   };
-  return shallowDiff(beforeFlat, afterFlat);
+  const scalarDelta = shallowDiff(beforeFlat, afterFlat);
+
+  // Bounded message-level summary: detect added/removed messages without
+  // serializing full content (messages can be large).
+  const msgBefore = before.messages.length;
+  const msgAfter = after.messages.length;
+  const messagesChanged = before.messages !== after.messages && msgBefore !== msgAfter;
+  const messageDelta = messagesChanged
+    ? ({ messagesBefore: msgBefore, messagesAfter: msgAfter } as JsonObject)
+    : undefined;
+
+  if (scalarDelta === undefined && messageDelta === undefined) return undefined;
+  return {
+    ...(scalarDelta ?? {}),
+    ...(messageDelta !== undefined ? { messages: messageDelta } : {}),
+  } as JsonObject;
 }
 
 /** Passthrough wrapper that records stream outcome (success/failure/early-return). */

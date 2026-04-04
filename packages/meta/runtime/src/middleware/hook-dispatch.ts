@@ -70,22 +70,48 @@ export interface HookDispatchConfig {
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
   const { hooks, store, docId, signal, registry, registrySessionId } = config;
 
+  /** Truncate a string to a safe length for trajectory storage. */
+  function truncateReason(s: string): string {
+    return s.length <= 500 ? s : `${s.slice(0, 500)}…`;
+  }
+
+  /** Truncate a JsonObject payload to prevent unbounded blobs in traces. */
+  function truncatePayload(obj: JsonObject): JsonObject {
+    const serialized = JSON.stringify(obj);
+    if (serialized.length <= 2000) return obj;
+    return { _truncated: true, preview: serialized.slice(0, 2000) } as JsonObject;
+  }
+
   /** Extract a structured decision record from a hook execution result. */
   function extractDecision(result: HookExecutionResult): JsonObject {
     if (!result.ok) {
-      return { kind: "error", reason: result.error } as JsonObject;
+      return { kind: "error", reason: truncateReason(result.error) } as JsonObject;
     }
     const { decision } = result;
-    switch (decision.kind) {
-      case "block":
-        return { kind: "block", reason: decision.reason } as JsonObject;
-      case "modify":
-        return { kind: "modify", patch: decision.patch } as JsonObject;
-      case "transform":
-        return { kind: "transform", outputPatch: decision.outputPatch } as JsonObject;
-      case "continue":
-        return { kind: "continue" } as JsonObject;
+    const base = (() => {
+      switch (decision.kind) {
+        case "block":
+          return { kind: "block", reason: truncateReason(decision.reason) } as JsonObject;
+        case "modify":
+          return { kind: "modify", patch: truncatePayload(decision.patch) } as JsonObject;
+        case "transform":
+          return {
+            kind: "transform",
+            outputPatch: truncatePayload(decision.outputPatch),
+            ...(decision.metadata !== undefined
+              ? { metadata: truncatePayload(decision.metadata) }
+              : {}),
+          } as JsonObject;
+        case "continue":
+          return { kind: "continue" } as JsonObject;
+      }
+    })();
+    // Preserve fail-open context: hook actually failed but was swallowed by policy.
+    // Without this, a transient timeout appears identical to a genuine continue.
+    if (result.executionFailed === true) {
+      return { ...base, executionFailed: true } as JsonObject;
     }
+    return base;
   }
 
   /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
@@ -202,15 +228,16 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
             identifier: "stop-gate:block",
             outcome: "retry" as const,
             durationMs: 0,
-            request: { text: `Stop blocked: ${ctx.stopGateReason ?? "unknown"}` },
+            request: { text: `Stop blocked: ${truncateReason(ctx.stopGateReason ?? "unknown")}` },
             metadata: {
               type: "stop_gate_decision",
               blockedBy: ctx.stopGateBlockedBy ?? "unknown",
-              reason: ctx.stopGateReason ?? "unknown",
+              reason: truncateReason(ctx.stopGateReason ?? "unknown"),
               turnIndex: ctx.turnIndex,
             } as JsonObject,
           };
-          await store.append(docId, [step]).catch(() => {});
+          // Fire-and-forget — must not block the stop-gate retry critical path.
+          void store.append(docId, [step]).catch(() => {});
         }
         return;
       }

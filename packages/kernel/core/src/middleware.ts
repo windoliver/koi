@@ -174,7 +174,7 @@ export type MiddlewarePhase = "intercept" | "resolve" | "observe";
  */
 export type StopGateResult =
   | { readonly kind: "continue" }
-  | { readonly kind: "block"; readonly reason: string; readonly blockedBy: string };
+  | { readonly kind: "block"; readonly reason: string; readonly blockedBy?: string };
 
 // ---------------------------------------------------------------------------
 // Middleware interface

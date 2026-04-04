@@ -827,7 +827,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     sendStatus: options.sendStatus,
                     stopBlocked: true,
                     stopGateReason: gateResult.reason,
-                    stopGateBlockedBy: gateResult.blockedBy,
+                    ...(gateResult.blockedBy !== undefined
+                      ? { stopGateBlockedBy: gateResult.blockedBy }
+                      : {}),
                   });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
