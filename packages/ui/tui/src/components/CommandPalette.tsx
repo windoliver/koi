@@ -67,15 +67,32 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = m
     const queryRef = useRef(storedQuery);
     const [query, setQuery] = useState(storedQuery);
 
-    // When the bridge restores the modal (e.g., after a permission-prompt
-    // clears and the palette is re-shown with a stored query), resync local
-    // state so the displayed query matches the restored value.
+    // Reconcile when storedQuery changes (bridge restore or first mount).
+    //
+    // Two cases:
+    // A) We own the modal (just restored) and local state is ahead of the store
+    //    (user typed during the interruption). Persist local value to the store —
+    //    our value is more recent and should win.
+    // B) We don't own the modal (being initialized or externally driven). Adopt
+    //    the stored value so the displayed query stays in sync.
+    //
+    // This makes the interruption handoff atomic from the user's perspective:
+    // characters typed while the permission prompt was showing are preserved
+    // when the palette comes back.
     useEffect(() => {
-      if (storedQuery !== queryRef.current) {
+      if (storedQuery === queryRef.current) return; // already in sync
+      if (store?.getState().modal?.kind === "command-palette") {
+        // We own the modal — persist our (more recent) local query to the store
+        store.dispatch({
+          kind: "set_modal",
+          modal: { kind: "command-palette", query: queryRef.current },
+        });
+      } else {
+        // We don't own the modal — adopt the stored value
         queryRef.current = storedQuery;
         setQuery(storedQuery);
       }
-    }, [storedQuery]);
+    }, [storedQuery, store]);
 
     const updateQuery = useCallback(
       (next: string) => {

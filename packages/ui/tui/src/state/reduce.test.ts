@@ -828,6 +828,41 @@ describe("reduce — set_view", () => {
 // set_modal
 // ---------------------------------------------------------------------------
 
+describe("reduce — set_modal — command palette query round-trip", () => {
+  test("query survives permission-prompt interruption and restoration", () => {
+    // Simulates the store-level half of the interruption handoff:
+    // 1. Palette opened with empty query
+    // 2. User types "cl" — palette dispatches query update
+    // 3. Permission prompt takes over the modal slot
+    // 4. Bridge restores palette with the saved query "cl"
+    // Result: modal is command-palette with query "cl"
+    let state = createInitialState();
+
+    // Open palette
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "" } });
+
+    // User types "cl"
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cl" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cl" });
+
+    // Permission prompt takes over
+    state = reduce(state, {
+      kind: "set_modal",
+      modal: { kind: "permission-prompt", prompt: { requestId: "r1", toolId: "bash", input: {}, reason: "needs approval", riskLevel: "low" } },
+    });
+    expect(state.modal?.kind).toBe("permission-prompt");
+
+    // Bridge restores palette with the last saved query
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cl" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cl" });
+
+    // Component's effect then promotes local "cle" (typed during interruption)
+    // back into the store — simulate that dispatch:
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cle" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cle" });
+  });
+});
+
 describe("reduce — set_modal", () => {
   test("sets command-palette modal", () => {
     const state = createInitialState();
