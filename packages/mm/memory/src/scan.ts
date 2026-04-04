@@ -31,6 +31,10 @@ export interface MemoryScanResult {
   readonly memories: readonly ScannedMemory[];
   readonly skipped: readonly SkippedFile[];
   readonly totalFiles: number;
+  /** True if the directory listing was truncated by the backend. */
+  readonly truncated: boolean;
+  /** True if the directory listing failed entirely (backend error). */
+  readonly listFailed: boolean;
 }
 
 /** A file that was skipped during scanning (parse failure, read error, etc.). */
@@ -59,11 +63,12 @@ export async function scanMemoryDirectory(
   // Step 1: List all .md files
   const listResult = await fs.list(config.memoryDir, { glob: "*.md" });
   if (!listResult.ok) {
-    return { memories: [], skipped: [], totalFiles: 0 };
+    return { memories: [], skipped: [], totalFiles: 0, truncated: false, listFailed: true };
   }
 
   const entries = listResult.value.entries;
   const totalFiles = entries.length;
+  const truncated = listResult.value.truncated;
 
   // Step 2: Sort by modifiedAt descending (newest first), cap at maxFiles
   const sorted = entries
@@ -101,5 +106,5 @@ export async function scanMemoryDirectory(
     memories.push({ record, fileSize: readResult.value.size });
   }
 
-  return { memories, skipped, totalFiles };
+  return { memories, skipped, totalFiles, truncated, listFailed: false };
 }

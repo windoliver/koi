@@ -7,6 +7,7 @@ import type {
   MemoryRecordId,
   Result,
 } from "@koi/core";
+import { estimateTokens } from "@koi/token-estimator";
 import { recallMemories, selectWithinBudget } from "../recall.js";
 import type { ScoredMemory } from "../salience.js";
 import type { ScannedMemory } from "../scan.js";
@@ -193,5 +194,59 @@ describe("recallMemories", () => {
     expect(result.formatted).toBe("");
     expect(result.totalScanned).toBe(0);
     expect(result.truncated).toBe(false);
+    expect(result.degraded).toBe(false);
+  });
+
+  test("sets degraded when list fails", async () => {
+    const failFs: FileSystemBackend = {
+      name: "fail-fs",
+      list() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "backend down", retryable: false },
+        };
+      },
+      read() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      write() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      edit() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      search() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+    };
+    const result = await recallMemories(failFs, { memoryDir: "/mem", now });
+    expect(result.degraded).toBe(true);
+    expect(result.selected.length).toBe(0);
+  });
+
+  test("formatted output tokens do not exceed budget", async () => {
+    const files = Array.from({ length: 10 }, (_, i) => ({
+      path: `/mem/mem${i}.md`,
+      content: makeMemoryFileContent(`Memory ${i}`, "user", "x".repeat(200)),
+      modifiedAt: now - i * 86_400_000,
+    }));
+    const fs = createMockFs(files);
+    const budget = 300;
+    const result = await recallMemories(fs, { memoryDir: "/mem", tokenBudget: budget, now });
+
+    const actualTokens = estimateTokens(result.formatted);
+    expect(actualTokens).toBeLessThanOrEqual(budget);
   });
 });

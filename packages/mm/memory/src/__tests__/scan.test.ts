@@ -107,6 +107,8 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(3);
     expect(result.skipped.length).toBe(0);
     expect(result.totalFiles).toBe(3);
+    expect(result.truncated).toBe(false);
+    expect(result.listFailed).toBe(false);
   });
 
   test("sorts by modifiedAt descending (newest first)", async () => {
@@ -197,6 +199,65 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(1);
     expect(result.skipped.length).toBe(1);
     expect(result.skipped[0]?.reason).toContain("read");
+  });
+
+  test("sets listFailed when fs.list returns error", async () => {
+    const failFs: FileSystemBackend = {
+      name: "fail-fs",
+      list() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "backend down", retryable: false },
+        };
+      },
+      read() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      write() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      edit() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+      search() {
+        return {
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+        };
+      },
+    };
+    const result = await scanMemoryDirectory(failFs, { memoryDir: "/memory" });
+    expect(result.listFailed).toBe(true);
+    expect(result.memories.length).toBe(0);
+  });
+
+  test("sets truncated when backend reports truncated listing", async () => {
+    const goodFile = makeMemoryFile("Good", "user", "valid", 0);
+    const baseFs = createMockFs([goodFile]);
+    const truncatedFs: FileSystemBackend = {
+      ...baseFs,
+      list(path, options) {
+        const result = baseFs.list(path, options);
+        if (!("ok" in result) || !result.ok) return result;
+        return {
+          ok: true as const,
+          value: { entries: result.value.entries, truncated: true },
+        };
+      },
+    };
+    const result = await scanMemoryDirectory(truncatedFs, { memoryDir: "/memory" });
+    expect(result.truncated).toBe(true);
+    expect(result.listFailed).toBe(false);
+    expect(result.memories.length).toBe(1);
   });
 
   test("populates record fields correctly", async () => {

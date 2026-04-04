@@ -8,7 +8,7 @@
 import type { FileSystemBackend } from "@koi/core";
 import { estimateTokens } from "@koi/token-estimator";
 import type { FormatOptions } from "./format.js";
-import { formatMemorySection, formatSingleMemory } from "./format.js";
+import { formatMemorySection } from "./format.js";
 import type { SalienceConfig, ScoredMemory } from "./salience.js";
 import { scoreMemories } from "./salience.js";
 import { scanMemoryDirectory } from "./scan.js";
@@ -40,6 +40,8 @@ export interface RecallResult {
   readonly totalTokens: number;
   readonly totalScanned: number;
   readonly truncated: boolean;
+  /** True if the scan was degraded (list failed or was truncated by backend). */
+  readonly degraded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,9 @@ const DEFAULT_TOKEN_BUDGET = 8000;
 /**
  * Selects memories that fit within a token budget.
  *
+ * Budgets against the full formatted section (including header, trusting-recall
+ * note, and separators) to ensure `estimateTokens(result.formatted) <= budget`.
+ *
  * Iterates scored memories (assumed sorted by salience descending).
  * Each memory is either fully included or skipped — no mid-content truncation.
  * Uses heuristic token estimation (~4 chars/token).
@@ -62,27 +67,28 @@ const DEFAULT_TOKEN_BUDGET = 8000;
 export function selectWithinBudget(
   memories: readonly ScoredMemory[],
   budget: number,
+  formatOptions?: FormatOptions,
 ): {
   readonly selected: readonly ScoredMemory[];
   readonly totalTokens: number;
   readonly truncated: boolean;
 } {
   const selected: ScoredMemory[] = [];
-  let totalTokens = 0;
   let truncated = false;
 
   for (const memory of memories) {
-    const formatted = formatSingleMemory(memory);
+    const candidate = [...selected, memory];
+    const formatted = formatMemorySection(candidate, formatOptions);
     const tokens = estimateTokens(formatted);
 
-    if (totalTokens + tokens <= budget) {
+    if (tokens <= budget) {
       selected.push(memory);
-      totalTokens += tokens;
     } else {
       truncated = true;
     }
   }
 
+  const totalTokens = estimateTokens(formatMemorySection(selected, formatOptions));
   return { selected, totalTokens, truncated };
 }
 
@@ -110,15 +116,24 @@ export async function recallMemories(
     maxFiles: config.maxFiles,
   });
 
+  const degraded = scanResult.listFailed || scanResult.truncated;
+
   if (scanResult.memories.length === 0) {
-    return { selected: [], formatted: "", totalTokens: 0, totalScanned: 0, truncated: false };
+    return {
+      selected: [],
+      formatted: "",
+      totalTokens: 0,
+      totalScanned: 0,
+      truncated: false,
+      degraded,
+    };
   }
 
   // Step 2: Score by salience
   const scored = scoreMemories(scanResult.memories, config.salience, now);
 
-  // Step 3: Select within token budget
-  const { selected, totalTokens, truncated } = selectWithinBudget(scored, budget);
+  // Step 3: Select within token budget (budgets against full formatted output)
+  const { selected, totalTokens, truncated } = selectWithinBudget(scored, budget, config.format);
 
   // Step 4: Format for injection
   const formatted = formatMemorySection(selected, config.format);
@@ -129,5 +144,6 @@ export async function recallMemories(
     totalTokens,
     totalScanned: scanResult.memories.length,
     truncated,
+    degraded,
   };
 }
