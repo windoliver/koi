@@ -302,6 +302,15 @@
         "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
+    "packages/mm/memory-tools": {
+      "name": "@koi/memory-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/mm/model-openai-compat": {
       "name": "@koi/model-openai-compat",
       "version": "0.0.0",
@@ -623,6 +632,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 
