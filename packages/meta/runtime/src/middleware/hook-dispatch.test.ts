@@ -144,7 +144,10 @@ describe("hook-dispatch decision metadata", () => {
     });
     await mw.wrapToolCall?.(makeTurnCtx(), { toolId: "test-tool", input: {} } as never, next);
 
-    expect(getHookDecision(steps)).toEqual({ kind: "modify", patch });
+    expect(getHookDecision(steps)).toEqual({
+      kind: "modify",
+      patch: { fieldCount: 2, fields: { safe: "boolean", level: "number" } },
+    });
   });
 
   test("transform decision includes outputPatch in metadata", async () => {
@@ -161,7 +164,10 @@ describe("hook-dispatch decision metadata", () => {
     });
     await mw.wrapToolCall?.(makeTurnCtx(), { toolId: "test-tool", input: {} } as never, next);
 
-    expect(getHookDecision(steps)).toEqual({ kind: "transform", outputPatch });
+    expect(getHookDecision(steps)).toEqual({
+      kind: "transform",
+      outputPatch: { fieldCount: 1, fields: { redacted: "boolean" } },
+    });
   });
 
   test("failed hook appears with error decision in metadata", async () => {

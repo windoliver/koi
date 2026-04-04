@@ -75,11 +75,26 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     return s.length <= 500 ? s : `${s.slice(0, 500)}…`;
   }
 
-  /** Truncate a JsonObject payload to prevent unbounded blobs in traces. */
-  function truncatePayload(obj: JsonObject): JsonObject {
-    const serialized = JSON.stringify(obj);
-    if (serialized.length <= 2000) return obj;
-    return { _truncated: true, preview: serialized.slice(0, 2000) } as JsonObject;
+  /**
+   * Summarize a JsonObject payload for trace metadata. Records field names
+   * and value types/sizes but never raw values — prevents sensitive data
+   * (e.g. from redaction hooks) from leaking into trajectory storage.
+   */
+  function summarizePayload(obj: JsonObject): JsonObject {
+    const fields: Record<string, string> = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val === null || val === undefined) {
+        fields[key] = "null";
+      } else if (Array.isArray(val)) {
+        fields[key] = `array(${val.length})`;
+      } else if (typeof val === "object") {
+        fields[key] = `object(${Object.keys(val as Record<string, unknown>).length} keys)`;
+      } else {
+        fields[key] = typeof val;
+      }
+    }
+    return { fieldCount: Object.keys(obj).length, fields } as JsonObject;
   }
 
   /**
@@ -98,13 +113,13 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           case "block":
             return { kind: "block", reason: truncateReason(decision.reason) } as JsonObject;
           case "modify":
-            return { kind: "modify", patch: truncatePayload(decision.patch) } as JsonObject;
+            return { kind: "modify", patch: summarizePayload(decision.patch) } as JsonObject;
           case "transform":
             return {
               kind: "transform",
-              outputPatch: truncatePayload(decision.outputPatch),
+              outputPatch: summarizePayload(decision.outputPatch),
               ...(decision.metadata !== undefined
-                ? { metadata: truncatePayload(decision.metadata) }
+                ? { metadata: summarizePayload(decision.metadata) }
                 : {}),
             } as JsonObject;
           case "continue":
