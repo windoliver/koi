@@ -89,7 +89,7 @@ describe("createRedactor", () => {
           kind: "runtime-boom",
           detect(input: string) {
             // Passes probes, crashes on everything else
-            if (probeInputs.has(input)) return undefined;
+            if (probeInputs.has(input)) return [];
             throw new Error("runtime crash on real input");
           },
         },
@@ -117,7 +117,7 @@ describe("createRedactor", () => {
           name: "runtime-boom",
           kind: "runtime-boom",
           detect(input: string) {
-            if (probeInputs.has(input)) return undefined;
+            if (probeInputs.has(input)) return [];
             throw new Error("runtime crash");
           },
         },
