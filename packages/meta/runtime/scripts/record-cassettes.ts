@@ -678,9 +678,14 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalWriter: retryBroker,
   });
 
-  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, exfiltrationGuard, permMiddleware, semanticRetryMw].map(
-    (mw) => wrapMiddlewareWithTrace(mw, { store, docId }),
-  );
+  const tracedMiddleware = [
+    eventTrace,
+    coreHookMw,
+    hookMw,
+    exfiltrationGuard,
+    permMiddleware,
+    semanticRetryMw,
+  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
   const runtime = await createKoi({
     manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
