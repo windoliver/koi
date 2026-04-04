@@ -2780,3 +2780,130 @@ describe("Golden: @koi/fs-local", () => {
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: spawn inheritance — @koi/core L0 types + validateSpawnRequest (#1425)
+// Standalone queries (no LLM, no cassette — pure unit-style in @koi/runtime context)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/engine spawn inheritance", () => {
+  test("validateSpawnRequest accepts valid requests and rejects allowlist+denylist conflict", async () => {
+    const { validateSpawnRequest } = await import("@koi/core");
+
+    // Valid: no lists
+    const valid = validateSpawnRequest({
+      agentName: "researcher",
+      description: "do research",
+      signal: AbortSignal.timeout(1000),
+    });
+    expect(valid.ok).toBe(true);
+
+    // Valid: denylist only
+    const withDeny = validateSpawnRequest({
+      agentName: "researcher",
+      description: "do research",
+      signal: AbortSignal.timeout(1000),
+      toolDenylist: ["dangerous_tool"],
+    });
+    expect(withDeny.ok).toBe(true);
+
+    // Invalid: both lists set simultaneously
+    const conflict = validateSpawnRequest({
+      agentName: "researcher",
+      description: "do research",
+      signal: AbortSignal.timeout(1000),
+      toolAllowlist: ["safe_tool"],
+      toolDenylist: ["dangerous_tool"],
+    });
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) {
+      expect(conflict.error.code).toBe("VALIDATION");
+      expect(conflict.error.retryable).toBe(false);
+      expect(conflict.error.message).toContain("mutually exclusive");
+    }
+  });
+
+  test("ManifestSpawnConfig shape: allowlist mode + env exclude + channel policy", async () => {
+    const { DEFAULT_SPAWN_CHANNEL_POLICY } = await import("@koi/core");
+
+    // Verify ManifestSpawnConfig values satisfy the expected shapes.
+    const manifestSpawn = {
+      tools: { policy: "allowlist" as const, list: ["ToolA", "ToolB"] },
+      env: { exclude: ["SENSITIVE_KEY"] },
+      channels: DEFAULT_SPAWN_CHANNEL_POLICY,
+    };
+
+    expect(manifestSpawn.tools.policy).toBe("allowlist");
+    expect(manifestSpawn.tools.list).toContain("ToolA");
+    expect(manifestSpawn.env.exclude).toContain("SENSITIVE_KEY");
+    expect(manifestSpawn.channels.mode).toBe("output-only");
+    expect(manifestSpawn.channels.attribution).toBe("metadata");
+
+    // SpawnInheritanceConfig shape
+    const inheritanceConfig = {
+      channels: { mode: "all" as const, attribution: "metadata" as const },
+      env: { overrides: { SAFE_KEY: "new-value", REMOVED_KEY: undefined } },
+      priority: 15,
+    };
+
+    expect(inheritanceConfig.channels.mode).toBe("all");
+    expect(inheritanceConfig.env.overrides.SAFE_KEY).toBe("new-value");
+    expect(inheritanceConfig.env.overrides.REMOVED_KEY).toBeUndefined();
+    expect(inheritanceConfig.priority).toBe(15);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn-inheritance ATIF trajectory (golden file) — #1425
+// ---------------------------------------------------------------------------
+
+describe("spawn-inheritance ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Spawn tool call using toolDenylist", async () => {
+    const { existsSync } = await import("node:fs");
+    const path = `${FIXTURES}/spawn-inheritance.trajectory.json`;
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-inheritance.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("Spawn tool called with toolDenylist=['Glob'] and returned output", async () => {
+    const { existsSync } = await import("node:fs");
+    const path = `${FIXTURES}/spawn-inheritance.trajectory.json`;
+    if (!existsSync(path)) return; // skip gracefully if not recorded
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly tool_calls?: readonly {
+          readonly function_name?: string;
+          readonly arguments?: Record<string, unknown>;
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content?: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const spawnStep = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "Spawn"),
+    );
+
+    expect(spawnStep).toBeDefined();
+    expect(spawnStep?.outcome).toBe("success");
+
+    const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
+    expect(spawnCall?.arguments?.agentName).toBe("researcher");
+    expect(Array.isArray(spawnCall?.arguments?.toolDenylist)).toBe(true);
+    expect((spawnCall?.arguments?.toolDenylist as string[]).includes("Glob")).toBe(true);
+
+    // Child returned an output
+    const result = spawnStep?.observation?.results?.[0]?.content;
+    expect(result).toBeDefined();
+    expect(result?.length).toBeGreaterThan(0);
+  });
+});

@@ -109,15 +109,35 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   const baseDenylist = expandDenylistWithAlwaysExcluded(
     options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
   );
-  const toolDenylist =
+  // let justified: modified below when applying manifest ceiling
+  let toolDenylist: ReadonlySet<string> =
     options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
   const baseAllowlist =
     options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
-  // When nonInteractive, strip interactive tools from allowlist too (not just denylist)
-  const toolAllowlist =
+  // let justified: modified below when applying manifest ceiling
+  let toolAllowlist: ReadonlySet<string> | undefined =
     options.nonInteractive === true && baseAllowlist !== undefined
       ? stripFromAllowlist(baseAllowlist, NON_INTERACTIVE_DENIED_TOOLS)
       : baseAllowlist;
+
+  // Apply manifest-level spawn ceiling declared by the parent manifest.
+  // The ceiling is the authoritative maximum — runtime options can only further restrict.
+  // Allowlist mode: child inherits only tools in manifest.list (intersect with runtime allowlist).
+  // Denylist mode: manifest.list tools are always excluded (union with runtime denylist).
+  const manifestSpawn = options.parentAgent.manifest.spawn;
+  if (manifestSpawn?.tools !== undefined) {
+    const manifestPolicy = manifestSpawn.tools.policy ?? "denylist";
+    const manifestList = new Set(manifestSpawn.tools.list ?? []);
+    if (manifestPolicy === "allowlist") {
+      toolAllowlist =
+        toolAllowlist !== undefined
+          ? intersectSets(toolAllowlist, manifestList) // runtime allowlist ∩ manifest ceiling
+          : manifestList; // no runtime allowlist: manifest becomes the effective ceiling
+    } else {
+      toolDenylist = unionSets(toolDenylist, manifestList); // always exclude manifest-denied tools
+    }
+  }
+
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),
@@ -331,14 +351,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
         });
 
-        // Revoke auto-delegation grant on child termination (best-effort)
+        // Revoke auto-delegation grant on child termination.
+        // Failure is logged as a structured warning with enough context to manually
+        // revoke the leaked key. Future: retry queue (#1425 follow-up).
         if (childGrantId !== undefined && parentHasDelegation) {
           const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
           if (parentDel !== undefined) {
             void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
-              console.error(
-                `[spawn-child] delegation revoke failed for child "${childPid.id}"`,
-                err,
+              console.warn(
+                `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
+                  `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
               );
             });
           }
@@ -430,4 +452,20 @@ function expandDenylistForNonInteractive(
     merged.add(tool);
   }
   return merged;
+}
+
+/** Returns a new Set containing only elements present in both sets. */
+function intersectSets<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): ReadonlySet<T> {
+  const result = new Set<T>();
+  for (const item of a) {
+    if (b.has(item)) result.add(item);
+  }
+  return result;
+}
+
+/** Returns a new Set containing all elements from both sets. */
+function unionSets<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): ReadonlySet<T> {
+  const result = new Set<T>(a);
+  for (const item of b) result.add(item);
+  return result;
 }

@@ -1131,6 +1131,23 @@ const queries: readonly QueryConfig[] = [
     providers: [spawnToolProvider],
     maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
+
+  // 14. spawn-inheritance: tool narrowing via toolDenylist (#1425)
+  //     Parent spawns a child with toolDenylist=['Glob'] — child cannot use Glob.
+  //     Trajectory: parent → Spawn(toolDenylist) → child runs without Glob → result back.
+  {
+    name: "spawn-inheritance",
+    prompt:
+      "Use the Spawn tool with agentName='researcher' and toolDenylist=['Glob'] to delegate: " +
+      "'What is 2+2? Answer with just the number.' " +
+      "Then report the answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [spawnToolProvider],
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================

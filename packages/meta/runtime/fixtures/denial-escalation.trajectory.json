@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:53.226Z",
+      "timestamp": "2026-04-04T04:08:09.546Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:53.226Z",
+      "timestamp": "2026-04-04T04:08:09.546Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,7 +56,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T00:15:53.227Z",
+      "timestamp": "2026-04-04T04:08:09.546Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
       "observation": {
@@ -70,7 +70,7 @@
         "prompt_tokens": 399,
         "completion_tokens": 7
       },
-      "duration_ms": 669,
+      "duration_ms": 631,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:53.896Z",
+      "timestamp": "2026-04-04T04:08:10.177Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"a\":3,\"b\":4})",
-      "duration_ms": 0.22862499999973807,
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "duration_ms": 0.19558299999880546,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:53.896Z",
+      "timestamp": "2026-04-04T04:08:10.177Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 669.5402079999985,
+      "duration_ms": 630.5105000000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -134,10 +134,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:53.896Z",
+      "timestamp": "2026-04-04T04:08:10.177Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 669.7568330000013,
+      "duration_ms": 630.6513340000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -151,21 +151,21 @@
     {
       "step_id": 6,
       "source": "agent",
-      "timestamp": "2026-04-04T00:15:53.896Z",
+      "timestamp": "2026-04-04T04:08:10.177Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "error: Policy denies add_numbers",
       "observation": {
         "results": [
           {
-            "content": "I am unable to call the tool because my policy does not allow the use of the add_numbers tool.\n"
+            "content": "I am unable to call the `add_numbers` tool as I lack the required permissions. Apologies, I cannot fulfill this request.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 415,
-        "completion_tokens": 23
+        "prompt_tokens": 414,
+        "completion_tokens": 29
       },
-      "duration_ms": 677,
+      "duration_ms": 740,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -191,10 +191,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:54.574Z",
+      "timestamp": "2026-04-04T04:08:10.917Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: Policy denies add_numbers",
-      "duration_ms": 677.3353330000009,
+      "duration_ms": 740.0944999999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -208,10 +208,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:54.574Z",
+      "timestamp": "2026-04-04T04:08:10.917Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: default mode — policy enforcement active\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nCall the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: Policy denies add_numbers",
-      "duration_ms": 677.4998749999995,
+      "duration_ms": 740.1829579999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

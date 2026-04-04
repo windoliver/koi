@@ -139,6 +139,11 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
                 items: { type: "string" },
                 description: "Tool names to exclude from the spawned agent.",
               },
+              timeoutMs: {
+                type: "number",
+                description:
+                  "Wall-clock deadline in milliseconds. Agent is stopped when elapsed. Default: 300000 (5 minutes).",
+              },
             },
             required: ["agentName", "description"],
           } as JsonObject,
@@ -146,10 +151,19 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         origin: "primordial",
         policy: DEFAULT_UNSANDBOXED_POLICY,
         execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
+          const timeoutMs =
+            args.timeoutMs !== undefined ? parsePositiveInt(args.timeoutMs, "timeoutMs") : 300_000; // 5 min default
+          const timeoutSignal = AbortSignal.timeout(timeoutMs);
+          const signal =
+            options?.signal !== undefined
+              ? AbortSignal.any([options.signal, timeoutSignal])
+              : timeoutSignal;
+
           const result = await spawnFn({
             agentName: String(args.agentName ?? ""),
             description: String(args.description ?? ""),
-            signal: options?.signal ?? AbortSignal.timeout(300_000), // 5 min default
+            signal,
+            timeoutMs,
             ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
             ...(args.maxTurns !== undefined
               ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
