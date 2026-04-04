@@ -358,25 +358,35 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/** Describe a value's type and size for structural summaries. */
+function describeValue(val: unknown): string {
+  if (val === null || val === undefined) return "null";
+  if (Array.isArray(val)) return `array(${val.length})`;
+  if (typeof val === "object")
+    return `object(${Object.keys(val as Record<string, unknown>).length})`;
+  if (typeof val === "string") return `string(${(val as string).length})`;
+  return typeof val;
+}
+
 /**
- * Diff two objects by value. Returns `{ changed, added, removed }` or
- * undefined if objects are identical by value.
+ * Structural diff of two objects. Records changed/added/removed field names
+ * with type summaries, never raw values — safe for sensitive payloads.
  */
 function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefined {
-  const changed: Record<string, { readonly from: unknown; readonly to: unknown }> = {};
-  const added: Record<string, unknown> = {};
+  const changed: Record<string, { readonly fromType: string; readonly toType: string }> = {};
+  const added: Record<string, string> = {};
   const removed: string[] = [];
 
   for (const key of Object.keys(before)) {
     if (!(key in after)) {
       removed.push(key);
     } else if (!valuesEqual(before[key], after[key])) {
-      changed[key] = { from: before[key], to: after[key] };
+      changed[key] = { fromType: describeValue(before[key]), toType: describeValue(after[key]) };
     }
   }
   for (const key of Object.keys(after)) {
     if (!(key in before)) {
-      added[key] = after[key];
+      added[key] = describeValue(after[key]);
     }
   }
 

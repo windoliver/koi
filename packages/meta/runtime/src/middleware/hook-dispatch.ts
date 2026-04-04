@@ -250,11 +250,11 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
             identifier: "stop-gate:block",
             outcome: "retry" as const,
             durationMs: 0,
-            request: { text: `Stop blocked: ${truncateReason(ctx.stopGateReason ?? "unknown")}` },
+            request: { text: `Stop blocked by ${ctx.stopGateBlockedBy ?? "unknown"}` },
             metadata: {
               type: "stop_gate_decision",
               blockedBy: ctx.stopGateBlockedBy ?? "unknown",
-              reason: truncateReason(ctx.stopGateReason ?? "unknown"),
+              reasonLength: (ctx.stopGateReason ?? "").length,
               turnIndex: ctx.turnIndex,
             } as JsonObject,
           };

@@ -120,7 +120,7 @@ describe("trace-wrapper delta capture", () => {
     const delta = meta.requestDelta as JsonObject;
     expect(delta).toBeDefined();
     const changed = delta.changed as JsonObject;
-    expect(changed.temperature).toEqual({ from: 0.7, to: 0.3 });
+    expect(changed.temperature).toEqual({ fromType: "number", toType: "number" });
   });
 
   test("records tool input delta when middleware modifies tool input and captureDeltas is true", async () => {
@@ -154,7 +154,7 @@ describe("trace-wrapper delta capture", () => {
     const delta = meta.inputDelta as JsonObject;
     expect(delta).toBeDefined();
     const added = delta.added as JsonObject;
-    expect(added.sanitized).toBe(true);
+    expect(added.sanitized).toBe("boolean");
   });
 
   test("no delta field when captureDeltas is false (default)", async () => {

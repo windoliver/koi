@@ -220,7 +220,7 @@ describe("hook-dispatch stop-gate recording", () => {
 
     const meta = step?.metadata as JsonObject;
     expect(meta.blockedBy).toBe("quality-gate");
-    expect(meta.reason).toBe("tests not passing");
+    expect(meta.reasonLength).toBe("tests not passing".length);
     expect(meta.turnIndex).toBe(2);
   });
 
