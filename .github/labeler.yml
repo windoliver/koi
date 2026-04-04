@@ -33,6 +33,7 @@
       - "packages/**/shutdown/**"
       - "packages/**/task-board/**"
       - "packages/**/token-estimator/**"
+      - "packages/**/tools-core/**"
       - "packages/**/validation/**"
 
 "layer:L3":
@@ -66,4 +67,5 @@
       - "!packages/**/shutdown/**"
       - "!packages/**/task-board/**"
       - "!packages/**/token-estimator/**"
+      - "!packages/**/tools-core/**"
       - "!packages/**/validation/**"

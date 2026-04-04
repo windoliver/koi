@@ -37,15 +37,12 @@ import type {
   EngineEvent,
   EngineInput,
   JsonObject,
+  MemoryRecord,
+  MemoryRecordInput,
   ModelChunk,
   PermissionBackend,
 } from "@koi/core";
-import {
-  createSingleToolProvider,
-  serializeMemoryFrontmatter,
-  validateMemoryFilePath,
-  validateMemoryRecordInput,
-} from "@koi/core";
+import { createSingleToolProvider, memoryRecordId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -58,6 +55,8 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import type { MemoryToolBackend } from "@koi/memory-tools";
+import { createMemoryToolProvider } from "@koi/memory-tools";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -100,7 +99,7 @@ const modelAdapter = createOpenAICompatAdapter({
 // ---------------------------------------------------------------------------
 
 const MEMORY_STORE_PROMPT =
-  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.';
+  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_recall tool with query "testing" to retrieve it. Finally use the memory_search tool with type "feedback" to search for feedback memories.';
 
 // ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
@@ -182,84 +181,85 @@ if (!taskListResult.ok) {
 const taskListTool = taskListResult.value;
 
 // ---------------------------------------------------------------------------
-// Memory tools (backed by @koi/core L0 pure functions)
+// Memory tools (backed by @koi/memory-tools with in-memory backend)
 // ---------------------------------------------------------------------------
 
-const memoryStore = new Map<string, string>();
+function createInMemoryMemoryBackend(): MemoryToolBackend {
+  const records = new Map<string, MemoryRecord>();
+  let counter = 0;
 
-const memoryStoreResult = buildTool({
-  name: "memory_store",
-  description:
-    "Store a memory record. Provide name, description, type (user|feedback|project|reference), and content. Returns the serialized Markdown with frontmatter.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "Human-readable name" },
-      description: { type: "string", description: "One-line summary" },
-      type: {
-        type: "string",
-        enum: ["user", "feedback", "project", "reference"],
-        description: "Memory type",
-      },
-      content: { type: "string", description: "Memory body content" },
+  return {
+    store: (input: MemoryRecordInput) => {
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: record };
     },
-    required: ["name", "description", "type", "content"],
-  },
-  origin: "primordial",
-  execute: async (args: JsonObject): Promise<unknown> => {
-    const input = {
-      name: String(args.name),
-      description: String(args.description),
-      type: String(args.type),
-      content: String(args.content),
-      filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
-    };
-    const pathError = validateMemoryFilePath(input.filePath);
-    if (pathError !== undefined) {
-      return { ok: false, errors: [{ field: "filePath", message: pathError }] };
-    }
-    const errors = validateMemoryRecordInput(input);
-    if (errors.length > 0) {
-      return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
-    }
-    const frontmatter = {
-      name: input.name,
-      description: input.description,
-      type: input.type as "user" | "feedback" | "project" | "reference",
-    };
-    const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
-    if (serialized === undefined) {
-      return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
-    }
-    memoryStore.set(input.filePath, serialized);
-    return { ok: true, filePath: input.filePath, serialized };
-  },
-});
-if (!memoryStoreResult.ok) {
-  console.error(`buildTool(memory_store) failed: ${memoryStoreResult.error.message}`);
-  process.exit(1);
+    recall: (_query, _options) => {
+      return { ok: true as const, value: [...records.values()] };
+    },
+    search: (filter) => {
+      const all = [...records.values()];
+      const filtered = filter.type !== undefined ? all.filter((r) => r.type === filter.type) : all;
+      return { ok: true as const, value: filtered };
+    },
+    delete: (id) => {
+      records.delete(id);
+      return { ok: true as const, value: undefined };
+    },
+    findByName: (name, type) => {
+      const match = [...records.values()].find(
+        (r) => r.name === name && (type === undefined || r.type === type),
+      );
+      return { ok: true as const, value: match };
+    },
+    get: (id) => {
+      return { ok: true as const, value: records.get(id) };
+    },
+    update: (id, patch) => {
+      const existing = records.get(id);
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
+        };
+      const updated = { ...existing, ...patch, updatedAt: Date.now() } as MemoryRecord;
+      records.set(id, updated);
+      return { ok: true as const, value: updated };
+    },
+  };
 }
-const memoryStoreTool = memoryStoreResult.value;
 
-const memoryListResult = buildTool({
-  name: "memory_list",
-  description: "List all stored memory records with their file paths and types.",
-  inputSchema: { type: "object", properties: {} },
-  origin: "primordial",
-  execute: async (): Promise<unknown> => {
-    const records = [...memoryStore.entries()].map(([filePath, raw]) => {
-      const typeMatch = raw.match(/^type:\s*(.+)$/m);
-      const nameMatch = raw.match(/^name:\s*(.+)$/m);
-      return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
-    });
-    return { memories: records };
-  },
-});
-if (!memoryListResult.ok) {
-  console.error(`buildTool(memory_list) failed: ${memoryListResult.error.message}`);
+const memoryBackend = createInMemoryMemoryBackend();
+const memoryProviderResult = createMemoryToolProvider({ backend: memoryBackend });
+if (!memoryProviderResult.ok) {
+  console.error(`createMemoryToolProvider failed: ${memoryProviderResult.error.message}`);
   process.exit(1);
 }
-const memoryListTool = memoryListResult.value;
+const memoryProvider = memoryProviderResult.value;
+
+// Extract tool descriptors for cassette recording (need to attach to a mock agent)
+const memoryAttachResult = await memoryProvider.attach(
+  {} as Parameters<typeof memoryProvider.attach>[0],
+);
+const memoryComponents =
+  "components" in memoryAttachResult ? memoryAttachResult.components : memoryAttachResult;
+const memoryToolDescriptors = [...memoryComponents.values()]
+  .filter(
+    (
+      v,
+    ): v is {
+      readonly descriptor: {
+        readonly name: string;
+        readonly description: string;
+        readonly inputSchema: JsonObject;
+      };
+    } => typeof v === "object" && v !== null && "descriptor" in v,
+  )
+  .map((t) => t.descriptor);
 
 // =========================================================================
 // Recording helpers
@@ -1085,7 +1085,7 @@ const queries: readonly QueryConfig[] = [
     providers: [localFsProvider],
   },
 
-  // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
+  // 12. memory-store: @koi/memory-tools exercised — store, recall, search via L2 package
   {
     name: "memory-store",
     prompt: MEMORY_STORE_PROMPT,
@@ -1100,19 +1100,8 @@ const queries: readonly QueryConfig[] = [
         filter: { events: ["tool.succeeded"] },
       },
     ],
-    providers: [
-      createSingleToolProvider({
-        name: "memory-store",
-        toolName: "memory_store",
-        createTool: () => memoryStoreTool,
-      }),
-      createSingleToolProvider({
-        name: "memory-list",
-        toolName: "memory_list",
-        createTool: () => memoryListTool,
-      }),
-    ],
-    maxTurns: 3,
+    providers: [memoryProvider],
+    maxTurns: 5,
   },
 
   // 13. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
@@ -1212,7 +1201,7 @@ await recordCassette("memory-store", () =>
         ],
       },
     ],
-    tools: [memoryStoreTool.descriptor, memoryListTool.descriptor],
+    tools: memoryToolDescriptors,
   }),
 );
 
