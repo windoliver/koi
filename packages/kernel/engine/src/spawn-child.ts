@@ -185,10 +185,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       }
     }
 
-    // Merge: manifest exclusions applied first, then runtime overrides (runtime wins on conflict)
+    // Merge: runtime overrides applied first, then manifest exclusions (manifest always wins).
+    // This ensures a manifest ceiling cannot be circumvented by a per-spawn override that
+    // re-adds an excluded credential — the final removal always takes effect.
     const mergedOverrides: Readonly<Record<string, string | undefined>> = {
-      ...manifestExcludeOverrides,
       ...(inheritance.env?.overrides ?? {}),
+      ...manifestExcludeOverrides,
     };
     const hasOverrides = Object.keys(mergedOverrides).length > 0;
 
@@ -485,17 +487,45 @@ function expandDenylistForNonInteractive(
 
 /**
  * Apply the manifest's channel ceiling to the runtime channel policy.
- * The manifest declares the most permissive mode allowed; the runtime may only restrict further.
- * Mode restrictiveness order: none > output-only > all.
+ * All three fields are clamped — the runtime can only be equally or more restrictive.
+ *
+ * Restrictiveness orders:
+ *   mode:             none > output-only > all
+ *   attribution:      none > prefix > metadata  (less attribution = more restrictive)
+ *   propagateStatus:  false > true              (no propagation = more restrictive)
  */
 function applyChannelCeiling(
   ceiling: SpawnChannelPolicy,
   runtime: SpawnChannelPolicy,
 ): SpawnChannelPolicy {
-  const RESTRICTIVENESS: Record<ChannelInheritMode, number> = { none: 2, "output-only": 1, all: 0 };
-  const effectiveMode =
-    RESTRICTIVENESS[ceiling.mode] >= RESTRICTIVENESS[runtime.mode] ? ceiling.mode : runtime.mode;
-  return effectiveMode === runtime.mode ? runtime : { ...runtime, mode: effectiveMode };
+  const MODE_R: Record<ChannelInheritMode, number> = { none: 2, "output-only": 1, all: 0 };
+  const ATTR_R: Record<"metadata" | "prefix" | "none", number> = {
+    none: 2,
+    prefix: 1,
+    metadata: 0,
+  };
+
+  const effectiveMode = MODE_R[ceiling.mode] >= MODE_R[runtime.mode] ? ceiling.mode : runtime.mode;
+
+  // Attribution: clamp to ceiling if ceiling is more restrictive
+  let effectiveAttribution = runtime.attribution;
+  if (ceiling.attribution !== undefined) {
+    const ceilingR = ATTR_R[ceiling.attribution];
+    const runtimeR = runtime.attribution !== undefined ? ATTR_R[runtime.attribution] : -1;
+    effectiveAttribution = ceilingR >= runtimeR ? ceiling.attribution : runtime.attribution;
+  }
+
+  // propagateStatus: false is more restrictive — ceiling false cannot be overridden
+  const effectivePropagateStatus =
+    ceiling.propagateStatus === false ? false : runtime.propagateStatus;
+
+  return {
+    mode: effectiveMode,
+    ...(effectiveAttribution !== undefined ? { attribution: effectiveAttribution } : {}),
+    ...(effectivePropagateStatus !== undefined
+      ? { propagateStatus: effectivePropagateStatus }
+      : {}),
+  };
 }
 
 /** Returns a new Set containing only elements present in both sets. */

@@ -85,6 +85,13 @@ export interface SpawnRequest {
    */
   readonly timeoutMs?: number | undefined;
   /**
+   * Absolute deadline as Unix timestamp (ms). Set by the spawn initiator to
+   * `Date.now() + timeoutMs` so deferred/on-demand children can compute remaining
+   * budget after setup time instead of starting a fresh full-duration timer.
+   * When both `timeoutMs` and `absoluteDeadlineMs` are set, `absoluteDeadlineMs` wins.
+   */
+  readonly absoluteDeadlineMs?: number | undefined;
+  /**
    * Expected structured output schema. When set, the engine should
    * enforce that the agent calls a tool matching this schema before completing.
    */

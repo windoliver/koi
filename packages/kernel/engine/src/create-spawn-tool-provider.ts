@@ -164,11 +164,16 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
                 : timeoutSignal
               : (options?.signal ?? AbortSignal.timeout(0x7fff_ffff)); // no timeout: ~24 days max
 
+          // Record absolute deadline so deferred/on-demand children compute remaining
+          // budget rather than starting a fresh full-duration timer after setup.
+          const absoluteDeadlineMs = timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+
           const result = await spawnFn({
             agentName: String(args.agentName ?? ""),
             description: String(args.description ?? ""),
             signal,
             timeoutMs,
+            ...(absoluteDeadlineMs !== undefined ? { absoluteDeadlineMs } : {}),
             ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
             ...(args.maxTurns !== undefined
               ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
