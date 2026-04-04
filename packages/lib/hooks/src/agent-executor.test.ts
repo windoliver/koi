@@ -874,7 +874,8 @@ describe("mergeToolDenylist", () => {
     const result = mergeToolDenylist(["spawn", "custom"]);
     expect(result.has("spawn")).toBe(true);
     expect(result.has("custom")).toBe(true);
-    // 8 defaults + 1 new "custom" = 9 (spawn is a dupe of default)
-    expect(result.size).toBe(9);
+    // HARD_SAFETY_DENYLIST now has 4 entries (spawn, agent, Agent, Spawn) + 5 defaults = 9 defaults
+    // + 1 new "custom" = 10 (lowercase "spawn" is a dupe of default, "Spawn" is separate)
+    expect(result.size).toBe(10);
   });
 });

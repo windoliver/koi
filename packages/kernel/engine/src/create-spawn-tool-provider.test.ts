@@ -170,8 +170,9 @@ describe("createSpawnToolProvider", () => {
     expect(resolver.resolve).toHaveBeenCalledWith("researcher");
   });
 
-  test("Spawn tool execute returns error shape on SpawnResult failure", async () => {
-    // Use a provider where resolve returns NOT_FOUND so spawnFn returns { ok: false }
+  test("Spawn tool execute throws KoiRuntimeError on SpawnResult failure", async () => {
+    // Spawn failures now propagate as thrown KoiRuntimeErrors (not { error, code } return payloads)
+    // so the engine's tool-failure path (retries, interruption, observability) sees a real failure.
     const ledger = createInMemorySpawnLedger(10);
     const unknownResolver = {
       resolve: (_agentType: string) => ({
@@ -192,13 +193,9 @@ describe("createSpawnToolProvider", () => {
     const components = (await provider.attach(agent)) as ReadonlyMap<string, unknown>;
     const tool = components.get("tool:Spawn") as Tool;
 
-    const result = (await tool.execute({
-      agentName: "unknown-agent",
-      description: "Do something",
-    })) as { error: string; code: string };
-
-    expect(result.error).toBe("No such agent");
-    expect(result.code).toBe("NOT_FOUND");
+    await expect(
+      tool.execute({ agentName: "unknown-agent", description: "Do something" }),
+    ).rejects.toThrow("No such agent");
   });
 
   test("concurrent attach calls create independent SpawnFns", async () => {
