@@ -325,6 +325,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/mm/memory-fs": {
+      "name": "@koi/memory-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/mm/memory-tools": {
       "name": "@koi/memory-tools",
       "version": "0.0.0",
@@ -665,6 +672,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
     "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
+
+    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/mm/memory-fs"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 
