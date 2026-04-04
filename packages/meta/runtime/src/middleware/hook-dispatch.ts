@@ -236,8 +236,10 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
               turnIndex: ctx.turnIndex,
             } as JsonObject,
           };
-          // Fire-and-forget — must not block the stop-gate retry critical path.
-          void store.append(docId, [step]).catch(() => {});
+          // Await with error swallowing — same pattern as recordHookResults.
+          // Ensures ordering (veto step indexed before retry) without stalling
+          // on store errors (catch swallows).
+          await store.append(docId, [step]).catch(() => {});
         }
         return;
       }

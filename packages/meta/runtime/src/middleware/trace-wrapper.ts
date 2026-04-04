@@ -358,10 +358,19 @@ function computeRequestDelta(before: ModelRequest, after: ModelRequest): JsonObj
     ? ({ messagesBefore: msgBefore, messagesAfter: msgAfter } as JsonObject)
     : undefined;
 
-  if (scalarDelta === undefined && messageDelta === undefined) return undefined;
+  // Detect metadata changes (policy tags, model hints, etc.)
+  const metadataChanged = before.metadata !== after.metadata;
+  const metadataDelta = metadataChanged
+    ? shallowDiff((before.metadata ?? {}) as JsonObject, (after.metadata ?? {}) as JsonObject)
+    : undefined;
+
+  if (scalarDelta === undefined && messageDelta === undefined && metadataDelta === undefined) {
+    return undefined;
+  }
   return {
     ...(scalarDelta ?? {}),
     ...(messageDelta !== undefined ? { messages: messageDelta } : {}),
+    ...(metadataDelta !== undefined ? { metadata: metadataDelta } : {}),
   } as JsonObject;
 }
 
