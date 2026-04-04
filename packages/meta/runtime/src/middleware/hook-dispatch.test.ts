@@ -128,7 +128,7 @@ describe("hook-dispatch decision metadata", () => {
 
     expect(getHookDecision(steps)).toEqual({
       kind: "block",
-      reason: "not allowed",
+      reasonLength: "not allowed".length,
     });
   });
 
@@ -185,7 +185,7 @@ describe("hook-dispatch decision metadata", () => {
 
     expect(getHookDecision(steps)).toEqual({
       kind: "error",
-      reason: "timeout exceeded",
+      reasonLength: "timeout exceeded".length,
     });
   });
 });

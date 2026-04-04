@@ -70,11 +70,6 @@ export interface HookDispatchConfig {
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
   const { hooks, store, docId, signal, registry, registrySessionId } = config;
 
-  /** Truncate a string to a safe length for trajectory storage. */
-  function truncateReason(s: string): string {
-    return s.length <= 500 ? s : `${s.slice(0, 500)}…`;
-  }
-
   /**
    * Summarize a JsonObject payload for trace metadata. Records field names
    * and value types/sizes but never raw values — prevents sensitive data
@@ -105,13 +100,13 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
   function extractDecision(result: HookExecutionResult): JsonObject {
     try {
       if (!result.ok) {
-        return { kind: "error", reason: truncateReason(result.error) } as JsonObject;
+        return { kind: "error", reasonLength: result.error.length } as JsonObject;
       }
       const { decision } = result;
       const base = (() => {
         switch (decision.kind) {
           case "block":
-            return { kind: "block", reason: truncateReason(decision.reason) } as JsonObject;
+            return { kind: "block", reasonLength: decision.reason.length } as JsonObject;
           case "modify":
             return { kind: "modify", patch: summarizePayload(decision.patch) } as JsonObject;
           case "transform":
