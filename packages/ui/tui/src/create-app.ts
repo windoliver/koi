@@ -90,6 +90,12 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   } = config;
 
   let started = false;
+  // Set by stop() to cancel any in-flight start(). start() checks this after
+  // each async boundary so a stopped handle can never re-animate.
+  let closing = false;
+  // In-flight startup promise — shared by concurrent start() calls so only
+  // one initialization runs, and stop() can await it before tearing down.
+  let startPromise: Promise<void> | null = null;
   let activeRenderer: CliRenderer | undefined;
   let cleanupResize: (() => void) | undefined;
   // Declared as `let` — reassigned in the debounce closure; justified by design
@@ -97,73 +103,148 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
 
   const handle: TuiAppHandle = {
     async start(): Promise<void> {
-      if (started) return; // idempotent
-      started = true;
+      if (started) return; // already running
+      if (closing) return; // stop() was called — handle is permanently closed
+      if (startPromise !== null) return startPromise; // concurrent call — share init
 
-      // Resolve renderer — injected (tests) or created (prod)
-      // Decision 8A: renderer failure is unexpected — throw with cause
-      if (injectedRenderer !== undefined) {
-        activeRenderer = injectedRenderer;
-      } else {
-        // Lazy import — only loads the Zig FFI binary when actually needed.
-        // Tests with an injected renderer never reach this branch.
+      const p: Promise<void> = (async (): Promise<void> => {
+        // Resolve renderer before committing `started` so a failure leaves the
+        // handle in a retryable clean state.
+        let localRenderer: CliRenderer;
+        if (injectedRenderer !== undefined) {
+          localRenderer = injectedRenderer;
+        } else {
+          // Lazy import — only loads the Zig FFI binary when actually needed.
+          // Tests with an injected renderer never reach this branch.
+          try {
+            const { createCliRenderer } = await import("@opentui/core");
+            localRenderer = await createCliRenderer({ exitOnCtrlC: false });
+          } catch (e: unknown) {
+            throw new Error("Failed to start TUI renderer", { cause: e });
+          }
+        }
+
+        // Check cancellation after the async renderer creation — stop() may
+        // have been called while we were waiting for FFI initialization.
+        if (closing) {
+          if (localRenderer !== injectedRenderer) {
+            try {
+              localRenderer.destroy();
+            } catch {
+              /* ignore */
+            }
+          }
+          return;
+        }
+
+        // Decision 2A: dispatch initial layout tier before first render
+        const dispatchLayout = (): void => {
+          const cols = process.stdout.columns ?? 80;
+          store.dispatch({ kind: "set_layout", tier: computeLayoutTier(cols) });
+        };
+        dispatchLayout();
+
+        // Decision 15A: 50ms debounce — collapses 60+ resize events/sec to 1-2
+        const onResize = (): void => {
+          if (debounceTimer !== null) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout((): void => {
+            dispatchLayout();
+            debounceTimer = null;
+          }, 50);
+        };
+        process.stdout.on("resize", onResize);
+        cleanupResize = (): void => {
+          process.stdout.off("resize", onResize);
+          if (debounceTimer !== null) {
+            clearTimeout(debounceTimer);
+            debounceTimer = null;
+          }
+        };
+
+        // Commit renderer and mark started.
+        activeRenderer = localRenderer;
+        started = true;
+
+        // Decision 4A: auto-mount the React tree.
+        // If createRoot or the initial render throws, roll back all committed
+        // state so the handle is left clean and retryable.
         try {
-          const { createCliRenderer } = await import("@opentui/core");
-          activeRenderer = await createCliRenderer({ exitOnCtrlC: false });
+          const root = createRoot(activeRenderer);
+          root.render(
+            React.createElement(
+              StoreContext.Provider,
+              { value: store },
+              React.createElement(TuiRoot, {
+                onCommand,
+                onSessionSelect,
+                onSubmit,
+                onInterrupt,
+                onPermissionRespond: permissionBridge.respond,
+              }),
+            ),
+          );
         } catch (e: unknown) {
-          throw new Error("Failed to start TUI renderer", { cause: e });
+          // Roll back everything committed above.
+          started = false;
+          cleanupResize?.();
+          cleanupResize = undefined;
+          if (localRenderer !== injectedRenderer) {
+            try {
+              localRenderer.destroy();
+            } catch {
+              /* ignore secondary error */
+            }
+          }
+          activeRenderer = undefined;
+          throw e;
         }
+      })();
+
+      startPromise = p;
+      try {
+        await p;
+      } finally {
+        // Clear the in-flight promise so a failed start can be retried and
+        // stop() can detect that startup has fully settled.
+        if (startPromise === p) startPromise = null;
       }
-
-      // Decision 2A: dispatch initial layout tier before first render
-      const dispatchLayout = (): void => {
-        const cols = process.stdout.columns ?? 80;
-        store.dispatch({ kind: "set_layout", tier: computeLayoutTier(cols) });
-      };
-      dispatchLayout();
-
-      // Decision 15A: 50ms debounce — collapses 60+ resize events/sec to 1-2
-      const onResize = (): void => {
-        if (debounceTimer !== null) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout((): void => {
-          dispatchLayout();
-          debounceTimer = null;
-        }, 50);
-      };
-      process.stdout.on("resize", onResize);
-      cleanupResize = (): void => {
-        process.stdout.off("resize", onResize);
-        if (debounceTimer !== null) {
-          clearTimeout(debounceTimer);
-          debounceTimer = null;
-        }
-      };
-
-      // Decision 4A: auto-mount the React tree
-      const root = createRoot(activeRenderer);
-      root.render(
-        React.createElement(
-          StoreContext.Provider,
-          { value: store },
-          React.createElement(TuiRoot, {
-            onCommand,
-            onSessionSelect,
-            onSubmit,
-            onInterrupt,
-            onPermissionRespond: permissionBridge.respond,
-          }),
-        ),
-      );
     },
 
     async stop(): Promise<void> {
-      if (!started) return; // idempotent — safe before start() and on double-call
+      // True no-op if nothing has started or is starting — preserves the
+      // stop-before-start contract and restartability.
+      if (!started && startPromise === null) return;
+
+      // Signal cancellation so any in-flight start() aborts after its next
+      // async boundary — prevents re-animation after shutdown.
+      closing = true;
+
+      // Dispose the bridge immediately — it resolves pending approvals with
+      // deny. Safe to call before start() completes and idempotent on repeat.
+      permissionBridge.dispose();
+
+      // If startup is in progress, wait for it to settle — but not forever.
+      // Native FFI init can stall; 5 s covers normal startup and lets us do
+      // best-effort cleanup rather than hanging the process on a stuck renderer.
+      if (startPromise !== null) {
+        const STOP_TIMEOUT_MS = 5_000;
+        await Promise.race([
+          startPromise.catch(() => {}), // swallow — checked via `started` below
+          new Promise<void>((resolve) => setTimeout(resolve, STOP_TIMEOUT_MS)),
+        ]);
+      }
+
+      if (!started) {
+        // Startup was cancelled, failed, or timed out — reset closing so the
+        // handle can be started again after a transient failure.
+        closing = false;
+        return;
+      }
       started = false;
+      closing = false; // reset so the handle is restartable
 
       cleanupResize?.();
       cleanupResize = undefined;
-
-      permissionBridge.dispose();
 
       // Only destroy renderer we created; injected renderers are caller-owned
       if (activeRenderer !== undefined && injectedRenderer === undefined) {

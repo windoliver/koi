@@ -81,6 +81,9 @@ export const TuiRoot: React.NamedExoticComponent<TuiRootProps> = memo(
         handleGlobalKey(event, store.getState(), {
           onTogglePalette: () => {
             const s = store.getState();
+            // Never interrupt an active permission prompt — it is bridge-owned
+            // and must be resolved through onPermissionRespond, not replaced.
+            if (s.modal?.kind === "permission-prompt") return;
             store.dispatch({
               kind: "set_modal",
               modal:
@@ -90,7 +93,21 @@ export const TuiRoot: React.NamedExoticComponent<TuiRootProps> = memo(
             });
           },
           onInterrupt,
-          onDismissModal: () => store.dispatch({ kind: "set_modal", modal: null }),
+          onDismissModal: () => {
+            const s = store.getState();
+            if (s.modal?.kind === "permission-prompt") {
+              // Route Esc through the bridge — produces an explicit deny so the
+              // engine-side approval Promise resolves rather than hanging until
+              // the 30s timeout.
+              onPermissionRespond(s.modal.prompt.requestId, {
+                kind: "deny",
+                reason: "User dismissed",
+              });
+              // Bridge.respond() dispatches permission_response which clears modal.
+            } else {
+              store.dispatch({ kind: "set_modal", modal: null });
+            }
+          },
           onBack: () => {
             if (store.getState().activeView !== "conversation") {
               store.dispatch({ kind: "set_view", view: "conversation" });
@@ -98,7 +115,7 @@ export const TuiRoot: React.NamedExoticComponent<TuiRootProps> = memo(
           },
         });
       },
-      [store, onInterrupt],
+      [store, onInterrupt, onPermissionRespond],
     );
 
     useKeyboard(handleKey);
