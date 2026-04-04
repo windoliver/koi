@@ -5,9 +5,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { JsonObject, Tool } from "@koi/core";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createTaskTools } from "./create-task-tools.js";
+
+async function freshResultsDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "koi-task-tools-test-"));
+}
 
 function agentId(id: string): import("@koi/core").AgentId {
   return id as import("@koi/core").AgentId;
@@ -26,7 +33,9 @@ interface ToolSet {
 
 async function setup(): Promise<ToolSet> {
   const store = createMemoryTaskBoardStore();
-  const board = await createManagedTaskBoard({ store });
+  // Use a real resultsDir — task_update(status: completed) now requires durable storage
+  const resultsDir = await freshResultsDir();
+  const board = await createManagedTaskBoard({ store, resultsDir });
   const tools = createTaskTools({ board, agentId: agentId("agent-1") });
   if (tools.length < 6) throw new Error("Expected 6 task tools");
   const [create, get, update, list, stop, output] = tools as [Tool, Tool, Tool, Tool, Tool, Tool];
@@ -505,33 +514,22 @@ describe("task_output", () => {
     expect(r.task?.status).toBe("killed");
   });
 
-  test("completed_no_result: completed but no resultsDir configured (Decision 16B)", async () => {
-    // ManagedTaskBoard without resultsDir — results are in-memory only
-    // Simulate by completing a task, then creating a NEW board from the same store
-    // (new board won't have the in-memory result)
+  test("completion blocked when board has no durable result storage", async () => {
+    // Board without resultsDir: task_update(status: completed) must fail fast
+    // rather than silently losing output after a restart (data-loss prevention).
     const store = createMemoryTaskBoardStore();
-    const board1 = await createManagedTaskBoard({ store });
-    const { create: create1, update: update1 } = await (async () => {
-      const t = createTaskTools({ board: board1, agentId: agentId("agent-1") });
-      if (t.length < 6) throw new Error("Expected 6 tools");
-      const [c, , u] = t as [Tool, Tool, Tool, Tool, Tool, Tool];
-      return { create: c, update: u };
-    })();
+    const boardNoResults = await createManagedTaskBoard({ store }); // no resultsDir
+    const t = createTaskTools({ board: boardNoResults, agentId: agentId("agent-1") });
+    if (t.length < 6) throw new Error("Expected 6 tools");
+    const [create, , update] = t as [Tool, Tool, Tool, Tool, Tool, Tool];
 
-    const r1 = await exec(create1, { subject: "Auth", description: "Do auth" });
+    const r1 = await exec(create, { subject: "Auth", description: "Do auth" });
     const id = (r1.task as Record<string, unknown>).id as string;
-    await exec(update1, { task_id: id, status: "in_progress" });
-    await exec(update1, { task_id: id, status: "completed", output: "Done" });
+    await exec(update, { task_id: id, status: "in_progress" });
 
-    // New board instance — same store, no in-memory results carried over
-    const board2 = await createManagedTaskBoard({ store });
-    const tools2 = createTaskTools({ board: board2, agentId: agentId("agent-1") });
-    if (tools2.length < 6) throw new Error("Expected 6 tools");
-    const output2 = (tools2 as [Tool, Tool, Tool, Tool, Tool, Tool])[5];
-
-    const r = (await exec(output2, { task_id: id })) as { kind: string; message?: string };
-    expect(r.kind).toBe("completed_no_result");
-    expect(r.message).toContain("resultsDir");
+    const r2 = await exec(update, { task_id: id, status: "completed", output: "Done" });
+    expect(r2.ok).toBe(false);
+    expect(r2.error as string).toContain("resultsDir");
   });
 
   // Zod boundary tests
@@ -558,7 +556,8 @@ describe("verification nudge", () => {
     create: Tool;
   }> {
     const store = createMemoryTaskBoardStore();
-    const board = await createManagedTaskBoard({ store });
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
     const tools = createTaskTools({ board, agentId: agentId("agent-1") });
     if (tools.length < 6) throw new Error("Expected 6 tools");
     const [create, , update] = tools as [Tool, Tool, Tool, Tool, Tool, Tool];

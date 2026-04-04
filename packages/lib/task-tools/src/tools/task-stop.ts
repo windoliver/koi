@@ -1,4 +1,4 @@
-import type { JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
+import type { AgentId, JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, isTerminalTaskStatus, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
@@ -8,7 +8,7 @@ const schema = z.object({
   reason: z.string().optional().describe("Optional reason for stopping the task"),
 });
 
-export function createTaskStopTool(board: ManagedTaskBoard): Tool {
+export function createTaskStopTool(board: ManagedTaskBoard, agentId: AgentId): Tool {
   return {
     descriptor: {
       name: "task_stop",
@@ -49,6 +49,14 @@ export function createTaskStopTool(board: ManagedTaskBoard): Tool {
           error:
             `Cannot stop task '${task_id}': status is '${task.status}', expected 'in_progress'. ` +
             "Pending tasks do not need to be stopped.",
+        };
+      }
+
+      // Ownership check: only the assigned agent may stop their own task
+      if (task.assignedTo !== agentId) {
+        return {
+          ok: false,
+          error: `Cannot stop task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
         };
       }
 

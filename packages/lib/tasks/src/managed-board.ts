@@ -224,6 +224,8 @@ export async function createManagedTaskBoard(
 
     nextId: () => Promise.resolve(store.nextId()),
 
+    hasResultPersistence: () => resultsDir !== undefined,
+
     add: (input) => applyMutation((b) => b.add(input)),
 
     addAll: (inputs) => applyMutation((b) => b.addAll(inputs)),

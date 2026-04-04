@@ -345,6 +345,26 @@ export interface ManagedTaskBoard extends AsyncDisposable {
   readonly addAll: (inputs: readonly TaskInput[]) => Promise<Result<TaskBoard, KoiError>>;
   /** Assign a task to an agent — validates via board, persists to store. */
   readonly assign: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically check that no task is already `in_progress` and assign `taskId`
+   * to `agentId` — all within the single-writer lock.
+   *
+   * Use this instead of `assign()` when enforcing the one-active-task invariant,
+   * because a snapshot read + separate `assign()` call is a TOCTOU race.
+   */
+  readonly startTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Returns `true` when completed `TaskResult` payloads are persisted to disk and
+   * will survive a process restart. Returns `false` when results are in-memory only.
+   *
+   * Tools that expose task output (e.g. `task_output`) should check this before
+   * allowing task completion, to prevent the silent data-loss path where a task
+   * shows as `completed` but its output is permanently gone after a restart.
+   */
+  readonly hasResultPersistence: () => boolean;
   /** Complete a task — validates via board, persists to store. */
   readonly complete: (
     taskId: TaskItemId,

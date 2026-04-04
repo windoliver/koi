@@ -97,6 +97,24 @@ export function createTaskUpdateTool(
         }
 
         if (status === "completed") {
+          // Ownership check: only the assigned agent may complete an in_progress task
+          if (task.status === "in_progress" && task.assignedTo !== agentId) {
+            return {
+              ok: false,
+              error: `Cannot complete task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+            };
+          }
+          // Fail fast: completing a task without durable result storage means
+          // the output will be silently lost after any process restart, leaving
+          // the task as `completed` with no recoverable output via task_output.
+          if (!board.hasResultPersistence()) {
+            return {
+              ok: false,
+              error:
+                "Cannot complete task: result storage is not durable. " +
+                "Create the ManagedTaskBoard with a resultsDir so completed outputs survive restarts.",
+            };
+          }
           if (output === undefined || output.trim() === "") {
             return {
               ok: false,
@@ -122,6 +140,13 @@ export function createTaskUpdateTool(
         }
 
         if (status === "failed") {
+          // Ownership check: only the assigned agent may fail an in_progress task
+          if (task.status === "in_progress" && task.assignedTo !== agentId) {
+            return {
+              ok: false,
+              error: `Cannot fail task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+            };
+          }
           if (reason === undefined || reason.trim() === "") {
             return {
               ok: false,
@@ -144,7 +169,13 @@ export function createTaskUpdateTool(
           };
         }
 
-        // status === "killed"
+        // status === "killed": ownership check for in_progress tasks
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: `Cannot kill task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+          };
+        }
         const killResult = await board.kill(id);
         if (!killResult.ok) {
           return { ok: false, error: killResult.error.message };
