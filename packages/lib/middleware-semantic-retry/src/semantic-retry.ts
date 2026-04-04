@@ -424,12 +424,22 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         state.pendingAction = undefined;
       }
 
-      // Stream with failure detection
-      let succeeded = false; // let: set true on done chunk
+      // Stream with failure detection — only treat done chunks with success
+      // stop reasons as actual successes. Non-success stops (error, hook_blocked)
+      // are provider/middleware failures surfaced via done chunk, not exceptions.
+      let succeeded = false; // let: set true on done chunk with success stop reason
       try {
         for await (const chunk of next(effectiveRequest)) {
           if (chunk.kind === "done") {
-            succeeded = true;
+            const stopReason = chunk.response.stopReason;
+            const isNonSuccessStop =
+              stopReason !== undefined &&
+              stopReason !== "stop" &&
+              stopReason !== "length" &&
+              stopReason !== "tool_use";
+            if (!isNonSuccessStop) {
+              succeeded = true;
+            }
           }
           yield chunk;
         }
