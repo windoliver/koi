@@ -17,6 +17,9 @@ import {
 // Configuration & result types
 // ---------------------------------------------------------------------------
 
+/** Maximum file size in bytes for a single memory file. Larger files are skipped. */
+const MAX_MEMORY_FILE_BYTES = 50_000;
+
 /** Configuration for scanning a memory directory. */
 export interface MemoryScanConfig {
   /** Absolute path to the memory directory. */
@@ -114,14 +117,20 @@ export async function scanMemoryDirectory(
     if (memories.length >= maxFiles) break;
     if (readAttempts >= maxReadAttempts) break;
 
-    // Validate path is inside memoryDir and passes core validation
+    // Reject symlinks and non-files to prevent directory-escape via symlinked entries
     if (entry.kind !== "file") {
-      skipped.push({ filePath: entry.path, reason: "not a file" });
+      skipped.push({ filePath: entry.path, reason: `skipped: kind is ${entry.kind}, not file` });
       continue;
     }
     const relativePath = deriveRelativePath(entry.path, config.memoryDir);
     if (relativePath === undefined) {
       skipped.push({ filePath: entry.path, reason: "path outside memory directory or invalid" });
+      continue;
+    }
+
+    // Skip oversized files before reading to bound I/O cost
+    if (entry.size !== undefined && entry.size > MAX_MEMORY_FILE_BYTES) {
+      skipped.push({ filePath: relativePath, reason: `file too large: ${entry.size} bytes` });
       continue;
     }
 

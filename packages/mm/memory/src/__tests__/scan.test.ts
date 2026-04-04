@@ -260,6 +260,50 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(1);
   });
 
+  test("skips symlinks", async () => {
+    const goodFile = makeMemoryFile("Good", "user", "valid", 0);
+    const baseFs = createMockFs([goodFile]);
+    const symlinkFs: FileSystemBackend = {
+      ...baseFs,
+      list(path, options) {
+        const result = baseFs.list(path, options);
+        if (!("ok" in result) || !result.ok) return result;
+        return {
+          ok: true as const,
+          value: {
+            entries: [
+              ...result.value.entries,
+              {
+                path: "/memory/link.md",
+                kind: "symlink" as const,
+                size: 10,
+                modifiedAt: Date.now(),
+              },
+            ],
+            truncated: false,
+          },
+        };
+      },
+    };
+    const result = await scanMemoryDirectory(symlinkFs, { memoryDir: "/memory" });
+    expect(result.memories.length).toBe(1);
+    expect(result.skipped.some((s) => s.reason.includes("symlink"))).toBe(true);
+  });
+
+  test("skips oversized files", async () => {
+    const hugeFile: MockFile = {
+      path: "/memory/huge.md",
+      content: "x".repeat(100000),
+      size: 100000,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([hugeFile]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+    expect(result.memories.length).toBe(0);
+    expect(result.skipped.length).toBe(1);
+    expect(result.skipped[0]?.reason).toContain("too large");
+  });
+
   test("discovers nested memory files in subdirectories", async () => {
     const nestedFile: MockFile = {
       path: "/memory/team/user_role.md",

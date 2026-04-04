@@ -8,7 +8,7 @@
 import type { FileSystemBackend } from "@koi/core";
 import { estimateTokens } from "@koi/token-estimator";
 import type { FormatOptions } from "./format.js";
-import { formatMemorySection } from "./format.js";
+import { formatMemorySection, formatSingleMemory } from "./format.js";
 import type { SalienceConfig, ScoredMemory } from "./salience.js";
 import { scoreMemories } from "./salience.js";
 import { scanMemoryDirectory } from "./scan.js";
@@ -59,8 +59,8 @@ const DEFAULT_TOKEN_BUDGET = 8000;
 /**
  * Selects memories that fit within a token budget.
  *
- * Budgets against the full formatted section (including header, trusting-recall
- * note, and separators) to ensure `estimateTokens(result.formatted) <= budget`.
+ * Uses incremental per-memory estimation for fast rejection, then verifies
+ * against the full formatted section to ensure the budget invariant holds.
  *
  * Iterates scored memories (assumed sorted by salience descending).
  * Each memory is either fully included or skipped — no mid-content truncation.
@@ -77,21 +77,28 @@ export function selectWithinBudget(
 } {
   const selected: ScoredMemory[] = [];
   let truncated = false;
+  let lastVerifiedTokens = 0;
 
   for (const memory of memories) {
-    const candidate = [...selected, memory];
-    const formatted = formatMemorySection(candidate, formatOptions);
-    const tokens = estimateTokens(formatted);
+    // Quick incremental estimate for fast rejection
+    const memoryTokens = estimateTokens(formatSingleMemory(memory));
+    if (lastVerifiedTokens + memoryTokens > budget) {
+      truncated = true;
+      continue;
+    }
 
-    if (tokens <= budget) {
+    // Verify against full formatted section
+    const candidate = [...selected, memory];
+    const candidateTokens = estimateTokens(formatMemorySection(candidate, formatOptions));
+    if (candidateTokens <= budget) {
       selected.push(memory);
+      lastVerifiedTokens = candidateTokens;
     } else {
       truncated = true;
     }
   }
 
-  const totalTokens = estimateTokens(formatMemorySection(selected, formatOptions));
-  return { selected, totalTokens, truncated };
+  return { selected, totalTokens: lastVerifiedTokens, truncated };
 }
 
 // ---------------------------------------------------------------------------
