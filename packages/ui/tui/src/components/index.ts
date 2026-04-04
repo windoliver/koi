@@ -4,6 +4,8 @@
 
 // Phase 2j-3: Input + permission prompt components
 export { AskUserDialog, type AskUserDialogProps } from "./AskUserDialog.js";
+// Phase 2j-4: Status bar + command palette + session picker
+export { CommandPalette, type CommandPaletteProps } from "./CommandPalette.js";
 export { ConfirmDialog, type ConfirmDialogProps, processConfirmKey } from "./ConfirmDialog.js";
 // Message rendering components
 export { ErrorBlock } from "./error-block.js";
@@ -18,7 +20,17 @@ export {
   type PermissionPromptProps,
   processPermissionKey,
 } from "./PermissionPrompt.js";
+export {
+  handleSelectOverlayKey,
+  SelectOverlay,
+  type SelectOverlayProps,
+} from "./SelectOverlay.js";
+export { SessionPicker, type SessionPickerProps } from "./SessionPicker.js";
 export { handleSlashOverlayKey, SlashOverlay, type SlashOverlayProps } from "./SlashOverlay.js";
+export { StatusBar, type StatusBarProps } from "./StatusBar.js";
+export { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
+// Phase 2j-4: Pure helpers (importable without JSX runtime)
+export { formatCost, formatTokens } from "./status-bar-helpers.js";
 export { TextBlock } from "./text-block.js";
 export { ThinkingBlock } from "./thinking-block.js";
 export { ToolCallBlock } from "./tool-call-block.js";

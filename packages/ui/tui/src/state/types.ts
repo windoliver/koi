@@ -23,6 +23,9 @@ export const COMPACT_THRESHOLD = 1100;
 /** Maximum characters stored per tool call output (tail-sliced). */
 export const MAX_TOOL_OUTPUT_CHARS = 50_000;
 
+/** Maximum sessions retained in the session picker (most recent first). */
+export const MAX_SESSIONS = 50;
+
 // ---------------------------------------------------------------------------
 // View & Modal
 // ---------------------------------------------------------------------------
@@ -53,7 +56,57 @@ export interface PermissionPromptData {
 /** Transient overlay that preserves the underlying view. */
 export type TuiModal =
   | { readonly kind: "command-palette"; readonly query: string }
-  | { readonly kind: "permission-prompt"; readonly prompt: PermissionPromptData };
+  | { readonly kind: "permission-prompt"; readonly prompt: PermissionPromptData }
+  | { readonly kind: "session-picker" };
+
+// ---------------------------------------------------------------------------
+// Session & Metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Cumulative token and cost metrics accumulated across all engine runs in a session.
+ *
+ * ## Stable contracts (do not repurpose in place):
+ * - `turns` — user→agent round trips that involved at least one model call.
+ *   Increments by 1 per `done` event when `EngineMetrics.turns > 0`.
+ *   Zero-model-call completions (interrupted runs) do not increment this.
+ * - `engineTurns` — total model calls across all runs, from `EngineMetrics.turns`.
+ *   Includes tool-call loops and stop-retries within a single user request.
+ *   Exposed in the status bar as `T{turns}·{engineTurns}` when amplified.
+ *
+ * Backward compatibility: `engineTurns` was added after initial rollout.
+ * The reducer defaults it with `?? 0` when reading pre-migration state objects.
+ */
+export interface CumulativeMetrics {
+  readonly totalTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly turns: number;
+  readonly engineTurns: number;
+  /** Null until at least one turn provides costUsd. */
+  readonly costUsd: number | null;
+}
+
+/** Session identity — set once by the host on session start. */
+export interface SessionInfo {
+  readonly modelName: string;
+  readonly provider: string;
+  readonly sessionName: string;
+}
+
+/** Summary of a saved session for the session picker. */
+export interface SessionSummary {
+  readonly id: string;
+  readonly name: string;
+  /** Unix timestamp in milliseconds. */
+  readonly lastActivityAt: number;
+  readonly messageCount: number;
+  /** Short preview of the last message (may be truncated by the host). */
+  readonly preview: string;
+}
+
+/** Agent processing state — derived from engine events, not WebSocket state. */
+export type AgentStatus = "idle" | "processing" | "error";
 
 // ---------------------------------------------------------------------------
 // Connection & Layout
@@ -115,7 +168,7 @@ export type TuiMessage =
 // State
 // ---------------------------------------------------------------------------
 
-/** Complete TUI rendering state — flat, 6 fields. */
+/** Complete TUI rendering state. */
 export interface TuiState {
   readonly messages: readonly TuiMessage[];
   readonly activeView: TuiView;
@@ -123,6 +176,16 @@ export interface TuiState {
   readonly connectionStatus: ConnectionStatus;
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
+  // --- Status bar data ---
+  /** Set by the host on session start; null before first session. */
+  readonly sessionInfo: SessionInfo | null;
+  /** Cumulative metrics accumulated across all turns. */
+  readonly cumulativeMetrics: CumulativeMetrics;
+  /** Processing state driven by engine events. */
+  readonly agentStatus: AgentStatus;
+  // --- Session picker data ---
+  /** Saved sessions, sorted most-recent-first, capped at MAX_SESSIONS. */
+  readonly sessions: readonly SessionSummary[];
 }
 
 // ---------------------------------------------------------------------------
@@ -152,4 +215,16 @@ export type TuiAction =
       readonly kind: "permission_response";
       readonly requestId: string;
       readonly decision: ApprovalDecision;
+    }
+  | {
+      /** Set by the host on session start (model name, provider, session name). */
+      readonly kind: "set_session_info";
+      readonly modelName: string;
+      readonly provider: string;
+      readonly sessionName: string;
+    }
+  | {
+      /** Injected by the host from persistence; TUI never performs I/O. */
+      readonly kind: "set_session_list";
+      readonly sessions: readonly SessionSummary[];
     };
