@@ -47,7 +47,8 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): React.ReactNode 
     () =>
       items.map((item, i) => ({
         name: getLabel(item),
-        description: getDescription ? getDescription(item) : undefined,
+        // SelectOption requires description: string — use "" when no descriptor provided
+        description: getDescription ? getDescription(item) : "",
         value: String(i),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
