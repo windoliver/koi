@@ -81,7 +81,8 @@ export function createTaskUpdateTool(
             return { ok: false, error: assignResult.error.message };
           }
           if (active_form !== undefined) {
-            const patchResult = await board.update(id, { activeForm: active_form });
+            // Task is now in_progress and owned by agentId — updateOwned enforces that
+            const patchResult = await board.updateOwned(id, agentId, { activeForm: active_form });
             if (!patchResult.ok) {
               return { ok: false, error: patchResult.error.message };
             }
@@ -97,16 +98,8 @@ export function createTaskUpdateTool(
         }
 
         if (status === "completed") {
-          // Ownership check: only the assigned agent may complete an in_progress task
-          if (task.status === "in_progress" && task.assignedTo !== agentId) {
-            return {
-              ok: false,
-              error: `Cannot complete task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
-            };
-          }
           // Fail fast: completing a task without durable result storage means
-          // the output will be silently lost after any process restart, leaving
-          // the task as `completed` with no recoverable output via task_output.
+          // the output will be silently lost after any process restart.
           if (!board.hasResultPersistence()) {
             return {
               ok: false,
@@ -123,7 +116,8 @@ export function createTaskUpdateTool(
             };
           }
           const taskResult = { taskId: id, output, durationMs: 0 };
-          const completeResult = await board.complete(id, taskResult);
+          // completeOwnedTask: atomically re-checks ownership inside the lock
+          const completeResult = await board.completeOwnedTask(id, agentId, taskResult);
           if (!completeResult.ok) {
             return { ok: false, error: completeResult.error.message };
           }
@@ -140,13 +134,6 @@ export function createTaskUpdateTool(
         }
 
         if (status === "failed") {
-          // Ownership check: only the assigned agent may fail an in_progress task
-          if (task.status === "in_progress" && task.assignedTo !== agentId) {
-            return {
-              ok: false,
-              error: `Cannot fail task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
-            };
-          }
           if (reason === undefined || reason.trim() === "") {
             return {
               ok: false,
@@ -155,7 +142,8 @@ export function createTaskUpdateTool(
             };
           }
           const err: KoiError = { code: "EXTERNAL", message: reason, retryable: false };
-          const failResult = await board.fail(id, err);
+          // failOwnedTask: atomically re-checks ownership inside the lock
+          const failResult = await board.failOwnedTask(id, agentId, err);
           if (!failResult.ok) {
             return { ok: false, error: failResult.error.message };
           }
@@ -169,14 +157,8 @@ export function createTaskUpdateTool(
           };
         }
 
-        // status === "killed": ownership check for in_progress tasks
-        if (task.status === "in_progress" && task.assignedTo !== agentId) {
-          return {
-            ok: false,
-            error: `Cannot kill task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
-          };
-        }
-        const killResult = await board.kill(id);
+        // status === "killed": killOwnedTask re-checks ownership inside the lock
+        const killResult = await board.killOwnedTask(id, agentId);
         if (!killResult.ok) {
           return { ok: false, error: killResult.error.message };
         }
@@ -206,7 +188,8 @@ export function createTaskUpdateTool(
         ...("active_form" in parsed.data ? { activeForm: active_form } : {}),
       };
 
-      const patchResult = await board.update(id, patch);
+      // updateOwned: atomically rejects cross-agent writes on in_progress tasks
+      const patchResult = await board.updateOwned(id, agentId, patch);
       if (!patchResult.ok) {
         return { ok: false, error: patchResult.error.message };
       }

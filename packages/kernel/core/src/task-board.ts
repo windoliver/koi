@@ -370,12 +370,47 @@ export interface ManagedTaskBoard extends AsyncDisposable {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and complete it.
+   * Use instead of `complete()` to prevent cross-agent completion races.
+   */
+  readonly completeOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    result: TaskResult,
+  ) => Promise<Result<TaskBoard, KoiError>>;
   /** Fail a task — validates via board, persists to store. */
   readonly fail: (taskId: TaskItemId, error: KoiError) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and fail it.
+   * Use instead of `fail()` to prevent cross-agent failure races.
+   */
+  readonly failOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    error: KoiError,
+  ) => Promise<Result<TaskBoard, KoiError>>;
   /** Kill a task — validates via board, persists to store. */
   readonly kill: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and kill it.
+   * Use instead of `kill()` to prevent cross-agent cancellation races.
+   */
+  readonly killOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+  ) => Promise<Result<TaskBoard, KoiError>>;
   /** Update task metadata — validates via board, persists to store. */
   readonly update: (taskId: TaskItemId, patch: TaskPatch) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is either unassigned or assigned to `agentId`,
+   * then apply a metadata patch. Rejects cross-agent metadata writes on in_progress tasks.
+   */
+  readonly updateOwned: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    patch: TaskPatch,
+  ) => Promise<Result<TaskBoard, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------

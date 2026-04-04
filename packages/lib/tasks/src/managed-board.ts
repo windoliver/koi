@@ -240,11 +240,105 @@ export async function createManagedTaskBoard(
           : undefined,
       ),
 
+    completeOwnedTask: (taskId, agentId, taskResult) =>
+      applyMutation(
+        (b) => {
+          const task = b.get(taskId);
+          if (task === undefined) {
+            return {
+              ok: false,
+              error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+            };
+          }
+          if (task.status === "in_progress" && task.assignedTo !== agentId) {
+            return {
+              ok: false,
+              error: {
+                code: "CONFLICT",
+                message: `Cannot complete task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+                retryable: false,
+              },
+            };
+          }
+          return b.complete(taskId, taskResult);
+        },
+        resultsDir !== undefined
+          ? async () => persistResult(resultsDir, taskResult)
+          : undefined,
+      ),
+
     fail: (taskId, error) => applyMutation((b) => b.fail(taskId, error)),
+
+    failOwnedTask: (taskId, agentId, error) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot fail task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.fail(taskId, error);
+      }),
 
     kill: (taskId) => applyMutation((b) => b.kill(taskId)),
 
+    killOwnedTask: (taskId, agentId) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot kill task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.kill(taskId);
+      }),
+
     update: (taskId, patch) => applyMutation((b) => b.update(taskId, patch)),
+
+    updateOwned: (taskId, agentId, patch) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        // Reject cross-agent metadata writes on in_progress tasks
+        if (task.status === "in_progress" && task.assignedTo !== agentId) {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot update task '${taskId}': assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
+              retryable: false,
+            },
+          };
+        }
+        return b.update(taskId, patch);
+      }),
 
     [Symbol.asyncDispose]: async () => {
       await store[Symbol.asyncDispose]();

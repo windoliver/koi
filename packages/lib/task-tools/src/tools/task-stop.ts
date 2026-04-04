@@ -52,15 +52,8 @@ export function createTaskStopTool(board: ManagedTaskBoard, agentId: AgentId): T
         };
       }
 
-      // Ownership check: only the assigned agent may stop their own task
-      if (task.assignedTo !== agentId) {
-        return {
-          ok: false,
-          error: `Cannot stop task '${task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
-        };
-      }
-
-      const result = await board.kill(id);
+      // killOwnedTask: atomically re-checks ownership inside the mutex
+      const result = await board.killOwnedTask(id, agentId);
       if (!result.ok) {
         return { ok: false, error: result.error.message };
       }
