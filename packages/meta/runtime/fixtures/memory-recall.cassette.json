@@ -1,0 +1,52 @@
+{
+  "name": "memory-recall",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775282332000,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "memory_recall",
+      "callId": "tool_memory_recall_JUgITzew3fhNsKAWs4Qg"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_recall_JUgITzew3fhNsKAWs4Qg",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_recall_JUgITzew3fhNsKAWs4Qg",
+      "delta": "{}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 67,
+      "outputTokens": 3
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_memory_recall_JUgITzew3fhNsKAWs4Qg"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775282331-LeiR9LFvwImwxuUDMlvx",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_memory_recall_JUgITzew3fhNsKAWs4Qg",
+            "name": "memory_recall",
+            "arguments": {}
+          }
+        ],
+        "usage": {
+          "inputTokens": 67,
+          "outputTokens": 3
+        }
+      }
+    }
+  ]
+}

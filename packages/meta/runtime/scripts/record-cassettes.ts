@@ -36,11 +36,16 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileListResult,
+  FileReadResult,
+  FileSystemBackend,
   JsonObject,
+  KoiError,
   MemoryRecord,
   MemoryRecordInput,
   ModelChunk,
   PermissionBackend,
+  Result,
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
@@ -55,6 +60,7 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
@@ -100,6 +106,9 @@ const modelAdapter = createOpenAICompatAdapter({
 
 const MEMORY_STORE_PROMPT =
   'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_recall tool with query "testing" to retrieve it. Finally use the memory_search tool with type "feedback" to search for feedback memories.';
+
+const MEMORY_RECALL_PROMPT =
+  "Use the memory_recall tool to recall all persisted memories for session start. Report what memories were found, how many were selected, and whether the recall was truncated or degraded.";
 
 // ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
@@ -260,6 +269,132 @@ const memoryToolDescriptors = [...memoryComponents.values()]
     } => typeof v === "object" && v !== null && "descriptor" in v,
   )
   .map((t) => t.descriptor);
+
+// ---------------------------------------------------------------------------
+// Memory recall tool (backed by @koi/memory recallMemories + in-memory FS)
+// ---------------------------------------------------------------------------
+
+const recallMemoryFiles = new Map<string, { content: string; modifiedAt: number }>([
+  [
+    "/memories/user_role.md",
+    {
+      content: [
+        "---",
+        "name: User role",
+        "description: Senior engineer with Go expertise",
+        "type: user",
+        "---",
+        "",
+        "Deep Go expertise, new to React and this project's frontend.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 2 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/testing_feedback.md",
+    {
+      content: [
+        "---",
+        "name: Testing feedback",
+        "description: always write failing tests first",
+        "type: feedback",
+        "---",
+        "",
+        "Rule: write failing tests before implementation.",
+        "**Why:** catches regressions early.",
+        "**How to apply:** TDD workflow for all new features.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 5 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/project_goal.md",
+    {
+      content: [
+        "---",
+        "name: Project goal",
+        "description: ship v2 by Q2 2026",
+        "type: project",
+        "---",
+        "",
+        "v2 rewrite targeting Q2 2026. Merge freeze begins 2026-03-05.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 10 * 86_400_000,
+    },
+  ],
+]);
+
+const recallMockFs: FileSystemBackend = {
+  name: "recall-mock-fs",
+  read(path): Result<FileReadResult, KoiError> {
+    const file = recallMemoryFiles.get(path);
+    if (!file) {
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: `not found: ${path}`, retryable: false },
+      };
+    }
+    return { ok: true, value: { content: file.content, path, size: file.content.length } };
+  },
+  list(path): Result<FileListResult, KoiError> {
+    const entries = [...recallMemoryFiles.entries()]
+      .filter(([p]) => p.startsWith(path) && p.endsWith(".md"))
+      .map(([p, f]) => ({
+        path: p,
+        kind: "file" as const,
+        size: f.content.length,
+        modifiedAt: f.modifiedAt,
+      }));
+    return { ok: true, value: { entries, truncated: false } };
+  },
+  write() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  edit() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  search() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+    };
+  },
+};
+
+const memoryRecallResult = buildTool({
+  name: "memory_recall",
+  description:
+    "Recall persisted memories for session start. Scans the memory directory, scores by salience, selects within token budget, and returns formatted memories.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const result = await recallMemories(recallMockFs, {
+      memoryDir: "/memories",
+      tokenBudget: 8000,
+      now: Date.now(),
+    });
+    return {
+      selected: result.selected.length,
+      totalScanned: result.totalScanned,
+      truncated: result.truncated,
+      degraded: result.degraded,
+      skippedFiles: result.skippedFiles,
+      totalTokens: result.totalTokens,
+      formatted: result.formatted,
+    };
+  },
+});
+if (!memoryRecallResult.ok) {
+  console.error(`buildTool(memory_recall) failed: ${memoryRecallResult.error.message}`);
+  process.exit(1);
+}
+const memoryRecallTool = memoryRecallResult.value;
 
 // =========================================================================
 // Recording helpers
@@ -1104,7 +1239,32 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 5,
   },
 
-  // 13. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
+  // 13. memory-recall: @koi/memory recallMemories exercised — scan, score, budget, format
+  {
+    name: "memory-recall",
+    prompt: MEMORY_RECALL_PROMPT,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "memory-recall",
+        toolName: "memory_recall",
+        createTool: () => memoryRecallTool,
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // 14. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
   //     Parent delegates to built-in "researcher" agent via the Spawn tool.
   //     Trajectory: parent model call → Spawn tool → child researcher agent (real LLM) → result back.
   {
@@ -1202,6 +1362,24 @@ await recordCassette("memory-store", () =>
       },
     ],
     tools: memoryToolDescriptors,
+  }),
+);
+
+await recordCassette("memory-recall", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: MEMORY_RECALL_PROMPT,
+          },
+        ],
+      },
+    ],
+    tools: [memoryRecallTool.descriptor],
   }),
 );
 

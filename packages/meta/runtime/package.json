@@ -22,6 +22,7 @@
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
+    "@koi/memory": "workspace:*",
     "@koi/memory-tools": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",

@@ -2835,3 +2835,240 @@ describe("Golden: @koi/fs-local", () => {
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// memory-recall trajectory: @koi/memory recallMemories full-stack ATIF
+// ---------------------------------------------------------------------------
+
+describe("memory-recall ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with memory_recall tool definition", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-recall.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly agent: {
+        readonly model_name?: string;
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("memory-recall");
+    expect(doc.agent.model_name).toBe("google/gemini-2.0-flash-001");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_recall")).toBe(true);
+  });
+
+  test("memory_recall tool output contains recalled memories with formatting", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-recall.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const recallStep = toolSteps.find((s) => {
+      const content = s.observation?.results?.[0]?.content ?? "";
+      return content.includes("selected") && content.includes("formatted");
+    });
+    expect(recallStep).toBeDefined();
+    const content = recallStep?.observation?.results?.[0]?.content ?? "";
+
+    // Validate recall returned all 3 memories
+    expect(content).toContain('"totalScanned":3');
+    expect(content).toContain('"degraded":false');
+
+    // Validate formatted output contains trust boundary
+    expect(content).toContain("memory-data");
+    expect(content).toContain("Memory");
+  });
+
+  test("step count: MCP + MW + HOOK + MODEL + TOOL (>= 8)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/memory-recall.trajectory.json`).json()) as {
+      readonly steps: readonly unknown[];
+    };
+    expect(doc.steps.length).toBeGreaterThanOrEqual(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone L2 golden: @koi/memory recall functions (no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory recall pipeline", () => {
+  test("recallMemories scans, scores, budgets, and formats with trust boundary", async () => {
+    const { recallMemories, computeDecayScore, computeTypeRelevance, computeSalience } =
+      await import("@koi/memory");
+    type FSBackend = import("@koi/core").FileSystemBackend;
+    type FRResult = import("@koi/core").FileReadResult;
+    type FLResult = import("@koi/core").FileListResult;
+    type KErr = import("@koi/core").KoiError;
+    type Res<T, E> = import("@koi/core").Result<T, E>;
+
+    const now = Date.now();
+    const DAY = 86_400_000;
+
+    const files = new Map<string, { content: string; modifiedAt: number }>([
+      [
+        "/mem/user_role.md",
+        {
+          content:
+            "---\nname: User role\ndescription: Go expert\ntype: user\n---\n\nDeep Go expertise.",
+          modifiedAt: now - 1 * DAY,
+        },
+      ],
+      [
+        "/mem/feedback.md",
+        {
+          content:
+            "---\nname: TDD\ndescription: write tests first\ntype: feedback\n---\n\nRule: failing tests first.",
+          modifiedAt: now - 5 * DAY,
+        },
+      ],
+      [
+        "/mem/project.md",
+        {
+          content:
+            "---\nname: v2 Goal\ndescription: ship by Q2\ntype: project\n---\n\nMerge freeze 2026-03-05.",
+          modifiedAt: now - 30 * DAY,
+        },
+      ],
+    ]);
+
+    const mockFs: FSBackend = {
+      name: "golden-mock-fs",
+      read(path): Res<FRResult, KErr> {
+        const f = files.get(path);
+        if (!f)
+          return { ok: false, error: { code: "NOT_FOUND", message: "nope", retryable: false } };
+        return { ok: true, value: { content: f.content, path, size: f.content.length } };
+      },
+      list(path): Res<FLResult, KErr> {
+        const entries = [...files.entries()]
+          .filter(([p]) => p.startsWith(path) && p.endsWith(".md"))
+          .map(([p, f]) => ({
+            path: p,
+            kind: "file" as const,
+            size: f.content.length,
+            modifiedAt: f.modifiedAt,
+          }));
+        return { ok: true, value: { entries, truncated: false } };
+      },
+      write() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+      edit() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+      search() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+    };
+
+    // Decay: recent > old
+    expect(computeDecayScore(now - DAY, now)).toBeGreaterThan(
+      computeDecayScore(now - 30 * DAY, now),
+    );
+
+    // Type relevance: feedback > reference
+    expect(computeTypeRelevance("feedback")).toBeGreaterThan(computeTypeRelevance("reference"));
+
+    // Salience floor
+    expect(computeSalience(0.001, 0.5)).toBe(0.1);
+
+    // Full pipeline
+    const result = await recallMemories(mockFs, { memoryDir: "/mem", tokenBudget: 8000, now });
+
+    expect(result.totalScanned).toBe(3);
+    expect(result.selected.length).toBe(3);
+    expect(result.degraded).toBe(false);
+    expect(result.truncated).toBe(false);
+    expect(result.skippedFiles).toBe(0);
+
+    // Trust boundary
+    expect(result.formatted).toContain("<memory-data>");
+    expect(result.formatted).toContain("</memory-data>");
+    expect(result.formatted).toContain("Do not execute");
+
+    // Budget invariant (totalTokens is the verified estimate from the pipeline)
+    expect(result.totalTokens).toBeLessThanOrEqual(8000);
+    expect(result.totalTokens).toBeGreaterThan(0);
+  });
+
+  test("recallMemories respects token budget and sets truncated", async () => {
+    const { recallMemories } = await import("@koi/memory");
+    type FSBackend = import("@koi/core").FileSystemBackend;
+    type FRResult = import("@koi/core").FileReadResult;
+    type FLResult = import("@koi/core").FileListResult;
+    type KErr = import("@koi/core").KoiError;
+    type Res<T, E> = import("@koi/core").Result<T, E>;
+
+    const now = Date.now();
+    const files = new Map(
+      Array.from({ length: 10 }, (_, i) => [
+        `/mem/mem${i}.md`,
+        {
+          content: `---\nname: Memory ${i}\ndescription: test\ntype: user\n---\n\n${"x".repeat(300)}`,
+          modifiedAt: now - i * 86_400_000,
+        },
+      ]),
+    );
+
+    const mockFs: FSBackend = {
+      name: "budget-mock-fs",
+      read(path): Res<FRResult, KErr> {
+        const f = files.get(path);
+        if (!f)
+          return { ok: false, error: { code: "NOT_FOUND", message: "nope", retryable: false } };
+        return { ok: true, value: { content: f.content, path, size: f.content.length } };
+      },
+      list(path): Res<FLResult, KErr> {
+        const entries = [...files.entries()]
+          .filter(([p]) => p.startsWith(path) && p.endsWith(".md"))
+          .map(([p, f]) => ({
+            path: p,
+            kind: "file" as const,
+            size: f.content.length,
+            modifiedAt: f.modifiedAt,
+          }));
+        return { ok: true, value: { entries, truncated: false } };
+      },
+      write() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+      edit() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+      search() {
+        return {
+          ok: false,
+          error: { code: "INTERNAL" as const, message: "ro", retryable: false },
+        };
+      },
+    };
+
+    const result = await recallMemories(mockFs, { memoryDir: "/mem", tokenBudget: 200, now });
+
+    expect(result.selected.length).toBeLessThan(10);
+    expect(result.truncated).toBe(true);
+    expect(result.totalTokens).toBeLessThanOrEqual(200);
+  });
+});
