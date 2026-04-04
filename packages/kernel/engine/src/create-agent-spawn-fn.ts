@@ -157,11 +157,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
-    //    Attach a fresh spawn provider for the child when a factory is provided —
-    //    this enables recursive delegation without circular imports (the factory
-    //    is passed in by createSpawnToolProvider, not imported here directly).
+    //    Attach a fresh Spawn provider for the child only when the effective tool ceiling
+    //    allows it. If the parent manifest denylists "Spawn" or uses an allowlist that
+    //    does not include "Spawn", do not attach a fresh provider — the child cannot
+    //    delegate further. This closes the recursive-spawn bypass.
+    const spawnAllowedByManifest = isSpawnAllowedByManifest(
+      base.parentAgent.manifest.spawn,
+      request.toolDenylist,
+      request.toolAllowlist,
+    );
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined ? [options.spawnProviderFactory()] : [];
+      options.spawnProviderFactory !== undefined && spawnAllowedByManifest
+        ? [options.spawnProviderFactory()]
+        : [];
 
     const spawnOptions: SpawnChildOptions = {
       ...base,
@@ -360,10 +368,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 8b. Streaming (default): run synchronously, collect output inline.
+    // Compose the deadline into the streaming signal too — same wall-clock budget
+    // applies regardless of delivery mode.
+    const streamingSignal =
+      effectiveDeadlineMs !== undefined
+        ? AbortSignal.any([
+            request.signal,
+            AbortSignal.timeout(Math.max(0, effectiveDeadlineMs - Date.now())),
+          ])
+        : request.signal;
     return runWithAgentContext(agentContext, () =>
       runSpawnedAgent({
         spawnOptions,
-        input: { kind: "text", text: request.description, signal: request.signal },
+        input: { kind: "text", text: request.description, signal: streamingSignal },
         collector: createTextCollector(),
       }),
     );
@@ -373,6 +390,38 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the effective tool ceiling allows the child to use Spawn.
+ * Checks manifest allowlist/denylist and per-request allowlist/denylist.
+ * When false, the spawnProviderFactory is not called — the child cannot delegate further.
+ */
+function isSpawnAllowedByManifest(
+  manifestSpawn: AgentManifest["spawn"],
+  requestDenylist: readonly string[] | undefined,
+  requestAllowlist: readonly string[] | undefined,
+): boolean {
+  // Runtime denylist explicitly blocks Spawn
+  if (requestDenylist?.includes("Spawn")) return false;
+
+  // Runtime allowlist present but doesn't include Spawn
+  if (requestAllowlist !== undefined && !requestAllowlist.includes("Spawn")) return false;
+
+  // Manifest denylist blocks Spawn
+  if (manifestSpawn?.tools?.policy === "denylist" && manifestSpawn.tools.list?.includes("Spawn")) {
+    return false;
+  }
+
+  // Manifest allowlist doesn't include Spawn
+  if (
+    manifestSpawn?.tools?.policy === "allowlist" &&
+    !manifestSpawn.tools.list?.includes("Spawn")
+  ) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Extract systemPrompt from a TaskableAgent if it has one.
