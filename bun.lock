@@ -303,6 +303,14 @@
         "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
+    "packages/mm/memory": {
+      "name": "@koi/memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/mm/memory-tools": {
       "name": "@koi/memory-tools",
       "version": "0.0.0",
@@ -632,6 +640,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 
