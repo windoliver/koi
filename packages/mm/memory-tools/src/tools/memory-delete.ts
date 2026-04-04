@@ -11,6 +11,7 @@ import { memoryRecordId } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX } from "../constants.js";
 import { parseString } from "../parse-args.js";
+import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
 
 /** Execute handler — extracted for size limit. */
@@ -22,16 +23,16 @@ async function executeDelete(args: JsonObject, backend: MemoryToolBackend): Prom
 
   try {
     const getResult = await backend.get(id);
-    if (!getResult.ok) return { error: getResult.error.message, code: "INTERNAL" };
+    if (!getResult.ok) return safeBackendError(getResult.error, "Failed to look up memory");
     if (getResult.value === undefined) {
       return { deleted: false, error: "Memory not found", code: "NOT_FOUND" };
     }
 
     const deleteResult = await backend.delete(id);
-    if (!deleteResult.ok) return { error: deleteResult.error.message, code: "INTERNAL" };
+    if (!deleteResult.ok) return safeBackendError(deleteResult.error, "Failed to delete memory");
     return { deleted: true, id: idResult.value };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : String(e), code: "INTERNAL" };
+  } catch {
+    return safeCatchError("Failed to delete memory");
   }
 }
 

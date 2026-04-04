@@ -12,6 +12,7 @@ import type {
   MemoryRecordId,
   MemoryRecordInput,
   MemoryRecordPatch,
+  MemoryTier,
   MemoryType,
   Result,
 } from "@koi/core";
@@ -23,7 +24,7 @@ import type {
 /** Options for the memory_recall tool's backend call. */
 export interface MemoryToolRecallOptions {
   readonly limit?: number | undefined;
-  readonly tierFilter?: string | undefined;
+  readonly tierFilter?: MemoryTier | "all" | undefined;
   readonly graphExpand?: boolean | undefined;
   readonly maxHops?: number | undefined;
 }
@@ -49,33 +50,46 @@ export interface MemorySearchFilter {
  * DI interface between memory tools and the backing store.
  *
  * Implementations may be filesystem-backed (production) or in-memory (test).
- * All methods return Result to surface expected failures without throwing.
+ * Methods return `T | Promise<T>` so sync implementations work without wrapping.
+ * All callers must `await` (await on a non-Promise is a no-op).
  */
 export interface MemoryToolBackend {
-  readonly store: (input: MemoryRecordInput) => Promise<Result<MemoryRecord, KoiError>>;
+  readonly store: (
+    input: MemoryRecordInput,
+  ) => Result<MemoryRecord, KoiError> | Promise<Result<MemoryRecord, KoiError>>;
 
   readonly recall: (
     query: string,
     options?: MemoryToolRecallOptions,
-  ) => Promise<Result<readonly MemoryRecord[], KoiError>>;
+  ) =>
+    | Result<readonly MemoryRecord[], KoiError>
+    | Promise<Result<readonly MemoryRecord[], KoiError>>;
 
   readonly search: (
     filter: MemorySearchFilter,
-  ) => Promise<Result<readonly MemoryRecord[], KoiError>>;
+  ) =>
+    | Result<readonly MemoryRecord[], KoiError>
+    | Promise<Result<readonly MemoryRecord[], KoiError>>;
 
-  readonly delete: (id: MemoryRecordId) => Promise<Result<void, KoiError>>;
+  readonly delete: (id: MemoryRecordId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
   readonly findByName: (
     name: string,
     type?: MemoryType,
-  ) => Promise<Result<MemoryRecord | undefined, KoiError>>;
+  ) =>
+    | Result<MemoryRecord | undefined, KoiError>
+    | Promise<Result<MemoryRecord | undefined, KoiError>>;
 
-  readonly get: (id: MemoryRecordId) => Promise<Result<MemoryRecord | undefined, KoiError>>;
+  readonly get: (
+    id: MemoryRecordId,
+  ) =>
+    | Result<MemoryRecord | undefined, KoiError>
+    | Promise<Result<MemoryRecord | undefined, KoiError>>;
 
   readonly update: (
     id: MemoryRecordId,
     patch: MemoryRecordPatch,
-  ) => Promise<Result<MemoryRecord, KoiError>>;
+  ) => Result<MemoryRecord, KoiError> | Promise<Result<MemoryRecord, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------

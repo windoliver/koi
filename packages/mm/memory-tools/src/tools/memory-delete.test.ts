@@ -51,39 +51,39 @@ describe("memory_delete execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
-  test("returns internal error when get fails", async () => {
+  test("returns sanitized error when get fails", async () => {
     const backend = mockBackend({
-      get: async () => ({ ok: false, error: mockError("read error") }),
+      get: async () => ({ ok: false, error: mockError("/data/mem: read error") }),
     });
     const tool = unwrapTool(createMemoryDeleteTool(backend));
 
     const result = (await tool.execute({ id: "x" })) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("read error");
+    expect(result.error).toBe("Failed to look up memory");
   });
 
-  test("returns internal error when delete fails", async () => {
+  test("returns sanitized error when delete fails", async () => {
     const backend = mockBackend({
       get: async () => ({ ok: true, value: mockRecord() }),
-      delete: async () => ({ ok: false, error: mockError("perm denied") }),
+      delete: async () => ({ ok: false, error: mockError("EPERM: /var/data") }),
     });
     const tool = unwrapTool(createMemoryDeleteTool(backend));
 
     const result = (await tool.execute({ id: "x" })) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("perm denied");
+    expect(result.error).toBe("Failed to delete memory");
   });
 
-  test("returns internal error when backend throws", async () => {
+  test("returns sanitized error when backend throws", async () => {
     const backend = mockBackend({
       get: async () => {
-        throw new Error("crash");
+        throw new Error("ENOENT: /private/var/data");
       },
     });
     const tool = unwrapTool(createMemoryDeleteTool(backend));
 
     const result = (await tool.execute({ id: "x" })) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("crash");
+    expect(result.error).toBe("Failed to delete memory");
   });
 });

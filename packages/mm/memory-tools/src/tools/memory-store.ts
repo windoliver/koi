@@ -11,6 +11,7 @@ import { ALL_MEMORY_TYPES, validateMemoryRecordInput } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX } from "../constants.js";
 import { parseOptionalBoolean, parseOptionalEnum, parseString } from "../parse-args.js";
+import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
 
 /** Parse and validate tool args into a MemoryRecordInput + force flag. */
@@ -68,7 +69,7 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
 
   try {
     const dupResult = await backend.findByName(input.name, input.type);
-    if (!dupResult.ok) return { error: dupResult.error.message, code: "INTERNAL" };
+    if (!dupResult.ok) return safeBackendError(dupResult.error, "Failed to check for duplicates");
 
     if (dupResult.value !== undefined) {
       if (!force) {
@@ -82,15 +83,15 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
         description: input.description,
         content: input.content,
       });
-      if (!updateResult.ok) return { error: updateResult.error.message, code: "INTERNAL" };
+      if (!updateResult.ok) return safeBackendError(updateResult.error, "Failed to update memory");
       return { stored: true, id: updateResult.value.id, updated: true };
     }
 
     const storeResult = await backend.store(input);
-    if (!storeResult.ok) return { error: storeResult.error.message, code: "INTERNAL" };
+    if (!storeResult.ok) return safeBackendError(storeResult.error, "Failed to store memory");
     return { stored: true, id: storeResult.value.id, filePath: storeResult.value.filePath };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : String(e), code: "INTERNAL" };
+  } catch {
+    return safeCatchError("Failed to store memory");
   }
 }
 

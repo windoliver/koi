@@ -106,6 +106,13 @@ export function parseOptionalEnum<const T extends string>(
   return { ok: true, value: value as T };
 }
 
+/**
+ * Strict ISO 8601 shape check — rejects locale-ish strings that Date.parse
+ * would accept (e.g. "March 5, 2026"). Accepts YYYY-MM-DD with optional
+ * time, timezone offset, or trailing Z.
+ */
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
 export function parseOptionalTimestamp(
   args: JsonObject,
   key: string,
@@ -116,6 +123,12 @@ export function parseOptionalTimestamp(
     return {
       ok: false,
       err: { error: `${key} must be an ISO 8601 timestamp string`, code: "VALIDATION" },
+    };
+  }
+  if (!ISO_8601_RE.test(value)) {
+    return {
+      ok: false,
+      err: { error: `${key} must be a valid ISO 8601 timestamp`, code: "VALIDATION" },
     };
   }
   const ms = Date.parse(value);

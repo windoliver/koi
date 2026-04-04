@@ -34,6 +34,12 @@ describe("generateMemoryToolSkillContent", () => {
     const content = generateMemoryToolSkillContent();
     expect(content).not.toContain("Storage location");
   });
+
+  test("sanitizes backticks and newlines from baseDir", () => {
+    const content = generateMemoryToolSkillContent("/path/`inject\nnewline`/dir");
+    expect(content).not.toContain("`inject");
+    expect(content).toContain("/path/injectnewline/dir");
+  });
 });
 
 describe("MEMORY_TOOL_SKILL_CONTENT", () => {

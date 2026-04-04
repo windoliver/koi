@@ -14,7 +14,15 @@ import {
   parseOptionalString,
   parseOptionalTimestamp,
 } from "../parse-args.js";
+import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemorySearchFilter, MemoryToolBackend } from "../types.js";
+
+/** Normalize empty/whitespace-only keyword to undefined. */
+function normalizeKeyword(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 /** Execute handler — extracted for size limit. */
 async function executeSearch(
@@ -37,10 +45,11 @@ async function executeSearch(
   const limitResult = parseOptionalNumber(args, "limit");
   if (!limitResult.ok) return limitResult.err;
 
-  const limit = Math.min(Math.max(1, limitResult.value ?? maxLimit), maxLimit);
+  const limit = Math.min(Math.max(1, Math.round(limitResult.value ?? maxLimit)), maxLimit);
+  const keyword = normalizeKeyword(keywordResult.value);
 
   const filter: MemorySearchFilter = {
-    ...(keywordResult.value !== undefined ? { keyword: keywordResult.value } : {}),
+    ...(keyword !== undefined ? { keyword } : {}),
     ...(typeResult.value !== undefined ? { type: typeResult.value } : {}),
     ...(afterResult.value !== undefined ? { updatedAfter: afterResult.value } : {}),
     ...(beforeResult.value !== undefined ? { updatedBefore: beforeResult.value } : {}),
@@ -49,10 +58,10 @@ async function executeSearch(
 
   try {
     const result = await backend.search(filter);
-    if (!result.ok) return { error: result.error.message, code: "INTERNAL" };
+    if (!result.ok) return safeBackendError(result.error, "Failed to search memories");
     return { results: result.value, count: result.value.length };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : String(e), code: "INTERNAL" };
+  } catch {
+    return safeCatchError("Failed to search memories");
   }
 }
 
@@ -87,7 +96,7 @@ export function createMemorySearchTool(
           type: "string",
           description: "ISO 8601 timestamp — only memories updated before this time",
         },
-        limit: { type: "number", description: `Max results (default: ${searchLimit})` },
+        limit: { type: "integer", description: `Max results (default: ${searchLimit})` },
       },
     },
     origin: "primordial",

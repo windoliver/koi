@@ -5,6 +5,12 @@
  * when and how to use its memory tools.
  */
 
+/** Sanitize a path for safe interpolation into markdown — strip backticks, newlines, control chars. */
+function sanitizePath(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip control chars
+  return value.replace(/[`\r\n\x00-\x1f\x7f-\x9f]/g, "").trim();
+}
+
 /** Generate memory tool skill content with an optional base directory. */
 export function generateMemoryToolSkillContent(baseDir?: string | undefined): string {
   const storageSection =
@@ -12,7 +18,7 @@ export function generateMemoryToolSkillContent(baseDir?: string | undefined): st
       ? `
 ### Storage location
 
-Your memory is stored at: \`${baseDir}\`
+Your memory is stored at: \`${sanitizePath(baseDir)}\`
 `
       : "";
 

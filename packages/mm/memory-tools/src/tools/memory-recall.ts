@@ -14,9 +14,15 @@ import {
   parseOptionalNumber,
   parseString,
 } from "../parse-args.js";
+import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend, MemoryToolRecallOptions } from "../types.js";
 
 const TIER_VALUES = ["hot", "warm", "cold", "all"] as const;
+
+/** Clamp and round a numeric value to a positive integer within [1, max]. */
+function clampPositiveInt(value: number | undefined, fallback: number, max: number): number {
+  return Math.min(Math.max(1, Math.round(value ?? fallback)), max);
+}
 
 /** Execute handler — extracted for size limit. */
 async function executeRecall(
@@ -39,21 +45,25 @@ async function executeRecall(
   const hopsResult = parseOptionalNumber(args, "max_hops");
   if (!hopsResult.ok) return hopsResult.err;
 
-  const limit = Math.min(Math.max(1, limitResult.value ?? maxLimit), maxLimit);
+  if (hopsResult.value !== undefined && hopsResult.value < 0) {
+    return { error: "max_hops must be a non-negative integer", code: "VALIDATION" };
+  }
+
+  const limit = clampPositiveInt(limitResult.value, maxLimit, maxLimit);
 
   const options: MemoryToolRecallOptions = {
     limit,
     ...(tierResult.value !== undefined ? { tierFilter: tierResult.value } : {}),
     ...(expandResult.value !== undefined ? { graphExpand: expandResult.value } : {}),
-    ...(hopsResult.value !== undefined ? { maxHops: hopsResult.value } : {}),
+    ...(hopsResult.value !== undefined ? { maxHops: Math.round(hopsResult.value) } : {}),
   };
 
   try {
     const result = await backend.recall(queryResult.value, options);
-    if (!result.ok) return { error: result.error.message, code: "INTERNAL" };
+    if (!result.ok) return safeBackendError(result.error, "Failed to recall memories");
     return { results: result.value, count: result.value.length };
-  } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : String(e), code: "INTERNAL" };
+  } catch {
+    return safeCatchError("Failed to recall memories");
   }
 }
 
@@ -72,7 +82,7 @@ export function createMemoryRecallTool(
       type: "object",
       properties: {
         query: { type: "string", description: "Semantic search query" },
-        limit: { type: "number", description: `Max results (default: ${recallLimit})` },
+        limit: { type: "integer", description: `Max results (default: ${recallLimit})` },
         tier: {
           type: "string",
           enum: ["hot", "warm", "cold", "all"],
@@ -83,7 +93,7 @@ export function createMemoryRecallTool(
           description: "Expand results along causal edges",
         },
         max_hops: {
-          type: "number",
+          type: "integer",
           description: "Max BFS hops for graph expansion (default: 2)",
         },
       },

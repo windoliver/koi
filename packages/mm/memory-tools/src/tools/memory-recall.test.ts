@@ -108,14 +108,34 @@ describe("memory_recall execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
-  test("returns internal error on backend failure", async () => {
+  test("rejects negative max_hops", async () => {
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const result = (await tool.execute({ query: "test", max_hops: -1 })) as Record<string, unknown>;
+    expect(result.code).toBe("VALIDATION");
+  });
+
+  test("rounds fractional max_hops to integer", async () => {
+    let capturedHops: number | undefined;
     const backend = mockBackend({
-      recall: async () => ({ ok: false, error: mockError("timeout") }),
+      recall: async (_query, options) => {
+        capturedHops = options?.maxHops;
+        return { ok: true, value: [] };
+      },
+    });
+    const tool = unwrapTool(createMemoryRecallTool(backend));
+
+    await tool.execute({ query: "test", max_hops: 1.7 });
+    expect(capturedHops).toBe(2);
+  });
+
+  test("returns sanitized error on backend failure", async () => {
+    const backend = mockBackend({
+      recall: async () => ({ ok: false, error: mockError("/var/data: read error") }),
     });
     const tool = unwrapTool(createMemoryRecallTool(backend));
 
     const result = (await tool.execute({ query: "test" })) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("timeout");
+    expect(result.error).toBe("Failed to recall memories");
   });
 });

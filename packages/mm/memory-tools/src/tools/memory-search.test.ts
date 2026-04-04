@@ -102,15 +102,51 @@ describe("memory_search execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
-  test("returns internal error on backend failure", async () => {
+  test("normalizes empty keyword to undefined (match-all)", async () => {
+    let capturedFilter: MemorySearchFilter | undefined;
     const backend = mockBackend({
-      search: async () => ({ ok: false, error: mockError("disk error") }),
+      search: async (filter) => {
+        capturedFilter = filter;
+        return { ok: true, value: [] };
+      },
+    });
+    const tool = unwrapTool(createMemorySearchTool(backend));
+
+    await tool.execute({ keyword: "" });
+    expect(capturedFilter?.keyword).toBeUndefined();
+  });
+
+  test("normalizes whitespace-only keyword to undefined", async () => {
+    let capturedFilter: MemorySearchFilter | undefined;
+    const backend = mockBackend({
+      search: async (filter) => {
+        capturedFilter = filter;
+        return { ok: true, value: [] };
+      },
+    });
+    const tool = unwrapTool(createMemorySearchTool(backend));
+
+    await tool.execute({ keyword: "   " });
+    expect(capturedFilter?.keyword).toBeUndefined();
+  });
+
+  test("rejects non-ISO timestamp formats", async () => {
+    const tool = unwrapTool(createMemorySearchTool(mockBackend()));
+    const result = (await tool.execute({
+      updated_after: "March 5, 2026",
+    })) as Record<string, unknown>;
+    expect(result.code).toBe("VALIDATION");
+  });
+
+  test("returns sanitized error on backend failure", async () => {
+    const backend = mockBackend({
+      search: async () => ({ ok: false, error: mockError("/tmp/mem: disk error") }),
     });
     const tool = unwrapTool(createMemorySearchTool(backend));
 
     const result = (await tool.execute({})) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("disk error");
+    expect(result.error).toBe("Failed to search memories");
   });
 
   test("returns internal error when backend throws", async () => {

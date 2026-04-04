@@ -117,15 +117,16 @@ describe("memory_store execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
-  test("returns internal error when backend.store fails", async () => {
+  test("returns sanitized internal error when backend.store fails", async () => {
     const backend = mockBackend({
-      store: async () => ({ ok: false, error: mockError("disk full") }),
+      store: async () => ({ ok: false, error: mockError("/usr/local/data: permission denied") }),
     });
     const tool = unwrapTool(createMemoryStoreTool(backend));
 
     const result = (await tool.execute(validArgs)) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("disk full");
+    expect(result.error).toBe("Failed to store memory");
+    expect(result.error).not.toContain("/usr/local");
   });
 
   test("returns validation error when name is only control chars", async () => {
@@ -138,16 +139,17 @@ describe("memory_store execute", () => {
     expect(result.error).toContain("name");
   });
 
-  test("returns internal error when backend throws", async () => {
+  test("returns sanitized error when backend throws", async () => {
     const backend = mockBackend({
       findByName: async () => {
-        throw new Error("connection lost");
+        throw new Error("ENOENT: /private/var/data/memory");
       },
     });
     const tool = unwrapTool(createMemoryStoreTool(backend));
 
     const result = (await tool.execute(validArgs)) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
-    expect(result.error).toBe("connection lost");
+    expect(result.error).toBe("Failed to store memory");
+    expect(result.error).not.toContain("ENOENT");
   });
 });
