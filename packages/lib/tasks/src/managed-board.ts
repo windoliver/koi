@@ -232,6 +232,24 @@ export async function createManagedTaskBoard(
 
     assign: (taskId, agentId) => applyMutation((b) => b.assign(taskId, agentId)),
 
+    startTask: (taskId, agentId) =>
+      applyMutation((b) => {
+        const inProgress = b.inProgress();
+        if (inProgress.length > 0) {
+          const blocking = inProgress[0];
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot start task '${taskId}': task '${blocking?.id ?? "unknown"}' is already in_progress. Complete or stop the current task first.`,
+              retryable: false,
+              context: { blockingTaskId: blocking?.id ?? "unknown" },
+            },
+          };
+        }
+        return b.assign(taskId, agentId);
+      }),
+
     complete: (taskId, taskResult) =>
       applyMutation(
         (b) => b.complete(taskId, taskResult),
