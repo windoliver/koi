@@ -1,0 +1,641 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "spawn-tools",
+  "agent": {
+    "name": "golden-spawn-tools",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "task_create",
+        "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+      },
+      {
+        "name": "task_delegate",
+        "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+      },
+      {
+        "name": "agent_spawn",
+        "description": "Spawn a named child agent to complete a specific task. Returns the child agent's final output as a string. Call task_delegate first to mark the task as delegated on the board, then pass its task_id here so the child's result can be matched back."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:35.454Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:35.454Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-04T12:18:35.454Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "You are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. Report the researcher's output.",
+      "observation": {
+        "results": [
+          {
+            "content": "I'll execute these three steps in order. Let me start with step 1 right away!\n\n**Step 1: Creating the task**"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1471,
+        "completion_tokens": 111
+      },
+      "duration_ms": 1900,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_delegate",
+            "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+          },
+          {
+            "name": "agent_spawn",
+            "description": "Spawn a named child agent to complete a specific task. Returns the child agent's final output as a string. Call task_delegate first to mark the task as delegated on the board, then pass its task_id here so the child's result can be matched back."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 1900.1449579999971,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_create({\"subject\":\"Research caching strategies\",\"description\":\"Investigate Redis vs Memcached\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.11712499999703141,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "tool",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_create_5",
+          "function_name": "task_create",
+          "arguments": {
+            "subject": "Research caching strategies",
+            "description": "Investigate Redis vs Memcached"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_create_5",
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0,
+      "outcome": "success"
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 1900.232624999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "model_name": "middleware:hooks",
+      "message": "task_create({\"subject\":\"Research caching strategies\",\"description\":\"Investigate Redis vs Memcached\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.172167000004265,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:37.354Z",
+      "model_name": "middleware:permissions",
+      "message": "task_create({\"subject\":\"Research caching strategies\",\"description\":\"Investigate Redis vs Memcached\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.21666699999332195,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "agent",
+      "timestamp": "2026-04-04T12:18:37.355Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "observation": {
+        "results": [
+          {
+            "content": "Step 1 ✅ Task created with ID `task_3`. Now delegating it to the `researcher` agent."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1593,
+        "completion_tokens": 105
+      },
+      "duration_ms": 2072,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 4,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_delegate",
+            "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+          },
+          {
+            "name": "agent_spawn",
+            "description": "Spawn a named child agent to complete a specific task. Returns the child agent's final output as a string. Call task_delegate first to mark the task as delegated on the board, then pass its task_id here so the child's result can be matched back."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6"
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 2073.299165999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_delegate({\"task_id\":\"task_3\",\"agent_id\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"in_progress\",\"assignedTo\":\"researcher\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.6724160000012489,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "tool",
+      "timestamp": "2026-04-04T12:18:39.427Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_delegate_12",
+          "function_name": "task_delegate",
+          "arguments": {
+            "task_id": "task_3",
+            "agent_id": "researcher"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_delegate_12",
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"in_progress\",\"assignedTo\":\"researcher\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 2073.4107499999955,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "middleware:hooks",
+      "message": "task_delegate({\"task_id\":\"task_3\",\"agent_id\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"in_progress\",\"assignedTo\":\"researcher\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.7585839999956079,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "middleware:permissions",
+      "message": "task_delegate({\"task_id\":\"task_3\",\"agent_id\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"in_progress\",\"assignedTo\":\"researcher\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 0.8644169999970472,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "timestamp": "2026-04-04T12:18:39.428Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_3\",\"subject\":\"Research caching strategies\",\"status\":\"in_progress\",\"assignedTo\":\"researcher\",\"dependencies\":[]}}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1718,
+        "completion_tokens": 102
+      },
+      "duration_ms": 1362,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 6,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_delegate",
+            "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+          },
+          {
+            "name": "agent_spawn",
+            "description": "Spawn a named child agent to complete a specific task. Returns the child agent's final output as a string. Call task_delegate first to mark the task as delegated on the board, then pass its task_id here so the child's result can be matched back."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6"
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 1362.122083000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "agent_spawn({\"agent_name\":\"researcher\",\"description\":\"Research Redis vs Memcached caching strategies\",\"task_id\":\"task_3\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"output\":\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: done\"}"
+          }
+        ]
+      },
+      "duration_ms": 0.530083999998169,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "tool",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_agent_spawn_19",
+          "function_name": "agent_spawn",
+          "arguments": {
+            "agent_name": "researcher",
+            "description": "Research Redis vs Memcached caching strategies",
+            "task_id": "task_3"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_agent_spawn_19",
+            "content": "{\"ok\":true,\"output\":\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: done\"}"
+          }
+        ]
+      },
+      "duration_ms": 0,
+      "outcome": "success"
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 1362.2695420000018,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "middleware:hooks",
+      "message": "agent_spawn({\"agent_name\":\"researcher\",\"description\":\"Research Redis vs Memcached caching strategies\",\"task_id\":\"task_3\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"output\":\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: done\"}"
+          }
+        ]
+      },
+      "duration_ms": 0.6082499999974971,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "middleware:permissions",
+      "message": "agent_spawn({\"agent_name\":\"researcher\",\"description\":\"Research Redis vs Memcached caching strategies\",\"task_id\":\"task_3\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"output\":\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: done\"}"
+          }
+        ]
+      },
+      "duration_ms": 0.6921670000010636,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "agent",
+      "timestamp": "2026-04-04T12:18:40.790Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"output\":\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: done\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "Here's a full summary of everything that was done and the researcher's output:\n\n---\n\n### ✅ Step-by-Step Execution Report\n\n#### Step 1 — Task Created\n- **Task ID:** `task_3`\n- **Subject:** Research caching strategies\n- **Description:** Investigate Redis vs Memcached\n- **Status:** `pending` ✔️\n\n---\n\n#### Step 2 — Task Delegated\n- **Assigned To:** `researcher`\n- **Status updated to:** `in_progress` ✔️\n\n---\n\n#### Step 3 — Agent Spawned & Result Returned\n- **Agent:** `researcher`\n- **Description given:** Research Redis vs Memcached caching strategies\n- **Task ID passed:** `task_3`\n\n---\n\n### 📋 Researcher's Output\n\n> *\"Task delegated to researcher: Research Redis vs Memcached caching strategies — result: **done**\"*\n\nThe researcher agent successfully completed the task. The result was returned as **done**, confirming the research on Redis vs Memcached caching strategies has been carried out and concluded. If you'd like a deeper breakdown of the findings (e.g., performance, data structure support, persistence, scalability), I can spawn a follow-up agent or summarize known differences for you!"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1860,
+        "completion_tokens": 301
+      },
+      "duration_ms": 6354,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 8,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_delegate",
+            "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+          },
+          {
+            "name": "agent_spawn",
+            "description": "Spawn a named child agent to complete a specific task. Returns the child agent's final output as a string. Call task_delegate first to mark the task as delegated on the board, then pass its task_id here so the child's result can be matched back."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6"
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:47.145Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 6354.111750000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-04T12:18:47.145Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou are a coordinator. Do the following steps in order: 1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. 2) Use task_delegate to assign that task to agent 'researcher'. 3) Use agent_spawn with agent_name='researcher', description='Rese…",
+      "duration_ms": 6354.202665999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    }
+  ]
+}

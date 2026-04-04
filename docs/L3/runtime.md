@@ -51,7 +51,8 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/model-openai-compat` | OpenAI-compatible model adapter (OpenRouter etc.) | all LLM queries |
 | `@koi/permissions` | Permission backend (bypass/default/nexus modes) | `permission-deny` |
 | `@koi/query-engine` | Model stream consumer + turn runner | all queries |
-| `@koi/task-tools` | Task board tools (create/get/update/list/stop/output) | `task-tools` |
+| `@koi/spawn-tools` | Agent spawn tool + coordinator utilities (TaskCascade, recoverOrphanedTasks) | `spawn-tools` |
+| `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
 | `@koi/tasks` | In-memory task board store | `task-board` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead | `glob-use` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |

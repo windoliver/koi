@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonObject, Tool } from "@koi/core";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import { z } from "zod";
 import { createTaskTools } from "./create-task-tools.js";
 
 async function freshResultsDir(): Promise<string> {
@@ -20,7 +21,7 @@ function agentId(id: string): import("@koi/core").AgentId {
   return id as import("@koi/core").AgentId;
 }
 
-/** Tools are always 6 elements — assert here once rather than using ! at every callsite. */
+/** Tools are always 7 elements — assert here once rather than using ! at every callsite. */
 interface ToolSet {
   readonly tools: readonly Tool[];
   readonly create: Tool;
@@ -29,6 +30,7 @@ interface ToolSet {
   readonly list: Tool;
   readonly stop: Tool;
   readonly output: Tool;
+  readonly delegate: Tool;
 }
 
 async function setup(): Promise<ToolSet> {
@@ -37,9 +39,17 @@ async function setup(): Promise<ToolSet> {
   const resultsDir = await freshResultsDir();
   const board = await createManagedTaskBoard({ store, resultsDir });
   const tools = createTaskTools({ board, agentId: agentId("agent-1") });
-  if (tools.length < 6) throw new Error("Expected 6 task tools");
-  const [create, get, update, list, stop, output] = tools as [Tool, Tool, Tool, Tool, Tool, Tool];
-  return { tools, create, get, update, list, stop, output };
+  if (tools.length < 7) throw new Error("Expected 7 task tools");
+  const [create, get, update, list, stop, output, delegate] = tools as [
+    Tool,
+    Tool,
+    Tool,
+    Tool,
+    Tool,
+    Tool,
+    Tool,
+  ];
+  return { tools, create, get, update, list, stop, output, delegate };
 }
 
 async function exec(tool: Tool, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -620,5 +630,257 @@ describe("verification nudge", () => {
     expect(r1.nudge).toBeUndefined();
     const r2 = await completeTask(create, update, "Task 4");
     expect(r2.nudge).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_delegate
+// ---------------------------------------------------------------------------
+
+describe("task_delegate", () => {
+  test("delegates a pending task to a child agent", async () => {
+    const { create, delegate } = await setup();
+    const r = await exec(create, { subject: "Auth module", description: "Implement OAuth2" });
+    expect(r.ok).toBe(true);
+    const id = (r.task as Record<string, unknown>).id as string;
+
+    const dr = await exec(delegate, { task_id: id, agent_id: "child-agent-1" });
+    expect(dr.ok).toBe(true);
+    const task = dr.task as Record<string, unknown>;
+    expect(task.status).toBe("in_progress");
+    expect(task.assignedTo).toBe("child-agent-1");
+  });
+
+  test("allows N tasks to be delegated simultaneously without in_progress conflict", async () => {
+    const { create, delegate } = await setup();
+    const r1 = await exec(create, { subject: "Task A", description: "First" });
+    const r2 = await exec(create, { subject: "Task B", description: "Second" });
+    const r3 = await exec(create, { subject: "Task C", description: "Third" });
+    const id1 = (r1.task as Record<string, unknown>).id as string;
+    const id2 = (r2.task as Record<string, unknown>).id as string;
+    const id3 = (r3.task as Record<string, unknown>).id as string;
+
+    const d1 = await exec(delegate, { task_id: id1, agent_id: "child-1" });
+    const d2 = await exec(delegate, { task_id: id2, agent_id: "child-2" });
+    const d3 = await exec(delegate, { task_id: id3, agent_id: "child-3" });
+
+    expect(d1.ok).toBe(true);
+    expect(d2.ok).toBe(true);
+    expect(d3.ok).toBe(true);
+    expect((d1.task as Record<string, unknown>).status).toBe("in_progress");
+    expect((d2.task as Record<string, unknown>).status).toBe("in_progress");
+    expect((d3.task as Record<string, unknown>).status).toBe("in_progress");
+  });
+
+  test("rejects a task that is already in_progress (already delegated)", async () => {
+    const { create, delegate } = await setup();
+    const r = await exec(create, { subject: "Task", description: "Desc" });
+    const id = (r.task as Record<string, unknown>).id as string;
+    await exec(delegate, { task_id: id, agent_id: "child-1" });
+
+    // Second delegation attempt on same task
+    const dr = await exec(delegate, { task_id: id, agent_id: "child-2" });
+    expect(dr.ok).toBe(false);
+    expect(typeof dr.error).toBe("string");
+  });
+
+  test("returns error for unknown task_id", async () => {
+    const { delegate } = await setup();
+    const r = await exec(delegate, { task_id: "nonexistent_99", agent_id: "child-1" });
+    expect(r.ok).toBe(false);
+    expect(typeof r.error).toBe("string");
+  });
+
+  test("rejects invalid args — missing agent_id", async () => {
+    const { delegate } = await setup();
+    const r = await exec(delegate, { task_id: "task_1" });
+    expect(r.ok).toBe(false);
+    expect(typeof r.error).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_update regression — single-in-progress guard still active after delegation
+// ---------------------------------------------------------------------------
+
+describe("task_update regression — in_progress guard survives delegation", () => {
+  test("task_update cannot start a second task when one is already delegated", async () => {
+    const { create, update, delegate } = await setup();
+    const r1 = await exec(create, { subject: "Delegated task", description: "Delegated" });
+    const r2 = await exec(create, { subject: "Worker task", description: "For worker" });
+    const id1 = (r1.task as Record<string, unknown>).id as string;
+    const id2 = (r2.task as Record<string, unknown>).id as string;
+
+    // Delegate task 1 to a child — it's now in_progress
+    await exec(delegate, { task_id: id1, agent_id: "child-1" });
+
+    // task_update trying to claim task 2 as in_progress should fail
+    const ur = await exec(update, { task_id: id2, status: "in_progress" });
+    expect(ur.ok).toBe(false);
+    expect(String(ur.error)).toMatch(/in_progress/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_list — updated_since filter
+// ---------------------------------------------------------------------------
+
+describe("task_list — updated_since filter", () => {
+  test("returns only tasks updated after the given timestamp", async () => {
+    const { create, list } = await setup();
+    await exec(create, { subject: "Old A", description: "Created before cutoff" });
+    await exec(create, { subject: "Old B", description: "Created before cutoff" });
+
+    const cutoff = Date.now();
+    // Brief pause to ensure updatedAt > cutoff for the new task
+    await new Promise((res) => setTimeout(res, 5));
+
+    await exec(create, { subject: "New C", description: "Created after cutoff" });
+
+    const r = await exec(list, { updated_since: cutoff });
+    expect(r.ok).toBe(true);
+    const tasks = r.tasks as readonly Record<string, unknown>[];
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.subject).toBe("New C");
+  });
+
+  test("returns all tasks when updated_since is 0", async () => {
+    const { create, list } = await setup();
+    await exec(create, { subject: "A", description: "Desc" });
+    await exec(create, { subject: "B", description: "Desc" });
+    const r = await exec(list, { updated_since: 0 });
+    expect(r.ok).toBe(true);
+    expect((r.tasks as unknown[]).length).toBe(2);
+  });
+
+  test("existing filters still work alongside updated_since", async () => {
+    const { create, update, list } = await setup();
+    await exec(create, { subject: "Old pending", description: "Desc" });
+    const cutoff = Date.now();
+    await new Promise((res) => setTimeout(res, 5));
+    await exec(create, { subject: "New pending", description: "Desc" });
+    // Complete a task so there's one non-pending task after the cutoff
+    const rc = await exec(create, { subject: "New task to complete", description: "Desc" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+    await exec(update, { task_id: id, status: "completed", output: "Done" });
+
+    const r = await exec(list, { updated_since: cutoff, status: "pending" });
+    expect(r.ok).toBe(true);
+    const tasks = r.tasks as readonly Record<string, unknown>[];
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.subject).toBe("New pending");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_output — resultSchemas validation
+// ---------------------------------------------------------------------------
+
+describe("task_output — resultSchemas validation", () => {
+  async function setupWithSchema(): Promise<
+    ToolSet & { boardRef: import("@koi/core").ManagedTaskBoard }
+  > {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      resultSchemas: {
+        research: z.object({ count: z.number(), summary: z.string() }),
+      },
+    });
+    if (tools.length < 7) throw new Error("Expected 7 task tools");
+    const [create, get, update, list, stop, output, delegate] = tools as [
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+    ];
+    return { tools, create, get, update, list, stop, output, delegate, boardRef: board };
+  }
+
+  test("returns completed result with no error when results match schema", async () => {
+    const { create, update, output } = await setupWithSchema();
+    const rc = await exec(create, {
+      subject: "Research task",
+      description: "Research something",
+      metadata: { kind: "research" },
+    });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+    await exec(update, {
+      task_id: id,
+      status: "completed",
+      output: "Done",
+      results: { count: 5, summary: "Found 5 items" },
+    });
+
+    const r = await exec(output, { task_id: id });
+    expect(r.kind).toBe("completed");
+    expect(r.resultsValidationError).toBeUndefined();
+  });
+
+  test("returns resultsValidationError when results do not match schema", async () => {
+    const { create, update, output } = await setupWithSchema();
+    const rc = await exec(create, {
+      subject: "Research task",
+      description: "Research something",
+      metadata: { kind: "research" },
+    });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+    await exec(update, {
+      task_id: id,
+      status: "completed",
+      output: "Done",
+      results: { count: "not-a-number", summary: "Bad" },
+    });
+
+    const r = await exec(output, { task_id: id });
+    expect(r.kind).toBe("completed");
+    expect(typeof r.resultsValidationError).toBe("string");
+  });
+
+  test("no validation when task has no metadata.kind", async () => {
+    const { create, update, output } = await setupWithSchema();
+    const rc = await exec(create, { subject: "Generic task", description: "No kind" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+    await exec(update, {
+      task_id: id,
+      status: "completed",
+      output: "Done",
+      results: { anything: "goes" },
+    });
+
+    const r = await exec(output, { task_id: id });
+    expect(r.kind).toBe("completed");
+    expect(r.resultsValidationError).toBeUndefined();
+  });
+
+  test("no validation when resultSchemas not configured", async () => {
+    const { create, update, output } = await setup();
+    const rc = await exec(create, {
+      subject: "Task",
+      description: "Desc",
+      metadata: { kind: "research" },
+    });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+    await exec(update, {
+      task_id: id,
+      status: "completed",
+      output: "Done",
+      results: { anything: "goes" },
+    });
+
+    const r = await exec(output, { task_id: id });
+    expect(r.kind).toBe("completed");
+    expect(r.resultsValidationError).toBeUndefined();
   });
 });

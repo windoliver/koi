@@ -1,6 +1,6 @@
 # @koi/task-tools
 
-LLM-callable task management tools — `task_create`, `task_get`, `task_update`, `task_list`, `task_stop`, `task_output`.
+LLM-callable task management tools — `task_create`, `task_get`, `task_update`, `task_list`, `task_stop`, `task_output`, `task_delegate`.
 
 ## Layer
 
@@ -8,9 +8,9 @@ L2 — depends on `@koi/core` (L0). `@koi/tasks` is a `devDependency` (test-only
 
 ## Purpose
 
-Provides the 6 tool surfaces that an LLM agent calls to create, inspect, and manage tasks
-on a `ManagedTaskBoard` during execution. Each tool validates its input with Zod and routes
-to the appropriate `ManagedTaskBoard` method.
+Provides the 7 tool surfaces that an LLM agent calls to create, inspect, manage, and
+delegate tasks on a `ManagedTaskBoard` during execution. Each tool validates its input with
+Zod and routes to the appropriate `ManagedTaskBoard` method.
 
 The package is the LLM-facing side of the task system. The persistence layer
 (`@koi/tasks`) and the immutable board logic (`@koi/task-board`) are separate packages
@@ -26,12 +26,19 @@ Each tool's input schema is defined once as a Zod schema. The same schema drives
 
 No hand-written JSON Schema objects — eliminates drift between LLM docs and validation.
 
-### Atomic single-in-progress enforcement
+### Atomic single-in-progress enforcement (worker agents)
 
-`task_update(status: "in_progress")` calls `board.startTask(taskId, agentId)`, which
-atomically checks that no task is already `in_progress` and assigns the task — all within
-the managed-board mutex. A preflight `board.snapshot().inProgress()` check followed by
-`board.assign()` would be a TOCTOU race; `startTask()` eliminates it.
+`task_update(status: "in_progress")` does a preflight `board.snapshot().inProgress()` check
+and rejects if any task is already `in_progress`. Workers use this to claim exactly one task
+at a time.
+
+### Coordinator fan-out via `task_delegate`
+
+`task_delegate(task_id, agent_id)` assigns a pending task to a child agent ID using
+`board.assign()` directly — bypassing the single-in-progress guard. Coordinators use this
+to fan-out N tasks simultaneously to N child agents. The distinction is semantic:
+- `task_update(in_progress)` = "I am working on this now" (single worker)
+- `task_delegate(agent_id)` = "child agent X will work on this" (coordinator)
 
 ### Atomic ownership enforcement
 
@@ -69,26 +76,41 @@ dependencies, blockedBy) rather than full `Task` objects. Full details (metadata
 timestamps, error) are available via `task_get`. This keeps list responses compact and
 avoids leaking large metadata blobs into LLM context on every list call.
 
+### Poll efficiency — `updated_since` filter
+
+`task_list` accepts an optional `updated_since: number` (Unix ms timestamp). Only tasks
+whose `updatedAt > updated_since` are returned. Coordinators store the timestamp of their
+last poll and pass it on each resume to skip unchanged tasks — reduces N+1 polling overhead
+for large fan-outs.
+
+### Opt-in result schema validation
+
+`TaskToolsConfig.resultSchemas` is an optional map from task kind string to a `ResultSchema`
+(any object with a `safeParse` method — satisfied by Zod schemas). When `task_output`
+returns a `completed` result with `result.results` set, it looks up
+`task.metadata.kind` in the registry. If a schema is found and validation fails, the
+response includes `resultsValidationError: string`. Tasks with no registered schema are
+not validated (backward compatible).
+
 ## Public API
 
 ### `createTaskTools(config: TaskToolsConfig): readonly Tool[]`
 
-Returns an array of 6 `Tool` objects in order: `task_create`, `task_get`, `task_update`,
-`task_list`, `task_stop`, `task_output`.
+Returns an array of 7 `Tool` objects in order: `task_create`, `task_get`, `task_update`,
+`task_list`, `task_stop`, `task_output`, `task_delegate`.
 
 ```typescript
 interface TaskToolsConfig {
-  /**
-   * The managed task board backing the 6 tools.
-   * Must be created with `resultsDir` set — task_update(completed) fails fast
-   * when result persistence is not configured.
-   */
+  /** The managed task board. Must be created with resultsDir for completion to work. */
   readonly board: ManagedTaskBoard;
-  /**
-   * Agent ID used when assigning/completing/failing/killing tasks.
-   * Typically the ID of the agent that owns this tool set.
-   */
+  /** Agent ID for assigning/completing/failing/killing tasks. */
   readonly agentId: AgentId;
+  /**
+   * Optional per-kind Zod (or compatible) schemas for validating TaskResult.results.
+   * Key: task.metadata.kind. When a completed result's results field doesn't match
+   * its schema, task_output returns resultsValidationError.
+   */
+  readonly resultSchemas?: Readonly<Record<string, ResultSchema>>;
 }
 ```
 
@@ -121,22 +143,26 @@ type TaskOutputResponse =
   | { kind: "not_found"; taskId: TaskItemId }
   | { kind: "pending"; task: TaskSummary }
   | { kind: "in_progress"; task: TaskSummary }
-  | { kind: "completed"; result: TaskResult }
+  | { kind: "completed"; result: TaskResult; resultsValidationError?: string }
   | { kind: "failed"; task: Task; error: KoiError }
   | { kind: "killed"; task: Task }
   | { kind: "completed_no_result"; taskId: TaskItemId; message: string }
 ```
 
+`resultsValidationError` is present only when `resultSchemas` is configured and validation
+fails. The `result` is still returned in full — the error is advisory.
+
 ## Tool Descriptions
 
 | Tool | Status arg | Notes |
 |------|-----------|-------|
-| `task_create` | — | Generates ID via `board.nextId()`. Sets `activeForm` if provided. |
+| `task_create` | — | Generates ID via `board.nextId()`. Accepts optional `metadata` (e.g. `{ kind: "research" }`). |
 | `task_get` | — | Returns full `Task` including metadata and timestamps. |
-| `task_update` | `in_progress`, `completed`, `failed`, `killed` | `completed` requires `output` and durable persistence. `failed` requires `reason`. |
-| `task_list` | — | Filters by `status`, `assigned_to`. Returns `TaskSummary[]`, ordered in_progress → pending → terminal. |
+| `task_update` | `in_progress`, `completed`, `failed`, `killed` | `completed` requires `output`. Accepts optional `results: JsonObject`. Single-in-progress guard. |
+| `task_list` | — | Filters by `status`, `assigned_to`, `updated_since`. Returns `TaskSummary[]`, ordered in_progress → pending → terminal. |
 | `task_stop` | — | Kills an `in_progress` task owned by the calling agent. Rejects pending and cross-agent. |
-| `task_output` | — | Returns `TaskOutputResponse` for the given task ID. Rejects cross-agent reads on assigned tasks. |
+| `task_output` | — | Returns `TaskOutputResponse`. Validates `results` against registered schema if configured. |
+| `task_delegate` | — | **Coordinator only.** Assigns a pending task to a child agent ID. No single-in-progress guard — multiple tasks may be delegated simultaneously. |
 
 ## Relationship to Other Packages
 

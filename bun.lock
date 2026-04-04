@@ -224,6 +224,18 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/spawn-tools": {
+      "name": "@koi/spawn-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/tasks": "workspace:*",
+      },
+    },
     "packages/lib/task-board": {
       "name": "@koi/task-board",
       "version": "0.0.0",
@@ -314,6 +326,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
@@ -709,6 +722,8 @@
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
+
+    "@koi/spawn-tools": ["@koi/spawn-tools@workspace:packages/lib/spawn-tools"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
 

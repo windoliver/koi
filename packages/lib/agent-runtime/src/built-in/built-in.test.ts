@@ -14,7 +14,7 @@ describe("getBuiltInAgents", () => {
   test("built-in count matches expected number", () => {
     const agents = getBuiltInAgents();
     expect(agents.length).toBe(BUILT_IN_AGENT_COUNT);
-    expect(agents.length).toBe(3);
+    expect(agents.length).toBe(4);
   });
 
   test("structural snapshot: agentType, tools, model", () => {
@@ -41,5 +41,13 @@ describe("getBuiltInAgents", () => {
     for (const agent of agents) {
       expect(agent.whenToUse.length).toBeGreaterThan(10);
     }
+  });
+
+  test("coordinator agent is present and uses opus model", () => {
+    const agents = getBuiltInAgents();
+    const coordinator = agents.find((a) => a.agentType === "coordinator");
+    expect(coordinator).toBeDefined();
+    expect(coordinator?.manifest.model.name).toBe("opus");
+    expect(coordinator?.source).toBe("built-in");
   });
 });

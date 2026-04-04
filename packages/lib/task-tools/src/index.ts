@@ -6,4 +6,4 @@
  */
 
 export { createTaskTools } from "./create-task-tools.js";
-export type { TaskOutputResponse, TaskSummary, TaskToolsConfig } from "./types.js";
+export type { ResultSchema, TaskOutputResponse, TaskSummary, TaskToolsConfig } from "./types.js";
