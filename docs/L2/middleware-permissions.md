@@ -340,8 +340,9 @@ Logged after the human responds via the `ApprovalHandler`. Contains:
 | `approvalDecision` | `"allow"`, `"deny"`, `"modify"`, or `"always-allow"` |
 | `userId` | Actor who made the decision (`ctx.session.userId` or `"__anonymous__"`) |
 | `denyReason` | Reason string (deny only) |
-| `originalInput` | Agent's proposed tool input (modify only) |
-| `modifiedInput` | Human's rewritten input (modify only) |
+| `originalInputKeys` | Sorted key names of agent's proposed input (modify only) |
+| `modifiedInputKeys` | Sorted key names of human's rewritten input (modify only) |
+| `inputModified` | `true` when input was rewritten (modify only) |
 | `scope` | `"session"` (always-allow only) |
 
 Both entries share `sessionId`, `agentId`, `turnIndex`, `kind: "tool_call"`, and

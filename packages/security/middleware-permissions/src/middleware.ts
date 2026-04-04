@@ -551,8 +551,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       meta.denyReason = approval.reason;
     }
     if (approval.kind === "modify") {
-      meta.originalInput = originalInput;
-      meta.modifiedInput = approval.updatedInput;
+      // Log key names only — raw inputs may contain secrets or sensitive data.
+      // Full payload capture requires a dedicated secure-audit mode.
+      meta.originalInputKeys = Object.keys(originalInput).sort();
+      meta.modifiedInputKeys = Object.keys(approval.updatedInput).sort();
+      meta.inputModified = true;
     }
     if (approval.kind === "always-allow") {
       meta.scope = approval.scope;
@@ -585,7 +588,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       userId: ctx.session.userId ?? "__anonymous__",
     };
     if (approval.kind === "modify") {
-      meta.modifiedInput = approval.updatedInput;
+      meta.inputModified = true;
+      meta.originalInputKeys = Object.keys(originalInput).sort();
+      meta.modifiedInputKeys = Object.keys(approval.updatedInput).sort();
     }
     if (approval.kind === "deny") {
       meta.denyReason = approval.reason;
@@ -601,10 +606,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       identifier: toolId,
       outcome: approval.kind === "deny" ? "failure" : "success",
       durationMs: clock() - startMs,
-      request: { data: originalInput },
       metadata: meta as JsonObject,
     };
-    onApprovalStep(ctx.session.sessionId as string, step);
+    try {
+      onApprovalStep(ctx.session.sessionId as string, step);
+    } catch (e: unknown) {
+      swallowError(e, { package: PKG, operation: "approval-step" });
+    }
   }
 
   /** Audit a permission decision at model-time filtering (wrapModelCall). */
@@ -1042,8 +1050,26 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const inflight = inflightApprovals.get(dedupKey);
       if (inflight !== undefined) {
         // Another call is already waiting for approval — wait for its result
+        const coalescedStartMs = clock();
         const rawResult = await inflight;
         const result = validateApprovalDecision(rawResult);
+
+        // Emit approval-outcome audit + trajectory for this coalesced caller too
+        const coalescedDurationMs = clock() - coalescedStartMs;
+        if (result !== undefined && auditSink !== undefined) {
+          auditApprovalOutcome(
+            ctx,
+            request.toolId,
+            result,
+            request.input,
+            coalescedDurationMs,
+            auditSink,
+          );
+        }
+        if (result !== undefined) {
+          emitApprovalStep(ctx, request.toolId, result, request.input, coalescedStartMs);
+        }
+
         if (result === undefined || result.kind === "deny") {
           throw new KoiRuntimeError({
             code: "PERMISSION",

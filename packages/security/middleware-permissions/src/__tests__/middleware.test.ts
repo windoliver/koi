@@ -1466,8 +1466,9 @@ describe("createPermissionsMiddleware", () => {
       const meta1 = entries[1]?.metadata as Record<string, unknown>;
       expect(meta1.phase).toBe("approval_outcome");
       expect(meta1.approvalDecision).toBe("modify");
-      expect(meta1.originalInput).toEqual({ cmd: "dangerous-cmd" });
-      expect(meta1.modifiedInput).toEqual({ cmd: "safe-cmd" });
+      expect(meta1.inputModified).toBe(true);
+      expect(meta1.originalInputKeys).toEqual(["cmd"]);
+      expect(meta1.modifiedInputKeys).toEqual(["cmd"]);
     });
 
     test("logs deny reason in second audit entry", async () => {
@@ -1549,6 +1550,43 @@ describe("createPermissionsMiddleware", () => {
       const meta0 = entries[0]?.metadata as Record<string, unknown>;
       expect(meta0.userId).toBe("alice");
     });
+
+    test("coalesced approvals emit audit entries for each caller", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      let resolveApproval: ((d: ApprovalDecision) => void) | undefined;
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> =>
+        new Promise((resolve) => {
+          resolveApproval = resolve;
+        });
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        auditSink,
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      // First call starts and registers in inflightApprovals
+      const p1 = mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+      // Yield so the first call reaches the inflight registration
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Second call coalesces onto the first
+      const p2 = mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+
+      // Resolve the approval
+      resolveApproval?.({ kind: "allow" });
+      await Promise.all([p1, p2]);
+
+      // Both callers should get an approval_outcome audit entry
+      const outcomeEntries = entries.filter(
+        (e) => (e.metadata as Record<string, unknown>).phase === "approval_outcome",
+      );
+      expect(outcomeEntries.length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1604,11 +1642,30 @@ describe("createPermissionsMiddleware", () => {
       const step = steps[0] as RichTrajectoryStep;
       expect(step.source).toBe("user");
       expect(step.outcome).toBe("success");
-      const req = step.request as Record<string, unknown>;
-      expect(req.data).toEqual({ dangerous: true });
       const meta = step.metadata as Record<string, unknown>;
       expect(meta.approvalDecision).toBe("modify");
-      expect(meta.modifiedInput).toEqual({ safe: true });
+      expect(meta.inputModified).toBe(true);
+      expect(meta.originalInputKeys).toEqual(["dangerous"]);
+      expect(meta.modifiedInputKeys).toEqual(["safe"]);
+    });
+
+    test("swallows onApprovalStep errors without blocking approval", async () => {
+      const onApprovalStep = (): void => {
+        throw new Error("callback exploded");
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        onApprovalStep,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "allow",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+      const handler = mock(noopToolHandler);
+
+      // Should not throw despite broken callback
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), handler);
+      expect(handler).toHaveBeenCalledTimes(1);
     });
 
     test("emits failure trajectory step on deny", async () => {
