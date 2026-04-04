@@ -84,6 +84,8 @@ export interface WebExecutor {
     query: string,
     options?: WebSearchOptions,
   ) => Promise<Result<readonly WebSearchResult[], KoiError>>;
+  /** Name of the search provider backend (e.g., "brave", "tavily") for provenance tracking. */
+  readonly providerName?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       : undefined;
 
   return {
+    providerName: config.searchProvider?.name,
     fetch: async (
       url: string,
       options?: WebFetchOptions,
