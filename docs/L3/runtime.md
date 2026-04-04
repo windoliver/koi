@@ -54,8 +54,9 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/task-tools` | Task board tools (create/get/update/list/stop/output) | `task-tools` |
 | `@koi/tasks` | In-memory task board store | `task-board` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead | `glob-use` |
-| `@koi/tools-core` | `buildTool()` factory for type-safe tool construction | `tool-use` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |
+
+> **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board` are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/`.
 
 ### Spawn Inheritance Coverage (#1425)
 
