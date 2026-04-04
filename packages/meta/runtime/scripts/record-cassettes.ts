@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Records VCR cassettes + full-stack ATIF trajectories.
  *
@@ -24,6 +25,11 @@
  *   @koi/tools-builtin        — Glob/Grep/ToolSearch
  */
 
+import {
+  createAgentDefinitionRegistry,
+  createDefinitionResolver,
+  getBuiltInAgents,
+} from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -39,7 +45,7 @@ import {
   validateMemoryFilePath,
   validateMemoryRecordInput,
 } from "@koi/core";
-import { createKoi } from "@koi/engine";
+import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
@@ -55,7 +61,7 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { consumeModelStream } from "@koi/query-engine";
+import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
@@ -688,6 +694,61 @@ const BYPASS_RULES: readonly SourcedRule[] = [
   { pattern: "*", action: "*", effect: "allow", source: "policy" },
 ];
 
+// ---------------------------------------------------------------------------
+// Spawn tool provider — @koi/agent-runtime + @koi/engine (#1424)
+// Child agents use a proper EngineAdapter built with runTurn() so the
+// model→tool→model loop works correctly inside spawnChildAgent/createKoi.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps modelAdapter into a full EngineAdapter for spawned child agents.
+ * Uses runTurn() from @koi/query-engine to drive the model loop.
+ * The parent bridge adapter is for recording; children need their own loop.
+ */
+function createChildBridge(): EngineAdapter {
+  return {
+    engineId: "spawn-child",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      const h = input.callHandlers;
+      if (!h) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers on child agent input" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const messages = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
+      ];
+      return runTurn({ callHandlers: h, messages, signal: input.signal });
+    },
+  };
+}
+
+const spawnBuiltIns = getBuiltInAgents();
+const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
+const spawnResolver = createDefinitionResolver(spawnRegistry);
+const spawnToolProvider = createSpawnToolProvider({
+  resolver: spawnResolver,
+  spawnLedger: createInMemorySpawnLedger(5),
+  adapter: createChildBridge(), // child agents use a proper engine adapter with runTurn
+  manifestTemplate: {
+    name: "spawned-agent",
+    version: "0.0.0",
+    description: "Spawned sub-agent",
+    model: { name: MODEL },
+  },
+});
+
 const queries: readonly QueryConfig[] = [
   // 1. simple-text: text response, no tools
   {
@@ -1008,6 +1069,23 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 3,
+  },
+
+  // 13. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
+  //     Parent delegates to built-in "researcher" agent via the Spawn tool.
+  //     Trajectory: parent model call → Spawn tool → child researcher agent (real LLM) → result back.
+  {
+    name: "spawn-agent",
+    prompt:
+      "Use the Spawn tool with agentName='researcher' to delegate this task: " +
+      "'What is the Fibonacci sequence? Provide a one-sentence definition.' " +
+      "Then report the researcher's answer verbatim.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [spawnToolProvider],
+    maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
 ];
 

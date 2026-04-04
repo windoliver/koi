@@ -1,13 +1,39 @@
 {
   "name": "simple-text",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775257875303,
+  "recordedAt": 1775261745020,
   "chunks": [
     {
-      "kind": "error",
-      "message": "openai-compat API error (401): User not found.",
-      "code": "PERMISSION",
-      "retryable": false
+      "kind": "text_delta",
+      "delta": "4"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 13,
+      "outputTokens": 2
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "4\n",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "stop",
+        "responseId": "gen-1775261744-SWElB6SD5U3XtnG0UmEJ",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "4\n"
+          }
+        ],
+        "usage": {
+          "inputTokens": 13,
+          "outputTokens": 2
+        }
+      }
     }
   ]
 }

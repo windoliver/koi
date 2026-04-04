@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-03T23:11:19.845Z",
+      "timestamp": "2026-04-04T00:16:03.991Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-03T23:11:19.845Z",
+      "timestamp": "2026-04-04T00:16:03.991Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,23 +38,35 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-03T23:11:19.846Z",
+      "timestamp": "2026-04-04T00:16:03.992Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
-      "duration_ms": 27,
-      "outcome": "failure",
+      "observation": {
+        "results": [
+          {
+            "content": "Paris\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 66,
+        "completion_tokens": 2
+      },
+      "duration_ms": 401,
+      "outcome": "success",
       "extra": {
         "totalMessages": 2,
-        "requestModel": "google/gemini-2.0-flash-001"
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-03T23:11:19.873Z",
+      "timestamp": "2026-04-04T00:16:04.394Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 27.73370900000009,
+      "duration_ms": 402.2244159999973,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -68,10 +80,187 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-03T23:11:19.873Z",
+      "timestamp": "2026-04-04T00:16:04.398Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 27.83008399999926,
+      "duration_ms": 406.2392499999987,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "timestamp": "2026-04-04T00:16:04.410Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "",
+      "observation": {
+        "results": [
+          {
+            "content": "Okay, I understand the active capabilities of this system are as follows:\n\n*   **Permissions:** The system has bypass permissions, effectively allowing all actions. This is also described as \"allow all\".\n\n*   **Hooks:** There is one active hook configured: \"completion-gate\". This suggests some logic is triggered upon task completion, potentially to control workflow.\n\n*   **Tracing:** The system is recording its trajectory, with no pending retries. This means the system is keeping a log of its actions and decisions.\n\n*   **Hook Dispatch:** There is 1 hook configured for event-driven execution. This, combined with the \"completion-gate\" hook, indicates a system that reacts to specific events with predefined actions.\n\nIn summary, this system can perform any action, has a mechanism to trigger actions upon task completion, is recording its decision-making process, and leverages event-driven architecture with hooks.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 56,
+        "completion_tokens": 188
+      },
+      "duration_ms": 1888,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:06.298Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 1888.3057919999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:06.299Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 1889.0650419999984,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "agent",
+      "timestamp": "2026-04-04T00:16:06.339Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "",
+      "observation": {
+        "results": [
+          {
+            "content": "Okay, I understand. Here's a breakdown of what this information indicates about the system's active capabilities:\n\n*   **`permissions: bypass (allow all)`**: This is a critical piece of information. It means the system is currently configured to bypass all permission checks.  In essence, it has unrestricted access and can perform any action without authorization constraints. This is a very powerful (and potentially dangerous) setting, usually reserved for specific debugging scenarios or system maintenance tasks. In a production environment, it would raise significant security concerns, as it removes any protection against unintended or malicious actions.\n\n*   **`hooks: Active hooks: completion-gate`**: This tells us that the system uses hooks, specifically with a \"completion-gate\" type. Hooks are mechanisms that allow you to execute custom code or scripts at specific points within the system's operation (think of them as event triggers). The \"completion-gate\" hook probably triggers something when a task or process completes successfully. This suggests that some behavior of the system is modified by the completion of certain steps.\n\n*   **`tracing: Recording trajectory (0 pending retries)`**: This indicates that the execution path of the system is being recorded for debugging or analysis purposes.  The \"0 pending retries\" suggests that the recording process is working smoothly without any errors or interruptions. Trajectory recording is helpful for understanding how the system behaves under different circumstances, diagnosing issues, and even auditing system activity.\n\n*   **`Hook Dispatch: 1 hook(s) configured for event-driven execution`**: This confirms that there is indeed a hook dispatcher enabled. It actively listens for specific events and triggers corresponding hooks, enabling an event-driven execution model. This suggests the system isn't just passively processing commands but also reacting to internal events.\n\n**In Summary:**\n\nThis system has powerful capabilities, including:\n\n*   **Full access (no permissions restricted).**\n*   **The capacity to modify its behavior based on the successful completion of processes.**\n*   **The ability to trace and track the execution path for later analysis.**\n*   **An event-driven nature through the hook dispatch mechanism.**\n\n**Important Considerations:**\n\nThe `permissions: bypass (allow all)` setting should be carefully considered. If this is not intended, it should be disabled immediately to ensure proper security and access control.  The combination of powerful permissions and event-driven hooks means that errors or malicious code could potentially cascade and become particularly problematic because of the unrestricted execution context. You should carefully control when this type of capability is enabled.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 56,
+        "completion_tokens": 528
+      },
+      "duration_ms": 3953,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:10.293Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3953.2700839999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:10.293Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 3953.8835419999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "timestamp": "2026-04-04T00:16:10.299Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "",
+      "observation": {
+        "results": [
+          {
+            "content": "Okay, I understand. Based on the information you've provided, this system has the following active capabilities:\n\n*   **Permissions:** The system is configured to bypass all permission checks, effectively granting it unrestricted access (allow all). This is a very powerful and potentially dangerous setting, as it could lead to unintended consequences or security vulnerabilities if not carefully managed.\n*   **Hooks:** There's an active hook called \"completion-gate\". This likely means a specific function or process is triggered upon task completion, possibly to validate results, trigger subsequent actions, or perform cleanup.\n*   **Tracing:** The system is actively recording its trajectory, presumably for debugging, auditing, or analysis. There are currently no pending retries in the tracing process, suggesting it's operating smoothly.\n*   **Hook Dispatch:** There's one hook configured for event-driven execution. This implies the system can respond to specific events by triggering pre-defined actions or scripts.\n\nIn simpler terms:\n\n*   It has full access.\n*   It has a mechanism related to task completion.\n*   It's recording its actions for later review.\n*   It can react to events automatically.\n\n**Key Considerations:**\n\n*   **Permissions Bypass:**  The \"bypass (allow all)\" permission setting is the most critical aspect.  This configuration should be thoroughly evaluated and justified.  It's essential to understand why this is necessary and what safeguards are in place to prevent misuse or accidental errors.\n*   **Completion Gate:**  Investigating the `completion-gate` hook would reveal its exact purpose and how it affects the system's workflow.\n*   **Event-Driven Hook:**  Knowing which event triggers the single hook dispatch would provide valuable context about its purpose and role.\n\nIf you provide more context or specific questions about these capabilities, I can give you more targeted information. For example:\n\n*   What kind of system is this (e.g., AI chatbot, software application, robot)?\n*   What is the purpose of the system?\n*   What are the potential risks associated with the \"bypass (allow all)\" permission?\n*   Why is there only one hook configured?\n*   What is the \"completion-gate\" hook used for?\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 56,
+        "completion_tokens": 469
+      },
+      "duration_ms": 4016,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:14.315Z",
+      "model_name": "middleware:hooks",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 4016.9005419999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-04T00:16:14.315Z",
+      "model_name": "middleware:permissions",
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
+      "duration_ms": 4017.0008750000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
