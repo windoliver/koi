@@ -255,6 +255,90 @@ const messages = useTuiStore(s => s.messages);
 const view = useTuiStore(s => s.activeView);
 ```
 
+## Phase 2j-5: Root Component + Keyboard + Theme + Factory
+
+Phase 2j-5 adds the final assembly layer on top of the state + components built in 2j-1 through 2j-4.
+
+### New files
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/key-event.ts` | ~25 | Shared key predicates (`isCtrlP`, `isCtrlC`, `isEscape`, etc.) |
+| `src/theme.ts` | ~70 | Deep Water color tokens + layout helpers (no domain mappers) |
+| `src/keyboard.ts` | ~70 | Pure `handleGlobalKey()` + `createKeyboardHandler()` |
+| `src/components/ConversationView.tsx` | ~50 | Wrapper (MessageList + InputArea) + view stubs |
+| `src/tui-root.tsx` | ~130 | Root component: StatusBar + views + modals + keyboard |
+| `src/create-app.ts` | ~110 | `createTuiApp()` factory |
+
+### Key design decisions
+
+**Two-layer keyboard (1A):** `TuiRoot` registers one `useKeyboard` for globals (Ctrl+P,
+Ctrl+C, Esc). Modals register their own `useKeyboard` and guard with `if (!focused) return`.
+Esc priority: root checks `modal !== null` before calling `onDismissModal` vs `onBack`.
+
+**State-driven layout tier (2A):** `TuiRoot` reads `layoutTier` from store. `createTuiApp`
+installs a terminal resize listener and dispatches `set_layout` with 50ms debounce (15A).
+`TuiRoot` itself has zero terminal I/O.
+
+**Single modal slot (3A):** `modal: TuiModal | null` — one modal at a time. Permission
+prompt replaces palette (known limitation, intentional for v2 scope).
+
+**Auto-mount factory (4A):** `createTuiApp(config)` does TTY check first (returns
+`Result<TuiAppHandle, TuiStartError>`). Calling `handle.start()` mounts the renderer and
+React tree. `handle.stop()` is idempotent.
+
+### `createTuiApp` flow
+
+```typescript
+const result = createTuiApp({ store, permissionBridge, onCommand, onSubmit, onInterrupt })
+if (!result.ok) {
+  // result.error.kind === "no_tty" — not a terminal (CI, pipe, etc.)
+  process.exit(1)
+}
+await result.value.start()   // mounts renderer + React, starts rendering
+// ...
+await result.value.stop()    // cleans up renderer, bridge, resize listener
+```
+
+### Theme
+
+`theme.ts` contains only two concerns:
+
+1. **`COLORS`** — the Deep Water palette as `as const` hex strings
+2. **Layout + string helpers** — `computeLayoutTier(cols)`, `truncate`, `separator`, `abbreviateModel`
+
+Domain-specific color decisions (agent status colors, connection indicator colors) live in
+co-located component helpers (e.g., `status-bar-helpers.ts`, `PermissionPrompt.tsx`), not
+in `theme.ts`. The `CONNECTION_STATUS_CONFIG` lookup table in `theme.ts` is an exception
+because it is a pure structural invariant with no domain business logic.
+
+**Layout tier breakpoints:**
+
+| Cols | Tier | What changes |
+|------|------|-------------|
+| < 60 | `compact` | Metrics hidden, minimal decoration |
+| 60-119 | `normal` | Standard layout |
+| ≥ 120 | `wide` | Full layout |
+
+### `TuiRoot` selector discipline
+
+`TuiRoot` only subscribes to the two fields it needs for routing:
+```typescript
+const activeView = useTuiStore((s) => s.activeView)  // re-renders on navigation only
+const modal = useTuiStore((s) => s.modal)            // re-renders on modal open/close only
+```
+Zero re-renders during streaming. StatusBar, MessageList, InputArea each manage their own
+subscriptions.
+
+### Error handling
+
+| Failure | Handling |
+|---------|----------|
+| `process.stdout.isTTY === false` | `createTuiApp` returns `{ ok: false, error: { kind: "no_tty" } }` |
+| `createCliRenderer()` throws | `handle.start()` throws `Error("Failed to start TUI renderer", { cause })` |
+| `stop()` before `start()` | No-op (idempotent) |
+| `stop()` called twice | No-op (idempotent) |
+
 ## Layer Compliance
 
 - State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
