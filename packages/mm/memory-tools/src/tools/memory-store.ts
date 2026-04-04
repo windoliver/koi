@@ -6,32 +6,39 @@
  * dedup warning. If force is true, updates the existing record.
  */
 
-import type { JsonObject, KoiError, Result, Tool, ToolPolicy } from "@koi/core";
-import { ALL_MEMORY_TYPES, DEFAULT_UNSANDBOXED_POLICY, validateMemoryRecordInput } from "@koi/core";
+import type { JsonObject, KoiError, MemoryRecordInput, Result, Tool } from "@koi/core";
+import { ALL_MEMORY_TYPES, validateMemoryRecordInput } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX } from "../constants.js";
 import { parseOptionalBoolean, parseOptionalEnum, parseString } from "../parse-args.js";
 import type { MemoryToolBackend } from "../types.js";
 
-/** Execute handler — extracted for size limit. */
-async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promise<unknown> {
+/** Parse and validate tool args into a MemoryRecordInput + force flag. */
+function parseStoreArgs(
+  args: JsonObject,
+): { readonly input: MemoryRecordInput; readonly force: boolean } | { readonly error: unknown } {
   const nameResult = parseString(args, "name");
-  if (!nameResult.ok) return nameResult.err;
+  if (!nameResult.ok) return { error: nameResult.err };
 
   const descResult = parseString(args, "description");
-  if (!descResult.ok) return descResult.err;
+  if (!descResult.ok) return { error: descResult.err };
 
   const typeResult = parseOptionalEnum(args, "type", ALL_MEMORY_TYPES);
-  if (!typeResult.ok) return typeResult.err;
+  if (!typeResult.ok) return { error: typeResult.err };
   if (typeResult.value === undefined) {
-    return { error: "type must be one of: user, feedback, project, reference", code: "VALIDATION" };
+    return {
+      error: {
+        error: "type must be one of: user, feedback, project, reference",
+        code: "VALIDATION",
+      },
+    };
   }
 
   const contentResult = parseString(args, "content");
-  if (!contentResult.ok) return contentResult.err;
+  if (!contentResult.ok) return { error: contentResult.err };
 
   const forceResult = parseOptionalBoolean(args, "force");
-  if (!forceResult.ok) return forceResult.err;
+  if (!forceResult.ok) return { error: forceResult.err };
 
   const input = {
     name: nameResult.value,
@@ -39,44 +46,46 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
     type: typeResult.value,
     content: contentResult.value,
   };
-
   const validationErrors = validateMemoryRecordInput(input);
   if (validationErrors.length > 0) {
     return {
-      error: validationErrors.map((e) => `${e.field}: ${e.message}`).join("; "),
-      code: "VALIDATION",
+      error: {
+        error: validationErrors.map((e) => `${e.field}: ${e.message}`).join("; "),
+        code: "VALIDATION",
+      },
     };
   }
 
+  return { input, force: forceResult.value === true };
+}
+
+/** Execute handler — performs dedup check and store/update. */
+async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promise<unknown> {
+  const parsed = parseStoreArgs(args);
+  if ("error" in parsed) return parsed.error;
+
+  const { input, force } = parsed;
+
   try {
-    // Dedup check
-    if (forceResult.value !== true) {
-      const dupResult = await backend.findByName(input.name, input.type);
-      if (!dupResult.ok) return { error: dupResult.error.message, code: "INTERNAL" };
-      if (dupResult.value !== undefined) {
+    const dupResult = await backend.findByName(input.name, input.type);
+    if (!dupResult.ok) return { error: dupResult.error.message, code: "INTERNAL" };
+
+    if (dupResult.value !== undefined) {
+      if (!force) {
         return {
           stored: false,
           duplicate: { id: dupResult.value.id, name: dupResult.value.name },
           message: "A memory with this name and type already exists. Use force: true to overwrite.",
         };
       }
+      const updateResult = await backend.update(dupResult.value.id, {
+        description: input.description,
+        content: input.content,
+      });
+      if (!updateResult.ok) return { error: updateResult.error.message, code: "INTERNAL" };
+      return { stored: true, id: updateResult.value.id, updated: true };
     }
 
-    // Force update existing
-    if (forceResult.value === true) {
-      const dupResult = await backend.findByName(input.name, input.type);
-      if (!dupResult.ok) return { error: dupResult.error.message, code: "INTERNAL" };
-      if (dupResult.value !== undefined) {
-        const updateResult = await backend.update(dupResult.value.id, {
-          description: input.description,
-          content: input.content,
-        });
-        if (!updateResult.ok) return { error: updateResult.error.message, code: "INTERNAL" };
-        return { stored: true, id: updateResult.value.id, updated: true };
-      }
-    }
-
-    // Create new
     const storeResult = await backend.store(input);
     if (!storeResult.ok) return { error: storeResult.error.message, code: "INTERNAL" };
     return { stored: true, id: storeResult.value.id, filePath: storeResult.value.filePath };
@@ -89,7 +98,6 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
 export function createMemoryStoreTool(
   backend: MemoryToolBackend,
   prefix: string = DEFAULT_PREFIX,
-  _policy: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY,
 ): Result<Tool, KoiError> {
   return buildTool({
     name: `${prefix}_store`,

@@ -6,8 +6,8 @@
  * the MEMORY.md index.
  */
 
-import type { JsonObject, KoiError, Result, Tool, ToolPolicy } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY, memoryRecordId } from "@koi/core";
+import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
+import { memoryRecordId } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX } from "../constants.js";
 import { parseString } from "../parse-args.js";
@@ -39,7 +39,6 @@ async function executeDelete(args: JsonObject, backend: MemoryToolBackend): Prom
 export function createMemoryDeleteTool(
   backend: MemoryToolBackend,
   prefix: string = DEFAULT_PREFIX,
-  _policy: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY,
 ): Result<Tool, KoiError> {
   return buildTool({
     name: `${prefix}_delete`,

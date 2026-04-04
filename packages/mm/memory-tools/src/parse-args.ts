@@ -53,8 +53,8 @@ export function parseOptionalNumber(
 ): ParseResult<number | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
-  if (typeof value !== "number") {
-    return { ok: false, err: { error: `${key} must be a number`, code: "VALIDATION" } };
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { ok: false, err: { error: `${key} must be a finite number`, code: "VALIDATION" } };
   }
   return { ok: true, value };
 }

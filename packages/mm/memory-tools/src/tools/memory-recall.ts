@@ -5,8 +5,7 @@
  * over causal edges.
  */
 
-import type { JsonObject, KoiError, Result, Tool, ToolPolicy } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT } from "../constants.js";
 import {
@@ -62,7 +61,6 @@ async function executeRecall(
 export function createMemoryRecallTool(
   backend: MemoryToolBackend,
   prefix: string = DEFAULT_PREFIX,
-  _policy: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Result<Tool, KoiError> {
   return buildTool({

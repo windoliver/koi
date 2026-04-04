@@ -42,7 +42,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend, "memory", undefined, 5));
+    const tool = unwrapTool(createMemoryRecallTool(backend, "memory", 5));
 
     await tool.execute({ query: "test", limit: 100 });
     expect(capturedLimit).toBe(5);

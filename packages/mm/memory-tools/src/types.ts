@@ -14,7 +14,6 @@ import type {
   MemoryRecordPatch,
   MemoryType,
   Result,
-  ToolPolicy,
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +88,5 @@ export interface MemoryToolProviderConfig {
   readonly prefix?: string | undefined;
   readonly recallLimit?: number | undefined;
   readonly searchLimit?: number | undefined;
-  readonly policy?: ToolPolicy | undefined;
   readonly priority?: number | undefined;
 }

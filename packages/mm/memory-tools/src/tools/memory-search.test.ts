@@ -82,7 +82,7 @@ describe("memory_search execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemorySearchTool(backend, "memory", undefined, 10));
+    const tool = unwrapTool(createMemorySearchTool(backend, "memory", 10));
 
     await tool.execute({ limit: 50 });
     expect(capturedFilter?.limit).toBe(10);

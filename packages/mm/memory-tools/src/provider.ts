@@ -7,7 +7,7 @@
  */
 
 import type { ComponentProvider, KoiError, Result, Tool } from "@koi/core";
-import { COMPONENT_PRIORITY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { COMPONENT_PRIORITY } from "@koi/core";
 import { createToolComponentProvider } from "@koi/tools-core";
 import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT, DEFAULT_SEARCH_LIMIT } from "./constants.js";
 import { createMemoryDeleteTool } from "./tools/memory-delete.js";
@@ -30,15 +30,14 @@ export function createMemoryToolProvider(
     prefix = DEFAULT_PREFIX,
     recallLimit = DEFAULT_RECALL_LIMIT,
     searchLimit = DEFAULT_SEARCH_LIMIT,
-    policy = DEFAULT_UNSANDBOXED_POLICY,
     priority = COMPONENT_PRIORITY.BUNDLED,
   } = config;
 
   const results: readonly Result<Tool, KoiError>[] = [
-    createMemoryStoreTool(backend, prefix, policy),
-    createMemoryRecallTool(backend, prefix, policy, recallLimit),
-    createMemorySearchTool(backend, prefix, policy, searchLimit),
-    createMemoryDeleteTool(backend, prefix, policy),
+    createMemoryStoreTool(backend, prefix),
+    createMemoryRecallTool(backend, prefix, recallLimit),
+    createMemorySearchTool(backend, prefix, searchLimit),
+    createMemoryDeleteTool(backend, prefix),
   ];
 
   const tools: Tool[] = [];

@@ -60,6 +60,16 @@ describe("parseOptionalNumber", () => {
     const result = parseOptionalNumber({ n: "five" }, "n");
     expect(result.ok).toBe(false);
   });
+
+  test("returns error for NaN", () => {
+    const result = parseOptionalNumber({ n: Number.NaN }, "n");
+    expect(result.ok).toBe(false);
+  });
+
+  test("returns error for Infinity", () => {
+    const result = parseOptionalNumber({ n: Number.POSITIVE_INFINITY }, "n");
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("parseOptionalBoolean", () => {
