@@ -40,8 +40,15 @@ export function createAuthNotificationHandler(
             },
           ],
         })
-        .catch(() => {
-          // Swallow send errors — failing to show the link should not crash the transport
+        .catch((err: unknown) => {
+          // auth_required delivery failure means the user never sees the OAuth URL.
+          // Log prominently — the bridge will continue polling until auth_timeout,
+          // then return AUTH_REQUIRED. This makes the root cause diagnosable.
+          // eslint-disable-next-line no-console
+          console.error(
+            `[koi/fs-nexus] Failed to deliver auth_required for ${provider}: ${String(err)}. ` +
+              `User will not see the authorization link at ${auth_url}`,
+          );
         });
     } else if (n.method === "auth_progress") {
       const { message, elapsed_seconds } = n.params;
@@ -54,7 +61,9 @@ export function createAuthNotificationHandler(
             },
           ],
         })
-        .catch(() => {});
+        .catch(() => {
+          // Progress heartbeats are informational — delivery failure is not critical
+        });
     } else if (n.method === "auth_complete") {
       const { provider } = n.params;
       void channel
@@ -66,7 +75,9 @@ export function createAuthNotificationHandler(
             },
           ],
         })
-        .catch(() => {});
+        .catch(() => {
+          // Completion notice — decorative; operation will succeed regardless
+        });
     }
   };
 }

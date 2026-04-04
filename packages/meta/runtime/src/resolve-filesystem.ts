@@ -142,24 +142,32 @@ function isLocalBridgeOptions(v: unknown): v is LocalBridgeOptions {
  *     process.cwd(),
  *     createAuthNotificationHandler(channel),
  *   );
- *   const runtime = createRuntime({ filesystem: backend });
+ *   const { backend, operations } = await resolveFileSystemAsync(..., handler);
+ *   const runtime = createRuntime({ filesystem: backend, filesystemOperations: operations });
  *   // On shutdown: await backend.dispose?.()
  *
  * @param config - Manifest filesystem config.
  * @param cwd - Working directory (used when backend is "local").
  * @param onNotification - Called when auth_required / auth_progress / auth_complete
  *   notifications arrive from the bridge. Wire createAuthNotificationHandler(channel) here.
+ * @returns `{ backend, operations }` — pass both to createRuntime to preserve write/edit grants.
  */
 export async function resolveFileSystemAsync(
   config: FileSystemConfig | undefined,
   cwd: string,
   onNotification?: ((n: BridgeNotification) => void) | undefined,
-): Promise<FileSystemBackend> {
-  const backend = config?.backend ?? "local";
+): Promise<{
+  readonly backend: FileSystemBackend;
+  readonly operations: readonly ("read" | "write" | "edit")[] | undefined;
+}> {
+  const fsBackend = config?.backend ?? "local";
+  // Preserve operation grants from the config — callers must forward these to
+  // createRuntime({ filesystemOperations: operations }) to avoid read-only regression.
+  const operations = config?.operations;
 
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
-  if (backend === "local") {
-    return createLocalFileSystem(cwd);
+  if (fsBackend === "local") {
+    return { backend: createLocalFileSystem(cwd), operations };
   }
 
   const options = config?.options;
@@ -177,15 +185,20 @@ export async function resolveFileSystemAsync(
     const unsubscribe =
       onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
+    // Derive mount point: explicit config wins, then fall back to the bridge's
+    // actual mount (transport.mounts[0] without leading slash). Without this,
+    // local and gdrive paths resolve against the HTTP default ("fs"), not the
+    // bridge's real namespace, and every I/O call will fail.
+    const derivedMountPoint = options.mountPoint ?? transport.mounts?.[0]?.slice(1);
+
     const nexusBackend = createNexusFileSystem({
       url: "local://bridge",
       transport,
-      // Preserve namespace scoping — must match the synchronous Nexus HTTP path.
-      ...(options.mountPoint !== undefined ? { mountPoint: options.mountPoint } : {}),
+      ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
     });
 
     // Wrap dispose to clean up the subscription and transport subprocess
-    return {
+    const backend: FileSystemBackend = {
       ...nexusBackend,
       name: `nexus-local:${Array.isArray(options.mountUri) ? options.mountUri.join(",") : options.mountUri}`,
       dispose: async (): Promise<void> => {
@@ -194,6 +207,7 @@ export async function resolveFileSystemAsync(
         transport.close();
       },
     };
+    return { backend, operations };
   }
 
   // Nexus HTTP transport — synchronous resolution
@@ -201,5 +215,5 @@ export async function resolveFileSystemAsync(
   if (!validated.ok) {
     throw new Error(`Invalid nexus filesystem config: ${validated.error.message}`);
   }
-  return createNexusFileSystem(validated.value);
+  return { backend: createNexusFileSystem(validated.value), operations };
 }
