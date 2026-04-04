@@ -16,11 +16,17 @@ import type { MemoryToolBackend } from "../types.js";
 
 /**
  * Canonicalize a frontmatter field value — same normalization as the
- * core serializer so dedup lookup matches the persisted form.
+ * core serializer (`sanitizeFrontmatterValue`) so dedup lookup matches
+ * the persisted form. Replaces newlines, strips C0/C1 control chars
+ * (except tab), collapses whitespace, and trims.
  */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip control chars matching core serializer
+const CONTROL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+
 function canonicalize(value: string): string {
   return value
     .replace(/\r\n|\r|\n/g, " ")
+    .replace(CONTROL_CHAR_RE, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }

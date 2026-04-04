@@ -14,22 +14,19 @@ import { parseString } from "../parse-args.js";
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
 
-/** Max length for memory record IDs — defense-in-depth against oversized inputs. */
-const MAX_ID_LENGTH = 128;
-
-/** Allowed ID characters: alphanumeric, hyphens, underscores, dots. */
-const ID_FORMAT_RE = /^[\w.-]+$/;
+/**
+ * Max length for memory record IDs — defense-in-depth against oversized inputs.
+ * Generous limit since MemoryRecordId is unconstrained in core.
+ */
+const MAX_ID_LENGTH = 512;
 
 /** Execute handler — extracted for size limit. */
 async function executeDelete(args: JsonObject, backend: MemoryToolBackend): Promise<unknown> {
   const idResult = parseString(args, "id");
   if (!idResult.ok) return idResult.err;
 
-  if (idResult.value.length > MAX_ID_LENGTH || !ID_FORMAT_RE.test(idResult.value)) {
-    return {
-      error: "id must be alphanumeric (with hyphens/underscores/dots), max 128 chars",
-      code: "VALIDATION",
-    };
+  if (idResult.value.length > MAX_ID_LENGTH) {
+    return { error: "id exceeds maximum length", code: "VALIDATION" };
   }
 
   const id = memoryRecordId(idResult.value);
