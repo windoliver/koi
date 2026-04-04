@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type {
   EngineEvent,
   EngineInput,
@@ -253,10 +253,9 @@ describe("applyDeliveryPolicy — deferred", () => {
     expect(item?.mode).toBe("collect");
   });
 
-  test("handles inbox full (logs warning, no throw)", async () => {
+  test("throws KoiRuntimeError when inbox is full (hard delivery failure)", async () => {
     const spawnResult = createMockSpawnResult([createDoneEvent("result")]);
     const fullInbox = createFullInbox();
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const handle = applyDeliveryPolicy({
       spawnResult,
@@ -264,11 +263,11 @@ describe("applyDeliveryPolicy — deferred", () => {
       parentInbox: fullInbox,
     });
 
-    // Should not throw
-    await requireRunChild(handle)(dummyInput);
-
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    warnSpy.mockRestore();
+    // Inbox full is now a hard failure — caller must not lose child output silently.
+    // The background task (createAgentSpawnFn) catches this and pushes an error inbox item.
+    await expect(requireRunChild(handle)(dummyInput)).rejects.toThrow(
+      "Deferred delivery: parent inbox at capacity",
+    );
   });
 
   test("handles stream error (rethrows with cause)", async () => {

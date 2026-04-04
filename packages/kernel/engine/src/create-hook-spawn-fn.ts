@@ -3,25 +3,19 @@
  *
  * Maps SpawnRequest fields to SpawnChildOptions for hook-agent spawns.
  * The returned SpawnFn is passed to `createHookMiddleware({ spawnFn })`.
- *
- * This adapter handles the full lifecycle:
- * 1. Build SpawnChildOptions from SpawnRequest
- * 2. Spawn via spawnChildAgent
- * 3. Run the child agent to completion
- * 4. Collect output and return SpawnResult
  */
 
 import type {
   AgentManifest,
-  CapabilityFragment,
   EngineAdapter,
-  EngineEvent,
   KoiErrorCode,
   KoiMiddleware,
   SpawnFn,
   SpawnRequest,
   SpawnResult,
 } from "@koi/core";
+import { createVerdictCollector } from "./output-collector.js";
+import { createSystemPromptMiddleware } from "./run-spawned-agent.js";
 import { spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
 
@@ -89,29 +83,29 @@ export interface CreateHookSpawnFnOptions {
  * - `additionalTools` → injected via component provider
  * - `maxTurns` → mapped to `limits.maxTurns`
  * - `maxTokens` → mapped to `limits.maxTokens`
- * - `nonInteractive` → passed through (approval handler stripping is caller's responsibility)
+ * - `nonInteractive` → passed through
  */
 export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
   const { base, adapter, manifestTemplate, inheritedMiddleware, hookAgentMarker } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
+    // Build manifest for this hook agent
+    const manifest: AgentManifest = {
+      ...manifestTemplate,
+      name: request.agentName,
+      description: request.description,
+    };
+
+    // Use explicit required output tool name from the request.
+    // Falls back to additionalTools[0] for backward compat, but callers
+    // should always set requiredOutputToolName explicitly.
+    const requiredOutputTool =
+      request.requiredOutputToolName ??
+      (request.outputSchema !== undefined && request.additionalTools !== undefined
+        ? request.additionalTools[0]?.name
+        : undefined);
+
     try {
-      // Build manifest for this hook agent
-      const manifest: AgentManifest = {
-        ...manifestTemplate,
-        name: request.agentName,
-        description: request.description,
-      };
-
-      // Use explicit required output tool name from the request.
-      // Falls back to additionalTools[0] for backward compat, but callers
-      // should always set requiredOutputToolName explicitly.
-      const requiredOutputTool =
-        request.requiredOutputToolName ??
-        (request.outputSchema !== undefined && request.additionalTools !== undefined
-          ? request.additionalTools[0]?.name
-          : undefined);
-
       // Build middleware list: inherited (tracing) + system prompt injection
       const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
       if (request.systemPrompt !== undefined) {
@@ -199,113 +193,6 @@ export function createHookSpawnFn(options: CreateHookSpawnFnOptions): SpawnFn {
         },
       };
     }
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Creates a middleware that injects a system prompt into every model call.
- * Prepends the hook prompt to any existing systemPrompt (e.g., from the
- * structured output guard's re-prompt hint) rather than replacing it.
- */
-function createSystemPromptMiddleware(hookPrompt: string): KoiMiddleware {
-  return {
-    name: "hook-agent:system-prompt",
-    phase: "resolve",
-    priority: 100,
-    async wrapModelCall(_ctx, request, next) {
-      return next({
-        ...request,
-        systemPrompt: mergeSystemPrompt(hookPrompt, request.systemPrompt),
-      });
-    },
-    async *wrapModelStream(_ctx, request, next) {
-      yield* next({
-        ...request,
-        systemPrompt: mergeSystemPrompt(hookPrompt, request.systemPrompt),
-      });
-    },
-    describeCapabilities(): CapabilityFragment | undefined {
-      return undefined;
-    },
-  };
-}
-
-/** Prepend hook prompt to existing systemPrompt, preserving guard hints. */
-function mergeSystemPrompt(hookPrompt: string, existing: string | undefined): string {
-  if (existing === undefined || existing.length === 0) return hookPrompt;
-  // Hook prompt first, then any guard-appended instructions
-  return `${hookPrompt}\n\n${existing}`;
-}
-
-/**
- * Stateful verdict collector — captures the specific required tool's output
- * and ignores subsequent tool calls/text once the verdict is recorded.
- *
- * If no required tool is specified, falls back to collecting the last
- * tool_call_end result (backward compat).
- */
-function createVerdictCollector(requiredToolName: string | undefined): {
-  observe: (event: EngineEvent) => void;
-  output: () => string;
-} {
-  let verdictCaptured = false;
-  let verdictOutput = "";
-  let textBuffer = "";
-  /** Track the tool name for the current in-flight tool call. */
-  let currentToolCallName: string | undefined;
-
-  return {
-    observe(event: EngineEvent): void {
-      // Once we have the verdict, ignore everything else
-      if (verdictCaptured) return;
-
-      if (event.kind === "tool_call_start") {
-        currentToolCallName = event.toolName;
-        return;
-      }
-
-      if (event.kind === "tool_call_end") {
-        const isVerdictTool =
-          requiredToolName !== undefined && currentToolCallName === requiredToolName;
-        currentToolCallName = undefined;
-
-        if (isVerdictTool) {
-          // Capture the verdict and stop — ignore subsequent events
-          verdictCaptured = true;
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
-          return;
-        }
-
-        // No required tool specified — fall back to last tool result
-        if (requiredToolName === undefined) {
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
-        }
-        return;
-      }
-
-      if (event.kind === "text_delta") {
-        textBuffer += event.delta;
-      }
-    },
-
-    output(): string {
-      // Verdict from the required tool takes priority; fall back to text
-      return verdictOutput.length > 0 ? verdictOutput : textBuffer;
-    },
   };
 }
 

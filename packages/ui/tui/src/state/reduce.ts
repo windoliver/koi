@@ -434,5 +434,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const sessions: readonly SessionSummary[] = sorted.slice(0, MAX_SESSIONS);
       return { ...state, sessions };
     }
+
+    default:
+      return state;
   }
 }

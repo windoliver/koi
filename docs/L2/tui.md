@@ -114,6 +114,7 @@ type TuiAction =
   | { kind: "set_zoom"; level: number }
   | { kind: "add_error"; code: string; message: string }
   | { kind: "clear_messages" }
+  | { kind: "permission_response"; requestId: string; decision: ApprovalDecision }
   // Phase 2j-4 — dispatched by host on session start; TUI never does I/O
   | { kind: "set_session_info"; modelName: string; provider: string; sessionName: string }
   | { kind: "set_session_list"; sessions: readonly SessionSummary[] }
@@ -205,7 +206,7 @@ packages/ui/tui/src/
 
 ## Components
 
-Ten components built on OpenTUI primitives:
+Fifteen components built on OpenTUI primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
@@ -215,6 +216,11 @@ Ten components built on OpenTUI primitives:
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `React.memo` — only re-renders when message reference changes |
 | `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
+| `InputArea` | Text input | `<textarea>` with slash detection; Enter submits, Ctrl+J for newline |
+| `SlashOverlay` | Slash completion | Fuzzy-filtered `<select>` dropdown; Escape dismisses |
+| `PermissionPrompt` | HITL approval | Single-key (y/n/a/Esc) with risk-level color coding |
+| `AskUserDialog` | Agent question | Multi-line `<textarea>`; Enter submits, Escape dismisses |
+| `ConfirmDialog` | Yes/no prompt | Single-key (y/n/Esc) confirmation modal |
 | `StatusBar` | Top/bottom info line | Model, tokens, cost, agentStatus, turn counter |
 | `CommandPalette` | Ctrl+P fuzzy search | 15 commands, progressive disclosure, query via useKeyboard |
 | `SessionPicker` | Session browser | Sorted list from `TuiState.sessions`, max 50 items |

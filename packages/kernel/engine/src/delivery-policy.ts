@@ -81,12 +81,25 @@ function extractOutputText(output: EngineOutput): string {
 
 /**
  * Consume an async iterable of EngineEvents, returning the done event's output.
+ * Accumulates text_delta and tool_call_end results as a fallback so output is not
+ * lost when the final done.output.content is empty (matches createTextCollector logic).
  * Throws if no done event is received (stream ended prematurely).
  */
 async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<EngineOutput> {
   let output: EngineOutput | undefined; // let: assigned inside for-await loop
+  let textBuffer = ""; // let: accumulated text_delta fallback
+  let lastToolResult = ""; // let: last tool_call_end fallback
   for await (const event of stream) {
-    if (event.kind === "done") {
+    if (event.kind === "text_delta") {
+      textBuffer += event.delta;
+    } else if (event.kind === "tool_call_end") {
+      const result = event.result;
+      if (typeof result === "string") {
+        lastToolResult = result;
+      } else if (typeof result === "object" && result !== null) {
+        lastToolResult = JSON.stringify(result);
+      }
+    } else if (event.kind === "done") {
       output = event.output;
     }
   }
@@ -95,6 +108,15 @@ async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<Engine
       "INTERNAL",
       "Child stream ended without a done event — delivery policy cannot extract output",
     );
+  }
+  // If done.output.content is empty, inject the accumulated incremental output.
+  // This matches createTextCollector's fallback logic for batch-output engines.
+  if (output.content.length === 0 && (textBuffer.length > 0 || lastToolResult.length > 0)) {
+    const accumulated = textBuffer.length > 0 ? textBuffer : lastToolResult;
+    return {
+      ...output,
+      content: [{ kind: "text", text: accumulated }],
+    };
   }
   return output;
 }
@@ -151,9 +173,14 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
 
         const accepted = inbox.push(item);
         if (!accepted) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `Deferred delivery: inbox rejected item (capacity exceeded) for agent ${spawnResult.childPid.id}`,
+          // Treat inbox rejection as a hard delivery failure. The child ran successfully
+          // but its output cannot be delivered — throwing here causes createAgentSpawnFn's
+          // background task to catch it and push an error item to the parent inbox so the
+          // caller can observe the failure rather than silently losing the result.
+          throw KoiRuntimeError.from(
+            "INTERNAL",
+            `Deferred delivery: parent inbox at capacity, child output lost for agent ${spawnResult.childPid.id}`,
+            { retryable: false, context: { childId: spawnResult.childPid.id } },
           );
         }
       },

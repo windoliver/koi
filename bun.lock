@@ -229,6 +229,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
         "@koi/validation": "workspace:*",
       },
     },
@@ -273,6 +274,7 @@
       "name": "@koi/runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-runtime": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -294,6 +296,7 @@
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
         "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "1.12.1",
