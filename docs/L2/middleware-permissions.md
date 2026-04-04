@@ -324,6 +324,40 @@ AuditSink receives:
 - `durationMs` measures actual backend latency (not hardcoded)
 - Sink errors are swallowed — a broken logger never crashes the agent
 
+### Two-Entry Audit Model for Approvals
+
+When the permission backend returns `effect: "ask"`, two audit entries are emitted:
+
+**Entry 1 — Permission check** (`phase: "execute"`):
+Logged immediately after the backend responds, before the human is asked.
+Contains the backend's decision (`effect: "ask"`) and reason.
+
+**Entry 2 — Approval outcome** (`phase: "approval_outcome"`):
+Logged after the human responds via the `ApprovalHandler`. Contains:
+
+| Field | Description |
+|-------|-------------|
+| `approvalDecision` | `"allow"`, `"deny"`, `"modify"`, or `"always-allow"` |
+| `userId` | Actor who made the decision (`ctx.session.userId` or `"__anonymous__"`) |
+| `denyReason` | Reason string (deny only) |
+| `originalInput` | Agent's proposed tool input (modify only) |
+| `modifiedInput` | Human's rewritten input (modify only) |
+| `scope` | `"session"` (always-allow only) |
+
+Both entries share `sessionId`, `agentId`, `turnIndex`, `kind: "tool_call"`, and
+`permissionCheck: true`. The `userId` field is also included in Entry 1.
+
+### Approval Trajectory Steps
+
+Approval decisions are also emitted as `RichTrajectoryStep` entries with `source: "user"`
+via the optional `onApprovalStep` callback. This makes the human's judgment visible in
+ATIF trajectories alongside agent and tool steps. Each step carries:
+
+- `source: "user"`, `kind: "tool_call"`
+- `identifier`: the tool ID that was approved/denied
+- `outcome`: `"success"` (allow/modify/always-allow) or `"failure"` (deny)
+- `metadata`: same structured fields as the audit entry (decision, userId, delta)
+
 ---
 
 ## Circuit Breaker

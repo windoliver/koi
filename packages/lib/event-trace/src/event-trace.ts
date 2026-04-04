@@ -78,6 +78,11 @@ export interface EventTraceHandle {
   readonly middleware: KoiMiddleware;
   /** Get the backing trajectory document store. */
   readonly getTrajectoryStore: () => TrajectoryDocumentStore;
+  /**
+   * Emit an externally-produced trajectory step (e.g., approval decisions from
+   * middleware-permissions). Assigns a proper stepIndex and writes to the store.
+   */
+  readonly emitExternalStep: (sessionId: string, step: RichTrajectoryStep) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,5 +491,13 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   return {
     middleware,
     getTrajectoryStore: () => store,
+    emitExternalStep(sessionId: string, step: RichTrajectoryStep): void {
+      const state = getState(sessionId);
+      if (state === undefined) return;
+      const stepIndex = state.nextLocalIndex;
+      state.nextLocalIndex += 1;
+      const indexed: RichTrajectoryStep = { ...step, stepIndex };
+      recordStep(state, indexed);
+    },
   };
 }

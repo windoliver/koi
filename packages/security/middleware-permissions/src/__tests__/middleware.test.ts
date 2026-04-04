@@ -15,6 +15,7 @@ import type {
   PermissionDecision,
   PermissionQuery,
 } from "@koi/core/permission-backend";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import { KoiRuntimeError } from "@koi/errors";
 import { createPermissionsMiddleware } from "../middleware.js";
 
@@ -1398,6 +1399,246 @@ describe("createPermissionsMiddleware", () => {
         noopToolHandler,
       );
       expect(checkFn).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 1: Approval audit trail
+  // -------------------------------------------------------------------------
+
+  describe("approval audit trail", () => {
+    test("logs second audit entry after approval with allow decision", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        auditSink,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "allow",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+
+      expect(entries).toHaveLength(2);
+      // First entry: permission check (phase: execute)
+      const meta0 = entries[0]?.metadata as Record<string, unknown>;
+      expect(meta0.phase).toBe("execute");
+      expect(meta0.effect).toBe("ask");
+
+      // Second entry: approval outcome
+      const meta1 = entries[1]?.metadata as Record<string, unknown>;
+      expect(meta1.phase).toBe("approval_outcome");
+      expect(meta1.approvalDecision).toBe("allow");
+      expect(meta1.userId).toBe("user-1");
+      expect(meta1.permissionCheck).toBe(true);
+    });
+
+    test("includes approval delta for modify decisions", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        auditSink,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "modify",
+        updatedInput: { cmd: "safe-cmd" },
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("deploy", { cmd: "dangerous-cmd" }),
+        noopToolHandler,
+      );
+
+      expect(entries).toHaveLength(2);
+      const meta1 = entries[1]?.metadata as Record<string, unknown>;
+      expect(meta1.phase).toBe("approval_outcome");
+      expect(meta1.approvalDecision).toBe("modify");
+      expect(meta1.originalInput).toEqual({ cmd: "dangerous-cmd" });
+      expect(meta1.modifiedInput).toEqual({ cmd: "safe-cmd" });
+    });
+
+    test("logs deny reason in second audit entry", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        auditSink,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "too risky",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+      } catch {
+        // expected — deny throws
+      }
+
+      expect(entries).toHaveLength(2);
+      const meta1 = entries[1]?.metadata as Record<string, unknown>;
+      expect(meta1.phase).toBe("approval_outcome");
+      expect(meta1.approvalDecision).toBe("deny");
+      expect(meta1.denyReason).toBe("too risky");
+      expect(meta1.userId).toBe("user-1");
+    });
+
+    test("logs always-allow scope in second audit entry", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        auditSink,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "always-allow",
+        scope: "session",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+
+      expect(entries).toHaveLength(2);
+      const meta1 = entries[1]?.metadata as Record<string, unknown>;
+      expect(meta1.phase).toBe("approval_outcome");
+      expect(meta1.approvalDecision).toBe("always-allow");
+      expect(meta1.scope).toBe("session");
+    });
+
+    test("threads userId into first audit entry", async () => {
+      const entries: AuditEntry[] = [];
+      const auditSink = {
+        log: async (entry: AuditEntry) => {
+          entries.push(entry);
+        },
+      };
+      const mw = createPermissionsMiddleware({
+        backend: allowAll(),
+        auditSink,
+      });
+
+      await mw.wrapToolCall?.(
+        makeTurnContext({ userId: "alice" }),
+        makeToolRequest("multiply"),
+        noopToolHandler,
+      );
+
+      expect(entries).toHaveLength(1);
+      const meta0 = entries[0]?.metadata as Record<string, unknown>;
+      expect(meta0.userId).toBe("alice");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2: Approval trajectory steps
+  // -------------------------------------------------------------------------
+
+  describe("approval trajectory steps", () => {
+    test("emits source:user trajectory step on allow", async () => {
+      const steps: RichTrajectoryStep[] = [];
+      const onApprovalStep = (_sid: string, step: RichTrajectoryStep): void => {
+        steps.push(step);
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        onApprovalStep,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "allow",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+
+      expect(steps).toHaveLength(1);
+      const step = steps[0] as RichTrajectoryStep;
+      expect(step.source).toBe("user");
+      expect(step.kind).toBe("tool_call");
+      expect(step.identifier).toBe("deploy");
+      expect(step.outcome).toBe("success");
+      const meta = step.metadata as Record<string, unknown>;
+      expect(meta.approvalDecision).toBe("allow");
+      expect(meta.userId).toBe("user-1");
+    });
+
+    test("emits trajectory step with delta for modify", async () => {
+      const steps: RichTrajectoryStep[] = [];
+      const onApprovalStep = (_sid: string, step: RichTrajectoryStep): void => {
+        steps.push(step);
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        onApprovalStep,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "modify",
+        updatedInput: { safe: true },
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      await mw.wrapToolCall?.(ctx, makeToolRequest("deploy", { dangerous: true }), noopToolHandler);
+
+      expect(steps).toHaveLength(1);
+      const step = steps[0] as RichTrajectoryStep;
+      expect(step.source).toBe("user");
+      expect(step.outcome).toBe("success");
+      const req = step.request as Record<string, unknown>;
+      expect(req.data).toEqual({ dangerous: true });
+      const meta = step.metadata as Record<string, unknown>;
+      expect(meta.approvalDecision).toBe("modify");
+      expect(meta.modifiedInput).toEqual({ safe: true });
+    });
+
+    test("emits failure trajectory step on deny", async () => {
+      const steps: RichTrajectoryStep[] = [];
+      const onApprovalStep = (_sid: string, step: RichTrajectoryStep): void => {
+        steps.push(step);
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        onApprovalStep,
+      });
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "rejected",
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+      try {
+        await mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler);
+      } catch {
+        // expected
+      }
+
+      expect(steps).toHaveLength(1);
+      const step = steps[0] as RichTrajectoryStep;
+      expect(step.source).toBe("user");
+      expect(step.outcome).toBe("failure");
+      const meta = step.metadata as Record<string, unknown>;
+      expect(meta.approvalDecision).toBe("deny");
+      expect(meta.denyReason).toBe("rejected");
     });
   });
 });

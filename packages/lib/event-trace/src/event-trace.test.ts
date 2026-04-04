@@ -1372,3 +1372,73 @@ describe("flush retry on transient failure", () => {
     expect(totalLost).toBe(2); // One more stale step dropped
   });
 });
+
+// ---------------------------------------------------------------------------
+// emitExternalStep
+// ---------------------------------------------------------------------------
+
+describe("emitExternalStep", () => {
+  test("assigns stepIndex and writes to store", async () => {
+    const store = makeMockStore();
+    const handle = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test-agent",
+    });
+
+    // Initialize session state via onSessionStart
+    await handle.middleware.onSessionStart?.(makeSessionCtx());
+
+    // First do a normal model call so we know stepIndex starts at 0
+    await handle.middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    // stepIndex 0 taken by model call — external step should get 1
+    const externalStep: RichTrajectoryStep = {
+      stepIndex: -1,
+      timestamp: 1000,
+      source: "user",
+      kind: "tool_call",
+      identifier: "deploy",
+      outcome: "success",
+      durationMs: 500,
+      metadata: { approvalDecision: "allow" },
+    };
+
+    handle.emitExternalStep("test-session", externalStep);
+
+    // Wait for async writes to flush
+    await new Promise((r) => setTimeout(r, 50));
+
+    const allSteps = store.steps.flat();
+    const userStep = allSteps.find((s) => s.source === "user");
+    expect(userStep).toBeDefined();
+    expect(userStep?.stepIndex).toBe(1);
+    expect(userStep?.identifier).toBe("deploy");
+    expect(userStep?.source).toBe("user");
+  });
+
+  test("silently skips if session not initialized", () => {
+    const store = makeMockStore();
+    const handle = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test-agent",
+    });
+
+    // No onSessionStart — session state does not exist
+    handle.emitExternalStep("unknown-session", {
+      stepIndex: -1,
+      timestamp: 1000,
+      source: "user",
+      kind: "tool_call",
+      identifier: "deploy",
+      outcome: "success",
+      durationMs: 0,
+    });
+
+    // No crash, no writes
+    expect(store.steps).toHaveLength(0);
+  });
+});
