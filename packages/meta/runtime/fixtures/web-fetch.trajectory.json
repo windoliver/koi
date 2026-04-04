@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.434Z",
+      "timestamp": "2026-04-04T07:02:55.347Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -34,7 +34,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.435Z",
+      "timestamp": "2026-04-04T07:02:55.347Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -48,7 +48,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:28.437Z",
+      "timestamp": "2026-04-04T07:02:55.350Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
       "observation": {
@@ -62,7 +62,7 @@
         "prompt_tokens": 271,
         "completion_tokens": 11
       },
-      "duration_ms": 504,
+      "duration_ms": 890,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -84,10 +84,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.943Z",
+      "timestamp": "2026-04-04T07:02:56.244Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 505.9952090000006,
+      "duration_ms": 893.971458,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -101,10 +101,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.943Z",
+      "timestamp": "2026-04-04T07:02:56.244Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 506.1498750000028,
+      "duration_ms": 894.2010420000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -118,10 +118,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.979Z",
+      "timestamp": "2026-04-04T07:02:56.280Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:web_fetch → on-tool-exec",
-      "duration_ms": 2.6742080000003625,
+      "duration_ms": 2.925083000001905,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -132,7 +132,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.980Z",
+      "timestamp": "2026-04-04T07:02:56.280Z",
       "model_name": "middleware:hook-dispatch",
       "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
@@ -142,7 +142,7 @@
           }
         ]
       },
-      "duration_ms": 38.66004199999952,
+      "duration_ms": 39.583874999996624,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -156,7 +156,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T06:11:28.941Z",
+      "timestamp": "2026-04-04T07:02:56.241Z",
       "tool_calls": [
         {
           "tool_call_id": "call_web_fetch_7",
@@ -181,7 +181,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.982Z",
+      "timestamp": "2026-04-04T07:02:56.282Z",
       "model_name": "middleware:hooks",
       "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
@@ -191,7 +191,7 @@
           }
         ]
       },
-      "duration_ms": 40.58245800000077,
+      "duration_ms": 41.4586249999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,7 +205,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:28.982Z",
+      "timestamp": "2026-04-04T07:02:56.282Z",
       "model_name": "middleware:permissions",
       "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
@@ -215,7 +215,7 @@
           }
         ]
       },
-      "duration_ms": 40.778417000001355,
+      "duration_ms": 41.64216700000179,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -229,7 +229,7 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T06:11:28.982Z",
+      "timestamp": "2026-04-04T07:02:56.283Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
       "observation": {
@@ -240,10 +240,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 473,
+        "prompt_tokens": 477,
         "completion_tokens": 8
       },
-      "duration_ms": 488,
+      "duration_ms": 408,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -265,10 +265,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:29.471Z",
+      "timestamp": "2026-04-04T07:02:56.692Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initi…",
-      "duration_ms": 488.6458329999987,
+      "duration_ms": 409.20879199999763,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -282,10 +282,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T06:11:29.471Z",
+      "timestamp": "2026-04-04T07:02:56.692Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initi…",
-      "duration_ms": 488.9643329999999,
+      "duration_ms": 409.4617499999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
