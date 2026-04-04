@@ -22,7 +22,7 @@ import type {
   SpawnResult,
   TaskableAgent,
 } from "@koi/core";
-import { INBOX } from "@koi/core";
+import { INBOX, validateSpawnRequest } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { runWithAgentContext } from "@koi/execution-context";
 
@@ -171,6 +171,12 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         ? [options.spawnProviderFactory()]
         : [];
 
+    // Fail fast on conflicting list fields before building child options.
+    const validation = validateSpawnRequest(request);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
+    }
+
     const spawnOptions: SpawnChildOptions = {
       ...base,
       manifest,
@@ -178,6 +184,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       signal: request.signal,
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
+      ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
       ...(request.additionalTools !== undefined
         ? { additionalTools: request.additionalTools }
         : {}),
