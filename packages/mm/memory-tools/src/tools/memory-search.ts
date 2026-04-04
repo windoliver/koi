@@ -45,6 +45,14 @@ async function executeSearch(
   const limitResult = parseOptionalNumber(args, "limit");
   if (!limitResult.ok) return limitResult.err;
 
+  if (
+    afterResult.value !== undefined &&
+    beforeResult.value !== undefined &&
+    afterResult.value > beforeResult.value
+  ) {
+    return { error: "updated_after must not be later than updated_before", code: "VALIDATION" };
+  }
+
   const limit = Math.min(Math.max(1, Math.round(limitResult.value ?? maxLimit)), maxLimit);
   const keyword = normalizeKeyword(keywordResult.value);
 

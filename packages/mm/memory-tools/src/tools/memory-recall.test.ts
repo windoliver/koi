@@ -76,6 +76,22 @@ describe("memory_recall execute", () => {
     expect(capturedTier).toBe("hot");
   });
 
+  test("defaults tier to all and maxHops to 2 when omitted", async () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const backend = mockBackend({
+      recall: async (_query, options) => {
+        capturedOptions = options as Record<string, unknown> | undefined;
+        return { ok: true, value: [] };
+      },
+    });
+    const tool = unwrapTool(createMemoryRecallTool(backend));
+
+    await tool.execute({ query: "test" });
+    expect(capturedOptions?.tierFilter).toBe("all");
+    expect(capturedOptions?.maxHops).toBe(2);
+    expect(capturedOptions?.graphExpand).toBe(false);
+  });
+
   test("passes graph expansion options", async () => {
     let capturedExpand: boolean | undefined;
     let capturedHops: number | undefined;

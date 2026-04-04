@@ -130,6 +130,16 @@ describe("memory_search execute", () => {
     expect(capturedFilter?.keyword).toBeUndefined();
   });
 
+  test("rejects inverted time window", async () => {
+    const tool = unwrapTool(createMemorySearchTool(mockBackend()));
+    const result = (await tool.execute({
+      updated_after: "2026-06-01T00:00:00Z",
+      updated_before: "2026-01-01T00:00:00Z",
+    })) as Record<string, unknown>;
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("updated_after");
+  });
+
   test("rejects non-ISO timestamp formats", async () => {
     const tool = unwrapTool(createMemorySearchTool(mockBackend()));
     const result = (await tool.execute({

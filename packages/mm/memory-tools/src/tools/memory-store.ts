@@ -14,6 +14,17 @@ import { parseOptionalBoolean, parseOptionalEnum, parseString } from "../parse-a
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
 
+/**
+ * Canonicalize a frontmatter field value — same normalization as the
+ * core serializer so dedup lookup matches the persisted form.
+ */
+function canonicalize(value: string): string {
+  return value
+    .replace(/\r\n|\r|\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 /** Parse and validate tool args into a MemoryRecordInput + force flag. */
 function parseStoreArgs(
   args: JsonObject,
@@ -42,8 +53,8 @@ function parseStoreArgs(
   if (!forceResult.ok) return { error: forceResult.err };
 
   const input = {
-    name: nameResult.value,
-    description: descResult.value,
+    name: canonicalize(nameResult.value),
+    description: canonicalize(descResult.value),
     type: typeResult.value,
     content: contentResult.value,
   };

@@ -5,14 +5,25 @@
  * when and how to use its memory tools.
  */
 
+import { DEFAULT_PREFIX } from "./constants.js";
+
 /** Sanitize a path for safe interpolation into markdown — strip backticks, newlines, control chars. */
 function sanitizePath(value: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip control chars
   return value.replace(/[`\r\n\x00-\x1f\x7f-\x9f]/g, "").trim();
 }
 
-/** Generate memory tool skill content with an optional base directory. */
-export function generateMemoryToolSkillContent(baseDir?: string | undefined): string {
+/** Options for generating memory tool skill content. */
+export interface MemorySkillOptions {
+  readonly baseDir?: string | undefined;
+  readonly prefix?: string | undefined;
+}
+
+/** Generate memory tool skill content with configurable prefix and base directory. */
+export function generateMemoryToolSkillContent(options?: MemorySkillOptions | undefined): string {
+  const prefix = options?.prefix ?? DEFAULT_PREFIX;
+  const baseDir = options?.baseDir;
+
   const storageSection =
     baseDir !== undefined
       ? `
@@ -29,10 +40,10 @@ what to remember. Memory persists across sessions with automatic deduplication.
 ${storageSection}
 ### Tools
 
-- **memory_store**: Save a memory record with name, description, type, and content. Checks for duplicates by name and type — use \`force: true\` to overwrite.
-- **memory_recall**: Retrieve memories relevant to a query or topic. Returns results ranked by relevance. Supports tier filtering and causal graph expansion.
-- **memory_search**: Search memories by keyword, type, or date range. All inputs are optional — an empty search returns all memories.
-- **memory_delete**: Remove a stale or incorrect memory by ID.
+- **${prefix}_store**: Save a memory record with name, description, type, and content. Checks for duplicates by name and type — use \`force: true\` to overwrite.
+- **${prefix}_recall**: Retrieve memories relevant to a query or topic. Returns results ranked by relevance. Supports tier filtering and causal graph expansion.
+- **${prefix}_search**: Search memories by keyword, type, or date range. All inputs are optional — an empty search returns all memories.
+- **${prefix}_delete**: Remove a stale or incorrect memory by ID.
 
 ### Memory types
 
@@ -82,5 +93,5 @@ Accessing a cold fact through recall warms it back up.
 `;
 }
 
-/** Static fallback — no baseDir info. */
+/** Static fallback — default prefix, no baseDir. */
 export const MEMORY_TOOL_SKILL_CONTENT: string = generateMemoryToolSkillContent();

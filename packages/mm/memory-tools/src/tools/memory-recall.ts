@@ -53,9 +53,9 @@ async function executeRecall(
 
   const options: MemoryToolRecallOptions = {
     limit,
-    ...(tierResult.value !== undefined ? { tierFilter: tierResult.value } : {}),
-    ...(expandResult.value !== undefined ? { graphExpand: expandResult.value } : {}),
-    ...(hopsResult.value !== undefined ? { maxHops: Math.round(hopsResult.value) } : {}),
+    tierFilter: tierResult.value ?? "all",
+    graphExpand: expandResult.value ?? false,
+    maxHops: hopsResult.value !== undefined ? Math.round(hopsResult.value) : 2,
   };
 
   try {

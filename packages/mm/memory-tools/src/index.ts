@@ -15,6 +15,7 @@ export {
 // Provider
 export { createMemoryToolProvider } from "./provider.js";
 // Skill
+export type { MemorySkillOptions } from "./skill.js";
 export { generateMemoryToolSkillContent, MEMORY_TOOL_SKILL_CONTENT } from "./skill.js";
 // Tool factories
 export { createMemoryDeleteTool } from "./tools/memory-delete.js";
