@@ -83,8 +83,9 @@ async function writeRecord(
     };
   }
 
-  const existingFiles = new Set(existing.map((r) => r.filePath));
-  const filename = deriveFilename(input.name, existingFiles);
+  // Use raw readdir for collision checks — includes malformed/unreadable files
+  const allFiles = await listMdFiles(dir);
+  const filename = deriveFilename(input.name, allFiles);
   const filePath = join(dir, filename);
 
   const serialized = serializeMemoryFrontmatter(
@@ -111,7 +112,7 @@ async function writeRecord(
     updatedAt: fileStat.mtimeMs,
   };
 
-  await rebuildIndex(dir, [...existing, record]);
+  await tryRebuildIndex(dir, [...existing, record]);
   return { action: "created", record };
 }
 
@@ -159,7 +160,7 @@ async function updateRecord(
   };
 
   const updatedRecords = records.map((r) => (r.id === id ? record : r));
-  await rebuildIndex(dir, updatedRecords);
+  await tryRebuildIndex(dir, updatedRecords);
   return record;
 }
 
@@ -177,7 +178,7 @@ async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
   }
 
   const remaining = records.filter((r) => r.id !== id);
-  await rebuildIndex(dir, remaining);
+  await tryRebuildIndex(dir, remaining);
   return true;
 }
 
@@ -236,6 +237,30 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
 /** Strip `.md` extension to get the record ID. */
 function filenameToId(filename: string): string {
   return filename.endsWith(".md") ? filename.slice(0, -3) : filename;
+}
+
+/**
+ * Best-effort index rebuild — record mutations are the source of truth.
+ * If index rebuild fails, the index self-heals on the next successful mutation.
+ */
+async function tryRebuildIndex(dir: string, records: readonly MemoryRecord[]): Promise<void> {
+  try {
+    await rebuildIndex(dir, records);
+  } catch {
+    // Index write failed — record mutation already committed.
+    // Index will be rebuilt on the next successful mutation.
+  }
+}
+
+/** List all .md filenames in a directory (raw readdir, includes malformed files). */
+async function listMdFiles(dir: string): Promise<ReadonlySet<string>> {
+  try {
+    const files = await readdir(dir);
+    return new Set(files.filter((f) => f.endsWith(".md") && f !== INDEX_FILENAME));
+  } catch (e: unknown) {
+    if (isEnoent(e)) return new Set();
+    throw e;
+  }
 }
 
 /** Check if an error is a filesystem ENOENT (file/dir not found). */
