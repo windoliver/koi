@@ -214,7 +214,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
   function consumeInjection(sid: SessionId): boolean {
     const state = sessions.get(sid);
-    if (!state || !state.shouldInject) return false;
+    if (!state?.shouldInject) return false;
     state.shouldInject = false;
     state.injectedThisTurn = true;
     return true;

@@ -119,7 +119,7 @@ function extractCommand(argv: readonly string[]): {
 }
 
 function resolveLogFormat(flagValue: string | undefined): "text" | "json" {
-  const raw = flagValue ?? process.env["LOG_FORMAT"];
+  const raw = flagValue ?? process.env.LOG_FORMAT;
   return raw === "json" ? "json" : "text";
 }
 

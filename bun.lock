@@ -206,6 +206,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-semantic-retry": {
+      "name": "@koi/middleware-semantic-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -309,10 +316,13 @@
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/memory": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
@@ -335,6 +345,13 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/mm/memory-fs": {
+      "name": "@koi/memory-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/mm/memory-tools": {
@@ -376,6 +393,15 @@
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
+      },
+    },
+    "packages/security/middleware-exfiltration-guard": {
+      "name": "@koi/middleware-exfiltration-guard",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/redaction": "workspace:*",
       },
     },
     "packages/security/middleware-permissions": {
@@ -669,13 +695,19 @@
 
     "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
 
+    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/mm/memory-fs"],
+
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
+
+    "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
 
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
+
+    "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 

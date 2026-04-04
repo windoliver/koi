@@ -3613,7 +3613,7 @@ function blockingStopMiddleware(blockUntilCall: number): {
     onBeforeStop: async () => {
       callCount++;
       if (callCount <= blockUntilCall) {
-        return { kind: "block", reason: `blocked attempt ${callCount}` };
+        return { kind: "block", reason: `blocked attempt ${callCount}`, blockedBy: "stop-blocker" };
       }
       return { kind: "continue" };
     },

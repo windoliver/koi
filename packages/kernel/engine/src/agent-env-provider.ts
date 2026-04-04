@@ -43,8 +43,10 @@ export function mergeEnv(
   if (invalidKeys.length > 0) {
     throw KoiRuntimeError.from(
       "VALIDATION",
-      `Env attenuation violation: keys [${invalidKeys.join(", ")}] not present in parent env. ` +
-        `Child env can only narrow parent env, not extend it.`,
+      `Env attenuation violation: override keys [${invalidKeys.join(", ")}] are not present in the parent env. ` +
+        `Children can only narrow (modify or remove) existing parent env keys, not introduce new ones. ` +
+        `Remove these keys from your overrides, or ensure the parent agent has them in its env. ` +
+        `Available parent keys: [${[...parentKeys].join(", ")}].`,
       { retryable: false, context: { invalidKeys, parentKeys: [...parentKeys] } },
     );
   }

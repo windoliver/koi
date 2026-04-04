@@ -22,7 +22,39 @@ export { detectSlashPrefix, matchCommands, parseSlashCommand } from "./commands/
 // Pure key handling (framework-agnostic — no React/OpenTUI import)
 export type { InputKeyResult } from "./components/input-keys.js";
 export { processInputKey } from "./components/input-keys.js";
+// Factory — createTuiApp (Phase 2j-5)
+export type {
+  CreateTuiAppConfig,
+  TuiAppHandle,
+  TuiStartError,
+} from "./create-app.js";
+export { createTuiApp } from "./create-app.js";
+// Key event predicates (framework-agnostic — no React/OpenTUI import)
+export {
+  isBackspace,
+  isCtrlC,
+  isCtrlJ,
+  isCtrlP,
+  isEnter,
+  isEscape,
+  isTab,
+} from "./key-event.js";
+// Global keyboard handler (Phase 2j-5)
+export type { GlobalKeyCallbacks } from "./keyboard.js";
+export { createKeyboardHandler, handleGlobalKey } from "./keyboard.js";
 // State management
 export * from "./state/index.js";
 // Store context (React hook — requires @opentui/react at runtime)
 export { StoreContext, useTuiStore } from "./store-context.js";
+// Theme — color tokens + layout helpers (Phase 2j-5)
+export {
+  abbreviateModel,
+  COLORS,
+  CONNECTION_STATUS_CONFIG,
+  computeLayoutTier,
+  separator,
+  truncate,
+} from "./theme.js";
+// TuiRoot component (Phase 2j-5, requires @opentui/react at runtime)
+export type { TuiRootProps } from "./tui-root.js";
+export { TuiRoot } from "./tui-root.js";

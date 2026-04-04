@@ -137,7 +137,19 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
               toolDenylist: {
                 type: "array",
                 items: { type: "string" },
-                description: "Tool names to exclude from the spawned agent.",
+                description:
+                  "Tool names to exclude from the spawned agent. Mutually exclusive with toolAllowlist.",
+              },
+              toolAllowlist: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
+              },
+              timeoutMs: {
+                type: "number",
+                description:
+                  "Wall-clock deadline in milliseconds. Agent is stopped when elapsed. Default: 300000 (5 minutes).",
               },
             },
             required: ["agentName", "description"],
@@ -146,10 +158,29 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         origin: "primordial",
         policy: DEFAULT_UNSANDBOXED_POLICY,
         execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
+          // timeoutMs: 0 = disable (run until caller signal fires), >0 = wall-clock deadline
+          const timeoutMs =
+            args.timeoutMs !== undefined
+              ? parseNonNegativeInt(args.timeoutMs, "timeoutMs")
+              : 300_000; // 5 min default
+          const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+          const signal =
+            timeoutSignal !== undefined
+              ? options?.signal !== undefined
+                ? AbortSignal.any([options.signal, timeoutSignal])
+                : timeoutSignal
+              : (options?.signal ?? AbortSignal.timeout(0x7fff_ffff)); // no timeout: ~24 days max
+
+          // Record absolute deadline so deferred/on-demand children compute remaining
+          // budget rather than starting a fresh full-duration timer after setup.
+          const absoluteDeadlineMs = timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+
           const result = await spawnFn({
             agentName: String(args.agentName ?? ""),
             description: String(args.description ?? ""),
-            signal: options?.signal ?? AbortSignal.timeout(300_000), // 5 min default
+            signal,
+            timeoutMs,
+            ...(absoluteDeadlineMs !== undefined ? { absoluteDeadlineMs } : {}),
             ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
             ...(args.maxTurns !== undefined
               ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
@@ -162,6 +193,9 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
               : {}),
             ...(Array.isArray(args.toolDenylist)
               ? { toolDenylist: args.toolDenylist as string[] }
+              : {}),
+            ...(Array.isArray(args.toolAllowlist)
+              ? { toolAllowlist: args.toolAllowlist as string[] }
               : {}),
           });
 
@@ -183,6 +217,22 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parse a tool argument as a non-negative integer (>= 0), throwing KoiRuntimeError on invalid input.
+ * Used for timeoutMs where 0 means "disable timeout".
+ */
+function parseNonNegativeInt(value: unknown, field: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `Spawn tool argument "${field}" must be a non-negative integer (0 = disable), got: ${String(value)}`,
+      { retryable: false },
+    );
+  }
+  return n;
+}
 
 /**
  * Parse a tool argument as a positive integer, throwing KoiRuntimeError on invalid input.

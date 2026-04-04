@@ -199,7 +199,7 @@ export function mapAtifToRichTrajectory(doc: AtifDocument): readonly RichTraject
 function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
   // Extract error from extra (reverse of forward mapping)
   const rawExtra = step.extra as Record<string, unknown> | undefined;
-  const errorData = rawExtra?.["error"] as
+  const errorData = rawExtra?.error as
     | { text?: string; data?: Record<string, unknown> }
     | undefined;
   // Strip error from metadata so it doesn't duplicate

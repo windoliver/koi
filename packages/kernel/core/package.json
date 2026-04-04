@@ -109,6 +109,10 @@
       "types": "./dist/rich-trajectory.d.ts",
       "import": "./dist/rich-trajectory.js"
     },
+    "./retry-signal": {
+      "types": "./dist/retry-signal.d.ts",
+      "import": "./dist/retry-signal.js"
+    },
     "./brick-snapshot": {
       "types": "./dist/brick-snapshot.d.ts",
       "import": "./dist/brick-snapshot.js"

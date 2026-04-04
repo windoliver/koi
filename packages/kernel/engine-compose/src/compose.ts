@@ -501,7 +501,7 @@ export async function runStopGate(
     if (mw.onBeforeStop !== undefined) {
       const result = await mw.onBeforeStop(ctx);
       if (result.kind === "block") {
-        return result;
+        return { kind: "block", reason: result.reason, blockedBy: result.blockedBy ?? mw.name };
       }
     }
   }
