@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import type { InboundMessage } from "@koi/core";
 import { charEstimator, textMsg } from "./__tests__/test-helpers.js";
 import type { BudgetConfig } from "./enforce-budget.js";
 import { enforceBudget } from "./enforce-budget.js";
@@ -461,6 +462,173 @@ describe("enforceBudget", () => {
 
       // Should be promoted to full, not returned as micro
       expect(result.compaction).toBe("full");
+    });
+  });
+
+  describe("droppedMessages", () => {
+    it("is absent for noop compaction", async () => {
+      // Small messages under soft threshold — no compaction
+      const config = testConfig({ contextWindowSize: 1000 });
+      const messages = [textMsg("hello"), textMsg("world")];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("noop");
+      expect("droppedMessages" in result).toBe(false);
+    });
+
+    it("contains dropped messages for micro compaction", async () => {
+      // Window: 200, soft: 0.5 → 100, hard: 0.75 → 150, target: 0.2 → 40
+      // Total: 120 tokens → above soft (100) but below hard (150) → micro
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+      });
+      // 4 messages × 30 chars = 120 tokens → micro zone
+      const messages = [
+        textMsg("a".repeat(30)),
+        textMsg("b".repeat(30)),
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("micro");
+      if (result.compaction === "micro") {
+        expect(result.droppedMessages).toBeDefined();
+        const dropped = result.droppedMessages ?? [];
+        expect(dropped.length).toBeGreaterThan(0);
+        // Dropped messages should not appear in surviving messages
+        for (const msg of dropped) {
+          expect(result.messages).not.toContain(msg);
+        }
+        // All messages are either surviving or dropped
+        expect(result.messages.length + dropped.length).toBeLessThanOrEqual(messages.length);
+      }
+    });
+
+    it("contains dropped messages for full compaction", async () => {
+      const store = createInMemoryReplacementStore();
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.1,
+        preserveRecent: 1,
+        maxSummaryTokens: 5,
+      });
+      // 80 tokens > hard threshold (75)
+      const messages = [
+        textMsg("a".repeat(20)),
+        textMsg("b".repeat(20)),
+        textMsg("c".repeat(20)),
+        textMsg("d".repeat(20)),
+      ];
+      const result = await enforceBudget(messages, store, config);
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        expect(result.droppedMessages).toBeDefined();
+        const dropped = result.droppedMessages ?? [];
+        expect(dropped.length).toBeGreaterThan(0);
+        // Dropped messages should be from before splitIdx
+        for (const msg of dropped) {
+          expect(messages.indexOf(msg)).toBeLessThan(result.splitIdx);
+        }
+      }
+    });
+
+    it("excludes rescued pinned messages from droppedMessages", async () => {
+      // Window: 200, soft: 100, hard: 150, target: 40
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+      });
+      const pinnedMsg = textMsg("pinned", "user", undefined, true);
+      // 120 tokens → micro zone, pinned message should survive
+      const messages = [
+        textMsg("a".repeat(30)),
+        pinnedMsg,
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      const result = await enforceBudget(messages, undefined, config);
+
+      if (result.compaction === "micro" && result.droppedMessages !== undefined) {
+        // Pinned message should NOT be in dropped
+        expect(result.droppedMessages).not.toContain(pinnedMsg);
+        // Pinned message should be in surviving messages
+        expect(result.messages).toContain(pinnedMsg);
+      }
+    });
+  });
+
+  describe("onBeforeDrop callback", () => {
+    it("is called with dropped messages during micro compaction", async () => {
+      const droppedCapture: InboundMessage[][] = []; // let: test accumulator
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+        onBeforeDrop: (msgs) => {
+          droppedCapture.push([...msgs]);
+        },
+      });
+      const messages = [
+        textMsg("a".repeat(30)),
+        textMsg("b".repeat(30)),
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      await enforceBudget(messages, undefined, config);
+
+      expect(droppedCapture.length).toBe(1);
+      expect(droppedCapture[0]?.length).toBeGreaterThan(0);
+    });
+
+    it("is not called when no messages are dropped (noop)", async () => {
+      let callCount = 0; // let: test counter
+      const config = testConfig({
+        contextWindowSize: 1000,
+        onBeforeDrop: () => {
+          callCount++;
+        },
+      });
+      const messages = [textMsg("hello")];
+      await enforceBudget(messages, undefined, config);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("supports async onBeforeDrop callback", async () => {
+      let asyncCalled = false; // let: test flag
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+        onBeforeDrop: async () => {
+          await Promise.resolve();
+          asyncCalled = true;
+        },
+      });
+      const messages = [
+        textMsg("a".repeat(30)),
+        textMsg("b".repeat(30)),
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      await enforceBudget(messages, undefined, config);
+
+      expect(asyncCalled).toBe(true);
     });
   });
 });

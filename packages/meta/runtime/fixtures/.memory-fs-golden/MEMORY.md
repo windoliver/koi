@@ -1,0 +1,1 @@
+- [design patterns](design_patterns.md) — Patterns for extensibility

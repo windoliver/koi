@@ -829,8 +829,17 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// retry signal — cross-middleware retry coordination protocol
+export type {
+  RetrySignal,
+  RetrySignalBroker,
+  RetrySignalReader,
+  RetrySignalWriter,
+} from "./retry-signal.js";
 // rich trajectory — full execution traces for LLM reflection
 export type {
+  DecisionSignal,
+  DecisionSignalKind,
   RichContent,
   RichStepMetrics,
   RichTrajectoryStep,

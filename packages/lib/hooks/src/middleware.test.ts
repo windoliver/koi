@@ -1160,7 +1160,7 @@ describe("onBeforeStop", () => {
 
     const result = await mw.onBeforeStop?.(makeTurnCtx());
     assertDefined(result);
-    expect(result).toEqual({ kind: "block", reason: "tests not passing" });
+    expect(result).toEqual({ kind: "block", reason: "tests not passing", blockedBy: "gate-hook" });
   });
 
   it("dispatches turn.stop event to registry", async () => {

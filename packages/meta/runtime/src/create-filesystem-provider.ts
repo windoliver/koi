@@ -19,7 +19,7 @@ import { createFsEditTool, createFsReadTool, createFsWriteTool } from "@koi/tool
 /** Filesystem operations exposed as tools. */
 type FsOperation = "read" | "write" | "edit";
 
-const FS_OPERATIONS: readonly FsOperation[] = ["read", "write", "edit"] as const;
+const _FS_OPERATIONS: readonly FsOperation[] = ["read", "write", "edit"] as const;
 
 const FS_TOOL_FACTORIES: Readonly<
   Record<
