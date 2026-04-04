@@ -1687,3 +1687,121 @@ describe("provenance tracking", () => {
     expect(systems?.length).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retry signal coordination
+// ---------------------------------------------------------------------------
+
+describe("retry signal coordination", () => {
+  test("model step gets outcome 'retry' when signal is active", async () => {
+    const mockStore = makeMockStore();
+    const signalReader = {
+      getRetrySignal: (sessionId: string) => {
+        if (sessionId === "test-session") {
+          return {
+            retrying: true,
+            originalStepIndex: 0,
+            reason: "tool_misuse: invalid arguments",
+            failureClass: "tool_misuse",
+            attemptNumber: 1,
+          };
+        }
+        return undefined;
+      },
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("retry");
+    expect(steps[0]?.metadata?.retryOf).toBe(0);
+    expect(steps[0]?.metadata?.retryAttempt).toBe(1);
+    expect(steps[0]?.metadata?.retryReason).toBe("tool_misuse: invalid arguments");
+    expect(steps[0]?.metadata?.retryFailureClass).toBe("tool_misuse");
+  });
+
+  test("tool step gets outcome 'retry' when signal is active", async () => {
+    const mockStore = makeMockStore();
+    const signalReader = {
+      getRetrySignal: () => ({
+        retrying: true,
+        originalStepIndex: 2,
+        reason: "api_error: timeout",
+        failureClass: "api_error",
+        attemptNumber: 3,
+      }),
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest(), async () =>
+      makeToolResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("retry");
+    expect(steps[0]?.metadata?.retryOf).toBe(2);
+    expect(steps[0]?.metadata?.retryAttempt).toBe(3);
+  });
+
+  test("steps have normal outcome when no signal is active", async () => {
+    const mockStore = makeMockStore();
+    const signalReader = {
+      getRetrySignal: () => undefined,
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("success");
+    expect(steps[0]?.metadata?.retryOf).toBeUndefined();
+  });
+
+  test("works without signalReader configured", async () => {
+    const mockStore = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      // No signalReader
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("success");
+  });
+});
