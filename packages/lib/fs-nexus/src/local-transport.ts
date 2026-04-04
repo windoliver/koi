@@ -202,7 +202,16 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   let nextId = 1;
   let closed = false;
 
-  // Pending request map — each in-flight call parks here until its response arrives.
+  // Serial call queue — the Python bridge processes one stdin line at a time.
+  // Concurrent calls would interleave their requests, making response routing
+  // ambiguous. The background reader loop handles notifications that arrive
+  // while a request is in-flight, but only one request may be in-flight at once.
+  // Consequence: one auth challenge on any mount blocks all subsequent calls
+  // until auth completes or times out. This is a known property of the serial
+  // bridge architecture and must be documented at the call site.
+  let callQueue: Promise<unknown> = Promise.resolve();
+
+  // Pending request map — at most one entry at a time (enforced by callQueue).
   const pendingRequests = new Map<number, PendingRequest>();
 
   // Notification handlers — fire-and-forget microtask dispatch (Issue 15-A).
@@ -283,7 +292,8 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   startReaderLoop();
 
   // ---------------------------------------------------------------------------
-  // call() — writes one request, parks in pendingRequests until response arrives
+  // call() — serialized via callQueue; one request in-flight at a time.
+  // The background reader loop handles notifications that arrive mid-call.
   // ---------------------------------------------------------------------------
   function call<T>(method: string, params: Record<string, unknown>): Promise<Result<T, KoiError>> {
     if (closed) {
@@ -293,59 +303,76 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
       });
     }
 
-    const requestId = nextId++;
-    const request = JSON.stringify({
-      jsonrpc: "2.0",
-      method,
-      params,
-      id: requestId,
-    });
-
-    return new Promise<Result<T, KoiError>>((resolve) => {
-      // Per-call timeout. If auth_required arrives, the timer is replaced
-      // with the auth timeout (Issue 13-A) by the reader loop above.
-      const timer = setTimeout(() => {
-        pendingRequests.delete(requestId);
-        // On timeout, kill the bridge so queued calls fail fast
-        close();
-        resolve({
+    // Chain onto the queue — ensures only one request is in-flight at a time.
+    const result = callQueue.then((): Promise<Result<T, KoiError>> => {
+      if (closed) {
+        return Promise.resolve({
           ok: false,
-          error: {
-            code: "TIMEOUT",
-            message: `Bridge call "${method}" timed out after ${String(callTimeout)}ms`,
-            retryable: true,
-          },
+          error: { code: "INTERNAL", message: "Transport closed", retryable: false },
         });
-      }, callTimeout);
+      }
 
-      pendingRequests.set(requestId, {
-        resolve: (line: string) => {
-          try {
-            const response = JSON.parse(line) as JsonRpcResponse<T>;
-            if (response.error !== undefined) {
-              resolve({ ok: false, error: mapNexusError(response.error, method) });
-            } else {
-              resolve({ ok: true, value: response.result as T });
-            }
-          } catch (e: unknown) {
-            resolve({ ok: false, error: mapNexusError(e, method) });
-          }
-        },
-        reject: (e: Error) => {
-          resolve({
-            ok: false,
-            error: closed
-              ? { code: "INTERNAL", message: "Transport closed", retryable: false }
-              : mapNexusError(e, method),
-          });
-        },
-        timer,
+      const requestId = nextId++;
+      const request = JSON.stringify({
+        jsonrpc: "2.0",
+        method,
+        params,
+        id: requestId,
       });
 
-      // Write to stdin — errors are surfaced through the reader loop dying
-      proc.stdin.write(`${request}\n`);
-      void proc.stdin.flush();
+      return new Promise<Result<T, KoiError>>((resolve) => {
+        // Per-call timeout. When auth_required arrives, the reader loop clears
+        // this timer and cedes deadline ownership to the bridge (which uses
+        // NEXUS_AUTH_TIMEOUT_MS). Since calls are serialized, only this one
+        // pending entry exists when auth_required fires, so clearing all timers
+        // in pendingRequests is safe and scoped to exactly this call.
+        const timer = setTimeout(() => {
+          pendingRequests.delete(requestId);
+          // Kill bridge so queued calls fail fast rather than waiting.
+          close();
+          resolve({
+            ok: false,
+            error: {
+              code: "TIMEOUT",
+              message: `Bridge call "${method}" timed out after ${String(callTimeout)}ms`,
+              retryable: true,
+            },
+          });
+        }, callTimeout);
+
+        pendingRequests.set(requestId, {
+          resolve: (line: string) => {
+            try {
+              const response = JSON.parse(line) as JsonRpcResponse<T>;
+              if (response.error !== undefined) {
+                resolve({ ok: false, error: mapNexusError(response.error, method) });
+              } else {
+                resolve({ ok: true, value: response.result as T });
+              }
+            } catch (e: unknown) {
+              resolve({ ok: false, error: mapNexusError(e, method) });
+            }
+          },
+          reject: (e: Error) => {
+            resolve({
+              ok: false,
+              error: closed
+                ? { code: "INTERNAL", message: "Transport closed", retryable: false }
+                : mapNexusError(e, method),
+            });
+          },
+          timer,
+        });
+
+        // Write to stdin — errors surface through the reader loop dying.
+        proc.stdin.write(`${request}\n`);
+        void proc.stdin.flush();
+      });
     });
+
+    // Swallow errors so the queue chain never rejects.
+    callQueue = result.catch(() => {});
+    return result;
   }
 
   // ---------------------------------------------------------------------------

@@ -418,9 +418,13 @@ describeIf("createLocalTransport (requires nexus-fs)", () => {
   });
 });
 
-// Test 10-A: auth on one mount does not block calls on other mounts.
-// Uses a mock bridge (no nexus-fs needed) that simulates one mount needing auth.
-describe("createLocalTransport multi-mount auth isolation", () => {
+// Test 10-A: multi-mount auth with serial transport.
+// The bridge is serial — one auth challenge blocks all queued calls until it resolves.
+// This test verifies that after a gdrive auth failure (-32007), the next queued call
+// (local) still executes and succeeds. Uses a mock async bridge (no nexus-fs needed).
+// Note: with a real serial bridge, the local call is QUEUED behind the gdrive call —
+// it does not run concurrently. Both resolve in order: gdrive first, then local.
+describe("createLocalTransport multi-mount serial auth", () => {
   let tmpDir: string;
   let transport: NexusTransport;
 
@@ -437,7 +441,7 @@ describe("createLocalTransport multi-mount auth isolation", () => {
     }
   });
 
-  test("local mount call succeeds while a second call is parked waiting for auth", async () => {
+  test("local mount call succeeds after gdrive auth failure resolves (serial ordering)", async () => {
     const bridgePath = writeMockBridge(
       tmpDir,
       "mock-multi-mount-auth",
@@ -490,19 +494,20 @@ asyncio.run(main())
       startupTimeoutMs: 5_000,
     });
 
-    // Fire both calls concurrently — gdrive blocks on auth, local should complete
-    const [localResult, gdriveResult] = await Promise.all([
-      transport.call<{ readonly content: string }>("read", { path: "/local/ws/readme.txt" }),
+    // Queue both calls — the transport is serial, so gdrive runs first, then local.
+    // Promise.all submits both to callQueue; gdrive acquires the slot first.
+    const [gdriveResult, localResult] = await Promise.all([
       transport.call("read", { path: "/gdrive/secret.txt" }),
+      transport.call<{ readonly content: string }>("read", { path: "/local/ws/readme.txt" }),
     ]);
 
-    // Local must succeed
-    expect(localResult.ok).toBe(true);
-    if (localResult.ok) expect(localResult.value.content).toBe("local file");
-
-    // gdrive must fail with AUTH_REQUIRED (not block local)
+    // gdrive fails with AUTH_REQUIRED (auth timed out)
     expect(gdriveResult.ok).toBe(false);
     if (!gdriveResult.ok) expect(gdriveResult.error.code).toBe("AUTH_REQUIRED");
+
+    // local succeeds — it ran after gdrive resolved (serial ordering)
+    expect(localResult.ok).toBe(true);
+    if (localResult.ok) expect(localResult.value.content).toBe("local file");
   });
 });
 
