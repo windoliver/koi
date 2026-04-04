@@ -6,8 +6,16 @@
  */
 
 import type { EngineEvent } from "@koi/core/engine";
-import type { TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
+import type {
+  CumulativeMetrics,
+  SessionInfo,
+  SessionSummary,
+  TuiAction,
+  TuiAssistantBlock,
+  TuiMessage,
+  TuiState,
+} from "./types.js";
+import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Assistant message type (narrowed)
@@ -196,17 +204,36 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         blocks: [],
         streaming: true,
       };
-      return { ...state, messages: maybeCompact([...closed, newMsg]) };
+      return { ...state, messages: maybeCompact([...closed, newMsg]), agentStatus: "processing" };
     }
 
     case "turn_end": {
       const messages = closeActiveAssistant(state.messages);
-      return messages === state.messages ? state : { ...state, messages };
+      const next = messages === state.messages ? state : { ...state, messages };
+      return next.agentStatus === "idle" ? next : { ...next, agentStatus: "idle" };
     }
 
     case "done": {
       const messages = finalizeAssistant(state.messages);
-      return messages === state.messages ? state : { ...state, messages };
+      const m = event.output.metrics;
+      const prev = state.cumulativeMetrics;
+      const cumulativeMetrics: CumulativeMetrics = {
+        totalTokens: prev.totalTokens + m.totalTokens,
+        inputTokens: prev.inputTokens + m.inputTokens,
+        outputTokens: prev.outputTokens + m.outputTokens,
+        // Count as a user round trip only when the engine actually ran at least one
+        // model call. Interrupted/no-op completions emit done with m.turns === 0
+        // and should not inflate the session counter.
+        turns: m.turns > 0 ? prev.turns + 1 : prev.turns,
+        // Default prev.engineTurns to prev.turns (conservative floor): each
+        // historical user turn required at least one model call, so engineTurns
+        // should never migrate below the existing turn count. This keeps the
+        // status bar amplification signal honest for restored legacy sessions.
+        engineTurns: (prev.engineTurns ?? prev.turns) + m.turns,
+        costUsd: m.costUsd !== undefined ? (prev.costUsd ?? 0) + m.costUsd : prev.costUsd,
+      };
+      const base = { ...state, cumulativeMetrics, agentStatus: "idle" as const };
+      return messages === state.messages ? base : { ...base, messages };
     }
 
     // ----- Text accumulation -----
@@ -357,6 +384,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         if (found) {
           return {
             ...state,
+            agentStatus: "error",
             messages: updateAssistant(finalized, found, {
               blocks: [...found.msg.blocks, errorBlock],
               streaming: false,
@@ -364,7 +392,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           };
         }
       }
-      // No active turn — create a standalone error message
+      // No active turn — create a standalone error message (agentStatus unchanged)
       const implicit: TuiMessage = {
         kind: "assistant",
         id: `assistant-error-${state.messages.length}`,
@@ -375,7 +403,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "clear_messages":
-      return state.messages.length === 0 ? state : { ...state, messages: [] };
+      if (state.messages.length === 0 && state.agentStatus === "idle") return state;
+      return { ...state, messages: [], agentStatus: "idle" };
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.
@@ -389,5 +418,24 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       }
       return { ...state, modal: null };
     }
+
+    case "set_session_info": {
+      const sessionInfo: SessionInfo = {
+        modelName: action.modelName,
+        provider: action.provider,
+        sessionName: action.sessionName,
+      };
+      return { ...state, sessionInfo };
+    }
+
+    case "set_session_list": {
+      // Sort by most-recent-first without mutating the incoming array.
+      const sorted = [...action.sessions].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      const sessions: readonly SessionSummary[] = sorted.slice(0, MAX_SESSIONS);
+      return { ...state, sessions };
+    }
+
+    default:
+      return state;
   }
 }

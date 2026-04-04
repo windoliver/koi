@@ -19,6 +19,17 @@ import type {
   TurnId,
 } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
+import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
+
+// Process-wide shared spawn ledger — all runtimes on this process account against
+// the same cap when no explicit shared ledger is provided via RuntimeConfig.spawnLedger.
+// A per-runtime private ledger would let multiple runtimes exceed the intended global limit.
+// Capacity is derived from DEFAULT_SPAWN_POLICY so the ledger and policy limits stay in sync.
+const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(
+  DEFAULT_SPAWN_POLICY.maxTotalProcesses,
+);
+
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
   createDebugInstrumentation,
@@ -28,7 +39,13 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import {
+  createFileSystemProvider,
+  createFileSystemTools,
+  createToolDispatcher,
+} from "./create-filesystem-provider.js";
 import { collectDebugInfo } from "./debug/collect-debug-info.js";
+import { resolveFileSystem } from "./resolve-filesystem.js";
 import {
   createStubAdapter,
   createStubChannel,
@@ -58,6 +75,19 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const channel = resolveChannel(config.channel);
   const { middleware, stubInstances } = resolveMiddleware(config.middleware);
   const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+  // Filesystem: strict host opt-in only.
+  // config.filesystem === false is a kill switch; undefined means no filesystem.
+  // Manifest.filesystem exists in L0 for the full createKoi() assembly path
+  // but is NOT honored here — createRuntime() requires explicit host config.
+  const filesystemConfig = config.filesystem === false ? undefined : config.filesystem;
+  const hasFilesystem = filesystemConfig !== undefined;
+  const filesystemBackend = hasFilesystem
+    ? resolveFileSystem(filesystemConfig, config.cwd ?? process.cwd())
+    : undefined;
+  const filesystemProvider =
+    filesystemBackend !== undefined
+      ? createFileSystemProvider(filesystemBackend, "fs", filesystemConfig?.operations)
+      : undefined;
 
   // Fail closed: if a real (non-stub) "permissions" middleware is installed
   // without an approval handler, the runtime cannot safely gate tool execution.
@@ -78,16 +108,46 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const instrumentation =
     config.debug === true ? createDebugInstrumentation({ enabled: true }) : undefined;
 
+  // Only advertise and wire fs tools when filesystem is explicitly enabled.
+  // Host-provided tools take precedence — if a host already provides fs_read
+  // (e.g., with custom sandboxing), the generated fs tool is excluded.
+  const fsTools =
+    filesystemBackend !== undefined
+      ? createFileSystemTools(filesystemBackend, "fs", filesystemConfig?.operations)
+      : undefined;
+  const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
+  const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
+  const dedupedFsToolMap =
+    fsTools !== undefined
+      ? new Map([...fsTools.tools].filter(([name]) => !hostToolIds.has(name)))
+      : undefined;
+  const allToolDescriptors = [...dedupedFsDescriptors, ...(config.toolDescriptors ?? [])];
+
+  // Inject filesystem tool handlers into the adapter's toolCall terminal.
+  // Only inject when filesystem is enabled AND adapter has terminals.
+  const adapterWithFsTools: EngineAdapter =
+    dedupedFsToolMap !== undefined &&
+    dedupedFsToolMap.size > 0 &&
+    rawAdapter.terminals !== undefined
+      ? {
+          ...rawAdapter,
+          terminals: {
+            ...rawAdapter.terminals,
+            toolCall: createToolDispatcher(dedupedFsToolMap, rawAdapter.terminals.toolCall),
+          },
+        }
+      : rawAdapter;
+
   // Compose middleware around adapter terminals, then apply timeout
   const composedAdapter = composeMiddlewareIntoAdapter(
-    rawAdapter,
+    adapterWithFsTools,
     middleware,
     instrumentation,
     trajectoryStore,
     config.requestApproval,
     config.userId,
     config.channelId,
-    config.toolDescriptors,
+    allToolDescriptors,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -96,16 +156,51 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? collectDebugInfo(middleware, adapter, channel, stubInstances)
       : undefined;
 
+  // Create spawn provider when a resolver is provided. Callers pass the provider
+  // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
+  // Resolve effective policy first so the fallback ledger uses the same capacity as
+  // the policy — a custom spawnPolicy.maxTotalProcesses without an explicit ledger
+  // would otherwise be silently ignored by the process-wide default ledger.
+  const effectiveSpawnPolicy = config.spawnPolicy ?? DEFAULT_SPAWN_POLICY;
+  const effectiveSpawnLedger =
+    config.spawnLedger ??
+    // Only reuse the shared default when the policy cap matches; otherwise allocate
+    // a fresh ledger with the correct capacity so the configured limit is honoured.
+    (effectiveSpawnPolicy.maxTotalProcesses === DEFAULT_SPAWN_POLICY.maxTotalProcesses
+      ? DEFAULT_PROCESS_SPAWN_LEDGER
+      : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
+
+  const spawnProvider =
+    config.resolver !== undefined
+      ? createSpawnToolProvider({
+          resolver: config.resolver,
+          spawnLedger: effectiveSpawnLedger,
+          adapter,
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: "sonnet" },
+          },
+          spawnPolicy: effectiveSpawnPolicy,
+          ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        })
+      : undefined;
+
   return {
     adapter,
     channel,
     middleware,
     debugInfo,
     trajectoryStore,
+    spawnProvider,
+    filesystemBackend,
+    filesystemProvider,
     dispose: async () => {
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
+        filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failures.length > 0) {

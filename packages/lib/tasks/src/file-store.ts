@@ -20,7 +20,9 @@ import type {
   TaskItemId,
 } from "@koi/core";
 import { taskItemId } from "@koi/core";
+import { isTask } from "@koi/task-board";
 import { createMemoryChangeNotifier } from "@koi/validation";
+import { matchesFilter } from "./filter.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -76,11 +78,35 @@ async function atomicWrite(baseDir: string, id: TaskItemId, content: string): Pr
   }
 }
 
-/** Read and parse a task JSON file. Returns undefined on any error. */
+/** Read and parse a task JSON file. Returns undefined on any error or invalid shape. */
 async function readTaskFile(filePath: string): Promise<Task | undefined> {
   try {
     const file = Bun.file(filePath);
-    return (await file.json()) as Task;
+    const raw: unknown = await file.json();
+    if (typeof raw !== "object" || raw === null) return undefined;
+    const obj = raw as Record<string, unknown>;
+    // Backward compat: backfill fields that may be absent in old files,
+    // matching createTaskBoard's snapshot handling. Only backfill when
+    // truly absent — if present but malformed, reject the file.
+    if (!("version" in obj)) {
+      obj.version = 0;
+    } else if (typeof obj.version !== "number") {
+      return undefined;
+    }
+    if (!("retries" in obj)) {
+      obj.retries = 0;
+    }
+    if (!("createdAt" in obj)) {
+      obj.createdAt = 0;
+    }
+    if (!("updatedAt" in obj)) {
+      obj.updatedAt = 0;
+    }
+    if (!("subject" in obj) && typeof obj.description === "string") {
+      obj.subject = obj.description;
+    }
+    if (!isTask(raw)) return undefined;
+    return raw;
   } catch {
     return undefined;
   }
@@ -137,6 +163,9 @@ export async function createFileTaskBoardStore(
     }
   }
 
+  /** IDs whose on-disk files are corrupt/unreadable. */
+  const corruptIds = new Set<TaskItemId>();
+
   /** Ensure the cache is populated (read all files once). */
   async function ensureCache(): Promise<void> {
     if (cachePopulated) return;
@@ -145,12 +174,25 @@ export async function createFileTaskBoardStore(
       if (item !== undefined) {
         cache.set(id, item);
       } else {
-        // Self-heal: file missing or corrupted
-        knownIds.delete(id);
+        // Check if file exists but is corrupt vs truly missing
+        const fileExists = await Bun.file(join(baseDir, taskFilename(id))).exists();
+        if (fileExists) {
+          corruptIds.add(id);
+        }
       }
     });
     await Promise.all(loadPromises);
     cachePopulated = true;
+  }
+
+  /** Throws if any known IDs are corrupt — callers that need a complete board should check. */
+  function assertNoCorruption(): void {
+    if (corruptIds.size > 0) {
+      const ids = [...corruptIds].join(", ");
+      throw new Error(
+        `Corrupt task files detected: ${ids}. Repair or delete these files before proceeding.`,
+      );
+    }
   }
 
   // -- Store methods --------------------------------------------------------
@@ -167,17 +209,44 @@ export async function createFileTaskBoardStore(
     const item = await readTaskFile(join(baseDir, taskFilename(id)));
     if (item !== undefined) {
       cache.set(id, item);
-    } else {
-      knownIds.delete(id); // Self-heal
+      corruptIds.delete(id); // File is now readable — clear corruption flag
     }
     return item;
   };
 
   const put = async (item: Task): Promise<void> => {
+    // Stale-write guard: reject same or older version (single-writer safety net,
+    // not multi-process CAS — two processes can still race the read-then-write).
+    // When cache is cold for a known ID, read from disk to catch stale snapshots.
+    let existing = cache.get(item.id);
+    if (existing === undefined && knownIds.has(item.id)) {
+      const filePath = join(baseDir, taskFilename(item.id));
+      const onDisk = await readTaskFile(filePath);
+      if (onDisk !== undefined) {
+        cache.set(item.id, onDisk);
+        existing = onDisk;
+      } else {
+        // File is either missing or corrupt. Check which.
+        const fileExists = await Bun.file(filePath).exists();
+        if (fileExists) {
+          // File exists but is corrupt — fail closed to prevent version downgrade
+          throw new Error(
+            `Cannot write task ${item.id}: existing file is corrupt or unreadable — repair or delete the file`,
+          );
+        }
+        // File is truly missing (deleted externally) — allow write
+      }
+    }
+    if (existing !== undefined && existing.version >= item.version) {
+      throw new Error(
+        `Version conflict for task ${item.id}: stored version ${String(existing.version)} >= incoming version ${String(item.version)}`,
+      );
+    }
     const content = JSON.stringify(item, null, 2);
     await atomicWrite(baseDir, item.id, content);
     knownIds.add(item.id);
     cache.set(item.id, item);
+    corruptIds.delete(item.id); // Successful write repairs corruption
     notifier.notify({ kind: "put", item });
   };
 
@@ -190,16 +259,18 @@ export async function createFileTaskBoardStore(
     }
     knownIds.delete(id);
     cache.delete(id);
+    corruptIds.delete(id); // Deleted file is no longer corrupt
     notifier.notify({ kind: "deleted", id });
   };
 
   const list = async (filter?: TaskBoardStoreFilter): Promise<readonly Task[]> => {
     await ensureCache();
+    // Fail loudly if any files are corrupt — callers rebuilding a board
+    // from list() must not silently start with partial state.
+    assertNoCorruption();
     const result: Task[] = [];
     for (const item of cache.values()) {
-      if (filter?.status !== undefined && item.status !== filter.status) continue;
-      if (filter?.assignedTo !== undefined && item.assignedTo !== filter.assignedTo) continue;
-      result.push(item);
+      if (matchesFilter(item, filter)) result.push(item);
     }
     return result;
   };
@@ -221,6 +292,7 @@ export async function createFileTaskBoardStore(
     await Promise.all(deletePromises);
     knownIds.clear();
     cache.clear();
+    corruptIds.clear(); // Reset clears corruption state
     cachePopulated = true; // Cache is now accurately empty
     // highWaterMark is intentionally NOT reset
   };

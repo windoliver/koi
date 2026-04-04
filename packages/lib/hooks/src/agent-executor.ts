@@ -46,8 +46,9 @@ import { extractStructure, redactEventData } from "./payload-redaction.js";
  * Hard safety denylist — these tools are NEVER available to hook agents,
  * regardless of toolAllowlist or toolDenylist config. Non-overridable.
  * Prevents recursive agent spawning from within verification hooks.
+ * Includes all known spawn-tool names (case-sensitive).
  */
-const HARD_SAFETY_DENYLIST: ReadonlySet<string> = new Set(["spawn", "agent", "Agent"]);
+const HARD_SAFETY_DENYLIST: ReadonlySet<string> = new Set(["spawn", "agent", "Agent", "Spawn"]);
 
 // Default denylist: hard safety + read-only-by-default safety.
 // Hook agents get read-only tools unless explicitly opted in via hook config.

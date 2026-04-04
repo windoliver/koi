@@ -161,6 +161,19 @@ export interface ManifestSandboxConfig {
   readonly persistence?: ManifestSandboxPersistence | undefined;
 }
 
+/** Filesystem backend selection for agent manifests. */
+export interface FileSystemConfig {
+  /** Backend type. Default: "local" (zero setup, uses Bun.file/node:fs). */
+  readonly backend?: "local" | "nexus";
+  /** Backend-specific configuration, validated by the L2 dispatch factory. */
+  readonly options?: JsonObject;
+  /**
+   * Which filesystem operations to expose as tools. Default: ["read"].
+   * Write/edit require explicit opt-in to prevent accidental mutation grants.
+   */
+  readonly operations?: readonly ("read" | "write" | "edit")[];
+}
+
 export interface AgentManifest {
   readonly name: string;
   readonly version: string;
@@ -198,6 +211,11 @@ export interface AgentManifest {
   readonly conventions?: readonly string[] | undefined;
   /** Search provider configuration — resolved to a SearchProvider at assembly time. */
   readonly search?: SearchConfig | undefined;
+  /**
+   * Filesystem backend configuration — controls which FileSystemBackend
+   * implementation is wired during assembly. Defaults to local when absent.
+   */
+  readonly filesystem?: FileSystemConfig | undefined;
   /**
    * Per-capability degeneracy configuration — maps capability name to config.
    * Capabilities are identified by `capability:<name>` tags on brick artifacts.

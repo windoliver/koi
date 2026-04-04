@@ -1,12 +1,19 @@
 import type {
+  AgentResolver,
   ApprovalHandler,
   ChannelAdapter,
   ChannelCapabilities,
+  ComponentProvider,
   EngineAdapter,
+  FileSystemBackend,
+  FileSystemConfig,
   KoiMiddleware,
+  ReportStore,
+  SpawnLedger,
   ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
+import type { SpawnPolicy } from "@koi/engine-compose";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -65,6 +72,49 @@ export interface RuntimeConfig {
    * tools are available. When omitted, callHandlers.tools is empty.
    */
   readonly toolDescriptors?: readonly ToolDescriptor[] | undefined;
+
+  /**
+   * Agent resolver for definition lookup. When provided, `createRuntime` returns a
+   * `spawnProvider` in `RuntimeHandle` that callers can pass to `createKoi({ providers })`
+   * to register the `Spawn` tool and enable agent-to-agent delegation.
+   */
+  readonly resolver?: AgentResolver | undefined;
+
+  /**
+   * ReportStore for `on_demand` delivery. Required when spawned agents use
+   * `delivery.kind === "on_demand"`. Passed through to the spawn provider.
+   */
+  readonly reportStore?: ReportStore | undefined;
+
+  /**
+   * Shared spawn ledger for process accounting. When provided it is threaded
+   * into the spawn provider so cross-runtime/cross-node accounting is preserved.
+   * When omitted a default in-memory ledger (capacity 50) is created locally.
+   */
+  readonly spawnLedger?: SpawnLedger | undefined;
+
+  /**
+   * Spawn governance policy (max depth, fan-out, total processes).
+   * When omitted the DEFAULT_SPAWN_POLICY is used.
+   */
+  readonly spawnPolicy?: SpawnPolicy | undefined;
+
+  /**
+   * Filesystem backend configuration. Controls which FileSystemBackend
+   * implementation is used.
+   *
+   * - `undefined`: falls back to `manifest.filesystem` if a manifest is provided.
+   * - `FileSystemConfig`: explicitly configures the backend.
+   * - `false`: explicitly disables filesystem, overriding any manifest config.
+   *   Use this to prevent manifest-supplied filesystem grants from taking effect.
+   */
+  readonly filesystem?: FileSystemConfig | false | undefined;
+
+  /**
+   * Working directory for the local filesystem backend. Required when
+   * filesystem.backend is "local" (or absent). Defaults to process.cwd().
+   */
+  readonly cwd?: string | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
@@ -119,6 +169,26 @@ export interface RuntimeHandle {
    * Shared between harness (writes DebugSpans) and event-trace (writes RichTrajectorySteps).
    */
   readonly trajectoryStore: TrajectoryDocumentStore | undefined;
+
+  /**
+   * Spawn tool provider. Only populated when `config.resolver` is provided.
+   * Pass this to `createKoi({ providers: [handle.spawnProvider] })` to register
+   * the `Spawn` tool and enable agent-to-agent delegation for that agent.
+   */
+  readonly spawnProvider: ComponentProvider | undefined;
+
+  /**
+   * Resolved filesystem backend. Only populated when filesystem is explicitly
+   * configured via config.filesystem or manifest.filesystem (opt-in).
+   */
+  readonly filesystemBackend: FileSystemBackend | undefined;
+
+  /**
+   * Filesystem ComponentProvider — registers the backend under FILESYSTEM token
+   * and creates fs_read, fs_write, fs_edit tools. Pass to createKoi() providers.
+   * Only populated when filesystem is explicitly configured.
+   */
+  readonly filesystemProvider: ComponentProvider | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

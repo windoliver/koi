@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Records VCR cassettes + full-stack ATIF trajectories.
  *
@@ -8,9 +9,9 @@
  *   simple-text      — text response, no tools, permissions bypass
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
- *   permission-deny  — permissions default mode denies add_numbers
- *   hook-blocked     — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
- *   hook-redaction   — agent hook on tool.succeeded, forwardRawPayload + default redaction
+ *   permission-deny       — permissions default mode denies add_numbers
+ *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
+ *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -22,8 +23,14 @@
  *   @koi/middleware-permissions — permission gating MW
  *   @koi/tools-core           — buildTool()
  *   @koi/tools-builtin        — Glob/Grep/ToolSearch
+ *   @koi/fs-local             — local filesystem backend
  */
 
+import {
+  createAgentDefinitionRegistry,
+  createDefinitionResolver,
+  getBuiltInAgents,
+} from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -31,11 +38,17 @@ import type {
   EngineInput,
   JsonObject,
   ModelChunk,
-  SpawnFn,
+  PermissionBackend,
 } from "@koi/core";
-import { createSingleToolProvider } from "@koi/core";
-import { createKoi } from "@koi/engine";
+import {
+  createSingleToolProvider,
+  serializeMemoryFrontmatter,
+  validateMemoryFilePath,
+  validateMemoryRecordInput,
+} from "@koi/core";
+import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
 import {
@@ -45,11 +58,12 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { consumeModelStream } from "@koi/query-engine";
+import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
@@ -82,6 +96,13 @@ const modelAdapter = createOpenAICompatAdapter({
 });
 
 // ---------------------------------------------------------------------------
+// Shared prompts (reused for both cassette + trajectory recording)
+// ---------------------------------------------------------------------------
+
+const MEMORY_STORE_PROMPT =
+  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.';
+
+// ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
 // ---------------------------------------------------------------------------
 
@@ -103,27 +124,6 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
-
-// ---------------------------------------------------------------------------
-// Credentials tool (for hook-redaction golden query)
-// ---------------------------------------------------------------------------
-
-const credentialsToolResult = buildTool({
-  name: "get_credentials",
-  description: "Retrieve database credentials for the current environment",
-  inputSchema: { type: "object", properties: {} },
-  origin: "primordial",
-  execute: async (): Promise<unknown> => ({
-    apiKey: "sk-ant-api03-" + "A".repeat(85),
-    dbPassword: "super-secret-pw-123",
-    host: "db.example.com",
-  }),
-});
-if (!credentialsToolResult.ok) {
-  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
-  process.exit(1);
-}
-const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -181,6 +181,86 @@ if (!taskListResult.ok) {
 }
 const taskListTool = taskListResult.value;
 
+// ---------------------------------------------------------------------------
+// Memory tools (backed by @koi/core L0 pure functions)
+// ---------------------------------------------------------------------------
+
+const memoryStore = new Map<string, string>();
+
+const memoryStoreResult = buildTool({
+  name: "memory_store",
+  description:
+    "Store a memory record. Provide name, description, type (user|feedback|project|reference), and content. Returns the serialized Markdown with frontmatter.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Human-readable name" },
+      description: { type: "string", description: "One-line summary" },
+      type: {
+        type: "string",
+        enum: ["user", "feedback", "project", "reference"],
+        description: "Memory type",
+      },
+      content: { type: "string", description: "Memory body content" },
+    },
+    required: ["name", "description", "type", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const input = {
+      name: String(args.name),
+      description: String(args.description),
+      type: String(args.type),
+      content: String(args.content),
+      filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
+    };
+    const pathError = validateMemoryFilePath(input.filePath);
+    if (pathError !== undefined) {
+      return { ok: false, errors: [{ field: "filePath", message: pathError }] };
+    }
+    const errors = validateMemoryRecordInput(input);
+    if (errors.length > 0) {
+      return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
+    }
+    const frontmatter = {
+      name: input.name,
+      description: input.description,
+      type: input.type as "user" | "feedback" | "project" | "reference",
+    };
+    const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
+    if (serialized === undefined) {
+      return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
+    }
+    memoryStore.set(input.filePath, serialized);
+    return { ok: true, filePath: input.filePath, serialized };
+  },
+});
+if (!memoryStoreResult.ok) {
+  console.error(`buildTool(memory_store) failed: ${memoryStoreResult.error.message}`);
+  process.exit(1);
+}
+const memoryStoreTool = memoryStoreResult.value;
+
+const memoryListResult = buildTool({
+  name: "memory_list",
+  description: "List all stored memory records with their file paths and types.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  execute: async (): Promise<unknown> => {
+    const records = [...memoryStore.entries()].map(([filePath, raw]) => {
+      const typeMatch = raw.match(/^type:\s*(.+)$/m);
+      const nameMatch = raw.match(/^name:\s*(.+)$/m);
+      return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
+    });
+    return { memories: records };
+  },
+});
+if (!memoryListResult.ok) {
+  console.error(`buildTool(memory_list) failed: ${memoryListResult.error.message}`);
+  process.exit(1);
+}
+const memoryListTool = memoryListResult.value;
+
 // =========================================================================
 // Recording helpers
 // =========================================================================
@@ -213,34 +293,22 @@ interface QueryConfig {
   readonly permissionMode: "bypass" | "default";
   readonly permissionRules: readonly SourcedRule[];
   readonly permissionDescription: string;
-  readonly hooks: readonly (
-    | {
-        readonly kind: "command";
-        readonly name: string;
-        readonly cmd: readonly string[];
-        readonly filter: { readonly events: readonly string[] };
-        readonly once?: boolean;
-      }
-    | {
-        readonly kind: "agent";
-        readonly name: string;
-        readonly prompt: string;
-        readonly model?: string;
-        readonly filter: { readonly events: readonly string[] };
-        readonly forwardRawPayload?: boolean;
-        readonly redaction?: {
-          readonly enabled?: boolean;
-          readonly censor?: string;
-          readonly sensitiveFields?: readonly string[];
-        };
-        readonly once?: boolean;
-      }
-  )[];
+  readonly hooks: readonly {
+    readonly kind: "command";
+    readonly name: string;
+    readonly cmd: readonly string[];
+    readonly filter: { readonly events: readonly string[] };
+    readonly once?: boolean;
+  }[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
   /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
   readonly useRegistry?: boolean;
+  /** Custom permission backend — overrides permissionMode/permissionRules when provided. */
+  readonly permissionBackend?: PermissionBackend;
+  /** Denial escalation config for permissions middleware. */
+  readonly denialEscalation?: boolean | DenialEscalationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,50 +336,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
-
-  // Provide a spawnFn for agent hooks — uses the same OpenRouter model adapter
-  const hasAgentHooks = config.hooks.some((h) => h.kind === "agent");
-  const spawnFn: SpawnFn | undefined = hasAgentHooks
-    ? async (request) => {
-        try {
-          const response = await modelAdapter.complete({
-            messages: [
-              {
-                senderId: "system",
-                timestamp: Date.now(),
-                content: [{ kind: "text", text: request.systemPrompt ?? "" }],
-              },
-              {
-                senderId: "user",
-                timestamp: Date.now(),
-                content: [{ kind: "text", text: request.description }],
-              },
-            ],
-            model: MODEL,
-          });
-          const textContent = response.content
-            .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
-            .map((c) => c.text)
-            .join("");
-          return { ok: true, output: textContent };
-        } catch (err: unknown) {
-          return {
-            ok: false,
-            error: {
-              code: "SPAWN_FAILED" as const,
-              message: err instanceof Error ? err.message : String(err),
-              retryable: false,
-              context: {},
-            },
-          };
-        }
-      }
-    : undefined;
-
-  const coreHookMw = createHookMiddleware({
-    hooks: loadedHooks,
-    ...(spawnFn !== undefined ? { spawnFn } : {}),
-  });
+  const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
 
   // Optional registry for once-hook lifecycle tracking
   // let justified: mutable — created conditionally
@@ -331,13 +356,16 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   });
 
   // @koi/permissions + @koi/middleware-permissions
-  const permBackend = createPermissionBackend({
-    mode: config.permissionMode,
-    rules: [...config.permissionRules],
-  });
+  const permBackend =
+    config.permissionBackend ??
+    createPermissionBackend({
+      mode: config.permissionMode,
+      rules: [...config.permissionRules],
+    });
   const permMiddleware = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionDescription,
+    ...(config.denialEscalation !== undefined ? { denialEscalation: config.denialEscalation } : {}),
   });
 
   // @koi/mcp
@@ -590,6 +618,29 @@ if (nexusFsCheck.exitCode === 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Local filesystem (@koi/fs-local — no Nexus server needed)
+// ---------------------------------------------------------------------------
+
+const { mkdtempSync } = await import("node:fs");
+const { tmpdir: tmpDirFn } = await import("node:os");
+const { join: joinPath } = await import("node:path");
+
+const localFsTmpDir = mkdtempSync(joinPath(tmpDirFn(), "koi-golden-local-fs-"));
+const localFsBackend = createLocalFileSystem(localFsTmpDir);
+
+// Pre-seed a file for the LLM to read
+await localFsBackend.write("golden-local.txt", "The local filesystem answer is 7.");
+
+const localReadTool = createFsReadTool(localFsBackend, "local_fs", { sandbox: false });
+const localFsProvider = createSingleToolProvider({
+  name: "local-fs",
+  toolName: "local_fs_read",
+  createTool: () => localReadTool,
+});
+
+console.log(`Local-fs golden query: dir=${localFsTmpDir}, seeded golden-local.txt`);
+
+// ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
 // ---------------------------------------------------------------------------
 
@@ -667,6 +718,61 @@ async function createMcpProvider(): Promise<{
 const BYPASS_RULES: readonly SourcedRule[] = [
   { pattern: "*", action: "*", effect: "allow", source: "policy" },
 ];
+
+// ---------------------------------------------------------------------------
+// Spawn tool provider — @koi/agent-runtime + @koi/engine (#1424)
+// Child agents use a proper EngineAdapter built with runTurn() so the
+// model→tool→model loop works correctly inside spawnChildAgent/createKoi.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps modelAdapter into a full EngineAdapter for spawned child agents.
+ * Uses runTurn() from @koi/query-engine to drive the model loop.
+ * The parent bridge adapter is for recording; children need their own loop.
+ */
+function createChildBridge(): EngineAdapter {
+  return {
+    engineId: "spawn-child",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      const h = input.callHandlers;
+      if (!h) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers on child agent input" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const messages = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
+      ];
+      return runTurn({ callHandlers: h, messages, signal: input.signal });
+    },
+  };
+}
+
+const spawnBuiltIns = getBuiltInAgents();
+const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
+const spawnResolver = createDefinitionResolver(spawnRegistry);
+const spawnToolProvider = createSpawnToolProvider({
+  resolver: spawnResolver,
+  spawnLedger: createInMemorySpawnLedger(5),
+  adapter: createChildBridge(), // child agents use a proper engine adapter with runTurn
+  manifestTemplate: {
+    name: "spawned-agent",
+    version: "0.0.0",
+    description: "Spawned sub-agent",
+    model: { name: MODEL },
+  },
+});
 
 const queries: readonly QueryConfig[] = [
   // 1. simple-text: text response, no tools
@@ -763,7 +869,41 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  {
+    name: "denial-escalation",
+    prompt: "Call the add_numbers tool with a=3 and b=4. Report the result.",
+    permissionMode: "default",
+    permissionRules: [{ pattern: "*", action: "*", effect: "allow", source: "user" }],
+    permissionDescription: "default mode — policy enforcement active",
+    permissionBackend: {
+      check: (query) =>
+        query.resource === "add_numbers"
+          ? { effect: "deny" as const, reason: "Policy denies add_numbers" }
+          : { effect: "allow" as const },
+      checkBatch: (queries) => queries.map(() => ({ effect: "allow" as const })),
+    },
+    denialEscalation: { threshold: 1, windowMs: 300_000 },
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 6. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
   {
     name: "hook-blocked",
     prompt: "What is 2+2?",
@@ -782,7 +922,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 6. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  // 7. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
   {
     name: "hook-once",
     prompt:
@@ -816,7 +956,7 @@ const queries: readonly QueryConfig[] = [
     useRegistry: true,
   },
 
-  // 7. web-fetch: @koi/tools-web exercised with real HTTP fetch
+  // 8. web-fetch: @koi/tools-web exercised with real HTTP fetch
   {
     name: "web-fetch",
     prompt: 'Use the web_fetch tool to fetch "http://example.com" and tell me the page title.',
@@ -834,7 +974,7 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 7. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  // 9. task-board: @koi/tasks exercised — create + list tasks via in-memory store
   {
     name: "task-board",
     prompt:
@@ -865,7 +1005,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 3,
   },
 
-  // 8. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
+  // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
   {
     name: "mcp-tool-use",
     prompt: "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
@@ -884,7 +1024,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
-  // 10. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
+  // 11. turn-stop: stop-gate hook blocks completion, engine re-prompts until maxStopRetries
   {
     name: "turn-stop",
     prompt: "What is the capital of France? Answer concisely.",
@@ -903,7 +1043,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 11. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
+  // 12. nexus-fs: @koi/fs-nexus exercised via real nexus-fs local transport
   ...(nexusFsProvider !== undefined
     ? [
         {
@@ -926,32 +1066,70 @@ const queries: readonly QueryConfig[] = [
       ]
     : []),
 
-  // 12. hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction
+  // 8. local-fs: @koi/fs-local exercised via real local filesystem
   {
-    name: "hook-redaction",
+    name: "local-fs-read",
     prompt:
-      "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+      'Use the local_fs_read tool to read the file at path "golden-local.txt". Tell me what the file says.',
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-local-fs-tool",
+        cmd: ["echo", "local-fs-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [localFsProvider],
+  },
+
+  // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
+  {
+    name: "memory-store",
+    prompt: MEMORY_STORE_PROMPT,
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
     hooks: [
       {
-        kind: "agent" as const,
-        name: "secret-scanner",
-        prompt:
-          "Verify the tool output does not contain any exposed secrets or credentials. If secrets are properly redacted, continue. If you see raw secrets, block.",
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
         filter: { events: ["tool.succeeded"] },
-        forwardRawPayload: true,
       },
     ],
     providers: [
       createSingleToolProvider({
-        name: "credentials",
-        toolName: "get_credentials",
-        createTool: () => credentialsTool,
+        name: "memory-store",
+        toolName: "memory_store",
+        createTool: () => memoryStoreTool,
+      }),
+      createSingleToolProvider({
+        name: "memory-list",
+        toolName: "memory_list",
+        createTool: () => memoryListTool,
       }),
     ],
-    maxTurns: 2,
+    maxTurns: 3,
+  },
+
+  // 13. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
+  //     Parent delegates to built-in "researcher" agent via the Spawn tool.
+  //     Trajectory: parent model call → Spawn tool → child researcher agent (real LLM) → result back.
+  {
+    name: "spawn-agent",
+    prompt:
+      "Use the Spawn tool with agentName='researcher' to delegate this task: " +
+      "'What is the Fibonacci sequence? Provide a one-sentence definition.' " +
+      "Then report the researcher's answer verbatim.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [spawnToolProvider],
+    maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
 ];
 
@@ -1020,7 +1198,7 @@ await recordCassette("hook-once", () =>
   }),
 );
 
-await recordCassette("hook-redaction", () =>
+await recordCassette("memory-store", () =>
   modelAdapter.stream({
     messages: [
       {
@@ -1029,12 +1207,12 @@ await recordCassette("hook-redaction", () =>
         content: [
           {
             kind: "text",
-            text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            text: MEMORY_STORE_PROMPT,
           },
         ],
       },
     ],
-    tools: [credentialsTool.descriptor],
+    tools: [memoryStoreTool.descriptor, memoryListTool.descriptor],
   }),
 );
 
@@ -1100,11 +1278,10 @@ for (const q of queries) {
 await mcpSetup.cleanup();
 nexusTransport?.close();
 
-console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
-console.log("  fixtures/hook-redaction.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

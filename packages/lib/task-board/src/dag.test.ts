@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Task, TaskItemId } from "@koi/core";
 import { taskItemId } from "@koi/core";
-import { detectCycle, topologicalSort } from "./dag.js";
+import { detectCycle, isAcyclic, topologicalSort } from "./dag.js";
 
 function task(id: string, deps: readonly string[] = []): Task {
   return {
@@ -11,6 +11,7 @@ function task(id: string, deps: readonly string[] = []): Task {
     dependencies: deps.map(taskItemId),
     status: "pending",
     retries: 0,
+    version: 0,
     createdAt: 0,
     updatedAt: 0,
   };
@@ -91,5 +92,20 @@ describe("topologicalSort", () => {
     const items = toMap([task("a"), task("b"), task("c")]);
     const result = topologicalSort(items);
     expect(result).toHaveLength(3);
+  });
+});
+
+describe("isAcyclic", () => {
+  test("returns true for empty graph", () => {
+    expect(isAcyclic(toMap([]))).toBe(true);
+  });
+
+  test("returns true for valid DAG", () => {
+    expect(isAcyclic(toMap([task("a"), task("b", ["a"]), task("c", ["b"])]))).toBe(true);
+  });
+
+  test("returns false for graph with cycle", () => {
+    const items = toMap([task("a", ["b"]), task("b", ["a"])]);
+    expect(isAcyclic(items)).toBe(false);
   });
 });

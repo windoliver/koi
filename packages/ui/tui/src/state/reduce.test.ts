@@ -13,7 +13,7 @@ import {
   testCallId,
   userMsg,
 } from "./test-helpers.js";
-import type { TuiAssistantBlock, TuiMessage } from "./types.js";
+import type { TuiAction, TuiAssistantBlock, TuiMessage } from "./types.js";
 import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -828,6 +828,50 @@ describe("reduce — set_view", () => {
 // set_modal
 // ---------------------------------------------------------------------------
 
+describe("reduce — set_modal — command palette query round-trip", () => {
+  test("query survives permission-prompt interruption and restoration", () => {
+    // Simulates the store-level half of the interruption handoff:
+    // 1. Palette opened with empty query
+    // 2. User types "cl" — palette dispatches query update
+    // 3. Permission prompt takes over the modal slot
+    // 4. Bridge restores palette with the saved query "cl"
+    // Result: modal is command-palette with query "cl"
+    let state = createInitialState();
+
+    // Open palette
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "" } });
+
+    // User types "cl"
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cl" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cl" });
+
+    // Permission prompt takes over
+    state = reduce(state, {
+      kind: "set_modal",
+      modal: {
+        kind: "permission-prompt",
+        prompt: {
+          requestId: "r1",
+          toolId: "bash",
+          input: {},
+          reason: "needs approval",
+          riskLevel: "low",
+        },
+      },
+    });
+    expect(state.modal?.kind).toBe("permission-prompt");
+
+    // Bridge restores palette with the last saved query
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cl" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cl" });
+
+    // Component's effect then promotes local "cle" (typed during interruption)
+    // back into the store — simulate that dispatch:
+    state = reduce(state, { kind: "set_modal", modal: { kind: "command-palette", query: "cle" } });
+    expect(state.modal).toEqual({ kind: "command-palette", query: "cle" });
+  });
+});
+
 describe("reduce — set_modal", () => {
   test("sets command-palette modal", () => {
     const state = createInitialState();
@@ -1317,5 +1361,378 @@ describe("reduce — message compaction", () => {
 describe("createInitialState", () => {
   test("initial state shape", () => {
     expect(createInitialState()).toMatchSnapshot();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_session_info
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_session_info", () => {
+  test("sets sessionInfo from null", () => {
+    const state = createInitialState();
+    const next = reduce(state, {
+      kind: "set_session_info",
+      modelName: "claude-opus-4-6",
+      provider: "anthropic",
+      sessionName: "my-session",
+    });
+    expect(next.sessionInfo).toEqual({
+      modelName: "claude-opus-4-6",
+      provider: "anthropic",
+      sessionName: "my-session",
+    });
+  });
+
+  test("overwrites existing sessionInfo (idempotent overwrite)", () => {
+    const state = stateWith({
+      sessionInfo: { modelName: "old-model", provider: "old-provider", sessionName: "old-session" },
+    });
+    const next = reduce(state, {
+      kind: "set_session_info",
+      modelName: "new-model",
+      provider: "openrouter",
+      sessionName: "new-session",
+    });
+    expect(next.sessionInfo).toEqual({
+      modelName: "new-model",
+      provider: "openrouter",
+      sessionName: "new-session",
+    });
+  });
+
+  test("does not affect other state fields", () => {
+    const state = stateWith({ activeView: "sessions", connectionStatus: "connected" });
+    const next = reduce(state, {
+      kind: "set_session_info",
+      modelName: "m",
+      provider: "p",
+      sessionName: "s",
+    });
+    expect(next.activeView).toBe("sessions");
+    expect(next.connectionStatus).toBe("connected");
+    expect(next.messages).toEqual(state.messages);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_session_list
+// ---------------------------------------------------------------------------
+
+function makeSession(
+  id: string,
+  lastActivityAt: number,
+): {
+  readonly id: string;
+  readonly name: string;
+  readonly lastActivityAt: number;
+  readonly messageCount: number;
+  readonly preview: string;
+} {
+  return { id, name: `Session ${id}`, lastActivityAt, messageCount: 5, preview: "preview" };
+}
+
+describe("reduce — set_session_list", () => {
+  test("stores sessions sorted by lastActivityAt descending", () => {
+    const state = createInitialState();
+    const sessions = [makeSession("a", 1000), makeSession("b", 3000), makeSession("c", 2000)];
+    const next = reduce(state, { kind: "set_session_list", sessions });
+    expect(next.sessions[0]?.id).toBe("b");
+    expect(next.sessions[1]?.id).toBe("c");
+    expect(next.sessions[2]?.id).toBe("a");
+  });
+
+  test("empty array stores empty sessions", () => {
+    const state = stateWith({ sessions: [makeSession("x", 1000)] });
+    const next = reduce(state, { kind: "set_session_list", sessions: [] });
+    expect(next.sessions).toHaveLength(0);
+  });
+
+  test("exactly 50 (MAX_SESSIONS) items — all stored, no truncation", () => {
+    const state = createInitialState();
+    const sessions = Array.from({ length: 50 }, (_, i) => makeSession(`s${i}`, i));
+    const next = reduce(state, { kind: "set_session_list", sessions });
+    expect(next.sessions).toHaveLength(50);
+  });
+
+  test("51 (MAX_SESSIONS + 1) items — oldest item dropped", () => {
+    const state = createInitialState();
+    const sessions = Array.from({ length: 51 }, (_, i) => makeSession(`s${i}`, i));
+    const next = reduce(state, { kind: "set_session_list", sessions });
+    expect(next.sessions).toHaveLength(50);
+    expect(next.sessions.some((s) => s.id === "s0")).toBe(false);
+    expect(next.sessions[0]?.id).toBe("s50");
+  });
+
+  test("does not mutate incoming sessions array", () => {
+    const state = createInitialState();
+    const sessions = [makeSession("a", 100), makeSession("b", 200)];
+    const copy = sessions.map((s) => ({ ...s }));
+    reduce(state, { kind: "set_session_list", sessions });
+    expect(sessions).toEqual(copy);
+  });
+
+  test("does not affect other state fields", () => {
+    const state = stateWith({ activeView: "help", connectionStatus: "connected" });
+    const next = reduce(state, { kind: "set_session_list", sessions: [makeSession("x", 1000)] });
+    expect(next.activeView).toBe("help");
+    expect(next.connectionStatus).toBe("connected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cumulative metrics on 'done'
+// ---------------------------------------------------------------------------
+
+function doneWith(metrics: {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+}): TuiAction {
+  return engineEvent({
+    kind: "done",
+    output: {
+      content: [],
+      stopReason: "completed",
+      metrics: {
+        totalTokens: metrics.totalTokens,
+        inputTokens: metrics.inputTokens,
+        outputTokens: metrics.outputTokens,
+        turns: 1,
+        durationMs: 100,
+        ...(metrics.costUsd !== undefined ? { costUsd: metrics.costUsd } : {}),
+      },
+    },
+  });
+}
+
+describe("reduce — cumulative metrics on 'done'", () => {
+  test("first done: accumulates from zero baseline", () => {
+    const state = createInitialState();
+    const next = reduce(state, doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20 }));
+    expect(next.cumulativeMetrics.totalTokens).toBe(100);
+    expect(next.cumulativeMetrics.inputTokens).toBe(80);
+    expect(next.cumulativeMetrics.outputTokens).toBe(20);
+    expect(next.cumulativeMetrics.turns).toBe(1);
+  });
+
+  test("second done: adds to existing cumulative totals", () => {
+    let state = createInitialState();
+    state = reduce(state, doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20 }));
+    const next = reduce(state, doneWith({ totalTokens: 50, inputTokens: 30, outputTokens: 20 }));
+    expect(next.cumulativeMetrics.totalTokens).toBe(150);
+    expect(next.cumulativeMetrics.inputTokens).toBe(110);
+    expect(next.cumulativeMetrics.outputTokens).toBe(40);
+    expect(next.cumulativeMetrics.turns).toBe(2);
+  });
+
+  test("done without costUsd: costUsd stays null", () => {
+    const state = createInitialState();
+    const next = reduce(state, doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20 }));
+    expect(next.cumulativeMetrics.costUsd).toBeNull();
+  });
+
+  test("done with costUsd when prev was null: costUsd becomes that value", () => {
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20, costUsd: 0.05 }),
+    );
+    expect(next.cumulativeMetrics.costUsd).toBeCloseTo(0.05);
+  });
+
+  test("done with costUsd when prev already has a value: costUsd adds up", () => {
+    let state = createInitialState();
+    state = reduce(
+      state,
+      doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20, costUsd: 0.05 }),
+    );
+    const next = reduce(
+      state,
+      doneWith({ totalTokens: 50, inputTokens: 30, outputTokens: 20, costUsd: 0.03 }),
+    );
+    expect(next.cumulativeMetrics.costUsd).toBeCloseTo(0.08);
+  });
+
+  test("done with costUsd after a no-costUsd turn: treats prior null as 0", () => {
+    let state = createInitialState();
+    state = reduce(state, doneWith({ totalTokens: 100, inputTokens: 80, outputTokens: 20 }));
+    expect(state.cumulativeMetrics.costUsd).toBeNull();
+    const next = reduce(
+      state,
+      doneWith({ totalTokens: 50, inputTokens: 30, outputTokens: 20, costUsd: 0.02 }),
+    );
+    expect(next.cumulativeMetrics.costUsd).toBeCloseTo(0.02);
+  });
+
+  test("turns accumulate from m.turns (single-turn runs: m.turns=1 each)", () => {
+    let state = createInitialState();
+    for (let i = 0; i < 5; i++) {
+      state = reduce(state, doneWith({ totalTokens: 10, inputTokens: 8, outputTokens: 2 }));
+    }
+    expect(state.cumulativeMetrics.turns).toBe(5);
+  });
+
+  test("done with legacy state missing engineTurns: floors at prev.turns, no NaN (backward compat)", () => {
+    // Simulate a state restored from before engineTurns was added to the schema.
+    // The ?? prev.turns floor preserves history: each prior user turn had ≥1 model call.
+    const legacyMetrics = {
+      totalTokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      turns: 3,
+      // engineTurns deliberately absent — pre-migration state
+      costUsd: null,
+    };
+    const state = stateWith({
+      // Cast: simulate a legacy state object that predates engineTurns
+      cumulativeMetrics: legacyMetrics as unknown as import("./types.js").CumulativeMetrics,
+    });
+    const next = reduce(state, doneWith({ totalTokens: 50, inputTokens: 40, outputTokens: 10 }));
+    expect(Number.isNaN(next.cumulativeMetrics.engineTurns)).toBe(false);
+    // Floor is prev.turns (3), not 0. After one more single-turn run: 3 + 1 = 4.
+    expect(next.cumulativeMetrics.engineTurns).toBe(4);
+    expect(next.cumulativeMetrics.turns).toBe(4);
+    // engineTurns === turns → no false amplification shown in status bar
+    expect(next.cumulativeMetrics.engineTurns).toBe(next.cumulativeMetrics.turns);
+  });
+
+  test("done with legacy state: subsequent tool-loop run still shows amplification signal", () => {
+    // After restoring a legacy session (engineTurns defaults to turns=3),
+    // a multi-turn tool-loop run should surface in the status bar.
+    const legacyMetrics = {
+      totalTokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      turns: 3,
+      costUsd: null,
+    };
+    const state = stateWith({
+      cumulativeMetrics: legacyMetrics as unknown as import("./types.js").CumulativeMetrics,
+    });
+    // Tool-loop run: m.turns = 4 (4 model calls for 1 user request)
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 400,
+            inputTokens: 320,
+            outputTokens: 80,
+            turns: 4,
+            durationMs: 800,
+          },
+        },
+      }),
+    );
+    expect(next.cumulativeMetrics.turns).toBe(4); // 3 prior + 1 new user turn
+    expect(next.cumulativeMetrics.engineTurns).toBe(7); // 3 (floor) + 4 (tool loop)
+    // engineTurns > turns → status bar shows amplification signal
+    expect(next.cumulativeMetrics.engineTurns).toBeGreaterThan(next.cumulativeMetrics.turns);
+  });
+
+  test("done with m.turns === 0: user turns unchanged (interrupted/no-op run)", () => {
+    // Engine emits done with turns=0 when interrupted before first model call
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "interrupted",
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 5 },
+        },
+      }),
+    );
+    // No model calls → should not count as a completed user turn
+    expect(next.cumulativeMetrics.turns).toBe(0);
+    expect(next.cumulativeMetrics.engineTurns).toBe(0);
+  });
+
+  test("done with m.turns > 1: user turns = 1, engineTurns = m.turns (multi-turn tool-loop run)", () => {
+    // A single user request that caused 3 internal engine turns (tool-call loop)
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 300,
+            inputTokens: 240,
+            outputTokens: 60,
+            turns: 3,
+            durationMs: 500,
+          },
+        },
+      }),
+    );
+    // User round trips: always 1 per done event
+    expect(next.cumulativeMetrics.turns).toBe(1);
+    // Engine-internal turns: accumulates m.turns (3 model calls for this run)
+    expect(next.cumulativeMetrics.engineTurns).toBe(3);
+    expect(next.cumulativeMetrics.totalTokens).toBe(300);
+  });
+
+  test("done sets agentStatus to idle", () => {
+    const state = stateWith({ agentStatus: "processing" });
+    const next = reduce(state, doneWith({ totalTokens: 10, inputTokens: 8, outputTokens: 2 }));
+    expect(next.agentStatus).toBe("idle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agentStatus transitions
+// ---------------------------------------------------------------------------
+
+describe("reduce — agentStatus", () => {
+  test("starts idle", () => {
+    expect(createInitialState().agentStatus).toBe("idle");
+  });
+
+  test("turn_start sets processing", () => {
+    const state = createInitialState();
+    const next = reduce(state, engineEvent({ kind: "turn_start", turnIndex: 0 }));
+    expect(next.agentStatus).toBe("processing");
+  });
+
+  test("turn_end sets idle", () => {
+    const state = stateWith({ agentStatus: "processing" });
+    const next = reduce(state, engineEvent({ kind: "turn_end", turnIndex: 0 }));
+    expect(next.agentStatus).toBe("idle");
+  });
+
+  test("add_error sets error when a streaming turn is active", () => {
+    const state = stateWith({
+      agentStatus: "processing",
+      messages: [assistantMsg("text", { streaming: true })],
+    });
+    const next = reduce(state, { kind: "add_error", code: "E", message: "fail" });
+    expect(next.agentStatus).toBe("error");
+  });
+
+  test("add_error does not change agentStatus when no active streaming turn", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "add_error", code: "E", message: "fail" });
+    expect(next.agentStatus).toBe("idle");
+  });
+
+  test("clear_messages resets agentStatus to idle", () => {
+    const state = stateWith({ agentStatus: "error", messages: [userMsg("hi")] });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.agentStatus).toBe("idle");
+  });
+
+  test("session-picker modal does not affect agentStatus", () => {
+    const state = stateWith({ agentStatus: "processing" });
+    const next = reduce(state, { kind: "set_modal", modal: { kind: "session-picker" } });
+    expect(next.agentStatus).toBe("processing");
   });
 });

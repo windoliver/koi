@@ -27,9 +27,6 @@ export type InputKeyResult =
   | { readonly kind: "backspace" }
   | { readonly kind: "delete-word" }
   | { readonly kind: "clear-line" }
-  | { readonly kind: "history-prev" }
-  | { readonly kind: "history-next" }
-  | { readonly kind: "slash-trigger" }
   | { readonly kind: "noop" };
 
 // ---------------------------------------------------------------------------
@@ -83,12 +80,9 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
     return { kind: "clear-line" };
   }
 
-  // Up/Down: history navigation (only when buffer is empty or single-line)
-  if (key.name === "up" && !currentText.includes("\n")) {
-    return { kind: "history-prev" };
-  }
-  if (key.name === "down" && !currentText.includes("\n")) {
-    return { kind: "history-next" };
+  // Up/Down: no-op (history navigation not yet implemented)
+  if (key.name === "up" || key.name === "down") {
+    return { kind: "noop" };
   }
 
   // Tab — do nothing in normal input (slash overlay handles tab)

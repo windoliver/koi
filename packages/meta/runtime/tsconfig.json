@@ -7,9 +7,12 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../kernel/core" },
+    { "path": "../../lib/agent-runtime" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
     { "path": "../../lib/channel-cli" },
+    { "path": "../../lib/fs-local" },
+    { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/query-engine" },
@@ -22,6 +25,7 @@
     { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../security/middleware-permissions" },
-    { "path": "../../security/permissions" }
+    { "path": "../../security/permissions" },
+    { "path": "../../lib/validation" }
   ]
 }

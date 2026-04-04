@@ -128,12 +128,13 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
     let content: string;
     try {
       content = readFileSync(filePath, "utf-8");
-    } catch {
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
       warnings.push({
         filePath,
         error: {
           code: "INTERNAL",
-          message: `Failed to read agent file: ${filePath}`,
+          message: `Failed to read agent file "${filePath}": ${msg}`,
           retryable: false,
         },
       });
@@ -159,6 +160,9 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
  *
  * Scans `<projectDir>/.koi/agents/` and `<userDir>/.koi/agents/`.
  * Missing directories produce empty results (no error).
+ *
+ * Performance: O(N) sync I/O where N = file count. Expected N < 20.
+ * Agent directories are configuration, not data — sync loading at startup is intentional.
  */
 export function loadCustomAgents(config: LoadAgentsConfig): LoadAgentsResult {
   const allAgents: AgentDefinition[] = [];

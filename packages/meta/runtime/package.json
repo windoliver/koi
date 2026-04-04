@@ -11,11 +11,13 @@
     }
   },
   "dependencies": {
+    "@koi/agent-runtime": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",
+    "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
@@ -29,7 +31,9 @@
     "@koi/tasks": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tools-core": "workspace:*",
-    "@koi/tools-web": "workspace:*"
+    "@koi/tools-web": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.12.1"
