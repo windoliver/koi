@@ -5,6 +5,7 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileSystemBackend,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -73,9 +74,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // FileSystemBackend (used when the caller needs async setup, e.g. local
   // bridge transport with auth notification wiring via resolveFileSystemAsync).
   const filesystemBackend = resolveFilesystemInput(config.filesystem, config.cwd);
+  // Extract operations from FileSystemConfig when present (not applicable for pre-created backends)
+  const filesystemOperations =
+    config.filesystem !== false &&
+    config.filesystem !== undefined &&
+    !isFileSystemBackend(config.filesystem)
+      ? config.filesystem.operations
+      : undefined;
   const filesystemProvider =
     filesystemBackend !== undefined
-      ? createFileSystemProvider(filesystemBackend, "fs", filesystemConfig?.operations)
+      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations)
       : undefined;
 
   // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -102,7 +110,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // (e.g., with custom sandboxing), the generated fs tool is excluded.
   const fsTools =
     filesystemBackend !== undefined
-      ? createFileSystemTools(filesystemBackend, "fs", filesystemConfig?.operations)
+      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations)
       : undefined;
   const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
   const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
