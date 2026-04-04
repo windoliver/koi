@@ -66,6 +66,7 @@ When a project agent and a built-in agent share the same `agentType`, the projec
 | `researcher` | Deep research across multiple sources |
 | `coder` | Code implementation and editing |
 | `reviewer` | Code review and feedback |
+| `coordinator` | Multi-agent orchestrator — decomposes goals into tasks, fans out to child agents via `agent_spawn`, polls for completion, synthesizes results. Uses `opus` model. |
 
 ## API
 
