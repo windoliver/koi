@@ -109,11 +109,18 @@ async def handle_auth(fs, exc) -> bool:
             })
 
         # Check if the token has appeared.
-        # Only suppress "token not present yet" results — propagate real failures
-        # (connection errors, token-store corruption, etc.) immediately so
-        # infrastructure problems don't masquerade as user auth timeouts.
+        # Bound each get_token() call to 2× the poll interval so a hung
+        # provider cannot wedge the entire auth loop — asyncio.TimeoutError
+        # is treated as "not ready yet". Other exceptions are narrowed:
+        # "not found" variants suppress (token not ready), anything else
+        # propagates immediately so infrastructure failures surface fast.
         try:
-            token = await fs.get_token(provider, user_email) if user_email else await fs.get_token(provider)
+            get_token_coro = (
+                fs.get_token(provider, user_email) if user_email else fs.get_token(provider)
+            )
+            token = await asyncio.wait_for(get_token_coro, timeout=AUTH_POLL_INTERVAL_S * 2)
+        except asyncio.TimeoutError:
+            token = None  # Provider hung — treat as not ready, keep polling
         except Exception as token_err:
             msg = str(token_err).lower()
             if any(w in msg for w in ("not found", "no token", "not present", "does not exist", "missing")):

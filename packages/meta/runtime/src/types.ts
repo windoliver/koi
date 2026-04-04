@@ -87,6 +87,16 @@ export interface RuntimeConfig {
    * filesystem.backend is "local" (or absent). Defaults to process.cwd().
    */
   readonly cwd?: string | undefined;
+
+  /**
+   * Which filesystem operations to expose as agent tools when `filesystem` is a
+   * pre-created `FileSystemBackend` (e.g., from `resolveFileSystemAsync()`).
+   * Ignored when `filesystem` is a `FileSystemConfig` — operations come from the config.
+   *
+   * Default: `["read"]` (the `createFileSystemProvider` default).
+   * Set explicitly to `["read", "write", "edit"]` to restore mutation tools.
+   */
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

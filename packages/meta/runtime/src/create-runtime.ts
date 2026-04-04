@@ -74,13 +74,15 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // FileSystemBackend (used when the caller needs async setup, e.g. local
   // bridge transport with auth notification wiring via resolveFileSystemAsync).
   const filesystemBackend = resolveFilesystemInput(config.filesystem, config.cwd);
-  // Extract operations from FileSystemConfig when present (not applicable for pre-created backends)
+  // Extract operations from FileSystemConfig when present; fall back to
+  // config.filesystemOperations for pre-created backends (e.g. from resolveFileSystemAsync).
+  // Without this, pre-created backends default to read-only, silently dropping write/edit tools.
   const filesystemOperations =
     config.filesystem !== false &&
     config.filesystem !== undefined &&
     !isFileSystemBackend(config.filesystem)
       ? config.filesystem.operations
-      : undefined;
+      : config.filesystemOperations;
   const filesystemProvider =
     filesystemBackend !== undefined
       ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations)
