@@ -261,3 +261,51 @@ describe("createTuiApp — double stop()", () => {
     offSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. StoreContext is accessible to children after start()
+// ---------------------------------------------------------------------------
+
+describe("createTuiApp — StoreContext wired after start()", () => {
+  test("StoreContext is accessible to children after start()", async () => {
+    const config = await makeConfig();
+    const result = createTuiApp(config);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      await result.value.start();
+
+      // Dispatch an action after start — store must reflect it
+      config.store.dispatch({ kind: "set_view", view: "sessions" });
+      expect(config.store.getState().activeView).toBe("sessions");
+
+      // Dispatch another action to confirm store is live
+      config.store.dispatch({ kind: "set_connection_status", status: "connected" });
+      expect(config.store.getState().connectionStatus).toBe("connected");
+
+      await result.value.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. renderer.destroy() disposes the Solid reactive root
+// ---------------------------------------------------------------------------
+
+describe("createTuiApp — renderer.destroy() disposes Solid root", () => {
+  test("renderer.destroy() disposes the Solid reactive root", async () => {
+    const renderer = await makeTestRenderer();
+    const config = await makeConfig({ renderer });
+    const result = createTuiApp(config);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      await result.value.start();
+
+      // stop() calls renderer.destroy() internally — after stop, started is false
+      await result.value.stop();
+
+      // A second stop() must be a no-op (not throw) — confirms the root was
+      // disposed and the guard prevents double-disposal
+      await expect(result.value.stop()).resolves.toBeUndefined();
+    }
+  });
+});

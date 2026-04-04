@@ -8,14 +8,14 @@
  * - Placeholder stubs render without crashing
  */
 
-import { testRender } from "@opentui/react/test-utils";
+import { testRender } from "@opentui/solid";
 import { describe, expect, mock, test } from "bun:test";
-import { act } from "react";
 import { createInitialState } from "../state/initial.js";
 import { reduce } from "../state/reduce.js";
 import { createStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
-import { StoreContext } from "../store-context.js";
+import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
+import type { TuiStore } from "../state/store.js";
 import {
   ConversationView,
   DoctorPlaceholder,
@@ -24,6 +24,19 @@ import {
 } from "./ConversationView.js";
 
 const OPTS = { width: 80, height: 24 };
+
+/** Wraps children in both store contexts so useTuiStore works in tests. */
+function StoreProviders(props: { store: TuiStore; children: JSX.Element }): JSX.Element {
+  return (
+    <StoreContext.Provider value={props.store}>
+      <TuiStateContext.Provider value={createStoreSignal(props.store)}>
+        {props.children}
+      </TuiStateContext.Provider>
+    </StoreContext.Provider>
+  );
+}
+
+import type { JSX } from "solid-js";
 
 function buildState(
   actions: ReadonlyArray<Parameters<typeof reduce>[1]>,
@@ -41,22 +54,22 @@ describe("ConversationView — rendering", () => {
   test("renders without crashing when store is empty", async () => {
     const store = createStore(createInitialState());
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <StoreContext.Provider value={store}>
-        <ConversationView
-          onSubmit={() => {}}
-          onSlashDetected={() => {}}
-          focused={true}
-        />
-      </StoreContext.Provider>,
+      () => (
+        <StoreProviders store={store}>
+          <ConversationView
+            onSubmit={() => {}}
+            onSlashDetected={() => {}}
+            focused={true}
+          />
+        </StoreProviders>
+      ),
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     // InputArea placeholder is present when focused and no text typed
     expect(typeof frame).toBe("string");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 
   test("renders user message from store", async () => {
@@ -69,21 +82,21 @@ describe("ConversationView — rendering", () => {
     ]);
     const store = createStore(state);
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <StoreContext.Provider value={store}>
-        <ConversationView
-          onSubmit={() => {}}
-          onSlashDetected={() => {}}
-          focused={true}
-        />
-      </StoreContext.Provider>,
+      () => (
+        <StoreProviders store={store}>
+          <ConversationView
+            onSubmit={() => {}}
+            onSlashDetected={() => {}}
+            focused={true}
+          />
+        </StoreProviders>
+      ),
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     expect(frame).toContain("hello from test");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 });
 
@@ -95,21 +108,21 @@ describe("ConversationView — focused prop", () => {
   test("renders with focused=false (modal active) without crash", async () => {
     const store = createStore(createInitialState());
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <StoreContext.Provider value={store}>
-        <ConversationView
-          onSubmit={() => {}}
-          onSlashDetected={() => {}}
-          focused={false}
-        />
-      </StoreContext.Provider>,
+      () => (
+        <StoreProviders store={store}>
+          <ConversationView
+            onSubmit={() => {}}
+            onSlashDetected={() => {}}
+            focused={false}
+          />
+        </StoreProviders>
+      ),
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     expect(typeof frame).toBe("string");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 });
 
@@ -122,21 +135,21 @@ describe("ConversationView — onSubmit", () => {
     const onSubmit = mock((_text: string) => {});
     const store = createStore(createInitialState());
     const { renderOnce, renderer } = await testRender(
-      <StoreContext.Provider value={store}>
-        <ConversationView
-          onSubmit={onSubmit}
-          onSlashDetected={() => {}}
-          focused={true}
-        />
-      </StoreContext.Provider>,
+      () => (
+        <StoreProviders store={store}>
+          <ConversationView
+            onSubmit={onSubmit}
+            onSlashDetected={() => {}}
+            focused={true}
+          />
+        </StoreProviders>
+      ),
       OPTS,
     );
     await renderOnce();
     // onSubmit is wired — not invoked at render time
     expect(onSubmit).not.toHaveBeenCalled();
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 });
 
@@ -147,40 +160,34 @@ describe("ConversationView — onSubmit", () => {
 describe("placeholder stubs", () => {
   test("SessionsPlaceholder renders without crash", async () => {
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <SessionsPlaceholder />,
+      () => <SessionsPlaceholder />,
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     expect(frame).toContain("sessions");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 
   test("DoctorPlaceholder renders without crash", async () => {
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <DoctorPlaceholder />,
+      () => <DoctorPlaceholder />,
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     expect(frame).toContain("doctor");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 
   test("HelpPlaceholder renders without crash", async () => {
     const { renderOnce, captureCharFrame, renderer } = await testRender(
-      <HelpPlaceholder />,
+      () => <HelpPlaceholder />,
       OPTS,
     );
     await renderOnce();
     const frame = captureCharFrame();
     expect(frame).toContain("help");
-    act(() => {
-      renderer.destroy();
-    });
+    renderer.destroy();
   });
 });

@@ -24,17 +24,23 @@
     "./components": {
       "types": "./dist/components/index.d.ts",
       "import": "./dist/components/index.js"
+    },
+    "./batcher": {
+      "types": "./dist/batcher/event-batcher.d.ts",
+      "import": "./dist/batcher/event-batcher.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/engine-channel.d.ts",
+      "import": "./dist/worker/engine-channel.js"
     }
   },
   "dependencies": {
     "@koi/core": "workspace:*",
     "@opentui/core": "0.1.96",
-    "@opentui/react": "0.1.96",
-    "react": "19.1.0"
+    "@opentui/solid": "0.1.96",
+    "solid-js": "1.9.11"
   },
-  "devDependencies": {
-    "@types/react": "19.1.2"
-  },
+  "devDependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

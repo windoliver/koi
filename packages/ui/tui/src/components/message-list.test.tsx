@@ -7,14 +7,13 @@
  * tree correctly renders the materialized state.
  */
 
-import { testRender } from "@opentui/react/test-utils";
+import { testRender } from "@opentui/solid";
 import { describe, expect, test } from "bun:test";
-import { act } from "react";
 import { createInitialState } from "../state/initial.js";
 import { reduce } from "../state/reduce.js";
 import { createStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
-import { StoreContext } from "../store-context.js";
+import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
 import { MessageList } from "./message-list.js";
 
 const RENDER_OPTS = { width: 80, height: 24 };
@@ -22,16 +21,18 @@ const RENDER_OPTS = { width: 80, height: 24 };
 async function renderList(state: TuiState): Promise<string> {
   const store = createStore(state);
   const { captureCharFrame, renderOnce, renderer } = await testRender(
-    <StoreContext.Provider value={store}>
-      <MessageList />
-    </StoreContext.Provider>,
+    () => (
+      <StoreContext.Provider value={store}>
+        <TuiStateContext.Provider value={createStoreSignal(store)}>
+          <MessageList />
+        </TuiStateContext.Provider>
+      </StoreContext.Provider>
+    ),
     RENDER_OPTS,
   );
   await renderOnce();
   const frame = captureCharFrame();
-  act(() => {
-    renderer.destroy();
-  });
+  renderer.destroy();
   return frame;
 }
 

@@ -8,14 +8,18 @@
  * - 10A: config.renderer optional — injected in tests, created internally in prod.
  * - 15A: 50ms debounce on resize dispatch to collapse rapid window-drag events.
  * - 2A: createTuiApp installs the resize listener + dispatches set_layout.
+ *
+ * Solid render note: @opentui/solid's render() hooks renderer.destroy() to
+ * automatically dispose the Solid reactive root. stop() calls renderer.destroy()
+ * which triggers that cleanup — no separate unmount step needed.
  */
 
 import type { Result } from "@koi/core/errors";
 // `createCliRenderer` uses a native Zig FFI library — lazy-import it inside
 // start() so tests with an injected renderer never load the native binary.
 import type { CliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
-import React from "react";
+import { render } from "@opentui/solid";
+import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
@@ -93,6 +97,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // Set by stop() to cancel any in-flight start(). start() checks this after
   // each async boundary so a stopped handle can never re-animate.
   let closing = false;
+  // Monotonically incremented by every stop() call. Each start() captures the
+  // generation at launch; if the generation changes by the time start() reaches
+  // the mount step, it self-aborts — even if closing was reset after a timeout.
+  let stopGeneration = 0;
   // In-flight startup promise — shared by concurrent start() calls so only
   // one initialization runs, and stop() can await it before tearing down.
   let startPromise: Promise<void> | null = null;
@@ -100,12 +108,21 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   let cleanupResize: (() => void) | undefined;
   // Declared as `let` — reassigned in the debounce closure; justified by design
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Explicit Solid reactive-root dispose captured during start() by intercepting
+  // the renderer.once("destroy") registration that mountSolidRoot makes.
+  // Called directly on stop() so we clean up without broadcasting a destroy event.
+  let solidRootDispose: (() => void) | undefined;
 
   const handle: TuiAppHandle = {
     async start(): Promise<void> {
       if (started) return; // already running
       if (closing) return; // stop() was called — handle is permanently closed
       if (startPromise !== null) return startPromise; // concurrent call — share init
+
+      // Capture the current stop generation. If stop() is called while we are
+      // awaiting renderer creation, the generation increments and we self-abort
+      // at the mount step — even if closing was reset after a 5s timeout.
+      const myGeneration = stopGeneration;
 
       const p: Promise<void> = (async (): Promise<void> => {
         // Resolve renderer before committing `started` so a failure leaves the
@@ -124,9 +141,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           }
         }
 
-        // Check cancellation after the async renderer creation — stop() may
-        // have been called while we were waiting for FFI initialization.
-        if (closing) {
+        // Check cancellation after the async renderer creation.
+        // Two conditions: `closing` (stop() in progress) OR `stopGeneration`
+        // changed (stop() completed and reset closing, but this start() is stale).
+        if (closing || stopGeneration !== myGeneration) {
           if (localRenderer !== injectedRenderer) {
             try {
               localRenderer.destroy();
@@ -165,27 +183,51 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         activeRenderer = localRenderer;
         started = true;
 
-        // Decision 4A: auto-mount the React tree.
-        // If createRoot or the initial render throws, roll back all committed
-        // state so the handle is left clean and retryable.
+        // Decision 4A: auto-mount the Solid component tree.
+        // createComponent is Solid's non-JSX API (identical to compiled JSX output).
+        //
+        // @opentui/solid's mountSolidRoot registers a one-time "destroy" listener
+        // on the renderer to dispose the Solid reactive root. We intercept that
+        // registration to capture the dispose function directly, so stop() can
+        // call it without broadcasting the renderer's public "destroy" event to
+        // other listeners (which would incorrectly signal renderer destruction to
+        // caller-owned renderers).
+        const rendererForCapture = activeRenderer;
+        const originalOnce = rendererForCapture.once.bind(rendererForCapture);
+        rendererForCapture.once = (
+          event: string,
+          listener: (...args: unknown[]) => void,
+        ): typeof rendererForCapture => {
+          if (event === "destroy" && solidRootDispose === undefined) {
+            solidRootDispose = listener as () => void;
+          }
+          return originalOnce(event, listener);
+        };
+
+        // If render throws, roll back all committed state so the handle is retryable.
         try {
-          const root = createRoot(activeRenderer);
-          root.render(
-            React.createElement(
-              StoreContext.Provider,
-              { value: store },
-              React.createElement(TuiRoot, {
-                onCommand,
-                onSessionSelect,
-                onSubmit,
-                onInterrupt,
-                onPermissionRespond: permissionBridge.respond,
+          await render(
+            () =>
+              createComponent(StoreContext.Provider, {
+                value: store,
+                get children() {
+                  // TuiRoot creates TuiStateContext.Provider internally, so
+                  // only StoreContext.Provider is needed at this level.
+                  return createComponent(TuiRoot, {
+                    onCommand,
+                    onSessionSelect,
+                    onSubmit,
+                    onInterrupt,
+                    onPermissionRespond: permissionBridge.respond,
+                  });
+                },
               }),
-            ),
+            activeRenderer,
           );
         } catch (e: unknown) {
           // Roll back everything committed above.
           started = false;
+          solidRootDispose = undefined;
           cleanupResize?.();
           cleanupResize = undefined;
           if (localRenderer !== injectedRenderer) {
@@ -197,6 +239,9 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           }
           activeRenderer = undefined;
           throw e;
+        } finally {
+          // Always restore once() — we only needed it during mount
+          rendererForCapture.once = originalOnce;
         }
       })();
 
@@ -217,7 +262,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
 
       // Signal cancellation so any in-flight start() aborts after its next
       // async boundary — prevents re-animation after shutdown.
+      // Incrementing stopGeneration ensures that even if closing is reset after
+      // the 5s timeout, a late-completing start() will self-abort when it checks
+      // its captured generation against the current value.
       closing = true;
+      stopGeneration++;
 
       // Dispose the bridge immediately — it resolves pending approvals with
       // deny. Safe to call before start() completes and idempotent on repeat.
@@ -246,7 +295,18 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       cleanupResize?.();
       cleanupResize = undefined;
 
-      // Only destroy renderer we created; injected renderers are caller-owned
+      // Dispose the Solid reactive root (releases store subscriptions, keyboard
+      // hooks, etc.). We captured the dispose function during start() by
+      // intercepting mountSolidRoot's renderer.once("destroy") registration.
+      // Calling it directly avoids broadcasting the renderer's "destroy" event
+      // to other listeners, which would incorrectly signal terminal destruction
+      // to caller-owned renderers.
+      solidRootDispose?.();
+      solidRootDispose = undefined;
+
+      // Only destroy the terminal renderer if we own it. renderer.destroy() also
+      // fires "destroy" event, but solidRootDispose is already cleared above so
+      // it won't be called twice (mountSolidRoot's once() listener is idempotent).
       if (activeRenderer !== undefined && injectedRenderer === undefined) {
         activeRenderer.destroy();
       }

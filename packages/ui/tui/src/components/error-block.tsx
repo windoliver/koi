@@ -5,7 +5,7 @@
  * errors from normal conversation flow.
  */
 
-import type { ReactNode } from "react";
+import type { JSX } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
 
 type ErrorData = TuiAssistantBlock & { readonly kind: "error" };
@@ -14,7 +14,7 @@ interface ErrorBlockProps {
   readonly block: ErrorData;
 }
 
-export function ErrorBlock({ block }: ErrorBlockProps): ReactNode {
+export function ErrorBlock(props: ErrorBlockProps): JSX.Element {
   return (
     <box
       flexDirection="column"
@@ -25,9 +25,9 @@ export function ErrorBlock({ block }: ErrorBlockProps): ReactNode {
       paddingRight={1}
     >
       <text fg="red">
-        <b>Error: {block.code}</b>
+        <b>Error: {props.block.code}</b>
       </text>
-      <text fg="red">{block.message}</text>
+      <text fg="red">{props.block.message}</text>
     </box>
   );
 }

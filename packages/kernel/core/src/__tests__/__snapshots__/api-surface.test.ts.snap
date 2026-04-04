@@ -4545,3 +4545,106 @@ declare function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefin
 export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type MemoryIndex, type MemoryIndexEntry, type MemoryRecord, type MemoryRecordId, type MemoryRecordInput, type MemoryRecordPatch, type MemoryType, type MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput };
 "
 `;
+
+exports[`@koi/core API surface ./worker-protocol has stable type surface 1`] = `
+"import { E as EngineState, L as ApprovalDecision, b$ as EngineEvent, N as ApprovalRequest } from './assembly-HASH.js';
+import { InboundMessage } from './message.js';
+import './errors.js';
+import './common.js';
+import './channel.js';
+import './model-HASH.js';
+import './hook.js';
+import './sandbox-HASH.js';
+import './webhook.js';
+import './zone.js';
+import './filesystem-HASH.js';
+
+/**
+ * Worker ↔ main thread message protocol for engine worker isolation.
+ *
+ * The engine adapter runs in a Bun worker thread. These discriminated unions
+ * define every message that can cross the thread boundary via postMessage.
+ *
+ * Design:
+ * - Plain data only — no functions, no class instances (structured-clone safe)
+ * - String \`kind\` discriminant — hits Bun's zero-copy postMessage fast path
+ * - Approval requests are bidirectional: worker requests → main resolves →
+ *   worker continues (correlation via \`requestId\`)
+ *
+ * Layer: L0 (@koi/core) — pure types, zero logic, zero external deps.
+ */
+
+/**
+ * Serializable turn input sent over postMessage to start an engine stream.
+ *
+ * This is the structured-clone-safe subset of \`EngineInput\`:
+ * - Excludes \`callHandlers\` (function-valued, not cloneable)
+ * - Excludes \`signal\` (AbortSignal — not cloneable, worker manages its own)
+ * - Excludes \`correlationIds\` (internal bookkeeping reconstructed in worker)
+ *
+ * The worker reconstructs a full \`EngineInput\` from this payload by:
+ * 1. Building \`callHandlers\` from its local runtime/adapter
+ * 2. Creating a fresh \`AbortController\` (cancelled via \`stream_interrupt\`)
+ */
+type WorkerEngineInput = {
+    readonly kind: "text";
+    readonly text: string;
+} | {
+    readonly kind: "messages";
+    readonly messages: readonly InboundMessage[];
+} | {
+    readonly kind: "resume";
+    readonly state: EngineState;
+};
+/**
+ * Messages the engine worker sends to the main thread.
+ *
+ * | kind              | meaning                                               |
+ * |-------------------|-------------------------------------------------------|
+ * | ready             | Worker initialised — main may send stream_start       |
+ * | engine_event      | One EngineEvent from the adapter stream               |
+ * | approval_request  | Middleware needs a permission decision (HITL)         |
+ * | engine_done       | adapter.stream() completed normally                   |
+ * | engine_error      | adapter.stream() threw; message carries the reason    |
+ */
+type WorkerToMainMessage = {
+    readonly kind: "ready";
+} | {
+    readonly kind: "engine_event";
+    readonly event: EngineEvent;
+} | {
+    readonly kind: "approval_request";
+    readonly requestId: string;
+    readonly request: ApprovalRequest;
+} | {
+    readonly kind: "engine_done";
+} | {
+    readonly kind: "engine_error";
+    readonly message: string;
+};
+/**
+ * Messages the main thread sends to the engine worker.
+ *
+ * | kind               | meaning                                              |
+ * |--------------------|------------------------------------------------------|
+ * | stream_start       | Begin adapter.stream(input); worker posts events     |
+ * | stream_interrupt   | Abort the current stream (AbortController.abort())   |
+ * | approval_response  | User's decision for a pending approval_request       |
+ * | shutdown           | Terminate the worker cleanly                         |
+ */
+type MainToWorkerMessage = {
+    readonly kind: "stream_start";
+    readonly input: WorkerEngineInput;
+} | {
+    readonly kind: "stream_interrupt";
+} | {
+    readonly kind: "approval_response";
+    readonly requestId: string;
+    readonly decision: ApprovalDecision;
+} | {
+    readonly kind: "shutdown";
+};
+
+export type { MainToWorkerMessage, WorkerEngineInput, WorkerToMainMessage };
+"
+`;

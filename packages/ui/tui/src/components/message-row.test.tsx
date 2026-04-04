@@ -11,9 +11,8 @@
  * - Multi-block assistant message
  */
 
-import { testRender } from "@opentui/react/test-utils";
+import { testRender } from "@opentui/solid";
 import { describe, expect, test } from "bun:test";
-import { act } from "react";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { MessageRow } from "./message-row.js";
 
@@ -24,14 +23,12 @@ async function renderMessage(
   opts = RENDER_OPTS,
 ): Promise<string> {
   const { captureCharFrame, renderOnce, renderer } = await testRender(
-    <MessageRow message={message} />,
+    () => <MessageRow message={message} />,
     opts,
   );
   await renderOnce();
   const frame = captureCharFrame();
-  act(() => {
-    renderer.destroy();
-  });
+  renderer.destroy();
   return frame;
 }
 
