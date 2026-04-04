@@ -160,9 +160,9 @@ export function wrapMiddlewareWithTrace(
           // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
           // Snapshot before middleware for value-based delta detection.
-          // Deep-copy input so in-place mutations are detectable.
+          // Deep-clone input via structured clone so nested in-place mutations are detectable.
           const beforeInputCopy =
-            captureDeltas === true ? ({ ...request.input } as JsonObject) : undefined;
+            captureDeltas === true ? (structuredClone(request.input) as JsonObject) : undefined;
           const beforeInputHash = captureDeltas === true ? safeSnapshot(request.input) : undefined;
           let capturedInput: JsonObject | undefined;
           const trackedNext: ToolHandler = async (req) => {
@@ -361,9 +361,12 @@ interface ModelRequestSnapshot {
   readonly messagesHash: string;
   readonly messageCount: number;
   readonly metadataSnapshot: JsonObject;
+  readonly toolNames: readonly string[];
+  readonly toolsHash: string;
 }
 
 function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
+  const tools = req.tools ?? [];
   return {
     scalars: {
       temperature: req.temperature,
@@ -373,7 +376,9 @@ function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
     } as JsonObject,
     messagesHash: safeSnapshot(req.messages),
     messageCount: req.messages.length,
-    metadataSnapshot: { ...(req.metadata ?? {}) } as JsonObject,
+    metadataSnapshot: structuredClone(req.metadata ?? {}) as JsonObject,
+    toolNames: tools.map((t) => t.name),
+    toolsHash: safeSnapshot(tools.map((t) => t.name)),
   };
 }
 
@@ -393,8 +398,11 @@ function computeRequestDeltaFromSnapshot(
     const messagesChanged = before.messagesHash !== afterSnapshot.messagesHash;
     const metadataChanged =
       safeSnapshot(before.metadataSnapshot) !== safeSnapshot(afterSnapshot.metadataSnapshot);
+    const toolsChanged = before.toolsHash !== afterSnapshot.toolsHash;
 
-    if (!scalarsChanged && !messagesChanged && !metadataChanged) return undefined;
+    if (!scalarsChanged && !messagesChanged && !metadataChanged && !toolsChanged) {
+      return undefined;
+    }
 
     const result: Record<string, unknown> = {};
 
@@ -414,6 +422,17 @@ function computeRequestDeltaFromSnapshot(
     if (metadataChanged) {
       const delta = shallowDiff(before.metadataSnapshot, afterSnapshot.metadataSnapshot);
       if (delta !== undefined) result.metadata = delta;
+    }
+
+    if (toolsChanged) {
+      const removed = before.toolNames.filter((n) => !afterSnapshot.toolNames.includes(n));
+      const added = afterSnapshot.toolNames.filter((n) => !before.toolNames.includes(n));
+      result.tools = {
+        ...(removed.length > 0 ? { removed } : {}),
+        ...(added.length > 0 ? { added } : {}),
+        toolsBefore: before.toolNames.length,
+        toolsAfter: afterSnapshot.toolNames.length,
+      };
     }
 
     return Object.keys(result).length > 0 ? (result as JsonObject) : undefined;
