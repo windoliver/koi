@@ -174,6 +174,20 @@ export async function resolveFileSystemAsync(
 
   // Local bridge transport — async subprocess setup + auth wiring
   if (isLocalBridgeOptions(options)) {
+    // Multi-mount is not supported in this path: the bridge reports multiple mounts
+    // but createNexusFileSystem() accepts only one mountPoint prefix. Until per-mount
+    // transport routing exists, mixing OAuth-gated mounts (gdrive://) with local mounts
+    // in one resolveFileSystemAsync() call would silently route all paths under the
+    // first mount, breaking the others. Reject early with an actionable message.
+    const mountUris = Array.isArray(options.mountUri) ? options.mountUri : [options.mountUri];
+    if (mountUris.length > 1) {
+      throw new Error(
+        `resolveFileSystemAsync() does not support multi-mount local bridge configs yet. ` +
+          `Split mounts into separate transports or use a single mountUri. ` +
+          `Provided: ${mountUris.join(", ")}`,
+      );
+    }
+
     const transport = await createLocalTransport({
       mountUri: options.mountUri,
       pythonPath: options.pythonPath,

@@ -14,6 +14,16 @@
 import type { ChannelAdapter } from "@koi/core";
 import type { BridgeNotification } from "./types.js";
 
+/** Strip query parameters from an OAuth URL before logging — they carry anti-CSRF state. */
+function redactUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "[unparseable URL]";
+  }
+}
+
 /**
  * Creates a BridgeNotification handler that sends user-facing messages to a
  * channel when OAuth authorization is required, in progress, or complete.
@@ -42,12 +52,12 @@ export function createAuthNotificationHandler(
         })
         .catch((err: unknown) => {
           // auth_required delivery failure means the user never sees the OAuth URL.
-          // Log prominently — the bridge will continue polling until auth_timeout,
-          // then return AUTH_REQUIRED. This makes the root cause diagnosable.
+          // Log the provider and a redacted URL (origin + path only — no query params,
+          // which carry anti-CSRF state and account identifiers).
           // eslint-disable-next-line no-console
           console.error(
             `[koi/fs-nexus] Failed to deliver auth_required for ${provider}: ${String(err)}. ` +
-              `User will not see the authorization link at ${auth_url}`,
+              `User will not see the authorization link (redacted: ${redactUrl(auth_url)})`,
           );
         });
     } else if (n.method === "auth_progress") {
