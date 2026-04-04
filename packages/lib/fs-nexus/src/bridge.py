@@ -339,7 +339,24 @@ async def handle_request(fs, request):
                 auth_exc_type is not None and isinstance(e, auth_exc_type)
             )
 
-            if is_auth_error and attempts < AUTH_MAX_ATTEMPTS:
+            if is_auth_error:
+                if attempts >= AUTH_MAX_ATTEMPTS:
+                    # dispatch() has failed with AuthenticationError after every
+                    # allowed auth round-trip — the token exists but access is still
+                    # denied (e.g. wrong OAuth scope).
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": AUTH_TIMEOUT,
+                            "message": (
+                                "Authorization succeeded but access was still denied. "
+                                "The OAuth grant may have insufficient scope. "
+                                "Try re-authorizing with broader permissions."
+                            ),
+                        },
+                    }
+
                 attempts += 1
                 auth_ok = await handle_auth(fs, e)
 
@@ -357,26 +374,12 @@ async def handle_request(fs, request):
                         },
                     }
 
-                # Auth completed — loop back and retry the original operation.
-                # If this retry also fails with AuthenticationError (e.g., wrong
-                # OAuth scope), we send a more specific message on the next attempt.
-                if attempts >= AUTH_MAX_ATTEMPTS:
-                    # Second failure: hint at scope mismatch
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": AUTH_TIMEOUT,
-                            "message": (
-                                "Authorization succeeded but access was still denied. "
-                                "The OAuth grant may have insufficient scope. "
-                                "Try re-authorizing with broader permissions."
-                            ),
-                        },
-                    }
-                continue  # retry dispatch
+                # Auth completed — always retry dispatch regardless of attempt count.
+                # If dispatch throws AuthenticationError again, the loop re-enters
+                # and hits the attempts >= AUTH_MAX_ATTEMPTS guard above.
+                continue
 
-            # Not an auth error (or exhausted attempts) — map to standard codes
+            # Not an auth error — map to standard codes
             msg = str(e).lower()
             if "not found" in msg or "not mounted" in msg or "does not exist" in msg:
                 return {"jsonrpc": "2.0", "id": req_id, "error": {"code": FILE_NOT_FOUND, "message": str(e)}}

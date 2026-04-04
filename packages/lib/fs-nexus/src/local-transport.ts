@@ -236,20 +236,23 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
               void Promise.resolve().then(() => handler(parsed as BridgeNotification));
             }
 
-            // Issue 13-A: when auth_required arrives, extend every pending
-            // call's timeout to authTimeout so the user has time to authorize.
+            // On auth_required: clear the per-call timer and let the bridge own
+            // the deadline. The bridge uses NEXUS_AUTH_TIMEOUT_MS and will always
+            // send a JSON-RPC response — either a success result or a -32007
+            // AUTH_TIMEOUT error — so the pending call will resolve correctly.
+            // Setting a parallel local timer would race the bridge and misclassify
+            // the error; not setting one avoids the race and prevents unrelated
+            // in-flight requests from having their deadlines silently extended.
             if (
               typeof parsed === "object" &&
               parsed !== null &&
               "method" in parsed &&
               (parsed as Record<string, unknown>).method === "auth_required"
             ) {
-              for (const [id, pending] of pendingRequests) {
+              for (const [, pending] of pendingRequests) {
                 clearTimeout(pending.timer);
-                pending.timer = setTimeout(() => {
-                  pendingRequests.delete(id);
-                  pending.reject(new Error(`Auth wait timed out after ${String(authTimeout)}ms`));
-                }, authTimeout);
+                // Timer is intentionally not replaced — bridge owns the deadline.
+                // If the bridge process dies, the reader loop catch path rejects all pending.
               }
             }
           } else if (typeof parsed === "object" && parsed !== null && "id" in parsed) {
