@@ -159,9 +159,11 @@ export function wrapMiddlewareWithTrace(
           const start = performance.now();
           // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
-          // Snapshot before middleware for value-based delta detection
-          const beforeInputSnapshot =
-            captureDeltas === true ? boundedSnapshot(request.input) : undefined;
+          // Snapshot before middleware for value-based delta detection.
+          // Deep-copy input so in-place mutations are detectable.
+          const beforeInputCopy =
+            captureDeltas === true ? ({ ...request.input } as JsonObject) : undefined;
+          const beforeInputHash = captureDeltas === true ? safeSnapshot(request.input) : undefined;
           let capturedInput: JsonObject | undefined;
           const trackedNext: ToolHandler = async (req) => {
             nextCalled = true;
@@ -175,13 +177,21 @@ export function wrapMiddlewareWithTrace(
               typeof response.output === "string"
                 ? response.output
                 : JSON.stringify(response.output);
-            const deltaMeta =
-              captureDeltas === true &&
-              capturedInput !== undefined &&
-              beforeInputSnapshot !== undefined &&
-              beforeInputSnapshot !== boundedSnapshot(capturedInput)
-                ? shallowDiff(request.input as JsonObject, capturedInput)
-                : undefined;
+            // let: mutable — computed in try block for fail-open safety
+            let deltaMeta: JsonObject | undefined;
+            try {
+              if (
+                captureDeltas === true &&
+                capturedInput !== undefined &&
+                beforeInputHash !== undefined &&
+                beforeInputCopy !== undefined &&
+                beforeInputHash !== safeSnapshot(capturedInput)
+              ) {
+                deltaMeta = shallowDiff(beforeInputCopy, capturedInput) ?? undefined;
+              }
+            } catch {
+              // Fail-open: tracing never breaks the request path
+            }
             recordStep({
               stepIndex: 0,
               timestamp: Date.now(),
@@ -340,75 +350,77 @@ function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefi
   } as JsonObject;
 }
 
-/** Bounded JSON snapshot for value-based comparison. Truncated to 4KB to cap overhead. */
-function boundedSnapshot(obj: unknown): string {
-  const s = JSON.stringify(obj);
-  return s.length <= 4096 ? s : s.slice(0, 4096);
+/** Safe JSON snapshot for value-based comparison. Never truncated — uses hash for large payloads. */
+function safeSnapshot(obj: unknown): string {
+  return JSON.stringify(obj);
 }
 
 /** Snapshot model request fields for value-based delta detection. */
 interface ModelRequestSnapshot {
-  readonly scalars: string;
-  readonly messages: string;
-  readonly metadata: string;
+  readonly scalars: JsonObject;
+  readonly messagesHash: string;
+  readonly messageCount: number;
+  readonly metadataSnapshot: JsonObject;
 }
 
 function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
   return {
-    scalars: JSON.stringify({
+    scalars: {
       temperature: req.temperature,
       maxTokens: req.maxTokens,
       model: req.model,
       systemPrompt: req.systemPrompt,
-    }),
-    messages: boundedSnapshot(req.messages),
-    metadata: boundedSnapshot(req.metadata ?? {}),
+    } as JsonObject,
+    messagesHash: safeSnapshot(req.messages),
+    messageCount: req.messages.length,
+    metadataSnapshot: { ...(req.metadata ?? {}) } as JsonObject,
   };
 }
 
 /**
  * Compute request delta by comparing a pre-snapshot against the post-middleware request.
- * Uses value-based comparison (JSON snapshots) to detect in-place mutations.
+ * Uses value-based comparison to detect in-place mutations.
+ * Fail-open: returns undefined on any error so tracing never breaks the request path.
  */
 function computeRequestDeltaFromSnapshot(
   before: ModelRequestSnapshot,
   after: ModelRequest,
 ): JsonObject | undefined {
-  const afterSnapshot = snapshotModelRequest(after);
+  try {
+    const afterSnapshot = snapshotModelRequest(after);
 
-  const scalarsChanged = before.scalars !== afterSnapshot.scalars;
-  const messagesChanged = before.messages !== afterSnapshot.messages;
-  const metadataChanged = before.metadata !== afterSnapshot.metadata;
+    const scalarsChanged = safeSnapshot(before.scalars) !== safeSnapshot(afterSnapshot.scalars);
+    const messagesChanged = before.messagesHash !== afterSnapshot.messagesHash;
+    const metadataChanged =
+      safeSnapshot(before.metadataSnapshot) !== safeSnapshot(afterSnapshot.metadataSnapshot);
 
-  if (!scalarsChanged && !messagesChanged && !metadataChanged) return undefined;
+    if (!scalarsChanged && !messagesChanged && !metadataChanged) return undefined;
 
-  const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = {};
 
-  if (scalarsChanged) {
-    const beforeScalars = JSON.parse(before.scalars) as JsonObject;
-    const afterScalars = JSON.parse(afterSnapshot.scalars) as JsonObject;
-    const delta = shallowDiff(beforeScalars, afterScalars);
-    if (delta !== undefined) Object.assign(result, delta);
+    if (scalarsChanged) {
+      const delta = shallowDiff(before.scalars, afterSnapshot.scalars);
+      if (delta !== undefined) Object.assign(result, delta);
+    }
+
+    if (messagesChanged) {
+      result.messages = {
+        messagesBefore: before.messageCount,
+        messagesAfter: afterSnapshot.messageCount,
+        contentChanged: before.messageCount === afterSnapshot.messageCount,
+      };
+    }
+
+    if (metadataChanged) {
+      const delta = shallowDiff(before.metadataSnapshot, afterSnapshot.metadataSnapshot);
+      if (delta !== undefined) result.metadata = delta;
+    }
+
+    return Object.keys(result).length > 0 ? (result as JsonObject) : undefined;
+  } catch {
+    // Fail-open: tracing must never break the request path
+    return undefined;
   }
-
-  if (messagesChanged) {
-    const beforeMessages = JSON.parse(before.messages) as readonly unknown[];
-    const afterMessages = after.messages;
-    result.messages = {
-      messagesBefore: beforeMessages.length,
-      messagesAfter: afterMessages.length,
-      contentChanged: beforeMessages.length === afterMessages.length,
-    };
-  }
-
-  if (metadataChanged) {
-    const beforeMeta = JSON.parse(before.metadata) as JsonObject;
-    const afterMeta = (after.metadata ?? {}) as JsonObject;
-    const delta = shallowDiff(beforeMeta, afterMeta);
-    if (delta !== undefined) result.metadata = delta;
-  }
-
-  return Object.keys(result).length > 0 ? (result as JsonObject) : undefined;
 }
 
 /** Passthrough wrapper that records stream outcome (success/failure/early-return). */
