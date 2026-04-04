@@ -19,7 +19,7 @@ import type { ReplacementRef, ReplacementStore } from "@koi/core/replacement";
 import { maybeAwait } from "./async-util.js";
 import { findOptimalSplit } from "./find-split.js";
 import { microcompact } from "./micro-compact.js";
-import { findValidSplitPoints } from "./pair-boundaries.js";
+import { findValidSplitPoints, rescuePinnedGroups } from "./pair-boundaries.js";
 import { shouldCompact } from "./policy.js";
 import type { ReplacementOutcome } from "./replacement.js";
 import { collectRefsFromOutcomes, evaluateMessageResults } from "./replacement.js";
@@ -65,6 +65,8 @@ export type BudgetEnforcementResult =
       readonly compactedTokens: number;
       readonly strategy: string;
       readonly replacement?: ReplacementInfo;
+      /** Messages that were dropped by micro-compaction (excludes rescued pinned messages). */
+      readonly droppedMessages?: readonly InboundMessage[];
     }
   | {
       readonly compaction: "full";
@@ -72,6 +74,8 @@ export type BudgetEnforcementResult =
       readonly splitIdx: number;
       readonly totalTokens: number;
       readonly replacement?: ReplacementInfo;
+      /** Messages that will be dropped by full compaction (excludes rescued pinned messages). */
+      readonly droppedMessages?: readonly InboundMessage[];
     };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,12 @@ export interface BudgetConfig {
   readonly maxMessageTokens?: number;
   readonly previewChars?: number;
   readonly maxSummaryTokens?: number;
+  /**
+   * Called with messages about to be dropped before compaction returns.
+   * Allows callers to extract decision-relevant facts (approvals, constraints,
+   * pricing rationale) before they are permanently lost from the prompt.
+   */
+  readonly onBeforeDrop?: (messages: readonly InboundMessage[]) => void | Promise<void>;
 }
 
 /**
@@ -107,6 +117,51 @@ export function budgetConfigFromResolved(resolved: ResolvedConfig): BudgetConfig
     previewChars: resolved.replacement.previewChars,
     maxSummaryTokens: resolved.full.maxSummaryTokens,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dropped-message computation
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute messages that were dropped by compaction.
+ *
+ * For a given split index, the "head" (messages before the split) are candidates
+ * for dropping. Rescued pinned messages (and their pair partners) survive, so
+ * the dropped set is: head - rescued.
+ */
+function computeDroppedMessages(
+  allMessages: readonly InboundMessage[],
+  splitIdx: number,
+): readonly InboundMessage[] {
+  if (splitIdx <= 0) return [];
+  const rescued = new Set(rescuePinnedGroups(allMessages, splitIdx));
+  const dropped: InboundMessage[] = []; // let: accumulator array built once
+  for (let i = 0; i < splitIdx; i++) {
+    const msg = allMessages[i];
+    if (msg !== undefined && !rescued.has(msg)) {
+      dropped.push(msg);
+    }
+  }
+  return dropped;
+}
+
+/**
+ * Compute messages dropped by micro-compaction by comparing the original
+ * message array against the surviving messages (referential identity).
+ */
+function computeMicroDroppedMessages(
+  original: readonly InboundMessage[],
+  surviving: readonly InboundMessage[],
+): readonly InboundMessage[] {
+  const survivingSet = new Set(surviving);
+  const dropped: InboundMessage[] = []; // let: accumulator array built once
+  for (const msg of original) {
+    if (!survivingSet.has(msg)) {
+      dropped.push(msg);
+    }
+  }
+  return dropped;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +302,19 @@ export async function enforceBudget(
     // If micro-compaction met the target (post-compaction + result fits), return it.
     // Otherwise promote to full compaction.
     if (result.compactedTokens + newResultTokens <= Math.floor(contextWindowSize * microTarget)) {
+      const droppedMessages = computeMicroDroppedMessages(messages, result.messages);
+
+      // Fire onBeforeDrop callback before returning (gives caller a chance
+      // to extract decision-relevant facts from the about-to-be-lost messages).
+      // Wrapped in try-catch: observer callback must not break budget enforcement.
+      if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
+        try {
+          await Promise.resolve(config.onBeforeDrop(droppedMessages));
+        } catch {
+          // Observer callback failure must not prevent compaction from completing
+        }
+      }
+
       return {
         compaction: "micro",
         messages: result.messages,
@@ -254,6 +322,7 @@ export async function enforceBudget(
         compactedTokens: result.compactedTokens,
         strategy: result.strategy,
         ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+        ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
       };
     }
     // Fall through to full compaction
@@ -270,11 +339,24 @@ export async function enforceBudget(
     estimator,
   );
 
+  const droppedMessages = computeDroppedMessages(messages, splitIdx);
+
+  // Fire onBeforeDrop callback before returning.
+  // Wrapped in try-catch: observer callback must not break budget enforcement.
+  if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
+    try {
+      await Promise.resolve(config.onBeforeDrop(droppedMessages));
+    } catch {
+      // Observer callback failure must not prevent compaction from completing
+    }
+  }
+
   return {
     compaction: "full",
     messages,
     splitIdx,
     totalTokens,
     ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+    ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
   };
 }

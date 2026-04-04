@@ -10,6 +10,8 @@
 
 export type { BackoffTracker } from "./backoff.js";
 export { createBackoffTracker } from "./backoff.js";
+export type { DecisionSignalExtractorConfig } from "./decision-extract.js";
+export { extractDecisionSignals } from "./decision-extract.js";
 export type {
   BudgetConfig,
   BudgetEnforcementResult,

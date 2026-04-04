@@ -206,6 +206,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-semantic-retry": {
+      "name": "@koi/middleware-semantic-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -303,6 +310,7 @@
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
@@ -685,6 +693,8 @@
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
+
+    "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 

@@ -29,7 +29,8 @@ export { PermissionBackend, PermissionDecision, PermissionQuery } from './permis
 export { ProcEntry, ProcFs, WritableProcEntry } from './procfs.js';
 export { ReplacementRef, ReplacementStore, replacementRef } from './replacement.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
-export { RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore } from './rich-HASH.js';
+export { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWriter } from './retry-HASH.js';
+export { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore } from './rich-HASH.js';
 export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './sandbox-HASH.js';
@@ -3352,6 +3353,26 @@ exports[`@koi/core API surface ./rich-trajectory has stable type surface 1`] = `
  * trajectories feed LLM reflection only.
  */
 
+/** Kind of decision captured from a message about to be compacted. */
+type DecisionSignalKind = "approval" | "pricing" | "constraint" | "preference" | "rationale" | "custom";
+/**
+ * A decision signal extracted from a message before compaction drops it.
+ *
+ * Used by the pre-compaction extraction pipeline to preserve decision-relevant
+ * facts that would otherwise be permanently lost from the prompt.
+ */
+interface DecisionSignal {
+    /** Category of the decision. */
+    readonly kind: DecisionSignalKind;
+    /** Human-readable summary of the decision fact. */
+    readonly summary: string;
+    /** Index of the source message in the original message array. */
+    readonly sourceMessageIndex: number;
+    /** Timestamp when the signal was extracted (ms since epoch). */
+    readonly timestamp: number;
+    /** Opaque extension data for domain-specific fields. */
+    readonly metadata?: JsonObject;
+}
 /** Content payload with optional truncation metadata. */
 interface RichContent {
     readonly text?: string;
@@ -3427,7 +3448,67 @@ interface TrajectoryDocumentStore {
     readonly prune: (olderThanMs: number) => Promise<number>;
 }
 
-export type { RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore };
+export type { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore };
+"
+`;
+
+exports[`@koi/core API surface ./retry-signal has stable type surface 1`] = `
+"/**
+ * Retry signal protocol — L0 types for cross-middleware retry coordination.
+ *
+ * Defines the signal contract between retry-producing middleware (e.g.,
+ * semantic-retry) and retry-consuming observers (e.g., event-trace).
+ *
+ * Because retry producers and consumers are peer L2 packages that cannot
+ * import each other, this protocol lives in L0. The L3 runtime compose
+ * layer creates a broker instance and injects it into both sides.
+ */
+/**
+ * Signal describing an in-flight retry attempt.
+ *
+ * Written by retry middleware after classifying a failure and deciding to retry.
+ * Read by event-trace to annotate trajectory steps with retry metadata.
+ */
+interface RetrySignal {
+    /** Whether a retry is currently in progress. */
+    readonly retrying: boolean;
+    /**
+     * Turn index where the original failure occurred.
+     * Note: this is the turn index, not the trajectory step index, because
+     * the retry middleware (L2) does not have access to event-trace's step counter.
+     * Event-trace records this as \`metadata.retryOfTurn\` for correlation.
+     */
+    readonly originTurnIndex: number;
+    /** Human-readable reason for the retry (from failure analysis). */
+    readonly reason: string;
+    /** Failure class that triggered the retry (e.g., "tool_misuse", "api_error"). */
+    readonly failureClass: string;
+    /** 1-based attempt number (1 = first retry, 2 = second retry, etc.). */
+    readonly attemptNumber: number;
+}
+/** Write side: used by retry middleware to publish retry signals. */
+interface RetrySignalWriter {
+    /** Set the active retry signal for a session. */
+    readonly setRetrySignal: (sessionId: string, signal: RetrySignal) => void;
+    /** Clear the retry signal after successful retry or abort. */
+    readonly clearRetrySignal: (sessionId: string) => void;
+}
+/** Read side: used by event-trace to consume retry signals. */
+interface RetrySignalReader {
+    /** Get the active retry signal for a session, or undefined if none. */
+    readonly getRetrySignal: (sessionId: string) => RetrySignal | undefined;
+    /**
+     * Atomically get and clear the retry signal for a session.
+     * Returns the signal if one was active, then removes it so subsequent
+     * reads return undefined. Used by event-trace to consume the signal
+     * exactly once when recording the retry step.
+     */
+    readonly consumeRetrySignal: (sessionId: string) => RetrySignal | undefined;
+}
+/** Combined broker interface — injected by the L3 runtime compose layer. */
+type RetrySignalBroker = RetrySignalWriter & RetrySignalReader;
+
+export type { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWriter };
 "
 `;
 
