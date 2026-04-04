@@ -22,6 +22,48 @@ export interface NexusFileSystemConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Bridge notifications (local transport only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Out-of-band notification sent by the Python bridge on stdout (no `id` field).
+ * Used exclusively for the inline OAuth flow — the bridge sends these while
+ * an in-flight request is parked waiting for authentication to complete.
+ *
+ * Notification handlers registered via `NexusTransport.subscribe()` MUST be
+ * non-blocking. Handlers are dispatched via a microtask and must resolve
+ * quickly or offload work to their own queue.
+ */
+export type BridgeNotification =
+  | {
+      readonly jsonrpc: "2.0";
+      readonly method: "auth_required";
+      readonly params: {
+        readonly provider: string;
+        readonly user_email: string;
+        readonly auth_url: string;
+        readonly message: string;
+      };
+    }
+  | {
+      readonly jsonrpc: "2.0";
+      readonly method: "auth_complete";
+      readonly params: {
+        readonly provider: string;
+        readonly user_email: string;
+      };
+    }
+  | {
+      readonly jsonrpc: "2.0";
+      readonly method: "auth_progress";
+      readonly params: {
+        readonly provider: string;
+        readonly elapsed_seconds: number;
+        readonly message: string;
+      };
+    };
+
+// ---------------------------------------------------------------------------
 // Transport (inline — extract to @koi/nexus-client when 2nd consumer exists)
 // ---------------------------------------------------------------------------
 
@@ -32,6 +74,17 @@ export interface NexusTransport {
     method: string,
     params: Record<string, unknown>,
   ) => Promise<Result<T, KoiError>>;
+  /**
+   * Subscribe to bridge notifications (auth_required, auth_complete, auth_progress).
+   * Returns an unsubscribe function — call it to stop receiving notifications.
+   *
+   * HTTP transport always returns a no-op unsubscribe (notifications are
+   * local-bridge-only — they travel over the stdio pipe, not HTTP).
+   *
+   * Handler MUST be non-blocking — it is dispatched via a microtask and must
+   * resolve quickly or offload to its own queue.
+   */
+  readonly subscribe: (handler: (n: BridgeNotification) => void) => () => void;
   /** Close the transport, aborting any pending requests. */
   readonly close: () => void;
   /** Mount points discovered during startup (local transport only). */

@@ -10,7 +10,7 @@
  *   switch (code) {
  *     case "VALIDATION": return "bad input";
  *     case "NOT_FOUND":  return "missing";
- *     // ... all 9 codes ...
+ *     // ... all 10 codes ...
  *     default: {
  *       const _exhaustive: never = code;
  *       throw new Error(`Unhandled code: ${String(_exhaustive)}`);
@@ -43,7 +43,18 @@ export type KoiErrorCode =
    * Common browser automation pattern: call browser_snapshot to obtain fresh
    * [ref=eN] markers, then retry the action with the new ref.
    */
-  | "STALE_REF";
+  | "STALE_REF"
+  /**
+   * An operation requires OAuth authorization that has not been granted yet.
+   * The caller should surface an authorization URL to the user and retry
+   * once the user completes the OAuth flow.
+   *
+   * Distinct from PERMISSION (permanent denial). AUTH_REQUIRED is recoverable —
+   * the user can complete authorization and the operation will succeed.
+   *
+   * retryable: true — the same operation should succeed after authorization.
+   */
+  | "AUTH_REQUIRED";
 
 export interface KoiError {
   readonly code: KoiErrorCode;
@@ -71,6 +82,7 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
   EXTERNAL: false,
   INTERNAL: false,
   STALE_REF: false,
+  AUTH_REQUIRED: true, // retryable — operation succeeds once the user authorizes
 });
 
 export type Result<T, E = KoiError> =

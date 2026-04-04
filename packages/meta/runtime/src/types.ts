@@ -74,11 +74,13 @@ export interface RuntimeConfig {
    * implementation is used.
    *
    * - `undefined`: falls back to `manifest.filesystem` if a manifest is provided.
-   * - `FileSystemConfig`: explicitly configures the backend.
+   * - `FileSystemConfig`: explicitly configures the backend (resolved synchronously).
+   * - `FileSystemBackend`: a pre-created backend (e.g., from resolveFileSystemAsync
+   *   when using the local bridge transport with auth notification wiring).
    * - `false`: explicitly disables filesystem, overriding any manifest config.
    *   Use this to prevent manifest-supplied filesystem grants from taking effect.
    */
-  readonly filesystem?: FileSystemConfig | false | undefined;
+  readonly filesystem?: FileSystemConfig | FileSystemBackend | false | undefined;
 
   /**
    * Working directory for the local filesystem backend. Required when

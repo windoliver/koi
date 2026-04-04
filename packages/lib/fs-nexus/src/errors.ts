@@ -15,7 +15,13 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
 /** Nexus METHOD_NOT_FOUND — used as fallback signal for edit/search. */
 export const METHOD_NOT_FOUND_CODE = -32601;
 
-/** JSON-RPC code → KoiErrorCode mapping. */
+/**
+ * JSON-RPC code → KoiErrorCode mapping.
+ *
+ * IMPORTANT: These codes MUST stay in sync with the constants in bridge.py.
+ * If you add a code here, add the matching constant there, and vice versa.
+ * See: packages/lib/fs-nexus/src/bridge.py — "JSON-RPC error codes" section.
+ */
 const RPC_CODE_MAP: Readonly<
   Record<number, { readonly code: KoiErrorCode; readonly retryable: boolean }>
 > = {
@@ -26,6 +32,7 @@ const RPC_CODE_MAP: Readonly<
   [-32004]: { code: "PERMISSION", retryable: false }, // PERMISSION_ERROR
   [-32005]: { code: "VALIDATION", retryable: false }, // VALIDATION_ERROR
   [-32006]: { code: "CONFLICT", retryable: true }, // OCC CONFLICT
+  [-32007]: { code: "AUTH_REQUIRED", retryable: false }, // AUTH_TIMEOUT (user gave up)
   [METHOD_NOT_FOUND_CODE]: { code: "EXTERNAL", retryable: false },
 };
 

@@ -311,6 +311,10 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
 
   return {
     call,
+    // Fake transport has no subprocess — notifications never fire.
+    subscribe(): () => void {
+      return () => {};
+    },
     close(): void {
       closed = true;
     },

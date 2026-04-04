@@ -8,7 +8,9 @@ Ships with @koi/fs-nexus. No HTTP server needed.
 Protocol:
   - One JSON-RPC request per line on stdin
   - One JSON-RPC response per line on stdout
+  - Out-of-band notifications (no `id`) on stdout during auth flows
   - First message on stdout is {"ready": true} after mount completes
+  - All logging goes to stderr — stdout is the JSON-RPC channel only
 
 Usage:
   python bridge.py <mount_uri> [mount_uri2 ...]
@@ -18,20 +20,109 @@ Usage:
 
 import asyncio
 import json
+import os
 import re
 import sys
 
-# JSON-RPC error codes (match Nexus server conventions)
+# CRITICAL: stdout is the JSON-RPC channel.
+# Redirect ALL print() / library output to stderr BEFORE importing nexus.fs
+# so no library debug output corrupts the newline-delimited JSON stream.
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
+# JSON-RPC error codes — must match RPC_CODE_MAP in @koi/fs-nexus/src/errors.ts
 FILE_NOT_FOUND = -32000
 INVALID_PATH = -32002
 VALIDATION_ERROR = -32005
 CONFLICT = -32006
+AUTH_TIMEOUT = -32007   # user did not complete OAuth within NEXUS_AUTH_TIMEOUT_MS
 METHOD_NOT_FOUND = -32601
 INTERNAL_ERROR = -32603
+
+# Auth polling config
+AUTH_POLL_INTERVAL_S = 2          # poll get_token() every 2 seconds
+AUTH_PROGRESS_INTERVAL_S = 15     # send auth_progress every 15 seconds
+AUTH_MAX_ATTEMPTS = 2             # max OAuth round-trips before giving up
 
 
 class ConflictError(Exception):
     """Raised when if_match fails (optimistic concurrency violation)."""
+
+
+def _write(obj: dict) -> None:
+    """Write one JSON line to the real stdout (the JSON-RPC channel)."""
+    _real_stdout.write(json.dumps(obj, default=str) + "\n")
+    _real_stdout.flush()
+
+
+def _notify(method: str, params: dict) -> None:
+    """Send a JSON-RPC notification (no `id`) to the Koi transport."""
+    _write({"jsonrpc": "2.0", "method": method, "params": params})
+
+
+async def handle_auth(fs, exc) -> bool:
+    """
+    Inline OAuth flow triggered by AuthenticationError.
+
+    Sends auth_required notification with the OAuth URL, then polls
+    nexus.get_token() every AUTH_POLL_INTERVAL_S seconds until the
+    token appears or NEXUS_AUTH_TIMEOUT_MS elapses.
+
+    Sends auth_progress every AUTH_PROGRESS_INTERVAL_S seconds so the
+    user sees the agent is still waiting (not hung).
+
+    Returns True if auth succeeded, False if it timed out.
+    Raises on unexpected errors.
+    """
+    provider = getattr(exc, "provider", "unknown")
+    user_email = getattr(exc, "user_email", "")
+    auth_url = getattr(exc, "auth_url", "")
+
+    if not auth_url:
+        # nexus-fs didn't provide a URL — cannot drive inline auth
+        return False
+
+    timeout_ms = int(os.environ.get("NEXUS_AUTH_TIMEOUT_MS", "300000"))
+    timeout_s = timeout_ms / 1000
+
+    _notify("auth_required", {
+        "provider": provider,
+        "user_email": user_email,
+        "auth_url": auth_url,
+        "message": f"Authorize {provider} to continue",
+    })
+
+    elapsed = 0.0
+    last_progress_at = 0.0
+
+    while elapsed < timeout_s:
+        await asyncio.sleep(AUTH_POLL_INTERVAL_S)
+        elapsed += AUTH_POLL_INTERVAL_S
+
+        # Send progress heartbeat every AUTH_PROGRESS_INTERVAL_S seconds
+        if elapsed - last_progress_at >= AUTH_PROGRESS_INTERVAL_S:
+            last_progress_at = elapsed
+            _notify("auth_progress", {
+                "provider": provider,
+                "elapsed_seconds": int(elapsed),
+                "message": f"Still waiting for {provider} authorization...",
+            })
+
+        # Check if the token has appeared
+        try:
+            token = await fs.get_token(provider, user_email) if user_email else await fs.get_token(provider)
+        except Exception:
+            token = None
+
+        if token:
+            _notify("auth_complete", {
+                "provider": provider,
+                "user_email": user_email,
+            })
+            return True
+
+    # Timed out — user did not complete OAuth
+    return False
 
 
 async def dispatch(fs, method, params):
@@ -208,29 +299,88 @@ async def dispatch(fs, method, params):
 
 
 async def handle_request(fs, request):
-    """Process one JSON-RPC request and return the response dict."""
+    """
+    Process one JSON-RPC request and return the response dict.
+
+    On AuthenticationError: drives the inline OAuth flow (auth_required
+    notification → poll for token → retry). Max AUTH_MAX_ATTEMPTS round-trips.
+    If auth times out, returns AUTH_TIMEOUT (-32007) error.
+    """
     req_id = request.get("id")
     method = request.get("method", "")
     params = request.get("params", {})
 
-    try:
-        result = await dispatch(fs, method, params)
-        return {"jsonrpc": "2.0", "id": req_id, "result": result}
-    except ConflictError as e:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": CONFLICT, "message": str(e)}}
-    except FileNotFoundError as e:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": FILE_NOT_FOUND, "message": str(e)}}
-    except NotImplementedError as e:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": METHOD_NOT_FOUND, "message": str(e)}}
-    except (ValueError, TypeError) as e:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": VALIDATION_ERROR, "message": str(e)}}
-    except Exception as e:
-        # Nexus raises PathNotMountedError, FileNotFoundError variants, etc.
-        # Map "not found" messages to FILE_NOT_FOUND code.
-        msg = str(e).lower()
-        if "not found" in msg or "not mounted" in msg or "does not exist" in msg:
+    # Attempt the operation up to AUTH_MAX_ATTEMPTS times to handle
+    # the case where the first token is invalid (e.g., wrong OAuth scope).
+    # Issue 14-A: cap retries to prevent infinite auth loops.
+    attempts = 0
+
+    while True:
+        try:
+            result = await dispatch(fs, method, params)
+            return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+        except ConflictError as e:
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": CONFLICT, "message": str(e)}}
+        except FileNotFoundError as e:
             return {"jsonrpc": "2.0", "id": req_id, "error": {"code": FILE_NOT_FOUND, "message": str(e)}}
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": INTERNAL_ERROR, "message": str(e)}}
+        except NotImplementedError as e:
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": METHOD_NOT_FOUND, "message": str(e)}}
+        except (ValueError, TypeError) as e:
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": VALIDATION_ERROR, "message": str(e)}}
+
+        except Exception as e:
+            # Check for AuthenticationError from nexus-fs (requires nexus-fs >= auth-inline).
+            # AuthenticationError must provide: .provider, .user_email, .auth_url
+            auth_exc_type = getattr(
+                sys.modules.get("nexus.fs", None), "AuthenticationError", None
+            )
+            is_auth_error = (
+                auth_exc_type is not None and isinstance(e, auth_exc_type)
+            )
+
+            if is_auth_error and attempts < AUTH_MAX_ATTEMPTS:
+                attempts += 1
+                auth_ok = await handle_auth(fs, e)
+
+                if not auth_ok:
+                    # User did not complete OAuth within the timeout
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": AUTH_TIMEOUT,
+                            "message": (
+                                "OAuth authorization timed out. "
+                                "Complete the authorization in your browser and try again."
+                            ),
+                        },
+                    }
+
+                # Auth completed — loop back and retry the original operation.
+                # If this retry also fails with AuthenticationError (e.g., wrong
+                # OAuth scope), we send a more specific message on the next attempt.
+                if attempts >= AUTH_MAX_ATTEMPTS:
+                    # Second failure: hint at scope mismatch
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": AUTH_TIMEOUT,
+                            "message": (
+                                "Authorization succeeded but access was still denied. "
+                                "The OAuth grant may have insufficient scope. "
+                                "Try re-authorizing with broader permissions."
+                            ),
+                        },
+                    }
+                continue  # retry dispatch
+
+            # Not an auth error (or exhausted attempts) — map to standard codes
+            msg = str(e).lower()
+            if "not found" in msg or "not mounted" in msg or "does not exist" in msg:
+                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": FILE_NOT_FOUND, "message": str(e)}}
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": INTERNAL_ERROR, "message": str(e)}}
 
 
 async def main():
@@ -241,8 +391,7 @@ async def main():
 
     # Signal ready with mount info
     mounts = fs.list_mounts()
-    sys.stdout.write(json.dumps({"ready": True, "mounts": mounts}) + "\n")
-    sys.stdout.flush()
+    _write({"ready": True, "mounts": mounts})
 
     # Read stdin line by line using asyncio thread-safe approach
     loop = asyncio.get_event_loop()
@@ -263,8 +412,7 @@ async def main():
             continue
 
         response = await handle_request(fs, request)
-        sys.stdout.write(json.dumps(response, default=str) + "\n")
-        sys.stdout.flush()
+        _write(response)
 
     await fs.close()
 

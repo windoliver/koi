@@ -133,5 +133,10 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     abortController.abort();
   }
 
-  return { call, close };
+  // HTTP transport has no stdio pipe — notifications are local-bridge-only.
+  function subscribe(): () => void {
+    return () => {};
+  }
+
+  return { call, subscribe, close };
 }

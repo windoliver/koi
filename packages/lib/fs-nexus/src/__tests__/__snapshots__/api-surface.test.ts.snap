@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
-"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-CBnD242n.js';
+"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-CHtWuLO_.js';
 import { FileSystemBackend, Result, KoiError } from '@koi/core';
 
 /**
@@ -13,6 +13,11 @@ import { FileSystemBackend, Result, KoiError } from '@koi/core';
  * Usage:
  *   const transport = await createLocalTransport({ mountUri: "local://./workspace" });
  *   // transport implements NexusTransport — plug into createNexusFileSystem
+ *
+ * Auth notifications:
+ *   transport.subscribe(n => {
+ *     if (n.method === "auth_required") showLink(n.params.auth_url);
+ *   });
  */
 
 interface LocalTransportConfig {
@@ -42,6 +47,19 @@ interface LocalTransportConfig {
     readonly env?: Readonly<Record<string, string>> | undefined;
     /** Per-RPC call timeout (ms). Default: 30_000. Kills bridge on expiry. */
     readonly callTimeoutMs?: number | undefined;
+    /**
+     * Max time to wait for the user to complete an OAuth flow (ms). Default: 300_000 (5 min).
+     * When auth_required is received, the pending call's timeout is extended to this value
+     * so the user has time to authorize in their browser.
+     * Forwarded to bridge as NEXUS_AUTH_TIMEOUT_MS env variable.
+     */
+    readonly authTimeoutMs?: number | undefined;
+    /**
+     * @internal Test-only override for the bridge script path.
+     * Allows unit tests to inject a mock bridge without nexus-fs installed.
+     * Never set this in production code.
+     */
+    readonly _bridgePath?: string | undefined;
 }
 /**
  * Spawn a local nexus-fs bridge process and return a NexusTransport.
@@ -49,7 +67,9 @@ interface LocalTransportConfig {
  * The bridge imports SlimNexusFS, mounts the given URI, and speaks
  * JSON-RPC 2.0 over stdin/stdout. No HTTP server needed.
  *
- * Call \`transport.close()\` to kill the subprocess.
+ * Call \`transport.close()\` to kill the subprocess and reject all pending calls.
+ * Subscribe to \`transport.subscribe()\` to receive auth_required / auth_complete
+ * / auth_progress notifications during inline OAuth flows.
  */
 declare function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;
 
@@ -82,7 +102,7 @@ export { type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemF
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-CBnD242n.js';
+import { N as NexusTransport } from './types-CHtWuLO_.js';
 
 /**
  * Reusable FileSystemBackend contract test suite.

@@ -68,11 +68,11 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // config.filesystem === false is a kill switch; undefined means no filesystem.
   // Manifest.filesystem exists in L0 for the full createKoi() assembly path
   // but is NOT honored here — createRuntime() requires explicit host config.
-  const filesystemConfig = config.filesystem === false ? undefined : config.filesystem;
-  const hasFilesystem = filesystemConfig !== undefined;
-  const filesystemBackend = hasFilesystem
-    ? resolveFileSystem(filesystemConfig, config.cwd ?? process.cwd())
-    : undefined;
+  //
+  // Accepts either a FileSystemConfig (resolved here) or a pre-created
+  // FileSystemBackend (used when the caller needs async setup, e.g. local
+  // bridge transport with auth notification wiring via resolveFileSystemAsync).
+  const filesystemBackend = resolveFilesystemInput(config.filesystem, config.cwd);
   const filesystemProvider =
     filesystemBackend !== undefined
       ? createFileSystemProvider(filesystemBackend, "fs", filesystemConfig?.operations)
@@ -1005,6 +1005,36 @@ function injectCallHandlers(input: EngineInput, callHandlers: ComposedCallHandle
     case "resume":
       return { ...input, callHandlers };
   }
+}
+
+/**
+ * Type guard: distinguishes a pre-created FileSystemBackend from a FileSystemConfig.
+ * FileSystemBackend always has a `name` string and a `read` function.
+ */
+function isFileSystemBackend(v: unknown): v is FileSystemBackend {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).name === "string" &&
+    typeof (v as Record<string, unknown>).read === "function"
+  );
+}
+
+/**
+ * Resolve RuntimeConfig.filesystem to a FileSystemBackend or undefined.
+ *
+ * Handles three cases:
+ * - false / undefined → no filesystem
+ * - FileSystemBackend (pre-created, e.g. via resolveFileSystemAsync) → use as-is
+ * - FileSystemConfig → resolve synchronously via resolveFileSystem
+ */
+function resolveFilesystemInput(
+  input: RuntimeConfig["filesystem"],
+  cwd: string | undefined,
+): FileSystemBackend | undefined {
+  if (input === false || input === undefined) return undefined;
+  if (isFileSystemBackend(input)) return input;
+  return resolveFileSystem(input, cwd ?? process.cwd());
 }
 
 function injectSignal(input: EngineInput, signal: AbortSignal): EngineInput {
