@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 /**
  * Engine worker — runs the EngineAdapter loop in a Bun worker thread.
  *
@@ -189,10 +190,7 @@ self.onmessage = async (e: MessageEvent<MainToWorkerMessage>): Promise<void> => 
       break;
     }
 
-    default: {
-      const _never: never = msg;
-      void _never;
-    }
+    // No default — MainToWorkerMessage is a closed union
   }
 };
 

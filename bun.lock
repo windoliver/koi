@@ -287,6 +287,9 @@
     "packages/meta/cli": {
       "name": "@koi/cli",
       "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
     },
     "packages/meta/runtime": {
       "name": "@koi/runtime",
