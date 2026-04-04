@@ -59,10 +59,48 @@ describe("createGitHubDetector", () => {
     expect(matches[0]?.kind).toBe("github_token");
   });
 
-  test("detects GitHub server token", () => {
+  test("detects GitHub server token (ghs_)", () => {
     const token = `ghs_${"B".repeat(36)}`;
     const matches = detector.detect(token);
     expect(matches.length).toBe(1);
+  });
+
+  test("detects GitHub OAuth token (gho_)", () => {
+    const token = `gho_${"c".repeat(36)}`;
+    const matches = detector.detect(token);
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.kind).toBe("github_token");
+  });
+
+  test("detects GitHub user-to-server token (ghu_)", () => {
+    const token = `ghu_${"d".repeat(36)}`;
+    const matches = detector.detect(token);
+    expect(matches.length).toBe(1);
+  });
+
+  test("detects GitHub refresh token (ghr_)", () => {
+    const token = `ghr_${"e".repeat(36)}`;
+    const matches = detector.detect(token);
+    expect(matches.length).toBe(1);
+  });
+
+  test("detects fine-grained PAT (github_pat_)", () => {
+    const token = `github_pat_${"f".repeat(82)}`;
+    const matches = detector.detect(token);
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.kind).toBe("github_token");
+  });
+
+  test("ignores short github_pat_ strings (avoids over-redaction)", () => {
+    const short = "github_pat_short_id";
+    const matches = detector.detect(short);
+    expect(matches.length).toBe(0);
+  });
+
+  test("detects multiple token families in same text", () => {
+    const text = `ghp_${"a".repeat(36)} and github_pat_${"b".repeat(82)}`;
+    const matches = detector.detect(text);
+    expect(matches.length).toBe(2);
   });
 
   test("returns empty without signal", () => {
