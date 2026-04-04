@@ -93,20 +93,26 @@ export function wrapMiddlewareWithTrace(
               // Non-cloneable request — delta capture skipped
             }
           }
-          let capturedRequest: ModelRequest | undefined;
+          // Snapshot the forwarded request at the moment next() is invoked
+          // (not after middleware returns) to avoid post-next mutations.
+          let afterSnapshot: ModelRequestSnapshot | undefined;
           const trackedNext: ModelHandler = async (req) => {
             nextCalled = true;
-            if (captureDeltas === true) capturedRequest = req;
+            if (captureDeltas === true && beforeSnapshot !== undefined) {
+              try {
+                afterSnapshot = snapshotModelRequest(req);
+              } catch {
+                // Non-cloneable — skip delta
+              }
+            }
             return next(req);
           };
 
           try {
             const response = await hook(ctx, request, trackedNext);
             const deltaMeta =
-              captureDeltas === true &&
-              capturedRequest !== undefined &&
-              beforeSnapshot !== undefined
-                ? computeRequestDeltaFromSnapshot(beforeSnapshot, capturedRequest)
+              captureDeltas === true && afterSnapshot !== undefined && beforeSnapshot !== undefined
+                ? computeRequestDeltaFromSnapshots(beforeSnapshot, afterSnapshot)
                 : undefined;
             recordStep({
               stepIndex: 0,
@@ -279,9 +285,15 @@ export function wrapMiddlewareWithTrace(
               // Non-cloneable request — delta capture skipped
             }
           }
-          let capturedStreamRequest: ModelRequest | undefined;
+          let afterStreamSnapshot: ModelRequestSnapshot | undefined;
           const trackedStreamNext: ModelStreamHandler = (req) => {
-            if (captureDeltas === true) capturedStreamRequest = req;
+            if (captureDeltas === true && beforeStreamSnapshot !== undefined) {
+              try {
+                afterStreamSnapshot = snapshotModelRequest(req);
+              } catch {
+                // Non-cloneable — skip delta
+              }
+            }
             return next(req);
           };
 
@@ -290,9 +302,9 @@ export function wrapMiddlewareWithTrace(
           return wrapStreamForTrace(inner, (outcome, errorMessage) => {
             const deltaMeta =
               captureDeltas === true &&
-              capturedStreamRequest !== undefined &&
+              afterStreamSnapshot !== undefined &&
               beforeStreamSnapshot !== undefined
-                ? computeRequestDeltaFromSnapshot(beforeStreamSnapshot, capturedStreamRequest)
+                ? computeRequestDeltaFromSnapshots(beforeStreamSnapshot, afterStreamSnapshot)
                 : undefined;
             recordStep({
               stepIndex: 0,
@@ -438,22 +450,20 @@ function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
 }
 
 /**
- * Compute request delta by comparing a pre-snapshot against the post-middleware request.
- * Uses value-based comparison to detect in-place mutations.
+ * Compute request delta by comparing two snapshots (before/after middleware).
+ * Both snapshots are taken at the boundary — immune to post-next mutations.
  * Fail-open: returns undefined on any error so tracing never breaks the request path.
  */
-function computeRequestDeltaFromSnapshot(
+function computeRequestDeltaFromSnapshots(
   before: ModelRequestSnapshot,
-  after: ModelRequest,
+  after: ModelRequestSnapshot,
 ): JsonObject | undefined {
   try {
-    const afterSnapshot = snapshotModelRequest(after);
-
-    const scalarsChanged = safeSnapshot(before.scalars) !== safeSnapshot(afterSnapshot.scalars);
-    const messagesChanged = before.messagesHash !== afterSnapshot.messagesHash;
+    const scalarsChanged = safeSnapshot(before.scalars) !== safeSnapshot(after.scalars);
+    const messagesChanged = before.messagesHash !== after.messagesHash;
     const metadataChanged =
-      safeSnapshot(before.metadataSnapshot) !== safeSnapshot(afterSnapshot.metadataSnapshot);
-    const toolsChanged = before.toolsHash !== afterSnapshot.toolsHash;
+      safeSnapshot(before.metadataSnapshot) !== safeSnapshot(after.metadataSnapshot);
+    const toolsChanged = before.toolsHash !== after.toolsHash;
 
     if (!scalarsChanged && !messagesChanged && !metadataChanged && !toolsChanged) {
       return undefined;
@@ -462,31 +472,31 @@ function computeRequestDeltaFromSnapshot(
     const result: Record<string, unknown> = {};
 
     if (scalarsChanged) {
-      const delta = shallowDiff(before.scalars, afterSnapshot.scalars);
+      const delta = shallowDiff(before.scalars, after.scalars);
       if (delta !== undefined) Object.assign(result, delta);
     }
 
     if (messagesChanged) {
       result.messages = {
         messagesBefore: before.messageCount,
-        messagesAfter: afterSnapshot.messageCount,
-        contentChanged: before.messageCount === afterSnapshot.messageCount,
+        messagesAfter: after.messageCount,
+        contentChanged: before.messageCount === after.messageCount,
       };
     }
 
     if (metadataChanged) {
-      const delta = shallowDiff(before.metadataSnapshot, afterSnapshot.metadataSnapshot);
+      const delta = shallowDiff(before.metadataSnapshot, after.metadataSnapshot);
       if (delta !== undefined) result.metadata = delta;
     }
 
     if (toolsChanged) {
-      const removed = before.toolNames.filter((n) => !afterSnapshot.toolNames.includes(n));
-      const added = afterSnapshot.toolNames.filter((n) => !before.toolNames.includes(n));
+      const removed = before.toolNames.filter((n) => !after.toolNames.includes(n));
+      const added = after.toolNames.filter((n) => !before.toolNames.includes(n));
       result.tools = {
         ...(removed.length > 0 ? { removed } : {}),
         ...(added.length > 0 ? { added } : {}),
         toolsBefore: before.toolNames.length,
-        toolsAfter: afterSnapshot.toolNames.length,
+        toolsAfter: after.toolNames.length,
       };
     }
 
