@@ -2752,6 +2752,51 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
   }, 15000);
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-semantic-retry (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-semantic-retry", () => {
+  test("createSemanticRetryMiddleware produces a valid KoiMiddleware", async () => {
+    const { createSemanticRetryMiddleware } = await import("@koi/middleware-semantic-retry");
+
+    const handle = createSemanticRetryMiddleware({});
+    expect(handle.middleware.name).toBe("semantic-retry");
+    expect(handle.middleware.priority).toBe(420);
+    expect(handle.middleware.wrapModelCall).toBeDefined();
+    expect(handle.middleware.wrapModelStream).toBeDefined();
+    expect(handle.middleware.wrapToolCall).toBeDefined();
+    expect(handle.middleware.onSessionStart).toBeDefined();
+    expect(handle.middleware.onSessionEnd).toBeDefined();
+    expect(handle.middleware.describeCapabilities).toBeDefined();
+  });
+
+  test("createRetrySignalBroker provides consume-once semantics", async () => {
+    const { createRetrySignalBroker } = await import("@koi/middleware-semantic-retry");
+
+    const broker = createRetrySignalBroker();
+    const signal = {
+      retrying: true as const,
+      originTurnIndex: 0,
+      reason: "test failure",
+      failureClass: "unknown",
+      attemptNumber: 1,
+    };
+
+    // Set and get
+    broker.setRetrySignal("s1", signal);
+    expect(broker.getRetrySignal("s1")).toEqual(signal);
+
+    // Consume returns and clears atomically
+    const consumed = broker.consumeRetrySignal("s1");
+    expect(consumed).toEqual(signal);
+    expect(broker.getRetrySignal("s1")).toBeUndefined();
+
+    // Second consume returns undefined
+    expect(broker.consumeRetrySignal("s1")).toBeUndefined();
+  });
+});
+
 describe("Golden: @koi/fs-local", () => {
   test("createLocalFileSystem returns a FileSystemBackend with all operations", async () => {
     const { mkdtempSync, rmSync } = await import("node:fs");
