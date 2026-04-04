@@ -94,7 +94,7 @@ describe("walkAndRedact", () => {
   });
 
   test("secrets nested beyond maxDepth are not leaked", () => {
-    const deep = { a: { b: { c: { secret: "sk-ant-api03-" + "A".repeat(85) } } } };
+    const deep = { a: { b: { c: { secret: `sk-ant-api03-${"A".repeat(85)}` } } } };
     const shallowCtx = { ...ctx, maxDepth: 2 };
     const result = walkAndRedact(deep, shallowCtx);
     // Secret must NOT appear in the output

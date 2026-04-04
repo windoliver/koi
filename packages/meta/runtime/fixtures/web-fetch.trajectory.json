@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:55.347Z",
+      "timestamp": "2026-04-04T07:34:26.658Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -34,7 +34,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:55.347Z",
+      "timestamp": "2026-04-04T07:34:26.659Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -48,7 +48,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:02:55.350Z",
+      "timestamp": "2026-04-04T07:34:26.747Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
       "observation": {
@@ -59,10 +59,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 271,
+        "prompt_tokens": 296,
         "completion_tokens": 11
       },
-      "duration_ms": 890,
+      "duration_ms": 711,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -84,10 +84,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.244Z",
+      "timestamp": "2026-04-04T07:34:27.528Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 893.971458,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 781.0519590000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -101,10 +101,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.244Z",
+      "timestamp": "2026-04-04T07:34:27.528Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 894.2010420000006,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 782.9530830000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -118,10 +118,27 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.280Z",
+      "timestamp": "2026-04-04T07:34:27.528Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 785.000167000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-04T07:34:27.807Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:web_fetch → on-tool-exec",
-      "duration_ms": 2.925083000001905,
+      "duration_ms": 23.93316699999923,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -130,19 +147,19 @@
       }
     },
     {
-      "step_id": 6,
+      "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.280Z",
+      "timestamp": "2026-04-04T07:34:27.833Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"text\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
           }
         ]
       },
-      "duration_ms": 39.583874999996624,
+      "duration_ms": 370.0866249999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -154,44 +171,44 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 8,
       "source": "tool",
-      "timestamp": "2026-04-04T07:02:56.241Z",
+      "timestamp": "2026-04-04T07:34:27.463Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_web_fetch_7",
+          "tool_call_id": "call_web_fetch_8",
           "function_name": "web_fetch",
           "arguments": {
-            "format": "html",
-            "url": "http://example.com"
+            "url": "http://example.com",
+            "format": "text"
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_web_fetch_7",
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "source_call_id": "call_web_fetch_8",
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
           }
         ]
       },
-      "duration_ms": 39,
+      "duration_ms": 370,
       "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.282Z",
+      "timestamp": "2026-04-04T07:34:28.002Z",
       "model_name": "middleware:hooks",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"text\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
           }
         ]
       },
-      "duration_ms": 41.4586249999993,
+      "duration_ms": 539.226584,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -203,19 +220,19 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.282Z",
+      "timestamp": "2026-04-04T07:34:28.002Z",
       "model_name": "middleware:permissions",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"text\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
           }
         ]
       },
-      "duration_ms": 41.64216700000179,
+      "duration_ms": 539.619832999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -227,11 +244,35 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T07:34:28.002Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"text\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+          }
+        ]
+      },
+      "duration_ms": 543.5910000000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 12,
       "source": "agent",
-      "timestamp": "2026-04-04T07:02:56.283Z",
+      "timestamp": "2026-04-04T07:34:28.013Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
+      "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
       "observation": {
         "results": [
           {
@@ -240,10 +281,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 477,
+        "prompt_tokens": 366,
         "completion_tokens": 8
       },
-      "duration_ms": 408,
+      "duration_ms": 394,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -263,12 +304,12 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.692Z",
+      "timestamp": "2026-04-04T07:34:28.408Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initi…",
-      "duration_ms": 409.20879199999763,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample …",
+      "duration_ms": 395.0634590000009,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -280,12 +321,12 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-04T07:02:56.692Z",
+      "timestamp": "2026-04-04T07:34:28.409Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initi…",
-      "duration_ms": 409.4617499999986,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample …",
+      "duration_ms": 397.01583299999766,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -293,6 +334,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-04T07:34:28.409Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample …",
+      "duration_ms": 397.4325830000016,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

@@ -25,6 +25,7 @@
     "@koi/memory": "workspace:*",
     "@koi/memory-tools": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
+    "@koi/middleware-exfiltration-guard": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-report": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
