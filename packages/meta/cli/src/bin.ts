@@ -1,16 +1,19 @@
 #!/usr/bin/env bun
 
 /**
- * CLI entry point — fast-path for --version/--help, then dispatches to
- * subcommand parsers. Actual command runners are wired in #1263.
+ * CLI entry point.
+ *
+ * Fast-path: --version and --help are checked against raw process.argv BEFORE
+ * any module is loaded. Static `import` statements are hoisted in ESM and
+ * cannot be deferred, so the args module is loaded via `await import()` below
+ * to preserve this invariant.
  */
 
-import { COMMAND_NAMES, parseArgs } from "./args.js";
+import type { CliFlags } from "./args.js";
 
 const VERSION = "0.0.0";
 
-function printHelp(): void {
-  const help = `koi v${VERSION} — agent engine CLI
+const HELP = `koi v${VERSION} — agent engine CLI
 
 Usage:
   koi <command> [options]
@@ -31,27 +34,49 @@ Global flags:
   --version, -V          Show version
   --help, -h             Show this help
 `;
-  process.stdout.write(help);
+
+const rawArgv = process.argv.slice(2);
+
+if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+  process.stdout.write(`${VERSION}\n`);
+  process.exit(0);
 }
 
-const flags = parseArgs(process.argv.slice(2));
+if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+
+// Lazy-load args module now that fast-path is cleared.
+const { COMMAND_NAMES, isKnownCommand, parseArgs, ParseError } = await import("./args.js");
+
+let flags: CliFlags;
+try {
+  flags = parseArgs(rawArgv);
+} catch (e: unknown) {
+  if (e instanceof ParseError) {
+    process.stderr.write(`error: ${e.message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+
+if (flags.help) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
 
 if (flags.version) {
   process.stdout.write(`${VERSION}\n`);
   process.exit(0);
 }
 
-if (flags.help) {
-  printHelp();
-  process.exit(0);
-}
-
 if (flags.command === undefined) {
-  printHelp();
+  process.stdout.write(HELP);
   process.exit(0);
 }
 
-if (COMMAND_NAMES.includes(flags.command)) {
+if (isKnownCommand(flags.command)) {
   process.stderr.write(`koi ${flags.command}: not yet implemented\n`);
   process.exit(1);
 }
