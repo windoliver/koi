@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { CliFlags } from "./args.js";
 import {
-  ParseError,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -13,6 +12,7 @@ import {
   isStatusFlags,
   isStopFlags,
   isTuiFlags,
+  ParseError,
   parseArgs,
 } from "./args.js";
 
@@ -435,9 +435,7 @@ describe("parseArgs", () => {
     });
 
     test("ParseError message is descriptive", () => {
-      expect(() => parseArgs(["serve", "--port", "abc"])).toThrow(
-        "--port must be an integer",
-      );
+      expect(() => parseArgs(["serve", "--port", "abc"])).toThrow("--port must be an integer");
     });
 
     test("ParseError is catchable without killing the process", () => {

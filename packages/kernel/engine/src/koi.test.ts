@@ -3630,7 +3630,7 @@ function blockingStopMiddleware(blockUntilCall: number): {
 
 describe("createKoi stop gate", () => {
   test("block emits turn_end for blocked turn then turn_start for retry", async () => {
-    const { middleware, onAfterTurnCalls } = blockingStopMiddleware(1);
+    const { middleware } = blockingStopMiddleware(1);
     const { adapter, streamCalls, injectedMessages } = multiCallAdapter(
       [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
       { inject: true },
@@ -3648,9 +3648,10 @@ describe("createKoi stop gate", () => {
     // Expected: turn_start(0) → turn_end(0, stopBlocked) → turn_start(1) → done
     expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
 
-    const turnStart0 = events[0]!;
-    const turnEnd0 = events[1]!;
-    const turnStart1 = events[2]!;
+    const [turnStart0, turnEnd0, turnStart1, doneEvent] = events;
+    if (!turnStart0 || !turnEnd0 || !turnStart1 || !doneEvent) {
+      throw new Error("unexpected event count");
+    }
     expect(turnStart0.kind === "turn_start" && turnStart0.turnIndex).toBe(0);
     expect(turnEnd0.kind === "turn_end" && turnEnd0.turnIndex).toBe(0);
     expect(turnStart1.kind === "turn_start" && turnStart1.turnIndex).toBe(1);
@@ -3664,7 +3665,6 @@ describe("createKoi stop gate", () => {
     expect(streamCalls.length).toBe(2);
 
     // Done metrics include the retry turn
-    const doneEvent = events[3]!;
     if (doneEvent.kind === "done") {
       expect(doneEvent.output.metrics.turns).toBe(2);
     }
@@ -3688,7 +3688,8 @@ describe("createKoi stop gate", () => {
     expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
 
     expect(streamCalls.length).toBe(2);
-    const retryInput = streamCalls[1]!;
+    const [, retryInput] = streamCalls;
+    if (!retryInput) throw new Error("unexpected streamCalls count");
     expect(retryInput.kind).toBe("messages");
     if (retryInput.kind === "messages") {
       const firstContent = retryInput.messages[0]?.content[0];

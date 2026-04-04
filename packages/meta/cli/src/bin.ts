@@ -9,6 +9,8 @@
  * to preserve this invariant.
  */
 
+import type { CliFlags } from "./args.js";
+
 const VERSION = "0.0.0";
 
 const HELP = `koi v${VERSION} — agent engine CLI
@@ -48,7 +50,7 @@ if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
 // Lazy-load args module now that fast-path is cleared.
 const { COMMAND_NAMES, isKnownCommand, parseArgs, ParseError } = await import("./args.js");
 
-let flags;
+let flags: CliFlags;
 try {
   flags = parseArgs(rawArgv);
 } catch (e: unknown) {

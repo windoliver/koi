@@ -15,7 +15,6 @@ export type {
 } from "./args.js";
 export {
   COMMAND_NAMES,
-  ParseError,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -27,5 +26,6 @@ export {
   isStatusFlags,
   isStopFlags,
   isTuiFlags,
+  ParseError,
   parseArgs,
 } from "./args.js";
