@@ -6,7 +6,12 @@
  */
 
 import type { FileSystemBackend, MemoryRecord } from "@koi/core";
-import { MEMORY_INDEX_MAX_LINES, memoryRecordId, parseMemoryFrontmatter } from "@koi/core";
+import {
+  MEMORY_INDEX_MAX_LINES,
+  memoryRecordId,
+  parseMemoryFrontmatter,
+  validateMemoryFilePath,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Configuration & result types
@@ -51,15 +56,19 @@ export interface SkippedFile {
 const MAX_READ_ATTEMPTS_MULTIPLIER = 3;
 
 /**
- * Returns true if `filePath` is a descendant of `baseDir` with no traversal.
- * Both paths are normalized to forward slashes before comparison.
+ * Derives a validated relative path from an absolute entry path and the
+ * memory directory root. Returns undefined if the path is outside the
+ * directory, contains traversal, or fails core validation.
  */
-function isDescendantPath(filePath: string, baseDir: string): boolean {
-  const normalizedPath = filePath.replace(/\\/g, "/");
-  const normalizedBase = `${baseDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
-  if (!normalizedPath.startsWith(normalizedBase)) return false;
+function deriveRelativePath(entryPath: string, memoryDir: string): string | undefined {
+  const normalizedPath = entryPath.replace(/\\/g, "/");
+  const normalizedBase = `${memoryDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+  if (!normalizedPath.startsWith(normalizedBase)) return undefined;
   const relative = normalizedPath.slice(normalizedBase.length);
-  return !relative.split("/").some((seg) => seg === "..");
+  if (relative.length === 0) return undefined;
+  const validationError = validateMemoryFilePath(relative);
+  if (validationError !== undefined) return undefined;
+  return relative;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,32 +114,37 @@ export async function scanMemoryDirectory(
     if (memories.length >= maxFiles) break;
     if (readAttempts >= maxReadAttempts) break;
 
-    // Validate that the listed path is inside the requested memory directory
-    if (entry.kind !== "file" || !isDescendantPath(entry.path, config.memoryDir)) {
-      skipped.push({ filePath: entry.path, reason: "path outside memory directory or not a file" });
+    // Validate path is inside memoryDir and passes core validation
+    if (entry.kind !== "file") {
+      skipped.push({ filePath: entry.path, reason: "not a file" });
+      continue;
+    }
+    const relativePath = deriveRelativePath(entry.path, config.memoryDir);
+    if (relativePath === undefined) {
+      skipped.push({ filePath: entry.path, reason: "path outside memory directory or invalid" });
       continue;
     }
 
     readAttempts += 1;
     const readResult = await fs.read(entry.path);
     if (!readResult.ok) {
-      skipped.push({ filePath: entry.path, reason: `read failed: ${readResult.error.message}` });
+      skipped.push({ filePath: relativePath, reason: `read failed: ${readResult.error.message}` });
       continue;
     }
 
     const parsed = parseMemoryFrontmatter(readResult.value.content);
     if (parsed === undefined) {
-      skipped.push({ filePath: entry.path, reason: "invalid or missing frontmatter" });
+      skipped.push({ filePath: relativePath, reason: "invalid or missing frontmatter" });
       continue;
     }
 
     const record: MemoryRecord = {
-      id: memoryRecordId(entry.path),
+      id: memoryRecordId(relativePath),
       name: parsed.frontmatter.name,
       description: parsed.frontmatter.description,
       type: parsed.frontmatter.type,
       content: parsed.content,
-      filePath: entry.path,
+      filePath: relativePath,
       createdAt: entry.modifiedAt ?? 0,
       updatedAt: entry.modifiedAt ?? 0,
     };

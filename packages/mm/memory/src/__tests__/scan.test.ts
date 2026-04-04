@@ -138,7 +138,7 @@ describe("scanMemoryDirectory", () => {
 
     expect(result.memories.length).toBe(1);
     expect(result.skipped.length).toBe(1);
-    expect(result.skipped[0]?.filePath).toBe("/memory/bad.md");
+    expect(result.skipped[0]?.filePath).toBe("bad.md");
     expect(result.skipped[0]?.reason).toContain("frontmatter");
   });
 
@@ -344,7 +344,7 @@ describe("scanMemoryDirectory", () => {
     expect(record.description).toBe("test memory");
     expect(record.type).toBe("feedback");
     expect(record.content).toBe("Important feedback");
-    expect(record.filePath).toBe("/memory/my_memory.md");
+    expect(record.filePath).toBe("my_memory.md");
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     expect(first!.fileSize).toBe(file.size);
   });

@@ -36,11 +36,13 @@ const TRUSTING_RECALL_NOTE = [
 // ---------------------------------------------------------------------------
 
 /**
- * Escapes content so it cannot break out of the `<memory-data>` wrapper.
- * Replaces closing tags (`</memory-data>`) with a neutralized form.
+ * Escapes all `<` characters in memory content to prevent any tag-like
+ * constructs from breaking out of the `<memory-data>` wrapper.
+ * This is a superset of HTML entity escaping for the open-angle bracket,
+ * which makes it impossible to forge closing tags or inject new elements.
  */
 function escapeMemoryContent(content: string): string {
-  return content.replace(/<\/memory-data>/gi, "&lt;/memory-data&gt;");
+  return content.replace(/</g, "&lt;");
 }
 
 // ---------------------------------------------------------------------------
