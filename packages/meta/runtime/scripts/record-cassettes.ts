@@ -66,6 +66,10 @@ import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import {
+  createRetrySignalBroker,
+  createSemanticRetryMiddleware,
+} from "@koi/middleware-semantic-retry";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
@@ -505,11 +509,15 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     createFsAtifDelegate(trajDir),
   );
 
+  // @koi/middleware-semantic-retry — broker created early so event-trace can read signals
+  const retryBroker = createRetrySignalBroker();
+
   // @koi/event-trace
   const { middleware: eventTrace } = createEventTraceMiddleware({
     store,
     docId,
     agentName: `golden-${name}`,
+    signalReader: retryBroker,
   });
 
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
@@ -665,7 +673,12 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   // @koi/middleware-exfiltration-guard — secret exfiltration scanning (priority 50, before permissions)
   const exfiltrationGuard = createExfiltrationGuardMiddleware({ action: "block" });
 
-  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, exfiltrationGuard, permMiddleware].map(
+  // @koi/middleware-semantic-retry — writer side (broker created above with event-trace)
+  const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
+    signalWriter: retryBroker,
+  });
+
+  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, exfiltrationGuard, permMiddleware, semanticRetryMw].map(
     (mw) => wrapMiddlewareWithTrace(mw, { store, docId }),
   );
 
