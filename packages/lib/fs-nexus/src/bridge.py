@@ -19,10 +19,17 @@ Usage:
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import re
+import secrets
+import socket
 import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
 
 # CRITICAL: stdout is the JSON-RPC channel.
 # Redirect ALL print() / library output to stderr BEFORE importing nexus.fs
@@ -39,10 +46,14 @@ AUTH_TIMEOUT = -32007   # user did not complete OAuth within NEXUS_AUTH_TIMEOUT_
 METHOD_NOT_FOUND = -32601
 INTERNAL_ERROR = -32603
 
-# Auth polling config
-AUTH_POLL_INTERVAL_S = 2          # poll get_token() every 2 seconds
-AUTH_PROGRESS_INTERVAL_S = 15     # send auth_progress every 15 seconds
-AUTH_MAX_ATTEMPTS = 2             # max OAuth round-trips before giving up
+# Auth config
+AUTH_MAX_ATTEMPTS = 2   # max OAuth round-trips before giving up
+AUTH_PROGRESS_INTERVAL_S = 15  # send auth_progress heartbeat every N seconds
+
+# Queue for auth code submissions from the remote paste flow.
+# When Koi receives a pasted redirect URL it sends auth_submit to the bridge
+# stdin, which the concurrent stdin reader puts here.
+_auth_submit_queue: asyncio.Queue[str] = asyncio.Queue()
 
 
 class ConflictError(Exception):
@@ -60,83 +71,228 @@ def _notify(method: str, params: dict) -> None:
     _write({"jsonrpc": "2.0", "method": method, "params": params})
 
 
+# ---------------------------------------------------------------------------
+# PKCE helpers
+# ---------------------------------------------------------------------------
+
+def _pkce_verifier() -> str:
+    """Generate a cryptographically random PKCE code_verifier (RFC 7636)."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+
+
+def _pkce_challenge(verifier: str) -> str:
+    """Derive the S256 code_challenge from a verifier."""
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+# ---------------------------------------------------------------------------
+# Environment detection
+# ---------------------------------------------------------------------------
+
+def _can_open_browser() -> bool:
+    """
+    Return True when a browser redirect to localhost is reachable.
+
+    False when running in SSH, headless Linux (no DISPLAY), or any
+    environment where the user's browser can't reach localhost on this host.
+    """
+    if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
+        return False
+    if (
+        sys.platform not in ("darwin", "win32")
+        and not os.environ.get("DISPLAY")
+        and not os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Free port selection
+# ---------------------------------------------------------------------------
+
+def _find_free_port() -> int:
+    """Bind to port 0 to let the OS pick a free port, then release and return it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+# ---------------------------------------------------------------------------
+# Localhost callback server (local flow)
+# ---------------------------------------------------------------------------
+
+def _run_callback_server(port: int, code_holder: list, done: Event) -> None:
+    """
+    Run a one-shot HTTP server on localhost:PORT that captures ?code=...
+    from the OAuth redirect and sets the done Event.
+    Runs in a daemon thread — the main asyncio loop is unblocked.
+    """
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            code_list = params.get("code", [])
+            if code_list:
+                code_holder.append(code_list[0])
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            msg = b"<h1>Authorization complete. You can close this tab.</h1>"
+            self.wfile.write(msg)
+            done.set()
+
+        def log_message(self, *args):  # suppress HTTP request logs
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    httpd.timeout = 1.0  # check done flag every second
+    while not done.is_set():
+        httpd.handle_request()
+    httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Auth flow
+# ---------------------------------------------------------------------------
+
 async def handle_auth(fs, exc) -> bool:
     """
     Inline OAuth flow triggered by AuthenticationError.
 
-    Sends auth_required notification with the OAuth URL, then polls
-    nexus.get_token() every AUTH_POLL_INTERVAL_S seconds until the
-    token appears or NEXUS_AUTH_TIMEOUT_MS elapses.
+    Supports two modes selected automatically:
+    - Local  (browser reachable): PKCE + localhost callback — instant, no polling.
+    - Remote (SSH/headless):      PKCE + paste redirect URL — user pastes the full
+                                  redirect URL into the Koi conversation; Koi sends
+                                  it back as an auth_submit JSON-RPC request.
 
-    Sends auth_progress every AUTH_PROGRESS_INTERVAL_S seconds so the
-    user sees the agent is still waiting (not hung).
+    Requires nexus-fs to expose:
+      nexus.fs.generate_auth_url(provider, user_email, redirect_uri, code_verifier)
+      nexus.fs.exchange_auth_code(provider, code, redirect_uri, code_verifier)
 
-    Returns True if auth succeeded, False if it timed out.
+    Returns True if auth succeeded, False if timed out or user abandoned.
     Raises on unexpected errors.
     """
     provider = getattr(exc, "provider", "unknown")
     user_email = getattr(exc, "user_email", "")
-    auth_url = getattr(exc, "auth_url", "")
-
-    if not auth_url:
-        # nexus-fs didn't provide a URL — cannot drive inline auth
-        return False
 
     timeout_ms = int(os.environ.get("NEXUS_AUTH_TIMEOUT_MS", "300000"))
     timeout_s = timeout_ms / 1000
 
-    _notify("auth_required", {
+    # PKCE — generated by the bridge, not nexus-fs
+    verifier = _pkce_verifier()
+
+    local = _can_open_browser()
+    port = _find_free_port() if local else None
+    redirect_uri = f"http://127.0.0.1:{port}/callback" if local else "urn:ietf:wg:oauth:2.0:oob"
+
+    # Ask nexus-fs for the auth URL with our redirect_uri + PKCE challenge
+    # (nexus-fs >= auth-inline required)
+    nexus_fs_mod = sys.modules.get("nexus.fs")
+    generate_auth_url = getattr(nexus_fs_mod, "generate_auth_url", None)
+    exchange_auth_code = getattr(nexus_fs_mod, "exchange_auth_code", None)
+
+    if generate_auth_url is None or exchange_auth_code is None:
+        # nexus-fs does not yet expose the auth URL API — cannot drive inline auth
+        return False
+
+    auth_url = await generate_auth_url(
+        provider=provider,
+        user_email=user_email,
+        redirect_uri=redirect_uri,
+        code_verifier=verifier,
+    )
+
+    if local:
+        # ---------------------------------------------------------------
+        # Local flow: start callback server, send auth_required, await code
+        # ---------------------------------------------------------------
+        code_holder: list[str] = []
+        done = Event()
+        server_thread = Thread(
+            target=_run_callback_server,
+            args=(port, code_holder, done),
+            daemon=True,
+        )
+        server_thread.start()
+
+        _notify("auth_required", {
+            "provider": provider,
+            "user_email": user_email,
+            "auth_url": auth_url,
+            "message": f"Authorize {provider} to continue",
+            "mode": "local",
+        })
+
+        # Wait for the callback, sending progress heartbeats
+        elapsed = 0.0
+        last_progress_at = 0.0
+        while elapsed < timeout_s and not done.is_set():
+            await asyncio.sleep(1)
+            elapsed += 1
+            if elapsed - last_progress_at >= AUTH_PROGRESS_INTERVAL_S:
+                last_progress_at = elapsed
+                _notify("auth_progress", {
+                    "provider": provider,
+                    "elapsed_seconds": int(elapsed),
+                    "message": f"Waiting for {provider} authorization in browser...",
+                })
+
+        done.set()  # stop server even if we timed out
+        server_thread.join(timeout=2)
+
+        if not code_holder:
+            return False
+
+        code = code_holder[0]
+
+    else:
+        # ---------------------------------------------------------------
+        # Remote flow: show URL, wait for user to paste redirect URL back
+        # via auth_submit JSON-RPC request from Koi
+        # ---------------------------------------------------------------
+        _notify("auth_required", {
+            "provider": provider,
+            "user_email": user_email,
+            "auth_url": auth_url,
+            "message": f"Authorize {provider} to continue",
+            "mode": "remote",
+            "instructions": (
+                "Open the URL in your browser. "
+                "When the page shows a connection error, copy the full URL "
+                "from the address bar and paste it into the conversation."
+            ),
+        })
+
+        try:
+            redirect_url = await asyncio.wait_for(
+                _auth_submit_queue.get(), timeout=timeout_s
+            )
+        except asyncio.TimeoutError:
+            return False
+
+        # Extract code from pasted redirect URL
+        parsed = urllib.parse.urlparse(redirect_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        codes = params.get("code", [])
+        if not codes:
+            return False
+        code = codes[0]
+
+    # Exchange the authorization code for a stored token
+    await exchange_auth_code(
+        provider=provider,
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=verifier,
+    )
+
+    _notify("auth_complete", {
         "provider": provider,
         "user_email": user_email,
-        "auth_url": auth_url,
-        "message": f"Authorize {provider} to continue",
     })
-
-    elapsed = 0.0
-    last_progress_at = 0.0
-
-    while elapsed < timeout_s:
-        await asyncio.sleep(AUTH_POLL_INTERVAL_S)
-        elapsed += AUTH_POLL_INTERVAL_S
-
-        # Send progress heartbeat every AUTH_PROGRESS_INTERVAL_S seconds
-        if elapsed - last_progress_at >= AUTH_PROGRESS_INTERVAL_S:
-            last_progress_at = elapsed
-            _notify("auth_progress", {
-                "provider": provider,
-                "elapsed_seconds": int(elapsed),
-                "message": f"Still waiting for {provider} authorization...",
-            })
-
-        # Check if the token has appeared.
-        # Bound each get_token() call to 2× the poll interval so a hung
-        # provider cannot wedge the entire auth loop — asyncio.TimeoutError
-        # is treated as "not ready yet". Other exceptions are narrowed:
-        # "not found" variants suppress (token not ready), anything else
-        # propagates immediately so infrastructure failures surface fast.
-        try:
-            get_token_coro = (
-                fs.get_token(provider, user_email) if user_email else fs.get_token(provider)
-            )
-            token = await asyncio.wait_for(get_token_coro, timeout=AUTH_POLL_INTERVAL_S * 2)
-        except asyncio.TimeoutError:
-            token = None  # Provider hung — treat as not ready, keep polling
-        except Exception as token_err:
-            msg = str(token_err).lower()
-            if any(w in msg for w in ("not found", "no token", "not present", "does not exist", "missing")):
-                token = None  # Token not ready yet — keep polling
-            else:
-                raise  # Unexpected backend/provider failure — surface immediately
-
-        if token:
-            _notify("auth_complete", {
-                "provider": provider,
-                "user_email": user_email,
-            })
-            return True
-
-    # Timed out — user did not complete OAuth
-    return False
+    return True
 
 
 async def dispatch(fs, method, params):
@@ -410,22 +566,45 @@ async def main():
     mounts = fs.list_mounts()
     _write({"ready": True, "mounts": mounts})
 
-    # Read stdin line by line using asyncio thread-safe approach
     loop = asyncio.get_event_loop()
 
-    while True:
-        # Read one line from stdin in a thread (blocking I/O)
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if not line:
-            break
+    # Concurrent stdin reader — puts lines into a queue so that auth_submit
+    # requests can arrive while handle_request() is blocked in handle_auth().
+    # Without this, the bridge would deadlock waiting for handle_auth() to
+    # finish before reading the auth_submit that would unblock it.
+    stdin_queue: asyncio.Queue[str] = asyncio.Queue()
 
-        line = line.strip()
+    async def _read_stdin() -> None:
+        while True:
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if not line:
+                await stdin_queue.put("")  # sentinel — EOF
+                return
+            line = line.strip()
+            if line:
+                await stdin_queue.put(line)
+
+    asyncio.ensure_future(_read_stdin())
+
+    while True:
+        line = await stdin_queue.get()
         if not line:
-            continue
+            break  # EOF
 
         try:
             request = json.loads(line)
         except json.JSONDecodeError:
+            # Malformed line — fatal protocol error (see local-transport.ts)
+            break
+
+        method = request.get("method", "")
+
+        # auth_submit: Koi forwarded the user's pasted redirect URL (remote flow).
+        # Route to the pending handle_auth() coroutine via the shared queue.
+        # No response needed — this is a one-way signal.
+        if method == "auth_submit":
+            redirect_url = request.get("params", {}).get("redirect_url", "")
+            await _auth_submit_queue.put(redirect_url)
             continue
 
         response = await handle_request(fs, request)

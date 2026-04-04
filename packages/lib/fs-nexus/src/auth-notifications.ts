@@ -40,13 +40,15 @@ export function createAuthNotificationHandler(
 ): (n: BridgeNotification) => void {
   return (n: BridgeNotification): void => {
     if (n.method === "auth_required") {
-      const { provider, auth_url, message } = n.params;
+      const { provider, auth_url, message, mode, instructions } = n.params;
+      const remoteHint =
+        mode === "remote" && instructions !== undefined ? `\n\n_${instructions}_` : "";
       void channel
         .send({
           content: [
             {
               kind: "text",
-              text: `**${message}**\n\nOpen this link in your browser to authorize ${provider}:\n${auth_url}`,
+              text: `**${message}**\n\nOpen this link in your browser to authorize ${provider}:\n${auth_url}${remoteHint}`,
             },
           ],
         })

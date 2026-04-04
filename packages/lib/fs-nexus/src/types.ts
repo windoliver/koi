@@ -43,6 +43,13 @@ export type BridgeNotification =
         readonly user_email: string;
         readonly auth_url: string;
         readonly message: string;
+        /**
+         * "local"  — localhost callback server is running; browser redirect completes automatically.
+         * "remote" — SSH/headless; user must paste the full redirect URL back into the conversation.
+         */
+        readonly mode: "local" | "remote";
+        /** Only present when mode is "remote". Instructions to show the user. */
+        readonly instructions?: string | undefined;
       };
     }
   | {
@@ -85,6 +92,15 @@ export interface NexusTransport {
    * resolve quickly or offload to its own queue.
    */
   readonly subscribe: (handler: (n: BridgeNotification) => void) => () => void;
+  /**
+   * Forward a pasted redirect URL to the bridge for the remote OAuth flow.
+   * Called by the channel adapter when it receives a pasted redirect URL from
+   * the user after an `auth_required` notification with `mode: "remote"`.
+   *
+   * The bridge extracts `?code=...` from the URL and completes the exchange.
+   * No-op on HTTP transport (remote auth is local-bridge-only).
+   */
+  readonly submitAuthCode: (redirectUrl: string) => void;
   /** Close the transport, aborting any pending requests. */
   readonly close: () => void;
   /** Mount points discovered during startup (local transport only). */

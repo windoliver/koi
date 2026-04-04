@@ -138,5 +138,8 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     return () => {};
   }
 
-  return { call, subscribe, close };
+  // HTTP transport has no bridge subprocess — remote auth paste flow is local-only.
+  function submitAuthCode(): void {}
+
+  return { call, subscribe, submitAuthCode, close };
 }

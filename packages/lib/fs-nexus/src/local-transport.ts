@@ -413,7 +413,21 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     }
   }
 
-  return { call, subscribe, close, mounts };
+  // ---------------------------------------------------------------------------
+  // submitAuthCode() — forward pasted redirect URL to bridge (remote OAuth flow)
+  // ---------------------------------------------------------------------------
+  function submitAuthCode(redirectUrl: string): void {
+    if (closed) return;
+    const msg = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "auth_submit",
+      params: { redirect_url: redirectUrl },
+    });
+    proc.stdin.write(`${msg}\n`);
+    void proc.stdin.flush();
+  }
+
+  return { call, subscribe, submitAuthCode, close, mounts };
 }
 
 // ---------------------------------------------------------------------------
