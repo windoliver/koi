@@ -20,6 +20,12 @@ const schema = z.object({
     .describe(
       "Present-continuous description shown in spinner while in_progress (e.g. 'Implementing auth module')",
     ),
+  metadata: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Arbitrary metadata for this task (e.g. { kind: 'research' } to enable result schema validation).",
+    ),
 });
 
 export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
@@ -40,7 +46,7 @@ export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
         return { ok: false, error: parsed.error.message };
       }
 
-      const { subject, description, dependencies, active_form } = parsed.data;
+      const { subject, description, dependencies, active_form, metadata } = parsed.data;
       const id = await board.nextId();
 
       const result = await board.add({
@@ -51,6 +57,7 @@ export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
           ? { dependencies: dependencies.map((d) => taskItemId(d)) }
           : {}),
         ...(active_form !== undefined ? { activeForm: active_form } : {}),
+        ...(metadata !== undefined ? { metadata } : {}),
       });
 
       if (!result.ok) {

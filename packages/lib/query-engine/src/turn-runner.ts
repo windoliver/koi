@@ -232,9 +232,11 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       break;
     }
 
-    // Validate tool calls — fail closed on malformed/orphaned calls
+    // Validate tool calls — fail closed on malformed/orphaned calls.
+    // Empty toolName ("") means the function name was never received in the stream;
+    // "unknown" is the legacy fallback (kept for safety, should no longer appear).
     const validToolCalls = toolCalls.filter(
-      (tc) => tc.toolName !== "unknown" && tc.parsedArgs !== undefined,
+      (tc) => tc.toolName !== "" && tc.toolName !== "unknown" && tc.parsedArgs !== undefined,
     );
     if (validToolCalls.length < toolCalls.length) {
       const invalidCount = toolCalls.length - validToolCalls.length;

@@ -10,6 +10,15 @@ const schema = z.object({
     .optional()
     .describe("Filter tasks by status"),
   assigned_to: z.string().optional().describe("Filter tasks by assignee agent ID"),
+  updated_since: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Unix ms timestamp. Return only tasks updated after this time. " +
+        "Store the timestamp from your last poll to skip unchanged tasks.",
+    ),
 });
 
 const STATUS_ORDER: Record<string, number> = {
@@ -39,7 +48,7 @@ export function createTaskListTool(board: ManagedTaskBoard): Tool {
         return { ok: false, error: parsed.error.message };
       }
 
-      const { status, assigned_to } = parsed.data;
+      const { status, assigned_to, updated_since } = parsed.data;
       const snapshot = board.snapshot();
       let tasks = snapshot.all();
 
@@ -48,6 +57,9 @@ export function createTaskListTool(board: ManagedTaskBoard): Tool {
       }
       if (assigned_to !== undefined) {
         tasks = tasks.filter((t) => t.assignedTo === assigned_to);
+      }
+      if (updated_since !== undefined) {
+        tasks = tasks.filter((t) => t.updatedAt > updated_since);
       }
 
       const sorted = [...tasks].sort(

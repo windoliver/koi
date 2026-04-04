@@ -182,7 +182,9 @@ export async function* consumeModelStream(
         case "tool_call_end": {
           const acc = accumulators.get(chunk.callId);
           const rawArgs = acc ? acc.fragments.join("") : "";
-          const toolName = acc ? acc.toolName : "unknown";
+          // acc is undefined when tool_call_start was never emitted for this callId
+          // (should not happen after stream-parser fix, but kept as safety fallback).
+          const toolName = acc ? acc.toolName : "";
           accumulators.delete(chunk.callId);
 
           let parsedArgs: AccumulatedToolCall["parsedArgs"];

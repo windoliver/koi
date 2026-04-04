@@ -7,8 +7,9 @@
  * for advisory-only behavior per Decision 14A).
  */
 
-import type { Tool } from "@koi/core";
+import type { JsonObject, TaskItemId, Tool, ToolExecuteOptions } from "@koi/core";
 import { createTaskCreateTool } from "./tools/task-create.js";
+import { createTaskDelegateTool } from "./tools/task-delegate.js";
 import { createTaskGetTool } from "./tools/task-get.js";
 import { createTaskListTool } from "./tools/task-list.js";
 import { createTaskOutputTool } from "./tools/task-output.js";
@@ -44,7 +45,7 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
   // Wrap task_update to inject the verification nudge into completion responses
   const updateTool: Tool = {
     ...innerUpdateTool,
-    execute: async (args, options) => {
+    execute: async (args: JsonObject, options?: ToolExecuteOptions) => {
       const result = await innerUpdateTool.execute(args, options);
 
       // Inject nudge only on successful completion transitions
@@ -60,7 +61,7 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
       ) {
         const taskIdRaw = (args as { task_id?: unknown }).task_id;
         const taskId = typeof taskIdRaw === "string" ? taskIdRaw : "";
-        const task = board.snapshot().get(taskId as import("@koi/core").TaskItemId);
+        const task = board.snapshot().get(taskId as TaskItemId);
         const nudge = checkNudge(task?.subject ?? taskId);
         if (nudge !== undefined) {
           return { ...(result as Record<string, unknown>), nudge };
@@ -76,6 +77,7 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     updateTool,
     createTaskListTool(board),
     createTaskStopTool(board, agentId),
-    createTaskOutputTool(board, agentId),
+    createTaskOutputTool(board, agentId, config),
+    createTaskDelegateTool(board),
   ];
 }
