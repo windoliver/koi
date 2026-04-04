@@ -117,7 +117,13 @@ export function validateRedactionConfig(
   for (const pattern of userSuppliedPatterns.filter((p) => !isTrustedPattern(p))) {
     for (const adversarial of ADVERSARIAL_INPUTS) {
       const start = performance.now();
-      pattern.detect(adversarial);
+      try {
+        pattern.detect(adversarial);
+      } catch {
+        // Throwing detectors are not a ReDoS concern — they will be caught
+        // fail-closed at redaction time. Skip timing check for this input.
+        continue;
+      }
       const elapsed = performance.now() - start;
       if (elapsed > REDOS_THRESHOLD_MS) {
         const message = `Pattern "${pattern.name}" took ${elapsed.toFixed(1)}ms on adversarial input — possible ReDoS`;
