@@ -1,21 +1,21 @@
 {
   "name": "mcp-tool-use",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775278517872,
+  "recordedAt": 1775287808155,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "golden-mcp__weather",
-      "callId": "tool_golden-mcp__weather_eETah26VZNTIdZlBlbsZ"
+      "callId": "tool_golden-mcp__weather_k4objaT4RFDD6UooO0Iy"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_golden-mcp__weather_eETah26VZNTIdZlBlbsZ",
+      "callId": "tool_golden-mcp__weather_k4objaT4RFDD6UooO0Iy",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_golden-mcp__weather_eETah26VZNTIdZlBlbsZ",
+      "callId": "tool_golden-mcp__weather_k4objaT4RFDD6UooO0Iy",
       "delta": "{\"city\":\"Tokyo\"}"
     },
     {
@@ -25,7 +25,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_golden-mcp__weather_eETah26VZNTIdZlBlbsZ"
+      "callId": "tool_golden-mcp__weather_k4objaT4RFDD6UooO0Iy"
     },
     {
       "kind": "done",
@@ -33,11 +33,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775278517-KXrFsDkFobzYN3VVqfRJ",
+        "responseId": "gen-1775287807-T3kCgrDgpzBKwPbf2VCv",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_golden-mcp__weather_eETah26VZNTIdZlBlbsZ",
+            "id": "tool_golden-mcp__weather_k4objaT4RFDD6UooO0Iy",
             "name": "golden-mcp__weather",
             "arguments": {
               "city": "Tokyo"

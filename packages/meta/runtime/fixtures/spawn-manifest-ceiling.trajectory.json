@@ -1,14 +1,10 @@
 {
   "schema_version": "ATIF-v1.6",
-  "session_id": "tool-use",
+  "session_id": "spawn-manifest-ceiling",
   "agent": {
-    "name": "golden-tool-use",
+    "name": "golden-spawn-manifest-ceiling",
     "model_name": "google/gemini-2.0-flash-001",
     "tool_definitions": [
-      {
-        "name": "add_numbers",
-        "description": "Add two numbers together"
-      },
       {
         "name": "Glob",
         "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
@@ -20,6 +16,10 @@
       {
         "name": "ToolSearch",
         "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+      },
+      {
+        "name": "Spawn",
+        "description": "Delegate a task to a specialized sub-agent. The sub-agent runs to completion and returns its output. Use this to parallelize work or leverage domain-specific agents."
       }
     ]
   },
@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:08.872Z",
+      "timestamp": "2026-04-04T07:30:43.830Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:08.872Z",
+      "timestamp": "2026-04-04T07:30:43.830Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,9 +56,9 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:08.874Z",
+      "timestamp": "2026-04-04T07:30:43.832Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
       "observation": {
         "results": [
           {
@@ -67,20 +67,16 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 404,
-        "completion_tokens": 7
+        "prompt_tokens": 621,
+        "completion_tokens": 23
       },
-      "duration_ms": 686,
+      "duration_ms": 715,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
-          {
-            "name": "add_numbers",
-            "description": "Add two numbers together"
-          },
           {
             "name": "Glob",
             "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
@@ -92,6 +88,10 @@
           {
             "name": "ToolSearch",
             "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          },
+          {
+            "name": "Spawn",
+            "description": "Delegate a task to a specialized sub-agent. The sub-agent runs to completion and returns its output. Use this to parallelize work or leverage domain-specific agents."
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001"
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:09.562Z",
+      "timestamp": "2026-04-04T07:30:44.547Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-      "duration_ms": 687.9163750000007,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 715.7485420000012,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:09.562Z",
+      "timestamp": "2026-04-04T07:30:44.548Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-      "duration_ms": 688.6596250000002,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 716.1492500000022,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -133,32 +133,49 @@
     },
     {
       "step_id": 5,
-      "source": "system",
-      "timestamp": "2026-04-04T07:30:09.564Z",
-      "model_name": "hook:on-tool-exec",
-      "message": "tool.succeeded:add_numbers → on-tool-exec",
-      "duration_ms": 2.505875000000742,
+      "source": "agent",
+      "timestamp": "2026-04-04T07:30:44.548Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "List your available tools by name, then answer: what is 2+2?",
+      "observation": {
+        "results": [
+          {
+            "content": "My available tools are:\n\n*   Grep\n\n2 + 2 = 4\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 408,
+        "completion_tokens": 19
+      },
+      "duration_ms": 558,
       "outcome": "success",
       "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded:add_numbers",
-        "hookName": "on-tool-exec"
+        "totalMessages": 2,
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Grep",
+            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:09.587Z",
+      "timestamp": "2026-04-04T07:30:45.107Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "add_numbers({\"a\":7,\"b\":5})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"result\":12}"
+            "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
           }
         ]
       },
-      "duration_ms": 25.683624999999665,
+      "duration_ms": 559.5080839999937,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -172,42 +189,42 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T07:30:09.561Z",
+      "timestamp": "2026-04-04T07:30:44.547Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_add_numbers_7",
-          "function_name": "add_numbers",
+          "tool_call_id": "call_Spawn_7",
+          "function_name": "Spawn",
           "arguments": {
-            "a": 7,
-            "b": 5
+            "description": "List your available tools by name, then answer: what is 2+2?",
+            "agentName": "researcher"
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_add_numbers_7",
-            "content": "{\"result\":12}"
+            "source_call_id": "call_Spawn_7",
+            "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
           }
         ]
       },
-      "duration_ms": 26,
+      "duration_ms": 560,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:09.590Z",
+      "timestamp": "2026-04-04T07:30:45.107Z",
       "model_name": "middleware:hooks",
-      "message": "add_numbers({\"a\":7,\"b\":5})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"result\":12}"
+            "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
           }
         ]
       },
-      "duration_ms": 28.810041999999157,
+      "duration_ms": 559.6537499999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -221,17 +238,17 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:09.590Z",
+      "timestamp": "2026-04-04T07:30:45.107Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"a\":7,\"b\":5})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"result\":12}"
+            "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
           }
         ]
       },
-      "duration_ms": 29.501749999999447,
+      "duration_ms": 559.8554999999978,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -245,31 +262,27 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T07:30:09.590Z",
+      "timestamp": "2026-04-04T07:30:45.107Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"result\":12}",
+      "message": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
       "observation": {
         "results": [
           {
-            "content": "12\n"
+            "content": "The researcher's answer is: My available tools are:\n\n*   Grep\n\n2 + 2 = 4"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 426,
-        "completion_tokens": 3
+        "prompt_tokens": 660,
+        "completion_tokens": 25
       },
-      "duration_ms": 573,
+      "duration_ms": 687,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
-          {
-            "name": "add_numbers",
-            "description": "Add two numbers together"
-          },
           {
             "name": "Glob",
             "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
@@ -281,6 +294,10 @@
           {
             "name": "ToolSearch",
             "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          },
+          {
+            "name": "Spawn",
+            "description": "Delegate a task to a specialized sub-agent. The sub-agent runs to completion and returns its output. Use this to parallelize work or leverage domain-specific agents."
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001"
@@ -289,10 +306,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:10.163Z",
+      "timestamp": "2026-04-04T07:30:45.795Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
-      "duration_ms": 572.9357499999987,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 687.8541669999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -306,10 +323,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T07:30:10.163Z",
+      "timestamp": "2026-04-04T07:30:45.795Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
-      "duration_ms": 573.0575829999998,
+      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 688.0221249999959,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

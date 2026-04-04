@@ -2953,3 +2953,85 @@ describe("spawn-inheritance ATIF trajectory (golden file)", () => {
     expect(result?.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// spawn-allowlist ATIF trajectory (golden file) — #1425
+// Proves runtime toolAllowlist enforced at ModelRequest level via Spawn tool.
+// ---------------------------------------------------------------------------
+
+describe("spawn-allowlist ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-allowlist.trajectory.json`;
+
+  test("child model call contains only allowlisted tool (Grep) — not Glob or ToolSearch", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-allowlist.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+
+    // Parent has all tools
+    const parentStep = agentSteps.find(
+      (s) =>
+        s.extra?.tools?.some((t) => t.name === "Glob") &&
+        s.extra?.tools?.some((t) => t.name === "Spawn"),
+    );
+    expect(parentStep?.extra?.tools?.map((t) => t.name)).toContain("Glob");
+
+    // Child: only Grep (toolAllowlist=["Grep"] — no Glob, no ToolSearch)
+    const childStep = agentSteps.find((s) => s.message?.startsWith("List your available tools"));
+    expect(childStep).toBeDefined();
+    const childTools = childStep?.extra?.tools?.map((t) => t.name) ?? [];
+    expect(childTools).toContain("Grep");
+    expect(childTools).not.toContain("Glob");
+    expect(childTools).not.toContain("ToolSearch");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn-manifest-ceiling ATIF trajectory (golden file) — #1425
+// Proves manifest.spawn.tools.policy=allowlist enforced by engine without
+// any runtime toolAllowlist — ceiling from YAML alone.
+// ---------------------------------------------------------------------------
+
+describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-manifest-ceiling.trajectory.json`;
+
+  test("child model call contains only manifest-ceiling tool (Grep) — no runtime allowlist needed", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-manifest-ceiling.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+
+    // Parent has all tools (manifest ceiling applies to children, not itself)
+    const parentStep = agentSteps.find(
+      (s) =>
+        s.extra?.tools?.some((t) => t.name === "Glob") &&
+        s.extra?.tools?.some((t) => t.name === "Spawn"),
+    );
+    expect(parentStep?.extra?.tools?.map((t) => t.name)).toContain("Glob");
+
+    // Child: only Grep — engine enforced manifest.spawn.tools allowlist without
+    // any per-call toolAllowlist being set in the Spawn tool invocation
+    const childStep = agentSteps.find((s) => s.message?.startsWith("List your available tools"));
+    expect(childStep).toBeDefined();
+    const childTools = childStep?.extra?.tools?.map((t) => t.name) ?? [];
+    expect(childTools).toContain("Grep");
+    expect(childTools).not.toContain("Glob"); // blocked by manifest ceiling
+    expect(childTools).not.toContain("ToolSearch"); // blocked by manifest ceiling
+  });
+});
