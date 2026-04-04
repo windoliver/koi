@@ -30,6 +30,8 @@ export function createWebSearchTool(
         },
         required: ["query"],
       } satisfies JsonObject,
+      origin: "primordial",
+      ...(executor.providerName !== undefined ? { server: executor.providerName } : {}),
     },
     origin: "primordial",
     policy,

@@ -188,5 +188,27 @@ describe("createWebSearchTool", () => {
       const result = (await tool.execute({ query: "test" })) as { provider: string };
       expect(result.provider).toBe("unknown");
     });
+
+    test("sets descriptor.server to provider name for provenance tracking", () => {
+      const executor: WebExecutor = {
+        providerName: "tavily",
+        fetch: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "Not implemented", retryable: false },
+        }),
+        search: async () => ({ ok: true, value: [] }),
+      };
+      const tool = createWebSearchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
+      expect(tool.descriptor.server).toBe("tavily");
+    });
+
+    test("does not set descriptor.server when provider name is absent", () => {
+      const tool = createWebSearchTool(
+        mockExecutor({ ok: true, value: [] }),
+        "web",
+        DEFAULT_UNSANDBOXED_POLICY,
+      );
+      expect(tool.descriptor.server).toBeUndefined();
+    });
   });
 });

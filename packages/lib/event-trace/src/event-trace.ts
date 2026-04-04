@@ -485,12 +485,9 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             | { readonly system: string; readonly server?: string }
             | undefined;
 
-          // Build step metadata: include blockedByHook or provenance info
-          const stepMeta = blockedByHook
-            ? (response?.metadata as JsonObject)
-            : provenance !== undefined
-              ? ({ provenance } as JsonObject)
-              : undefined;
+          // Persist full response metadata (preserves provenance, correlation IDs, etc.)
+          const stepMeta =
+            response?.metadata !== undefined ? (response.metadata as JsonObject) : undefined;
 
           const step: RichTrajectoryStep = {
             stepIndex,
@@ -511,7 +508,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
 
           // Accumulate provenance for per-turn summary (#1464)
           if (provenance !== undefined) {
-            const key = provenance.server ?? provenance.system;
+            const key = `${provenance.system}:${provenance.server ?? ""}`;
             const existing = state.turnProvenance.get(key);
             if (existing !== undefined) {
               existing.tools.push(request.toolId);

@@ -171,9 +171,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     // Enrich response metadata with provenance when the tool has a server origin (#1464)
     const serverName = tool.descriptor.server;
+    const toolOrigin = tool.descriptor.origin ?? tool.origin;
     const provenance =
       serverName !== undefined
-        ? { provenance: { system: "mcp" as const, server: serverName } }
+        ? {
+            provenance: {
+              system: toolOrigin === "operator" ? ("mcp" as const) : ("builtin" as const),
+              server: serverName,
+            },
+          }
         : {};
     const merged = {
       ...(request.metadata !== undefined ? (request.metadata as Record<string, unknown>) : {}),

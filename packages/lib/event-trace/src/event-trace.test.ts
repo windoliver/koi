@@ -1618,4 +1618,72 @@ describe("provenance tracking", () => {
     expect(summaries.length).toBe(1);
     expect((summaries[0]?.metadata as Record<string, unknown>)?.turnIndex).toBe(0);
   });
+
+  test("tool step preserves full response metadata alongside provenance", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const toolResponse: ToolResponse = {
+      output: "result",
+      metadata: {
+        provenance: { system: "mcp", server: "crm" },
+        traceId: "abc-123",
+        cacheHit: true,
+      },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => toolResponse,
+    );
+
+    const step = store.steps[0]?.[0];
+    const meta = step?.metadata as Record<string, unknown>;
+    // Provenance is preserved
+    expect((meta?.provenance as Record<string, unknown>)?.server).toBe("crm");
+    // Other metadata fields are also preserved
+    expect(meta?.traceId).toBe("abc-123");
+    expect(meta?.cacheHit).toBe(true);
+  });
+
+  test("aggregation uses composite key to avoid collisions between different systems", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Two different systems that happen to share the same server name
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest("mcp_tool"), async () => ({
+      output: "r1",
+      metadata: { provenance: { system: "mcp", server: "shared" } },
+    }));
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest("builtin_tool"), async () => ({
+      output: "r2",
+      metadata: { provenance: { system: "builtin", server: "shared" } },
+    }));
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const allSteps = store.steps.flat();
+    const summaryStep = allSteps.find((s) => s.identifier === "provenance:turn_summary");
+    const meta = summaryStep?.metadata as Record<string, unknown>;
+    const systems = meta?.systemsConsulted as readonly Record<string, unknown>[];
+    // Should be 2 entries, not merged into 1
+    expect(systems?.length).toBe(2);
+  });
 });
