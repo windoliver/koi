@@ -5,7 +5,7 @@
  * A MEMORY.md index is rebuilt on every mutation (write/update/delete).
  */
 
-import { lstat, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   MemoryRecord,
@@ -37,7 +37,7 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
   const { dir } = config;
   const threshold = config.dedupThreshold ?? DEFAULT_DEDUP_THRESHOLD;
 
-  if (threshold < 0 || threshold > 1) {
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
     throw new Error(`dedupThreshold must be between 0 and 1, got ${String(threshold)}`);
   }
 
@@ -139,13 +139,11 @@ async function updateRecord(
     throw new Error("Failed to serialize updated memory record");
   }
 
-  // Atomic update: write unique temp file then rename over original
+  // In-place write — preserves inode and birthtime (createdAt).
+  // Concurrency is an accepted risk for this single-agent local store.
   const filePath = join(dir, existing.filePath);
-  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tmpPath = join(dir, `.${existing.filePath}.${suffix}.tmp`);
-  await writeFile(tmpPath, serialized, "utf-8");
-  await rename(tmpPath, filePath);
-  const fileStat = await stat(filePath);
+  await writeFile(filePath, serialized, "utf-8");
+  const updatedStat = await stat(filePath);
 
   // Re-parse to return sanitized values matching what's on disk
   const persisted = parseMemoryFrontmatter(serialized);
@@ -157,7 +155,7 @@ async function updateRecord(
     content: persisted?.content ?? updated.content,
     filePath: existing.filePath,
     createdAt: existing.createdAt,
-    updatedAt: fileStat.mtimeMs,
+    updatedAt: updatedStat.mtimeMs,
   };
 
   await tryRebuildIndexFromDisk(dir);
