@@ -380,7 +380,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         signalWriter?.clearRetrySignal(sessionId);
         return response;
       } catch (e: unknown) {
-        await handleFailure(sessionId, state, e, request, ctx.turnIndex);
+        await handleFailure(sessionId, state, e, modifiedRequest, ctx.turnIndex);
         throw e;
       }
     },
@@ -448,7 +448,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           signalWriter?.clearRetrySignal(sessionId);
         }
       } catch (e: unknown) {
-        await handleFailure(sessionId, state, e, request, ctx.turnIndex);
+        await handleFailure(sessionId, state, e, effectiveRequest, ctx.turnIndex);
         throw e;
       }
     },
