@@ -90,7 +90,6 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(functi
       width="100%"
       paddingLeft={1}
       paddingRight={1}
-      bg="#1E293B"
       gap={2}
     >
       <ModelChip info={sessionInfo} />

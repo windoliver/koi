@@ -848,7 +848,16 @@ describe("reduce — set_modal — command palette query round-trip", () => {
     // Permission prompt takes over
     state = reduce(state, {
       kind: "set_modal",
-      modal: { kind: "permission-prompt", prompt: { requestId: "r1", toolId: "bash", input: {}, reason: "needs approval", riskLevel: "low" } },
+      modal: {
+        kind: "permission-prompt",
+        prompt: {
+          requestId: "r1",
+          toolId: "bash",
+          input: {},
+          reason: "needs approval",
+          riskLevel: "low",
+        },
+      },
     });
     expect(state.modal?.kind).toBe("permission-prompt");
 
@@ -1593,7 +1602,11 @@ describe("reduce — cumulative metrics on 'done'", () => {
     // After restoring a legacy session (engineTurns defaults to turns=3),
     // a multi-turn tool-loop run should surface in the status bar.
     const legacyMetrics = {
-      totalTokens: 100, inputTokens: 80, outputTokens: 20, turns: 3, costUsd: null,
+      totalTokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      turns: 3,
+      costUsd: null,
     };
     const state = stateWith({
       cumulativeMetrics: legacyMetrics as unknown as import("./types.js").CumulativeMetrics,
@@ -1606,11 +1619,17 @@ describe("reduce — cumulative metrics on 'done'", () => {
         output: {
           content: [],
           stopReason: "completed",
-          metrics: { totalTokens: 400, inputTokens: 320, outputTokens: 80, turns: 4, durationMs: 800 },
+          metrics: {
+            totalTokens: 400,
+            inputTokens: 320,
+            outputTokens: 80,
+            turns: 4,
+            durationMs: 800,
+          },
         },
       }),
     );
-    expect(next.cumulativeMetrics.turns).toBe(4);       // 3 prior + 1 new user turn
+    expect(next.cumulativeMetrics.turns).toBe(4); // 3 prior + 1 new user turn
     expect(next.cumulativeMetrics.engineTurns).toBe(7); // 3 (floor) + 4 (tool loop)
     // engineTurns > turns → status bar shows amplification signal
     expect(next.cumulativeMetrics.engineTurns).toBeGreaterThan(next.cumulativeMetrics.turns);
@@ -1645,7 +1664,13 @@ describe("reduce — cumulative metrics on 'done'", () => {
         output: {
           content: [],
           stopReason: "completed",
-          metrics: { totalTokens: 300, inputTokens: 240, outputTokens: 60, turns: 3, durationMs: 500 },
+          metrics: {
+            totalTokens: 300,
+            inputTokens: 240,
+            outputTokens: 60,
+            turns: 3,
+            durationMs: 500,
+          },
         },
       }),
     );
