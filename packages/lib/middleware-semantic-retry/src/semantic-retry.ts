@@ -231,9 +231,26 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     );
 
     const classBudget = state.budgets[failureClass.kind] ?? 0;
-    // Guard: when budget is exhausted, clear any stale retry signal to prevent
-    // later unrelated steps from being mislabeled as retries by event-trace.
+    // When budget is exhausted, record an abort and set pendingAction so the
+    // next wrapModelCall/wrapModelStream fails deterministically.
     if (classBudget <= 0) {
+      const abortAction: RetryAction = {
+        kind: "abort",
+        reason: `Retry budget exhausted for ${failureClass.kind}`,
+      };
+      const record: RetryRecord = {
+        timestamp: Date.now(),
+        failureClass,
+        actionTaken: abortAction,
+        succeeded: false,
+      };
+      state.records = trimToRecent([...state.records, record], maxHistorySize);
+      state.pendingAction = abortAction;
+      try {
+        onRetry?.(record);
+      } catch {
+        // Observer callback must not mask the original failure
+      }
       signalWriter?.clearRetrySignal(sessionId);
       return;
     }

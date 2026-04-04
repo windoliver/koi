@@ -137,8 +137,9 @@ export function createDefaultFailureAnalyzer(
         return { kind: "narrow_scope", focusArea: "the specific failing operation" };
       }
 
-      // priorRetries === 2: escalate or redirect depending on pattern
-      if (isRepeatingClass(failure, classRecords)) {
+      // priorRetries === 2: escalate if most recent failure (any class) was same kind,
+      // otherwise redirect. Uses full history so redirect is reachable when classes alternate.
+      if (isRepeatingClass(failure, records)) {
         return { kind: "escalate_model", targetModel: DEFAULT_ESCALATION_MODEL };
       }
 

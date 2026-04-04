@@ -266,13 +266,23 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
    * Check for an active retry signal and return retry-annotated outcome + metadata.
    * Returns undefined when no retry signal is active.
    */
+  /**
+   * Check for an active retry signal and return retry-annotated outcome + metadata.
+   * Only applied to non-failure steps — failure steps are the original failing call,
+   * not the retry attempt. The retry middleware sets the signal during the failed
+   * call's catch handler, so the signal is already active when event-trace records
+   * the failure. We skip it to avoid mislabeling the failure as a retry.
+   */
   function applyRetrySignal(
     sessionId: string,
-    _baseOutcome: "success" | "failure" | "retry",
+    baseOutcome: "success" | "failure" | "retry",
     baseMetadata: JsonObject,
   ):
     | { readonly outcome: "success" | "failure" | "retry"; readonly metadata: JsonObject }
     | undefined {
+    // Don't override failure steps — they are the original failing call,
+    // not a retry attempt. The signal was set during this call's error handling.
+    if (baseOutcome === "failure") return undefined;
     const signal = signalReader?.getRetrySignal(sessionId);
     if (signal === undefined) return undefined;
     return {
