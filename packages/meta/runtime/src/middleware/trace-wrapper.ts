@@ -82,6 +82,8 @@ export function wrapMiddlewareWithTrace(
           const start = performance.now();
           // let: mutable — tracks whether next() was called and captures modified request
           let nextCalled = false;
+          // Snapshot before middleware for value-based delta detection
+          const beforeSnapshot = captureDeltas === true ? snapshotModelRequest(request) : undefined;
           let capturedRequest: ModelRequest | undefined;
           const trackedNext: ModelHandler = async (req) => {
             nextCalled = true;
@@ -92,8 +94,10 @@ export function wrapMiddlewareWithTrace(
           try {
             const response = await hook(ctx, request, trackedNext);
             const deltaMeta =
-              captureDeltas === true && capturedRequest !== undefined && capturedRequest !== request
-                ? computeRequestDelta(request, capturedRequest)
+              captureDeltas === true &&
+              capturedRequest !== undefined &&
+              beforeSnapshot !== undefined
+                ? computeRequestDeltaFromSnapshot(beforeSnapshot, capturedRequest)
                 : undefined;
             recordStep({
               stepIndex: 0,
@@ -155,6 +159,9 @@ export function wrapMiddlewareWithTrace(
           const start = performance.now();
           // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
+          // Snapshot before middleware for value-based delta detection
+          const beforeInputSnapshot =
+            captureDeltas === true ? boundedSnapshot(request.input) : undefined;
           let capturedInput: JsonObject | undefined;
           const trackedNext: ToolHandler = async (req) => {
             nextCalled = true;
@@ -171,7 +178,8 @@ export function wrapMiddlewareWithTrace(
             const deltaMeta =
               captureDeltas === true &&
               capturedInput !== undefined &&
-              capturedInput !== (request.input as JsonObject)
+              beforeInputSnapshot !== undefined &&
+              beforeInputSnapshot !== boundedSnapshot(capturedInput)
                 ? shallowDiff(request.input as JsonObject, capturedInput)
                 : undefined;
             recordStep({
@@ -234,6 +242,8 @@ export function wrapMiddlewareWithTrace(
           const start = performance.now();
 
           // Track modified request for delta capture in stream path
+          const beforeStreamSnapshot =
+            captureDeltas === true ? snapshotModelRequest(request) : undefined;
           let capturedStreamRequest: ModelRequest | undefined;
           const trackedStreamNext: ModelStreamHandler = (req) => {
             if (captureDeltas === true) capturedStreamRequest = req;
@@ -246,8 +256,8 @@ export function wrapMiddlewareWithTrace(
             const deltaMeta =
               captureDeltas === true &&
               capturedStreamRequest !== undefined &&
-              capturedStreamRequest !== request
-                ? computeRequestDelta(request, capturedStreamRequest)
+              beforeStreamSnapshot !== undefined
+                ? computeRequestDeltaFromSnapshot(beforeStreamSnapshot, capturedStreamRequest)
                 : undefined;
             recordStep({
               stepIndex: 0,
@@ -330,48 +340,75 @@ function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefi
   } as JsonObject;
 }
 
-/**
- * Compute request delta for ModelRequest. Diffs top-level scalar fields
- * and summarizes message-level changes (count added/removed, truncated preview).
- */
-function computeRequestDelta(before: ModelRequest, after: ModelRequest): JsonObject | undefined {
-  const beforeFlat: JsonObject = {
-    ...(before.temperature !== undefined ? { temperature: before.temperature } : {}),
-    ...(before.maxTokens !== undefined ? { maxTokens: before.maxTokens } : {}),
-    ...(before.model !== undefined ? { model: before.model } : {}),
-    ...(before.systemPrompt !== undefined ? { systemPrompt: before.systemPrompt } : {}),
-  };
-  const afterFlat: JsonObject = {
-    ...(after.temperature !== undefined ? { temperature: after.temperature } : {}),
-    ...(after.maxTokens !== undefined ? { maxTokens: after.maxTokens } : {}),
-    ...(after.model !== undefined ? { model: after.model } : {}),
-    ...(after.systemPrompt !== undefined ? { systemPrompt: after.systemPrompt } : {}),
-  };
-  const scalarDelta = shallowDiff(beforeFlat, afterFlat);
+/** Bounded JSON snapshot for value-based comparison. Truncated to 4KB to cap overhead. */
+function boundedSnapshot(obj: unknown): string {
+  const s = JSON.stringify(obj);
+  return s.length <= 4096 ? s : s.slice(0, 4096);
+}
 
-  // Bounded message-level summary: detect added/removed messages without
-  // serializing full content (messages can be large).
-  const msgBefore = before.messages.length;
-  const msgAfter = after.messages.length;
-  const messagesChanged = before.messages !== after.messages && msgBefore !== msgAfter;
-  const messageDelta = messagesChanged
-    ? ({ messagesBefore: msgBefore, messagesAfter: msgAfter } as JsonObject)
-    : undefined;
+/** Snapshot model request fields for value-based delta detection. */
+interface ModelRequestSnapshot {
+  readonly scalars: string;
+  readonly messages: string;
+  readonly metadata: string;
+}
 
-  // Detect metadata changes (policy tags, model hints, etc.)
-  const metadataChanged = before.metadata !== after.metadata;
-  const metadataDelta = metadataChanged
-    ? shallowDiff((before.metadata ?? {}) as JsonObject, (after.metadata ?? {}) as JsonObject)
-    : undefined;
-
-  if (scalarDelta === undefined && messageDelta === undefined && metadataDelta === undefined) {
-    return undefined;
-  }
+function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
   return {
-    ...(scalarDelta ?? {}),
-    ...(messageDelta !== undefined ? { messages: messageDelta } : {}),
-    ...(metadataDelta !== undefined ? { metadata: metadataDelta } : {}),
-  } as JsonObject;
+    scalars: JSON.stringify({
+      temperature: req.temperature,
+      maxTokens: req.maxTokens,
+      model: req.model,
+      systemPrompt: req.systemPrompt,
+    }),
+    messages: boundedSnapshot(req.messages),
+    metadata: boundedSnapshot(req.metadata ?? {}),
+  };
+}
+
+/**
+ * Compute request delta by comparing a pre-snapshot against the post-middleware request.
+ * Uses value-based comparison (JSON snapshots) to detect in-place mutations.
+ */
+function computeRequestDeltaFromSnapshot(
+  before: ModelRequestSnapshot,
+  after: ModelRequest,
+): JsonObject | undefined {
+  const afterSnapshot = snapshotModelRequest(after);
+
+  const scalarsChanged = before.scalars !== afterSnapshot.scalars;
+  const messagesChanged = before.messages !== afterSnapshot.messages;
+  const metadataChanged = before.metadata !== afterSnapshot.metadata;
+
+  if (!scalarsChanged && !messagesChanged && !metadataChanged) return undefined;
+
+  const result: Record<string, unknown> = {};
+
+  if (scalarsChanged) {
+    const beforeScalars = JSON.parse(before.scalars) as JsonObject;
+    const afterScalars = JSON.parse(afterSnapshot.scalars) as JsonObject;
+    const delta = shallowDiff(beforeScalars, afterScalars);
+    if (delta !== undefined) Object.assign(result, delta);
+  }
+
+  if (messagesChanged) {
+    const beforeMessages = JSON.parse(before.messages) as readonly unknown[];
+    const afterMessages = after.messages;
+    result.messages = {
+      messagesBefore: beforeMessages.length,
+      messagesAfter: afterMessages.length,
+      contentChanged: beforeMessages.length === afterMessages.length,
+    };
+  }
+
+  if (metadataChanged) {
+    const beforeMeta = JSON.parse(before.metadata) as JsonObject;
+    const afterMeta = (after.metadata ?? {}) as JsonObject;
+    const delta = shallowDiff(beforeMeta, afterMeta);
+    if (delta !== undefined) result.metadata = delta;
+  }
+
+  return Object.keys(result).length > 0 ? (result as JsonObject) : undefined;
 }
 
 /** Passthrough wrapper that records stream outcome (success/failure/early-return). */
