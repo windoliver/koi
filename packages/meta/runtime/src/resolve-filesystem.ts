@@ -108,6 +108,12 @@ interface LocalBridgeOptions {
   readonly callTimeoutMs?: number | undefined;
   /** Max time to wait for the user to complete OAuth (ms). Default: 300_000. */
   readonly authTimeoutMs?: number | undefined;
+  /**
+   * Nexus path prefix used for namespace isolation (e.g. per-tenant scoping).
+   * Forwarded to createNexusFileSystem — must match the synchronous Nexus path.
+   * Default: "fs" (the createNexusFileSystem default).
+   */
+  readonly mountPoint?: string | undefined;
 }
 
 function isLocalBridgeOptions(v: unknown): v is LocalBridgeOptions {
@@ -174,6 +180,8 @@ export async function resolveFileSystemAsync(
     const nexusBackend = createNexusFileSystem({
       url: "local://bridge",
       transport,
+      // Preserve namespace scoping — must match the synchronous Nexus HTTP path.
+      ...(options.mountPoint !== undefined ? { mountPoint: options.mountPoint } : {}),
     });
 
     // Wrap dispose to clean up the subscription and transport subprocess

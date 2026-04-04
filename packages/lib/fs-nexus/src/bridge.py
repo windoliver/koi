@@ -108,11 +108,18 @@ async def handle_auth(fs, exc) -> bool:
                 "message": f"Still waiting for {provider} authorization...",
             })
 
-        # Check if the token has appeared
+        # Check if the token has appeared.
+        # Only suppress "token not present yet" results — propagate real failures
+        # (connection errors, token-store corruption, etc.) immediately so
+        # infrastructure problems don't masquerade as user auth timeouts.
         try:
             token = await fs.get_token(provider, user_email) if user_email else await fs.get_token(provider)
-        except Exception:
-            token = None
+        except Exception as token_err:
+            msg = str(token_err).lower()
+            if any(w in msg for w in ("not found", "no token", "not present", "does not exist", "missing")):
+                token = None  # Token not ready yet — keep polling
+            else:
+                raise  # Unexpected backend/provider failure — surface immediately
 
         if token:
             _notify("auth_complete", {

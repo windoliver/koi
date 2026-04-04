@@ -234,8 +234,12 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
           try {
             parsed = JSON.parse(trimmed);
           } catch {
-            // Malformed line — skip silently (bridge may have emitted a debug line)
-            continue;
+            // Malformed post-startup JSON is a fatal protocol error.
+            // The bridge has corrupted the stdout channel — silently skipping
+            // would leave the in-flight request hanging until timeout.
+            // Throw to trigger the catch path, which calls close() and rejects
+            // all pending requests immediately with the offending line for diagnostics.
+            throw new Error(`Bridge sent malformed JSON: ${trimmed.slice(0, 200)}`);
           }
 
           if (isNotification(parsed)) {
