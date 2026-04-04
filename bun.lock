@@ -308,7 +308,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/tools-core": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
     },
     "packages/mm/model-openai-compat": {

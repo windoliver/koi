@@ -51,6 +51,18 @@ describe("memory_delete execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
+  test("rejects path-traversal id", async () => {
+    const tool = unwrapTool(createMemoryDeleteTool(mockBackend()));
+    const result = (await tool.execute({ id: "../../etc/passwd" })) as Record<string, unknown>;
+    expect(result.code).toBe("VALIDATION");
+  });
+
+  test("rejects oversized id", async () => {
+    const tool = unwrapTool(createMemoryDeleteTool(mockBackend()));
+    const result = (await tool.execute({ id: "a".repeat(200) })) as Record<string, unknown>;
+    expect(result.code).toBe("VALIDATION");
+  });
+
   test("returns sanitized error when get fails", async () => {
     const backend = mockBackend({
       get: async () => ({ ok: false, error: mockError("/data/mem: read error") }),

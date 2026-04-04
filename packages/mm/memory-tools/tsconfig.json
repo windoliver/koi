@@ -11,9 +11,6 @@
     },
     {
       "path": "../../lib/tools-core"
-    },
-    {
-      "path": "../../lib/validation"
     }
   ]
 }

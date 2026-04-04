@@ -46,11 +46,13 @@ async function executeRecall(
 
   const limit = Math.min(Math.max(1, limitResult.value ?? maxLimit), maxLimit);
 
+  const graphExpand = expandResult.value ?? false;
+
   const options: MemoryToolRecallOptions = {
     limit,
     tierFilter: tierResult.value ?? "all",
-    graphExpand: expandResult.value ?? false,
-    maxHops: hopsResult.value ?? 2,
+    graphExpand,
+    ...(graphExpand ? { maxHops: hopsResult.value ?? 2 } : {}),
   };
 
   try {

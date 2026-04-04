@@ -159,5 +159,15 @@ export function parseOptionalTimestamp(
       err: { error: `${key} must be a valid ISO 8601 timestamp`, code: "VALIDATION" },
     };
   }
+  // Roundtrip check — reject impossible calendar dates like Feb 30
+  // that Date.parse silently rolls forward
+  const date = new Date(ms);
+  const inputDay = Number.parseInt(value.slice(8, 10), 10);
+  if (date.getUTCDate() !== inputDay) {
+    return {
+      ok: false,
+      err: { error: `${key} must be a valid calendar date`, code: "VALIDATION" },
+    };
+  }
   return { ok: true, value: ms };
 }

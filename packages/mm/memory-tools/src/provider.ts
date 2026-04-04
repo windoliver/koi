@@ -40,11 +40,10 @@ export function createMemoryToolProvider(
     createMemoryDeleteTool(backend, prefix),
   ];
 
-  const tools: Tool[] = [];
-  for (const result of results) {
-    if (!result.ok) return result;
-    tools.push(result.value);
-  }
+  const firstError = results.find((r) => !r.ok);
+  if (firstError !== undefined && !firstError.ok) return firstError;
+
+  const tools: readonly Tool[] = results.flatMap((r) => (r.ok ? [r.value] : []));
 
   const provider = createToolComponentProvider({
     name: `${prefix}-tools`,

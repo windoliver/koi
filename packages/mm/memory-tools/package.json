@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/tools-core": "workspace:*",
-    "@koi/validation": "workspace:*"
+    "@koi/tools-core": "workspace:*"
   }
 }

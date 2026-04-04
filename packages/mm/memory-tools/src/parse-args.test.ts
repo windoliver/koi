@@ -179,4 +179,14 @@ describe("parseOptionalTimestamp", () => {
     const result = parseOptionalTimestamp({ d: 12345 }, "d");
     expect(result.ok).toBe(false);
   });
+
+  test("rejects impossible calendar dates like Feb 30", () => {
+    const result = parseOptionalTimestamp({ d: "2026-02-30T00:00:00Z" }, "d");
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects Apr 31", () => {
+    const result = parseOptionalTimestamp({ d: "2026-04-31T00:00:00Z" }, "d");
+    expect(result.ok).toBe(false);
+  });
 });
