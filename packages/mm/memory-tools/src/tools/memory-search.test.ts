@@ -9,6 +9,11 @@ describe("createMemorySearchTool", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("rejects negative searchLimit at construction", () => {
+    const result = createMemorySearchTool(mockBackend(), "memory", -5);
+    expect(result.ok).toBe(false);
+  });
+
   test("tool has correct name with default prefix", () => {
     const tool = unwrapTool(createMemorySearchTool(mockBackend()));
     expect(tool.descriptor.name).toBe("memory_search");

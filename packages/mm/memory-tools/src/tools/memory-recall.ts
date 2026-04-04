@@ -11,18 +11,13 @@ import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT } from "../constants.js";
 import {
   parseOptionalBoolean,
   parseOptionalEnum,
-  parseOptionalNumber,
+  parseOptionalInteger,
   parseString,
 } from "../parse-args.js";
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend, MemoryToolRecallOptions } from "../types.js";
 
 const TIER_VALUES = ["hot", "warm", "cold", "all"] as const;
-
-/** Clamp and round a numeric value to a positive integer within [1, max]. */
-function clampPositiveInt(value: number | undefined, fallback: number, max: number): number {
-  return Math.min(Math.max(1, Math.round(value ?? fallback)), max);
-}
 
 /** Execute handler — extracted for size limit. */
 async function executeRecall(
@@ -33,7 +28,7 @@ async function executeRecall(
   const queryResult = parseString(args, "query");
   if (!queryResult.ok) return queryResult.err;
 
-  const limitResult = parseOptionalNumber(args, "limit");
+  const limitResult = parseOptionalInteger(args, "limit");
   if (!limitResult.ok) return limitResult.err;
 
   const tierResult = parseOptionalEnum(args, "tier", TIER_VALUES);
@@ -42,20 +37,20 @@ async function executeRecall(
   const expandResult = parseOptionalBoolean(args, "graph_expand");
   if (!expandResult.ok) return expandResult.err;
 
-  const hopsResult = parseOptionalNumber(args, "max_hops");
+  const hopsResult = parseOptionalInteger(args, "max_hops");
   if (!hopsResult.ok) return hopsResult.err;
 
   if (hopsResult.value !== undefined && hopsResult.value < 0) {
     return { error: "max_hops must be a non-negative integer", code: "VALIDATION" };
   }
 
-  const limit = clampPositiveInt(limitResult.value, maxLimit, maxLimit);
+  const limit = Math.min(Math.max(1, limitResult.value ?? maxLimit), maxLimit);
 
   const options: MemoryToolRecallOptions = {
     limit,
     tierFilter: tierResult.value ?? "all",
     graphExpand: expandResult.value ?? false,
-    maxHops: hopsResult.value !== undefined ? Math.round(hopsResult.value) : 2,
+    maxHops: hopsResult.value ?? 2,
   };
 
   try {
@@ -73,6 +68,17 @@ export function createMemoryRecallTool(
   prefix: string = DEFAULT_PREFIX,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Result<Tool, KoiError> {
+  if (!Number.isInteger(recallLimit) || recallLimit < 1) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "recallLimit must be a positive integer",
+        retryable: false,
+      },
+    };
+  }
+
   return buildTool({
     name: `${prefix}_recall`,
     description:

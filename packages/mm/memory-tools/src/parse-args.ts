@@ -59,6 +59,18 @@ export function parseOptionalNumber(
   return { ok: true, value };
 }
 
+export function parseOptionalInteger(
+  args: JsonObject,
+  key: string,
+): ParseResult<number | undefined> {
+  const value = args[key];
+  if (value === undefined) return { ok: true, value: undefined };
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return { ok: false, err: { error: `${key} must be an integer`, code: "VALIDATION" } };
+  }
+  return { ok: true, value };
+}
+
 export function parseOptionalBoolean(
   args: JsonObject,
   key: string,
@@ -83,7 +95,13 @@ export function parseOptionalStringArray(
       err: { error: `${key} must be an array of strings`, code: "VALIDATION" },
     };
   }
-  return { ok: true, value: value as readonly string[] };
+  // Copy to a new array to avoid returning a mutable reference
+  return { ok: true, value: [...value] };
+}
+
+/** Check if a string is in a readonly string array (type-safe without assertion). */
+function includesString(arr: readonly string[], value: string): boolean {
+  return arr.includes(value);
 }
 
 export function parseOptionalEnum<const T extends string>(
@@ -93,7 +111,7 @@ export function parseOptionalEnum<const T extends string>(
 ): ParseResult<T | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
-  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
+  if (typeof value !== "string" || !includesString(allowed, value)) {
     return {
       ok: false,
       err: {
@@ -102,8 +120,11 @@ export function parseOptionalEnum<const T extends string>(
       },
     };
   }
-  // Safe: we verified value is in the allowed array above
-  return { ok: true, value: value as T };
+  // Type-safe: value is a string that is known to be in the allowed tuple.
+  // We find the matching element to return it with the correct narrowed type.
+  const match = allowed.find((a) => a === value);
+  if (match === undefined) return { ok: true, value: undefined };
+  return { ok: true, value: match };
 }
 
 /**

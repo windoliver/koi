@@ -10,7 +10,7 @@ import { buildTool } from "@koi/tools-core";
 import { DEFAULT_PREFIX, DEFAULT_SEARCH_LIMIT } from "../constants.js";
 import {
   parseOptionalEnum,
-  parseOptionalNumber,
+  parseOptionalInteger,
   parseOptionalString,
   parseOptionalTimestamp,
 } from "../parse-args.js";
@@ -42,7 +42,7 @@ async function executeSearch(
   const beforeResult = parseOptionalTimestamp(args, "updated_before");
   if (!beforeResult.ok) return beforeResult.err;
 
-  const limitResult = parseOptionalNumber(args, "limit");
+  const limitResult = parseOptionalInteger(args, "limit");
   if (!limitResult.ok) return limitResult.err;
 
   if (
@@ -53,7 +53,7 @@ async function executeSearch(
     return { error: "updated_after must not be later than updated_before", code: "VALIDATION" };
   }
 
-  const limit = Math.min(Math.max(1, Math.round(limitResult.value ?? maxLimit)), maxLimit);
+  const limit = Math.min(Math.max(1, limitResult.value ?? maxLimit), maxLimit);
   const keyword = normalizeKeyword(keywordResult.value);
 
   const filter: MemorySearchFilter = {
@@ -79,6 +79,17 @@ export function createMemorySearchTool(
   prefix: string = DEFAULT_PREFIX,
   searchLimit: number = DEFAULT_SEARCH_LIMIT,
 ): Result<Tool, KoiError> {
+  if (!Number.isInteger(searchLimit) || searchLimit < 1) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "searchLimit must be a positive integer",
+        retryable: false,
+      },
+    };
+  }
+
   return buildTool({
     name: `${prefix}_search`,
     description:

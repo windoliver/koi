@@ -71,7 +71,13 @@ function parseStoreArgs(
   return { input, force: forceResult.value === true };
 }
 
-/** Execute handler — performs dedup check and store/update. */
+/**
+ * Execute handler — performs dedup check and store/update.
+ *
+ * NOTE: The dedup check is best-effort (check-then-act). Concurrent calls
+ * with the same name/type can both pass the check. True uniqueness must be
+ * enforced by the backend's store() method (e.g. unique constraint).
+ */
 async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promise<unknown> {
   const parsed = parseStoreArgs(args);
   if ("error" in parsed) return parsed.error;

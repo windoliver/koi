@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   parseOptionalBoolean,
   parseOptionalEnum,
+  parseOptionalInteger,
   parseOptionalNumber,
   parseOptionalString,
   parseOptionalStringArray,
@@ -68,6 +69,31 @@ describe("parseOptionalNumber", () => {
 
   test("returns error for Infinity", () => {
     const result = parseOptionalNumber({ n: Number.POSITIVE_INFINITY }, "n");
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("parseOptionalInteger", () => {
+  test("returns value for integer", () => {
+    expect(parseOptionalInteger({ n: 5 }, "n")).toEqual({ ok: true, value: 5 });
+  });
+
+  test("returns undefined for missing key", () => {
+    expect(parseOptionalInteger({}, "n")).toEqual({ ok: true, value: undefined });
+  });
+
+  test("returns error for fractional number", () => {
+    const result = parseOptionalInteger({ n: 1.5 }, "n");
+    expect(result.ok).toBe(false);
+  });
+
+  test("returns error for non-number", () => {
+    const result = parseOptionalInteger({ n: "five" }, "n");
+    expect(result.ok).toBe(false);
+  });
+
+  test("returns error for NaN", () => {
+    const result = parseOptionalInteger({ n: Number.NaN }, "n");
     expect(result.ok).toBe(false);
   });
 });
