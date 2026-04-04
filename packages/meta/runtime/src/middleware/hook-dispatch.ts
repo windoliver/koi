@@ -70,6 +70,24 @@ export interface HookDispatchConfig {
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
   const { hooks, store, docId, signal, registry, registrySessionId } = config;
 
+  /** Extract a structured decision record from a hook execution result. */
+  function extractDecision(result: HookExecutionResult): JsonObject {
+    if (!result.ok) {
+      return { kind: "error", reason: result.error } as JsonObject;
+    }
+    const { decision } = result;
+    switch (decision.kind) {
+      case "block":
+        return { kind: "block", reason: decision.reason } as JsonObject;
+      case "modify":
+        return { kind: "modify", patch: decision.patch } as JsonObject;
+      case "transform":
+        return { kind: "transform", outputPatch: decision.outputPatch } as JsonObject;
+      case "continue":
+        return { kind: "continue" } as JsonObject;
+    }
+  }
+
   /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
   async function dispatchHooks(
     event: HookEvent,
@@ -104,6 +122,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         type: "hook_execution",
         triggerEvent,
         hookName: result.hookName,
+        decision: extractDecision(result),
       } as JsonObject,
     }));
 
@@ -172,9 +191,29 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     // wrapModelStream fire per model invocation, but turn.ended should fire
     // exactly once per user turn.
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      // Skip turn.ended dispatch for stop-gate vetoes — the turn was blocked,
-      // not completed. Avoids duplicate external side effects on retry.
-      if (ctx.stopBlocked === true) return;
+      // Record stop-gate block as a trajectory step before skipping turn.ended.
+      if (ctx.stopBlocked === true) {
+        if (store !== undefined && docId !== undefined) {
+          const step: RichTrajectoryStep = {
+            stepIndex: 0,
+            timestamp: Date.now(),
+            source: "system" as const,
+            kind: "model_call" as const,
+            identifier: "stop-gate:block",
+            outcome: "retry" as const,
+            durationMs: 0,
+            request: { text: `Stop blocked: ${ctx.stopGateReason ?? "unknown"}` },
+            metadata: {
+              type: "stop_gate_decision",
+              blockedBy: ctx.stopGateBlockedBy ?? "unknown",
+              reason: ctx.stopGateReason ?? "unknown",
+              turnIndex: ctx.turnIndex,
+            } as JsonObject,
+          };
+          await store.append(docId, [step]).catch(() => {});
+        }
+        return;
+      }
       try {
         const event: HookEvent = {
           event: "turn.ended",

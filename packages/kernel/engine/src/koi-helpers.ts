@@ -52,6 +52,8 @@ export function createTurnContext(opts: {
   readonly approvalHandler?: ApprovalHandler | undefined;
   readonly sendStatus?: ((status: ChannelStatus) => Promise<void>) | undefined;
   readonly stopBlocked?: true;
+  readonly stopGateReason?: string;
+  readonly stopGateBlockedBy?: string;
 }): TurnContext {
   return {
     session: opts.session,
@@ -63,5 +65,7 @@ export function createTurnContext(opts: {
     ...(opts.approvalHandler !== undefined ? { requestApproval: opts.approvalHandler } : {}),
     ...(opts.sendStatus !== undefined ? { sendStatus: opts.sendStatus } : {}),
     ...(opts.stopBlocked === true ? { stopBlocked: true } : {}),
+    ...(opts.stopGateReason !== undefined ? { stopGateReason: opts.stopGateReason } : {}),
+    ...(opts.stopGateBlockedBy !== undefined ? { stopGateBlockedBy: opts.stopGateBlockedBy } : {}),
   };
 }

@@ -38,6 +38,12 @@ export interface TraceWrapperConfig {
   readonly store: TrajectoryDocumentStore;
   /** Document ID for trajectory recording. */
   readonly docId: string;
+  /**
+   * When true, records shallow diffs of request modifications by middleware.
+   * Captures what each middleware changed in model requests and tool inputs.
+   * Default: false (no overhead).
+   */
+  readonly captureDeltas?: boolean;
 }
 
 /**
@@ -56,7 +62,7 @@ export function wrapMiddlewareWithTrace(
 ): KoiMiddleware {
   // Don't trace the trajectory recorder itself — circular and noisy
   if (TRACE_EXCLUDED.has(mw.name)) return mw;
-  const { store, docId } = config;
+  const { store, docId, captureDeltas } = config;
 
   function recordStep(step: RichTrajectoryStep): void {
     void store.append(docId, [step]).catch(() => {});
@@ -74,15 +80,21 @@ export function wrapMiddlewareWithTrace(
 
           const requestPreview = extractModelRequestText(request);
           const start = performance.now();
-          // let: mutable — tracks whether next() was called
+          // let: mutable — tracks whether next() was called and captures modified request
           let nextCalled = false;
+          let capturedRequest: ModelRequest | undefined;
           const trackedNext: ModelHandler = async (req) => {
             nextCalled = true;
+            if (captureDeltas === true) capturedRequest = req;
             return next(req);
           };
 
           try {
             const response = await hook(ctx, request, trackedNext);
+            const deltaMeta =
+              captureDeltas === true && capturedRequest !== undefined && capturedRequest !== request
+                ? computeRequestDelta(request, capturedRequest)
+                : undefined;
             recordStep({
               stepIndex: 0,
               timestamp: Date.now(),
@@ -100,6 +112,7 @@ export function wrapMiddlewareWithTrace(
                 phase: mw.phase ?? "resolve",
                 priority: mw.priority ?? 500,
                 nextCalled,
+                ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
               } as JsonObject,
             });
             return response;
@@ -140,10 +153,12 @@ export function wrapMiddlewareWithTrace(
 
           const requestPreview = `${request.toolId}(${JSON.stringify(request.input).slice(0, 300)})`;
           const start = performance.now();
-          // let: mutable
+          // let: mutable — tracks next() call and captures modified request
           let nextCalled = false;
+          let capturedInput: JsonObject | undefined;
           const trackedNext: ToolHandler = async (req) => {
             nextCalled = true;
+            if (captureDeltas === true) capturedInput = req.input as JsonObject;
             return next(req);
           };
 
@@ -153,6 +168,12 @@ export function wrapMiddlewareWithTrace(
               typeof response.output === "string"
                 ? response.output
                 : JSON.stringify(response.output);
+            const deltaMeta =
+              captureDeltas === true &&
+              capturedInput !== undefined &&
+              capturedInput !== (request.input as JsonObject)
+                ? shallowDiff(request.input as JsonObject, capturedInput)
+                : undefined;
             recordStep({
               stepIndex: 0,
               timestamp: Date.now(),
@@ -170,6 +191,7 @@ export function wrapMiddlewareWithTrace(
                 phase: mw.phase ?? "resolve",
                 priority: mw.priority ?? 500,
                 nextCalled,
+                ...(deltaMeta !== undefined ? { inputDelta: deltaMeta } : {}),
               } as JsonObject,
             });
             return response;
@@ -255,6 +277,64 @@ function extractModelRequestText(request: ModelRequest): string {
   }
   const full = parts.join("\n");
   return full.length <= 500 ? full : `${full.slice(0, 500)}…`;
+}
+
+/**
+ * Shallow diff between two objects. Returns `{ changed, added, removed }` or
+ * undefined if objects are identical by reference or have no differences.
+ */
+function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefined {
+  const changed: Record<string, { readonly from: unknown; readonly to: unknown }> = {};
+  const added: Record<string, unknown> = {};
+  const removed: string[] = [];
+
+  for (const key of Object.keys(before)) {
+    if (!(key in after)) {
+      removed.push(key);
+    } else if (before[key] !== after[key]) {
+      changed[key] = { from: before[key], to: after[key] };
+    }
+  }
+  for (const key of Object.keys(after)) {
+    if (!(key in before)) {
+      added[key] = after[key];
+    }
+  }
+
+  if (
+    Object.keys(changed).length === 0 &&
+    Object.keys(added).length === 0 &&
+    removed.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(Object.keys(changed).length > 0 ? { changed } : {}),
+    ...(Object.keys(added).length > 0 ? { added } : {}),
+    ...(removed.length > 0 ? { removed } : {}),
+  } as JsonObject;
+}
+
+/**
+ * Compute request delta for ModelRequest. Diffs top-level scalar fields
+ * (temperature, maxTokens, model, systemPrompt) — ignores messages array
+ * since it's typically large and not modified by middleware.
+ */
+function computeRequestDelta(before: ModelRequest, after: ModelRequest): JsonObject | undefined {
+  const beforeFlat: JsonObject = {
+    ...(before.temperature !== undefined ? { temperature: before.temperature } : {}),
+    ...(before.maxTokens !== undefined ? { maxTokens: before.maxTokens } : {}),
+    ...(before.model !== undefined ? { model: before.model } : {}),
+    ...(before.systemPrompt !== undefined ? { systemPrompt: before.systemPrompt } : {}),
+  };
+  const afterFlat: JsonObject = {
+    ...(after.temperature !== undefined ? { temperature: after.temperature } : {}),
+    ...(after.maxTokens !== undefined ? { maxTokens: after.maxTokens } : {}),
+    ...(after.model !== undefined ? { model: after.model } : {}),
+    ...(after.systemPrompt !== undefined ? { systemPrompt: after.systemPrompt } : {}),
+  };
+  return shallowDiff(beforeFlat, afterFlat);
 }
 
 /** Passthrough wrapper that records stream outcome (success/failure/early-return). */
