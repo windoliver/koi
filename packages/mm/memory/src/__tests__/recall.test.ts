@@ -236,6 +236,25 @@ describe("recallMemories", () => {
     expect(result.selected.length).toBe(0);
   });
 
+  test("sets degraded when files are skipped", async () => {
+    const goodFile = {
+      path: "/mem/good.md",
+      content: makeMemoryFileContent("Good", "user", "valid content"),
+      modifiedAt: now,
+    };
+    const badFile = {
+      path: "/mem/bad.md",
+      content: "no frontmatter",
+      modifiedAt: now,
+    };
+    const fs = createMockFs([goodFile, badFile]);
+    const result = await recallMemories(fs, { memoryDir: "/mem", now });
+
+    expect(result.degraded).toBe(true);
+    expect(result.skippedFiles).toBe(1);
+    expect(result.selected.length).toBe(1);
+  });
+
   test("formatted output tokens do not exceed budget", async () => {
     const files = Array.from({ length: 10 }, (_, i) => ({
       path: `/mem/mem${i}.md`,

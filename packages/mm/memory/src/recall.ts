@@ -39,8 +39,10 @@ export interface RecallResult {
   readonly formatted: string;
   readonly totalTokens: number;
   readonly totalScanned: number;
+  /** Number of files that could not be read or parsed. */
+  readonly skippedFiles: number;
   readonly truncated: boolean;
-  /** True if the scan was degraded (list failed or was truncated by backend). */
+  /** True if the scan was degraded (list failed, truncated, or files were skipped). */
   readonly degraded: boolean;
 }
 
@@ -116,7 +118,8 @@ export async function recallMemories(
     maxFiles: config.maxFiles,
   });
 
-  const degraded = scanResult.listFailed || scanResult.truncated;
+  const skippedFiles = scanResult.skipped.length;
+  const degraded = scanResult.listFailed || scanResult.truncated || skippedFiles > 0;
 
   if (scanResult.memories.length === 0) {
     return {
@@ -124,6 +127,7 @@ export async function recallMemories(
       formatted: "",
       totalTokens: 0,
       totalScanned: 0,
+      skippedFiles,
       truncated: false,
       degraded,
     };
@@ -143,6 +147,7 @@ export async function recallMemories(
     formatted,
     totalTokens,
     totalScanned: scanResult.memories.length,
+    skippedFiles,
     truncated,
     degraded,
   };

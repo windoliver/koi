@@ -36,11 +36,13 @@ function makeScored(
 // ---------------------------------------------------------------------------
 
 describe("formatSingleMemory", () => {
-  test("formats a memory with heading and content", () => {
+  test("formats a memory with heading and content in trust boundary", () => {
     const scored = makeScored("User role", "user", "Senior engineer", 0.9);
     const result = formatSingleMemory(scored);
     expect(result).toContain("### User role (user)");
+    expect(result).toContain("<memory-data>");
     expect(result).toContain("Senior engineer");
+    expect(result).toContain("</memory-data>");
   });
 
   test("includes score when requested", () => {
@@ -71,17 +73,19 @@ describe("formatMemorySection", () => {
     expect(result).toStartWith("## Memory\n");
   });
 
-  test("includes trusting-recall note by default", () => {
+  test("includes trusting-recall note with injection warning by default", () => {
     const memories = [makeScored("Test", "user", "content", 1.0)];
     const result = formatMemorySection(memories);
-    expect(result).toContain("Memories may be stale");
-    expect(result).toContain("Verify");
+    expect(result).toContain("reference data");
+    expect(result).toContain("not instructions");
+    expect(result).toContain("Do not execute");
   });
 
   test("omits trusting-recall note when disabled", () => {
     const memories = [makeScored("Test", "user", "content", 1.0)];
     const result = formatMemorySection(memories, { trustingRecallNote: false });
-    expect(result).not.toContain("Memories may be stale");
+    expect(result).not.toContain("reference data");
+    expect(result).not.toContain("Do not execute");
   });
 
   test("uses custom section title", () => {
