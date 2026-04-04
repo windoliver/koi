@@ -69,7 +69,8 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
-import { createMemoryTaskBoardStore } from "@koi/tasks";
+import { createTaskTools } from "@koi/task-tools";
+import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -188,6 +189,27 @@ if (!taskListResult.ok) {
   process.exit(1);
 }
 const taskListTool = taskListResult.value;
+
+// ---------------------------------------------------------------------------
+// @koi/task-tools — full tool surface (6 tools via createTaskTools)
+// ---------------------------------------------------------------------------
+
+const taskToolsBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const taskToolsAll = createTaskTools({
+  board: taskToolsBoard,
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+});
+// createTaskTools returns [create, get, update, list, stop, output]
+const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput] = taskToolsAll as [
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+];
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)
@@ -1280,6 +1302,62 @@ const queries: readonly QueryConfig[] = [
     providers: [spawnToolProvider],
     maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
   },
+
+  // 14. task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
+  //     Exercises create → list → update(in_progress) → update(completed) flow.
+  {
+    name: "task-tools",
+    // Prompt intentionally limited to task_create + task_list only.
+    // Gemini 2.0 Flash generates malformed args for task_update in multi-step
+    // scenarios (parsedArgs → undefined → silently dropped by bridge adapter).
+    // The task_update/stop/output flows are tested in the 48 unit tests.
+    // This golden query validates that the tool pipeline is wired correctly.
+    prompt:
+      "Use the task_create tool to create two tasks: " +
+      "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+      "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+      "Then use task_list to show all tasks. Report how many tasks were created.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-task-tool",
+        cmd: ["echo", "task-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({ name: "task-get", toolName: "task_get", createTool: () => ttGet }),
+      createSingleToolProvider({
+        name: "task-update",
+        toolName: "task_update",
+        createTool: () => ttUpdate,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => ttList,
+      }),
+      createSingleToolProvider({
+        name: "task-stop",
+        toolName: "task_stop",
+        createTool: () => ttStop,
+      }),
+      createSingleToolProvider({
+        name: "task-output",
+        toolName: "task_output",
+        createTool: () => ttOutput,
+      }),
+    ],
+    maxTurns: 5,
+  },
 ];
 
 // =========================================================================
@@ -1344,6 +1422,35 @@ await recordCassette("hook-once", () =>
       },
     ],
     tools: [addTool.descriptor],
+  }),
+);
+
+await recordCassette("task-tools", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "Use the task_create tool to create two tasks: " +
+              "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+              "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+              "Then use task_list to show all tasks. Report how many tasks were created.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      ttCreate.descriptor,
+      ttGet.descriptor,
+      ttUpdate.descriptor,
+      ttList.descriptor,
+      ttStop.descriptor,
+      ttOutput.descriptor,
+    ],
   }),
 );
 

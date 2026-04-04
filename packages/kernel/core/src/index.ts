@@ -999,6 +999,7 @@ export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // `ScheduledTaskStatus`. This is an intentional v2 domain correction.
 // task-board — backward compat aliases (deprecated)
 export type {
+  ManagedTaskBoard,
   Task,
   TaskBoard,
   TaskBoardConfig,

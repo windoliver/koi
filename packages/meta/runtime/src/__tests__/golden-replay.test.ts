@@ -1920,7 +1920,7 @@ describe("Golden: @koi/hooks payload redaction", () => {
   test("redactEventData masks API keys and passwords", async () => {
     const { redactEventData } = await import("@koi/hooks");
     const result = redactEventData(
-      { apiKey: "sk-ant-api03-" + "A".repeat(85), password: "hunter2", safe: "hello" },
+      { apiKey: `sk-ant-api03-${"A".repeat(85)}`, password: "hunter2", safe: "hello" },
       undefined, // default config = redaction enabled
     );
     expect(result.status).toBe("redacted");
@@ -1934,7 +1934,7 @@ describe("Golden: @koi/hooks payload redaction", () => {
     // Use a non-sensitive field name so the secret is detected by pattern scanning
     // (not field-name matching which always uses "redact" → [REDACTED])
     const result = redactEventData(
-      { output: "token is sk-ant-api03-" + "A".repeat(85) },
+      { output: `token is sk-ant-api03-${"A".repeat(85)}` },
       { enabled: true, censor: "mask" },
     );
     expect(result.status).toBe("redacted");
@@ -3070,5 +3070,185 @@ describe("Golden: @koi/memory recall pipeline", () => {
     expect(result.selected.length).toBeLessThan(10);
     expect(result.truncated).toBe(true);
     expect(result.totalTokens).toBeLessThanOrEqual(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-tools ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("task-tools ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with all 6 task tool definitions", async () => {
+    const file = Bun.file(`${FIXTURES}/task-tools.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("task-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    const toolNames = doc.agent.tool_definitions?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("task_create");
+    expect(toolNames).toContain("task_list");
+    expect(toolNames).toContain("task_update");
+    expect(toolNames).toContain("task_stop");
+    expect(toolNames).toContain("task_output");
+  });
+
+  test("has two TOOL steps for task_create — both ok:true with task IDs", async () => {
+    const file = Bun.file(`${FIXTURES}/task-tools.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("task-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    // Expect 3 tool steps: task_create × 2, task_list × 1
+    expect(toolSteps.length).toBeGreaterThanOrEqual(3);
+    const createSteps = toolSteps.filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "task_create"),
+    );
+    expect(createSteps.length).toBeGreaterThanOrEqual(2);
+    // Both creates should succeed
+    for (const step of createSteps) {
+      const content = step.observation?.results?.[0]?.content ?? "";
+      expect(content).toContain('"ok":true');
+    }
+    // task_1 and task_2 should both appear in the combined output
+    const allContent = createSteps.map((s) => s.observation?.results?.[0]?.content ?? "").join("");
+    expect(allContent).toContain("task_1");
+    expect(allContent).toContain("task_2");
+  });
+
+  test("has TOOL step for task_list returning TaskSummary array", async () => {
+    const file = Bun.file(`${FIXTURES}/task-tools.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("task-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const listStep = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "task_list"),
+    );
+    expect(listStep).toBeDefined();
+    const content = listStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain('"tasks"');
+    expect(content).toContain('"total":2');
+    // TaskSummary projection — no timestamps in list response
+    expect(content).not.toContain('"createdAt"');
+  });
+
+  test("3 tool steps (task_create × 2, task_list × 1) and 2 agent steps", async () => {
+    const file = Bun.file(`${FIXTURES}/task-tools.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("task-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+    expect(toolSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/task-tools (2 standalone queries, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/task-tools", () => {
+  test("task_create + task_list flow — create two tasks, list returns TaskSummary projection", async () => {
+    const { createTaskTools } = await import("@koi/task-tools");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+
+    const store = createMemoryTaskBoardStore();
+    const board = await createManagedTaskBoard({ store });
+    const tools = createTaskTools({
+      board,
+      agentId: "golden-agent" as import("@koi/core").AgentId,
+    });
+    if (tools.length < 6) throw new Error("Expected 6 task tools");
+    const [create, , , list] = tools as [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const r1 = (await create.execute({
+      subject: "Auth module",
+      description: "Implement OAuth2",
+    } as import("@koi/core").JsonObject)) as Record<string, unknown>;
+    const r2 = (await create.execute({
+      subject: "Write tests",
+      description: "Write unit tests",
+    } as import("@koi/core").JsonObject)) as Record<string, unknown>;
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+
+    const lr = (await list.execute({} as import("@koi/core").JsonObject)) as {
+      ok: boolean;
+      tasks: Record<string, unknown>[];
+      total: number;
+    };
+    expect(lr.ok).toBe(true);
+    expect(lr.total).toBe(2);
+    expect(lr.tasks[0]).toHaveProperty("id");
+    expect(lr.tasks[0]).toHaveProperty("subject");
+    expect(lr.tasks[0]).toHaveProperty("status");
+    // TaskSummary projection — no timestamps (full details via task_get)
+    expect(lr.tasks[0]).not.toHaveProperty("createdAt");
+  });
+
+  test("task_stop returns error for pending task — not running (Decision 4A)", async () => {
+    const { createTaskTools } = await import("@koi/task-tools");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+
+    const store = createMemoryTaskBoardStore();
+    const board = await createManagedTaskBoard({ store });
+    const tools = createTaskTools({
+      board,
+      agentId: "golden-agent" as import("@koi/core").AgentId,
+    });
+    if (tools.length < 6) throw new Error("Expected 6 task tools");
+    const [create, , , , stop] = tools as [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const r1 = (await create.execute({
+      subject: "Auth",
+      description: "Do auth",
+    } as import("@koi/core").JsonObject)) as Record<string, unknown>;
+    const id = (r1.task as Record<string, unknown>).id as string;
+
+    const sr = (await stop.execute({
+      task_id: id,
+    } as import("@koi/core").JsonObject)) as Record<string, unknown>;
+    expect(sr.ok).toBe(false);
+    expect(sr.error as string).toContain("in_progress");
   });
 });

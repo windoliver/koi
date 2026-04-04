@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type {
   AgentId,
   KoiError,
+  ManagedTaskBoard,
   Result,
   Task,
   TaskBoard,
@@ -42,36 +43,9 @@ export interface ManagedTaskBoardConfig {
   readonly resultsDir?: string | undefined;
 }
 
-export interface ManagedTaskBoard extends AsyncDisposable {
-  /** Current immutable board snapshot. */
-  readonly snapshot: () => TaskBoard;
-  /** Add a task — validates via board, persists to store. */
-  readonly add: (input: TaskInput) => Promise<Result<TaskBoard, KoiError>>;
-  /** Add multiple tasks atomically — validates via board, persists to store. */
-  readonly addAll: (inputs: readonly TaskInput[]) => Promise<Result<TaskBoard, KoiError>>;
-  /** Assign a task to an agent — validates via board, persists to store. */
-  readonly assign: (
-    taskId: TaskItemId,
-    agentId: AgentId,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Complete a task — validates via board, persists to store. */
-  readonly complete: (
-    taskId: TaskItemId,
-    result: TaskResult,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Fail a task — validates via board, persists to store. */
-  readonly fail: (
-    taskId: TaskItemId,
-    error: KoiError,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-  /** Kill a task — validates via board, persists to store. */
-  readonly kill: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
-  /** Update task metadata — validates via board, persists to store. */
-  readonly update: (
-    taskId: TaskItemId,
-    patch: TaskPatch,
-  ) => Promise<Result<TaskBoard, KoiError>>;
-}
+// ManagedTaskBoard interface is defined in @koi/core so L2 packages can
+// depend on it without importing the L2 implementation (@koi/tasks).
+export type { ManagedTaskBoard } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Result persistence helpers
@@ -247,6 +221,8 @@ export async function createManagedTaskBoard(
 
   return {
     snapshot: () => board,
+
+    nextId: () => Promise.resolve(store.nextId()),
 
     add: (input) => applyMutation((b) => b.add(input)),
 

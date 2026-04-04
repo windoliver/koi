@@ -224,6 +224,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/task-tools": {
+      "name": "@koi/task-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/tasks": "workspace:*",
+      },
+    },
     "packages/lib/tasks": {
       "name": "@koi/tasks",
       "version": "0.0.0",
@@ -293,6 +304,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
@@ -667,6 +679,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
+
+    "@koi/task-tools": ["@koi/task-tools@workspace:packages/lib/task-tools"],
 
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 

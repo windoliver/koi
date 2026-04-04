@@ -83,6 +83,7 @@ function inputToTask(input: TaskInput, now: number): Task {
     version: 0,
     dependencies: input.dependencies ?? [],
     status: "pending",
+    ...(input.activeForm !== undefined ? { activeForm: input.activeForm } : {}),
     metadata: input.metadata,
     createdAt: now,
     updatedAt: now,
@@ -259,6 +260,8 @@ function createBoardFromState(
       status: to,
       version: task.version + 1,
       updatedAt: now(),
+      // Clear activeForm on terminal transitions — stale spinner text must not persist.
+      ...(isTerminalTaskStatus(to) ? { activeForm: undefined } : {}),
       ...(patch ?? {}),
     };
     const newItems = new Map(items);
@@ -537,6 +540,8 @@ function createBoardFromState(
         ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
+        // Use `"activeForm" in patch` to distinguish explicit undefined (clear) from absent (leave).
+        ...("activeForm" in patch ? { activeForm: patch.activeForm } : {}),
         version: task.version + 1,
         updatedAt: now(),
       };
