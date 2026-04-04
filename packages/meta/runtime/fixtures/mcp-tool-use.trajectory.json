@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:02.100Z",
+      "timestamp": "2026-04-04T06:11:30.992Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:02.100Z",
+      "timestamp": "2026-04-04T06:11:30.992Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T00:16:02.101Z",
+      "timestamp": "2026-04-04T06:11:30.993Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 97,
         "completion_tokens": 8
       },
-      "duration_ms": 877,
+      "duration_ms": 475,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:02.991Z",
+      "timestamp": "2026-04-04T06:11:31.471Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 890.2289579999997,
+      "duration_ms": 478.26837499999965,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.013Z",
+      "timestamp": "2026-04-04T06:11:31.472Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 912.471540999999,
+      "duration_ms": 479.42516700000124,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.056Z",
+      "timestamp": "2026-04-04T06:11:31.475Z",
       "model_name": "hook:on-mcp-tool",
       "message": "tool.succeeded:golden-mcp__weather → on-mcp-tool",
-      "duration_ms": 59.08612499999799,
+      "duration_ms": 3.4238750000004075,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -124,7 +124,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.229Z",
+      "timestamp": "2026-04-04T06:11:31.475Z",
       "model_name": "middleware:hook-dispatch",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -134,7 +134,7 @@
           }
         ]
       },
-      "duration_ms": 246.3646660000013,
+      "duration_ms": 6.745291999999608,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -148,7 +148,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T00:16:02.983Z",
+      "timestamp": "2026-04-04T06:11:31.468Z",
       "tool_calls": [
         {
           "tool_call_id": "call_golden-mcp__weather_7",
@@ -166,13 +166,13 @@
           }
         ]
       },
-      "duration_ms": 246,
+      "duration_ms": 7,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.241Z",
+      "timestamp": "2026-04-04T06:11:31.479Z",
       "model_name": "middleware:hooks",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -182,7 +182,7 @@
           }
         ]
       },
-      "duration_ms": 257.7492910000001,
+      "duration_ms": 10.958208000000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -196,7 +196,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.241Z",
+      "timestamp": "2026-04-04T06:11:31.479Z",
       "model_name": "middleware:permissions",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -206,7 +206,7 @@
           }
         ]
       },
-      "duration_ms": 257.88491599999907,
+      "duration_ms": 11.154999999998836,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,7 +220,7 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T00:16:03.241Z",
+      "timestamp": "2026-04-04T06:11:31.481Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
       "observation": {
@@ -231,10 +231,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 135,
+        "prompt_tokens": 133,
         "completion_tokens": 17
       },
-      "duration_ms": 622,
+      "duration_ms": 423,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -252,10 +252,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.863Z",
+      "timestamp": "2026-04-04T06:11:31.904Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 622.0447500000009,
+      "duration_ms": 423.0759579999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -269,10 +269,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T00:16:03.863Z",
+      "timestamp": "2026-04-04T06:11:31.904Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 622.2965000000004,
+      "duration_ms": 424.81062499999825,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

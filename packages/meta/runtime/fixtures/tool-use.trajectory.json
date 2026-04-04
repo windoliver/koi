@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:49.502Z",
+      "timestamp": "2026-04-04T06:11:18.867Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:49.502Z",
+      "timestamp": "2026-04-04T06:11:18.867Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,7 +56,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T00:15:49.506Z",
+      "timestamp": "2026-04-04T06:11:18.876Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
       "observation": {
@@ -70,7 +70,7 @@
         "prompt_tokens": 404,
         "completion_tokens": 7
       },
-      "duration_ms": 673,
+      "duration_ms": 571,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.184Z",
+      "timestamp": "2026-04-04T06:11:19.461Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-      "duration_ms": 678.0550839999996,
+      "duration_ms": 585.0352090000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.184Z",
+      "timestamp": "2026-04-04T06:11:19.461Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.",
-      "duration_ms": 679.5923750000002,
+      "duration_ms": 588.6567919999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -134,10 +134,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.188Z",
+      "timestamp": "2026-04-04T06:11:19.464Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:add_numbers → on-tool-exec",
-      "duration_ms": 5.3037920000006125,
+      "duration_ms": 3.9776670000001104,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -148,9 +148,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.208Z",
+      "timestamp": "2026-04-04T06:11:19.464Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "message": "add_numbers({\"a\":7,\"b\":5})",
       "observation": {
         "results": [
           {
@@ -158,7 +158,7 @@
           }
         ]
       },
-      "duration_ms": 26.38774999999987,
+      "duration_ms": 10.484541999999237,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -172,14 +172,14 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T00:15:50.181Z",
+      "timestamp": "2026-04-04T06:11:19.454Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_7",
           "function_name": "add_numbers",
           "arguments": {
-            "b": 5,
-            "a": 7
+            "a": 7,
+            "b": 5
           }
         }
       ],
@@ -191,15 +191,15 @@
           }
         ]
       },
-      "duration_ms": 27,
+      "duration_ms": 10,
       "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.212Z",
+      "timestamp": "2026-04-04T06:11:19.467Z",
       "model_name": "middleware:hooks",
-      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "message": "add_numbers({\"a\":7,\"b\":5})",
       "observation": {
         "results": [
           {
@@ -207,7 +207,7 @@
           }
         ]
       },
-      "duration_ms": 30.760792000000038,
+      "duration_ms": 15.470792000000074,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -221,9 +221,9 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.212Z",
+      "timestamp": "2026-04-04T06:11:19.467Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"b\":5,\"a\":7})",
+      "message": "add_numbers({\"a\":7,\"b\":5})",
       "observation": {
         "results": [
           {
@@ -231,7 +231,7 @@
           }
         ]
       },
-      "duration_ms": 31.99970899999971,
+      "duration_ms": 18.18316699999923,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -245,7 +245,7 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T00:15:50.212Z",
+      "timestamp": "2026-04-04T06:11:19.467Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":12}",
       "observation": {
@@ -259,7 +259,7 @@
         "prompt_tokens": 428,
         "completion_tokens": 3
       },
-      "duration_ms": 754,
+      "duration_ms": 456,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -289,10 +289,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.966Z",
+      "timestamp": "2026-04-04T06:11:19.924Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
-      "duration_ms": 754.2922910000007,
+      "duration_ms": 456.96891700000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -306,10 +306,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T00:15:50.967Z",
+      "timestamp": "2026-04-04T06:11:19.924Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 7 + 5. After getting the result, respond with just the number.\n\n{\"result\":12}",
-      "duration_ms": 754.5086250000004,
+      "duration_ms": 457.1732919999995,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

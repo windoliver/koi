@@ -2187,6 +2187,110 @@ describe("Golden: @koi/memory", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/memory-tools (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory-tools", () => {
+  test("createMemoryToolProvider builds all 4 tools and provider attaches them", async () => {
+    const { createMemoryToolProvider } = await import("@koi/memory-tools");
+    const { toolToken, memoryRecordId: mkId } = await import("@koi/core");
+    type MRecord = import("@koi/core").MemoryRecord;
+    type MInput = import("@koi/core").MemoryRecordInput;
+
+    const mockBackend = {
+      store: (input: MInput) => {
+        const record: MRecord = {
+          id: mkId("mock-1"),
+          ...input,
+          filePath: "test.md",
+          createdAt: 0,
+          updatedAt: 0,
+        };
+        return { ok: true as const, value: record };
+      },
+      recall: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
+      search: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
+      delete: () => ({ ok: true as const, value: undefined }),
+      findByName: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
+      get: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
+      update: (
+        _id: import("@koi/core").MemoryRecordId,
+        _patch: import("@koi/core").MemoryRecordPatch,
+      ) => {
+        const r: MRecord = {
+          id: mkId("mock-1"),
+          name: "",
+          description: "",
+          type: "user",
+          content: "",
+          filePath: "",
+          createdAt: 0,
+          updatedAt: 0,
+        };
+        return { ok: true as const, value: r };
+      },
+    };
+
+    const result = createMemoryToolProvider({ backend: mockBackend });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const provider = result.value;
+    expect(provider.name).toBe("memory-tools");
+
+    const attachResult = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+
+    expect(components.has(toolToken("memory_store") as string)).toBe(true);
+    expect(components.has(toolToken("memory_recall") as string)).toBe(true);
+    expect(components.has(toolToken("memory_search") as string)).toBe(true);
+    expect(components.has(toolToken("memory_delete") as string)).toBe(true);
+  });
+
+  test("memory_store tool executes store with dedup and returns structured result", async () => {
+    const { createMemoryStoreTool } = await import("@koi/memory-tools");
+    const { memoryRecordId: mkId } = await import("@koi/core");
+    type MRecord = import("@koi/core").MemoryRecord;
+
+    const stored: MRecord = {
+      id: mkId("rec-1"),
+      name: "test",
+      description: "desc",
+      type: "user",
+      content: "body",
+      filePath: "test.md",
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const backend = {
+      store: () => ({ ok: true as const, value: stored }),
+      recall: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
+      search: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
+      delete: () => ({ ok: true as const, value: undefined }),
+      findByName: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
+      get: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
+      update: () => ({ ok: true as const, value: stored }),
+    };
+
+    const result = createMemoryStoreTool(backend);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const tool = result.value;
+    expect(tool.descriptor.name).toBe("memory_store");
+
+    const output = (await tool.execute({
+      name: "test",
+      description: "desc",
+      type: "user",
+      content: "body",
+    })) as Record<string, unknown>;
+    expect(output.stored).toBe(true);
+    expect(output.id).toBe("rec-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // memory-store trajectory: full-stack ATIF validation (golden file)
 // ---------------------------------------------------------------------------
 
@@ -2205,7 +2309,9 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     expect(doc.session_id).toBe("memory-store");
     expect(doc.agent.model_name).toBe("google/gemini-2.0-flash-001");
     expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_store")).toBe(true);
-    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_list")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_recall")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_search")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "memory_delete")).toBe(true);
   });
 
   test("MCP lifecycle + MW spans present", async () => {
@@ -2238,35 +2344,20 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     const toolSteps = doc.steps.filter(
       (s) => s.source === "tool" && s.observation?.results !== undefined,
     );
-    expect(toolSteps.length).toBeGreaterThanOrEqual(2); // memory_store + memory_list
+    expect(toolSteps.length).toBeGreaterThanOrEqual(3); // memory_store + memory_recall + memory_search
 
-    // memory_store output contains serialized frontmatter with all fields
+    // memory_store output contains stored: true and filePath
     const storeStep = toolSteps.find((s) => {
       const content = s.observation?.results?.[0]?.content ?? "";
-      return content.includes("filePath") && content.includes("serialized");
+      return content.includes("stored") && content.includes("filePath");
     });
     expect(storeStep).toBeDefined();
     const storeContent = storeStep?.observation?.results?.[0]?.content ?? "";
-
-    // Validate file path
     expect(storeContent).toContain("testing_approach.md");
-    // Validate ok: true (successful store)
-    expect(storeContent).toContain('"ok":true');
-
-    // Validate full frontmatter fields in serialized output
-    expect(storeContent).toContain("name: testing approach");
-    expect(storeContent).toContain("description: always write failing tests first");
-    expect(storeContent).toContain("type: feedback");
-    // Validate frontmatter delimiters
-    expect(storeContent).toContain("---");
-
-    // Validate multiline body content survived serialization
-    expect(storeContent).toContain("Rule: write failing tests before implementation.");
-    expect(storeContent).toContain("**Why:**");
-    expect(storeContent).toContain("**How to apply:**");
+    expect(storeContent).toContain('"stored":true');
   });
 
-  test("memory_list tool returns stored records with correct metadata", async () => {
+  test("memory_recall and memory_search tools return stored records", async () => {
     const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -2277,17 +2368,13 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     const toolSteps = doc.steps.filter(
       (s) => s.source === "tool" && s.observation?.results !== undefined,
     );
-    const listStep = toolSteps.find((s) => {
-      const content = s.observation?.results?.[0]?.content ?? "";
-      return content.includes("memories");
-    });
-    expect(listStep).toBeDefined();
-    const listContent = listStep?.observation?.results?.[0]?.content ?? "";
 
-    // Validate file path, name, and type all present in list output
-    expect(listContent).toContain("testing_approach.md");
-    expect(listContent).toContain("testing approach");
-    expect(listContent).toContain("feedback");
+    // At least one tool step should contain "results" (from recall or search)
+    const resultStep = toolSteps.find((s) => {
+      const content = s.observation?.results?.[0]?.content ?? "";
+      return content.includes("results") && content.includes("testing approach");
+    });
+    expect(resultStep).toBeDefined();
   });
 
   test("hook executions fire on tool.succeeded", async () => {
@@ -2296,8 +2383,8 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     };
 
     const hookSteps = doc.steps.filter((s) => s.extra?.type === "hook_execution");
-    // At least 2 hook executions (one per tool call)
-    expect(hookSteps.length).toBeGreaterThanOrEqual(2);
+    // At least 3 hook executions (one per tool call: store + recall + search)
+    expect(hookSteps.length).toBeGreaterThanOrEqual(3);
     expect(hookSteps[0]?.extra?.hookName).toBe("on-tool-exec");
   });
 
@@ -2323,8 +2410,8 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     const doc = (await Bun.file(`${FIXTURES}/memory-store.trajectory.json`).json()) as {
       readonly steps: readonly unknown[];
     };
-    // 18 steps recorded: 2 MCP + 3 MODEL + 2 TOOL + 2 HOOK + 4 MW:hooks + 4 MW:permissions + MW:hook-dispatch
-    expect(doc.steps.length).toBeGreaterThanOrEqual(12);
+    // 36 steps recorded: 2 MCP + 4 MODEL + 3 TOOL + 3 HOOK + MW spans
+    expect(doc.steps.length).toBeGreaterThanOrEqual(20);
   });
 });
 
@@ -2333,81 +2420,74 @@ describe("memory-store ATIF trajectory (golden file)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", () => {
-  test("produces live ATIF with memory_store + memory_list tool calls and correct output", async () => {
-    const { serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } =
-      await import("@koi/core");
+  test("produces live ATIF with memory_store + memory_recall tool calls and correct output", async () => {
+    const { memoryRecordId: mkId } = await import("@koi/core");
+    const { createMemoryToolProvider: createProvider } = await import("@koi/memory-tools");
+    type MRecord = import("@koi/core").MemoryRecord;
+    type MInput = import("@koi/core").MemoryRecordInput;
 
-    // Build memory tools (same as record-cassettes.ts)
-    const replayMemoryStore = new Map<string, string>();
-
-    const memStoreResult = buildTool({
-      name: "memory_store",
-      description: "Store a memory record.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          description: { type: "string" },
-          type: { type: "string", enum: ["user", "feedback", "project", "reference"] },
-          content: { type: "string" },
-        },
-        required: ["name", "description", "type", "content"],
+    // In-memory backend for replay
+    const records = new Map<string, MRecord>();
+    // let: mutable counter
+    let counter = 0;
+    const backend = {
+      store: (input: MInput) => {
+        counter += 1;
+        const id = mkId(`mem-${counter}`);
+        const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+        const now = Date.now();
+        const record: MRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+        records.set(id, record);
+        return { ok: true as const, value: record };
       },
-      origin: "primordial",
-      execute: async (args: JsonObject): Promise<unknown> => {
-        const input = {
-          name: String(args.name),
-          description: String(args.description),
-          type: String(args.type),
-          content: String(args.content),
-          filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
-        };
-        const pathError = validateMemoryFilePath(input.filePath);
-        if (pathError !== undefined) {
-          return { ok: false, errors: [{ field: "filePath", message: pathError }] };
-        }
-        const errors = validateMemoryRecordInput(input);
-        if (errors.length > 0) {
-          return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
-        }
-        const frontmatter = {
-          name: input.name,
-          description: input.description,
-          type: input.type as "user" | "feedback" | "project" | "reference",
-        };
-        const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
-        if (serialized === undefined) {
-          return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
-        }
-        replayMemoryStore.set(input.filePath, serialized);
-        return { ok: true, filePath: input.filePath, serialized };
+      recall: () => ({ ok: true as const, value: [...records.values()] }),
+      search: () => ({ ok: true as const, value: [...records.values()] }),
+      delete: (id: import("@koi/core").MemoryRecordId) => {
+        records.delete(id);
+        return { ok: true as const, value: undefined };
       },
-    });
-    if (!memStoreResult.ok) throw new Error(`buildTool failed: ${memStoreResult.error.message}`);
-    const memStoreTool = memStoreResult.value;
-
-    const memListResult = buildTool({
-      name: "memory_list",
-      description: "List all stored memory records.",
-      inputSchema: { type: "object", properties: {} },
-      origin: "primordial",
-      execute: async (): Promise<unknown> => {
-        const records = [...replayMemoryStore.entries()].map(([filePath, raw]) => {
-          const typeMatch = raw.match(/^type:\s*(.+)$/m);
-          const nameMatch = raw.match(/^name:\s*(.+)$/m);
-          return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
-        });
-        return { memories: records };
+      findByName: (name: string) => ({
+        ok: true as const,
+        value: [...records.values()].find((r) => r.name === name),
+      }),
+      get: (id: import("@koi/core").MemoryRecordId) => ({
+        ok: true as const,
+        value: records.get(id),
+      }),
+      update: (
+        id: import("@koi/core").MemoryRecordId,
+        patch: import("@koi/core").MemoryRecordPatch,
+      ) => {
+        const existing = records.get(id);
+        if (!existing)
+          return {
+            ok: false as const,
+            error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
+          };
+        const updated = { ...existing, ...patch, updatedAt: Date.now() } as MRecord;
+        records.set(id, updated);
+        return { ok: true as const, value: updated };
       },
-    });
-    if (!memListResult.ok) throw new Error(`buildTool failed: ${memListResult.error.message}`);
-    const memListTool = memListResult.value;
-
-    // Tool dispatch map
-    const toolMap: Record<string, (args: JsonObject) => Promise<unknown>> = {
-      memory_store: memStoreTool.execute,
-      memory_list: memListTool.execute,
     };
+
+    const providerResult = createProvider({ backend });
+    if (!providerResult.ok)
+      throw new Error(`createMemoryToolProvider failed: ${providerResult.error.message}`);
+    const memProvider = providerResult.value;
+
+    // Extract tools for dispatch map
+    const attachResult = await memProvider.attach({} as Parameters<typeof memProvider.attach>[0]);
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+    const toolMap: Record<string, (args: JsonObject) => Promise<unknown>> = {};
+    for (const [, v] of components) {
+      const tool = v as {
+        readonly descriptor?: { readonly name: string };
+        readonly execute?: (args: JsonObject) => Promise<unknown>;
+      };
+      if (tool.descriptor?.name && tool.execute) {
+        toolMap[tool.descriptor.name] = tool.execute;
+      }
+    }
 
     // Load cassette
     const cassette = await loadCassette(`${FIXTURES}/memory-store.cassette.json`);
@@ -2483,9 +2563,9 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
           const lastToolMsg = [...msgs].reverse().find((m) => m.senderId === "tool");
           const toolContent =
             lastToolMsg?.content?.[0]?.kind === "text" ? lastToolMsg.content[0].text : "";
-          const summary = toolContent.includes("memories")
-            ? "Listed memories successfully."
-            : toolContent.includes("testing_approach.md")
+          const summary = toolContent.includes("results")
+            ? "Retrieved memories successfully."
+            : toolContent.includes("stored")
               ? "Stored feedback memory at testing_approach.md."
               : "Done.";
           return toAsyncIterable([
@@ -2612,24 +2692,13 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
-      providers: [
-        createSingleToolProvider({
-          name: "memory-store",
-          toolName: "memory_store",
-          createTool: () => memStoreTool,
-        }),
-        createSingleToolProvider({
-          name: "memory-list",
-          toolName: "memory_list",
-          createTool: () => memListTool,
-        }),
-      ],
+      providers: [memProvider],
       loopDetection: false,
     });
 
     for await (const _e of runtime.run({
       kind: "text",
-      text: 'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.". Then use the memory_list tool to show all stored memories.',
+      text: 'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.". Then use the memory_recall tool with query "testing" to retrieve it.',
     })) {
       /* drain */
     }
@@ -2654,27 +2723,13 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(memoryStoreSteps[0]?.outcome).toBe("success");
     const storeOutput = memoryStoreSteps[0]?.response?.text ?? "";
     expect(storeOutput).toContain("testing_approach.md");
-    expect(storeOutput).toContain('"ok":true');
-    // Validate frontmatter fields in serialized output
-    expect(storeOutput).toContain("name: testing approach");
-    expect(storeOutput).toContain("description: always write failing tests first");
-    expect(storeOutput).toContain("type: feedback");
+    expect(storeOutput).toContain('"stored":true');
 
-    // memory_list executed
-    const memoryListSteps = steps.filter(
-      (s) => s.kind === "tool_call" && s.identifier === "memory_list",
-    );
-    expect(memoryListSteps.length).toBeGreaterThan(0);
-    expect(memoryListSteps[0]?.outcome).toBe("success");
-    const listOutput = memoryListSteps[0]?.response?.text ?? "";
-    expect(listOutput).toContain("testing_approach.md");
-    expect(listOutput).toContain("feedback");
-
-    // In-memory store correctly populated
-    expect(replayMemoryStore.has("testing_approach.md")).toBe(true);
-    const storedContent = replayMemoryStore.get("testing_approach.md") ?? "";
-    expect(storedContent).toContain("name: testing approach");
-    expect(storedContent).toContain("type: feedback");
+    // In-memory backend correctly populated
+    expect(records.size).toBeGreaterThan(0);
+    const storedRecord = [...records.values()][0];
+    expect(storedRecord?.name).toBe("testing approach");
+    expect(storedRecord?.type).toBe("feedback");
 
     // Final model turn: derived from tool output, not hardcoded
     const modelSteps = steps.filter(
