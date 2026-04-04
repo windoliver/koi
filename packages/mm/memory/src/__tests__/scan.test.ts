@@ -38,7 +38,7 @@ function createMockFs(files: readonly MockFile[]): FileSystemBackend {
       const entries: FileListEntry[] = files
         .filter((f) => {
           if (!f.path.startsWith(path)) return false;
-          if (glob === "*.md") return f.path.endsWith(".md");
+          if (glob === "**/*.md" || glob === "*.md") return f.path.endsWith(".md");
           return true;
         })
         .map(
@@ -258,6 +258,27 @@ describe("scanMemoryDirectory", () => {
     expect(result.truncated).toBe(true);
     expect(result.listFailed).toBe(false);
     expect(result.memories.length).toBe(1);
+  });
+
+  test("discovers nested memory files in subdirectories", async () => {
+    const nestedFile: MockFile = {
+      path: "/memory/team/user_role.md",
+      content: [
+        "---",
+        "name: Nested",
+        "description: test",
+        "type: user",
+        "---",
+        "",
+        "nested content",
+      ].join("\n"),
+      size: 60,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([nestedFile]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.filePath).toBe("team/user_role.md");
   });
 
   test("rejects paths outside the memory directory", async () => {

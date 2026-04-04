@@ -89,7 +89,7 @@ export async function scanMemoryDirectory(
   const maxFiles = config.maxFiles ?? MEMORY_INDEX_MAX_LINES;
 
   // Step 1: List all .md files
-  const listResult = await fs.list(config.memoryDir, { glob: "*.md" });
+  const listResult = await fs.list(config.memoryDir, { glob: "**/*.md", recursive: true });
   if (!listResult.ok) {
     return { memories: [], skipped: [], totalFiles: 0, truncated: false, listFailed: true };
   }

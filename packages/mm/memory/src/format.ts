@@ -58,7 +58,8 @@ function escapeMemoryContent(content: string): string {
  * The `[score: ...]` suffix is only included when `includeScore` is true.
  */
 export function formatSingleMemory(scored: ScoredMemory, includeScore?: boolean): string {
-  const heading = `### ${scored.memory.record.name} (${scored.memory.record.type})`;
+  const safeName = escapeMemoryContent(scored.memory.record.name);
+  const heading = `### ${safeName} (${scored.memory.record.type})`;
   const scoreSuffix = includeScore === true ? ` [score: ${scored.salienceScore.toFixed(2)}]` : "";
   const safeContent = escapeMemoryContent(scored.memory.record.content);
   return `${heading}${scoreSuffix}\n<memory-data>\n${safeContent}\n</memory-data>`;
