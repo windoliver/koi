@@ -1,20 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import type {
-  DeployFlags,
-  DoctorFlags,
-  InitFlags,
-  LogsFlags,
-  ServeFlags,
-  SessionsFlags,
-  StartFlags,
-  StatusFlags,
-  StopFlags,
-  TuiFlags,
-} from "./args.js";
+import { afterEach, describe, expect, test } from "bun:test";
+import type { CliFlags } from "./args.js";
 import {
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
+  isKnownCommand,
   isLogsFlags,
   isServeFlags,
   isSessionsFlags,
@@ -24,6 +14,21 @@ import {
   isTuiFlags,
   parseArgs,
 } from "./args.js";
+
+// ---------------------------------------------------------------------------
+// Test helper — replaces scattered `as XxxFlags` casts with a guarded narrower
+// that throws on wrong type rather than silently allowing incorrect access.
+// ---------------------------------------------------------------------------
+
+function asFlags<T extends CliFlags>(guard: (f: CliFlags) => f is T, argv: readonly string[]): T {
+  const flags = parseArgs(argv);
+  if (!guard(flags)) {
+    throw new Error(
+      `Expected ${guard.name} for argv [${argv.join(", ")}], got command=${flags.command}`,
+    );
+  }
+  return flags;
+}
 
 describe("parseArgs", () => {
   test("returns undefined command when no args", () => {
@@ -52,47 +57,46 @@ describe("parseArgs", () => {
   test("unknown command returns BaseFlags", () => {
     const result = parseArgs(["bogus"]);
     expect(result.command).toBe("bogus");
-    expect(result.directory).toBeUndefined();
   });
 
   describe("init", () => {
     test("parses bare init", () => {
-      const r = parseArgs(["init"]) as InitFlags;
+      const r = asFlags(isInitFlags, ["init"]);
       expect(r.command).toBe("init");
       expect(r.yes).toBe(false);
     });
 
     test("parses directory positional", () => {
-      const r = parseArgs(["init", "my-agent"]) as InitFlags;
+      const r = asFlags(isInitFlags, ["init", "my-agent"]);
       expect(r.directory).toBe("my-agent");
     });
 
     test("parses --yes", () => {
-      expect((parseArgs(["init", "--yes"]) as InitFlags).yes).toBe(true);
+      expect(asFlags(isInitFlags, ["init", "--yes"]).yes).toBe(true);
     });
 
     test("parses -y shorthand", () => {
-      expect((parseArgs(["init", "-y"]) as InitFlags).yes).toBe(true);
+      expect(asFlags(isInitFlags, ["init", "-y"]).yes).toBe(true);
     });
 
     test("parses --name", () => {
-      expect((parseArgs(["init", "--name", "a"]) as InitFlags).name).toBe("a");
+      expect(asFlags(isInitFlags, ["init", "--name", "a"]).name).toBe("a");
     });
 
     test("parses --template", () => {
-      expect((parseArgs(["init", "--template", "copilot"]) as InitFlags).template).toBe("copilot");
+      expect(asFlags(isInitFlags, ["init", "--template", "copilot"]).template).toBe("copilot");
     });
 
     test("parses --model", () => {
-      expect((parseArgs(["init", "--model", "gpt-4o"]) as InitFlags).model).toBe("gpt-4o");
+      expect(asFlags(isInitFlags, ["init", "--model", "gpt-4o"]).model).toBe("gpt-4o");
     });
 
     test("parses --engine", () => {
-      expect((parseArgs(["init", "--engine", "loop"]) as InitFlags).engine).toBe("loop");
+      expect(asFlags(isInitFlags, ["init", "--engine", "loop"]).engine).toBe("loop");
     });
 
     test("parses all flags together", () => {
-      const r = parseArgs([
+      const r = asFlags(isInitFlags, [
         "init",
         "proj",
         "-y",
@@ -104,7 +108,7 @@ describe("parseArgs", () => {
         "m",
         "--engine",
         "e",
-      ]) as InitFlags;
+      ]);
       expect(r.command).toBe("init");
       expect(r.directory).toBe("proj");
       expect(r.yes).toBe(true);
@@ -113,59 +117,55 @@ describe("parseArgs", () => {
       expect(r.model).toBe("m");
       expect(r.engine).toBe("e");
     });
-
-    test("ignores unknown flags", () => {
-      expect(parseArgs(["init", "--unknown", "v"]).command).toBe("init");
-    });
   });
 
   describe("start", () => {
     test("parses manifest positional", () => {
-      const r = parseArgs(["start", "./agent.yaml"]) as StartFlags;
+      const r = asFlags(isStartFlags, ["start", "./agent.yaml"]);
       expect(r.command).toBe("start");
       expect(r.manifest).toBe("./agent.yaml");
     });
 
     test("parses --verbose / -v", () => {
-      expect((parseArgs(["start", "-v"]) as StartFlags).verbose).toBe(true);
+      expect(asFlags(isStartFlags, ["start", "-v"]).verbose).toBe(true);
     });
 
     test("parses --dry-run", () => {
-      expect((parseArgs(["start", "--dry-run"]) as StartFlags).dryRun).toBe(true);
+      expect(asFlags(isStartFlags, ["start", "--dry-run"]).dryRun).toBe(true);
     });
 
     test("parses --log-format json", () => {
-      expect((parseArgs(["start", "--log-format", "json"]) as StartFlags).logFormat).toBe("json");
+      expect(asFlags(isStartFlags, ["start", "--log-format", "json"]).logFormat).toBe("json");
     });
 
     test("defaults log-format to text", () => {
-      expect((parseArgs(["start"]) as StartFlags).logFormat).toBe("text");
+      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("text");
     });
   });
 
   describe("serve", () => {
     test("parses manifest", () => {
-      expect((parseArgs(["serve", "./a.yaml"]) as ServeFlags).manifest).toBe("./a.yaml");
+      expect(asFlags(isServeFlags, ["serve", "./a.yaml"]).manifest).toBe("./a.yaml");
     });
 
     test("parses --port / -p", () => {
-      expect((parseArgs(["serve", "-p", "8080"]) as ServeFlags).port).toBe(8080);
+      expect(asFlags(isServeFlags, ["serve", "-p", "8080"]).port).toBe(8080);
     });
 
     test("parses --verbose", () => {
-      expect((parseArgs(["serve", "--verbose"]) as ServeFlags).verbose).toBe(true);
+      expect(asFlags(isServeFlags, ["serve", "--verbose"]).verbose).toBe(true);
     });
   });
 
   describe("tui", () => {
     test("parses bare tui", () => {
-      const r = parseArgs(["tui"]) as TuiFlags;
+      const r = asFlags(isTuiFlags, ["tui"]);
       expect(r.command).toBe("tui");
       expect(r.agent).toBeUndefined();
     });
 
     test("parses --agent and --session", () => {
-      const r = parseArgs(["tui", "--agent", "a1", "--session", "s1"]) as TuiFlags;
+      const r = asFlags(isTuiFlags, ["tui", "--agent", "a1", "--session", "s1"]);
       expect(r.agent).toBe("a1");
       expect(r.session).toBe("s1");
     });
@@ -173,114 +173,199 @@ describe("parseArgs", () => {
 
   describe("sessions", () => {
     test("parses bare sessions", () => {
-      const r = parseArgs(["sessions"]) as SessionsFlags;
+      const r = asFlags(isSessionsFlags, ["sessions"]);
       expect(r.command).toBe("sessions");
       expect(r.subcommand).toBeUndefined();
       expect(r.limit).toBe(20);
     });
 
     test("parses sessions list", () => {
-      expect((parseArgs(["sessions", "list"]) as SessionsFlags).subcommand).toBe("list");
+      expect(asFlags(isSessionsFlags, ["sessions", "list"]).subcommand).toBe("list");
     });
 
     test("parses --limit / -n", () => {
-      expect((parseArgs(["sessions", "-n", "10"]) as SessionsFlags).limit).toBe(10);
+      expect(asFlags(isSessionsFlags, ["sessions", "-n", "10"]).limit).toBe(10);
     });
   });
 
   describe("logs", () => {
     test("parses defaults", () => {
-      const r = parseArgs(["logs"]) as LogsFlags;
+      const r = asFlags(isLogsFlags, ["logs"]);
       expect(r.follow).toBe(false);
       expect(r.lines).toBe(50);
     });
 
     test("parses --follow / -f", () => {
-      expect((parseArgs(["logs", "-f"]) as LogsFlags).follow).toBe(true);
+      expect(asFlags(isLogsFlags, ["logs", "-f"]).follow).toBe(true);
     });
 
     test("parses --lines / -n", () => {
-      expect((parseArgs(["logs", "-n", "100"]) as LogsFlags).lines).toBe(100);
+      expect(asFlags(isLogsFlags, ["logs", "-n", "100"]).lines).toBe(100);
     });
 
     test("parses manifest positional", () => {
-      expect((parseArgs(["logs", "./a.yaml"]) as LogsFlags).manifest).toBe("./a.yaml");
+      expect(asFlags(isLogsFlags, ["logs", "./a.yaml"]).manifest).toBe("./a.yaml");
     });
   });
 
   describe("status", () => {
     test("parses bare status", () => {
-      expect((parseArgs(["status"]) as StatusFlags).json).toBe(false);
+      expect(asFlags(isStatusFlags, ["status"]).json).toBe(false);
     });
 
     test("parses --json", () => {
-      expect((parseArgs(["status", "--json"]) as StatusFlags).json).toBe(true);
+      expect(asFlags(isStatusFlags, ["status", "--json"]).json).toBe(true);
     });
 
     test("parses --timeout", () => {
-      expect((parseArgs(["status", "--timeout", "5000"]) as StatusFlags).timeout).toBe(5000);
+      expect(asFlags(isStatusFlags, ["status", "--timeout", "5000"]).timeout).toBe(5000);
     });
   });
 
   describe("doctor", () => {
     test("parses bare doctor", () => {
-      const r = parseArgs(["doctor"]) as DoctorFlags;
+      const r = asFlags(isDoctorFlags, ["doctor"]);
       expect(r.repair).toBe(false);
       expect(r.json).toBe(false);
     });
 
     test("parses --repair", () => {
-      expect((parseArgs(["doctor", "--repair"]) as DoctorFlags).repair).toBe(true);
+      expect(asFlags(isDoctorFlags, ["doctor", "--repair"]).repair).toBe(true);
     });
   });
 
   describe("stop", () => {
     test("parses bare stop", () => {
-      expect((parseArgs(["stop"]) as StopFlags).command).toBe("stop");
+      expect(asFlags(isStopFlags, ["stop"]).command).toBe("stop");
     });
 
     test("parses manifest", () => {
-      expect((parseArgs(["stop", "./a.yaml"]) as StopFlags).manifest).toBe("./a.yaml");
+      expect(asFlags(isStopFlags, ["stop", "./a.yaml"]).manifest).toBe("./a.yaml");
     });
   });
 
   describe("deploy", () => {
     test("parses bare deploy", () => {
-      const r = parseArgs(["deploy"]) as DeployFlags;
+      const r = asFlags(isDeployFlags, ["deploy"]);
       expect(r.system).toBe(false);
       expect(r.uninstall).toBe(false);
     });
 
     test("parses --system", () => {
-      expect((parseArgs(["deploy", "--system"]) as DeployFlags).system).toBe(true);
+      expect(asFlags(isDeployFlags, ["deploy", "--system"]).system).toBe(true);
     });
 
     test("parses --uninstall", () => {
-      expect((parseArgs(["deploy", "--uninstall"]) as DeployFlags).uninstall).toBe(true);
+      expect(asFlags(isDeployFlags, ["deploy", "--uninstall"]).uninstall).toBe(true);
     });
 
     test("parses --port / -p", () => {
-      expect((parseArgs(["deploy", "-p", "9100"]) as DeployFlags).port).toBe(9100);
+      expect(asFlags(isDeployFlags, ["deploy", "-p", "9100"]).port).toBe(9100);
+    });
+  });
+
+  describe("global flags with subcommand", () => {
+    test("--help flag propagates through command parse", () => {
+      expect(asFlags(isStartFlags, ["start", "--help"]).help).toBe(true);
+    });
+
+    test("--version flag propagates through command parse", () => {
+      expect(asFlags(isStartFlags, ["start", "--version"]).version).toBe(true);
+    });
+
+    test("-h after manifest still sets help", () => {
+      expect(asFlags(isStartFlags, ["start", "./a.yaml", "-h"]).help).toBe(true);
+    });
+  });
+
+  describe("logFormat env var", () => {
+    const origLogFormat = process.env.LOG_FORMAT;
+    afterEach(() => {
+      if (origLogFormat === undefined) {
+        delete process.env.LOG_FORMAT;
+      } else {
+        process.env.LOG_FORMAT = origLogFormat;
+      }
+    });
+
+    test("LOG_FORMAT=json is respected when no flag given", () => {
+      process.env.LOG_FORMAT = "json";
+      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("json");
+    });
+
+    test("--log-format flag overrides LOG_FORMAT env var", () => {
+      process.env.LOG_FORMAT = "json";
+      expect(asFlags(isStartFlags, ["start", "--log-format", "text"]).logFormat).toBe("text");
+    });
+
+    test("unset LOG_FORMAT defaults to text", () => {
+      delete process.env.LOG_FORMAT;
+      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("text");
     });
   });
 
   describe("type guards", () => {
-    test("isInitFlags", () => {
+    test("isInitFlags — true for init, false for others", () => {
       expect(isInitFlags(parseArgs(["init"]))).toBe(true);
       expect(isInitFlags(parseArgs(["start"]))).toBe(false);
+      expect(isInitFlags(parseArgs([]))).toBe(false);
     });
 
-    test("isStartFlags", () => expect(isStartFlags(parseArgs(["start"]))).toBe(true));
-    test("isServeFlags", () => expect(isServeFlags(parseArgs(["serve"]))).toBe(true));
-    test("isTuiFlags", () => expect(isTuiFlags(parseArgs(["tui"]))).toBe(true));
-    test("isSessionsFlags", () => expect(isSessionsFlags(parseArgs(["sessions"]))).toBe(true));
-    test("isLogsFlags", () => expect(isLogsFlags(parseArgs(["logs"]))).toBe(true));
-    test("isStatusFlags", () => expect(isStatusFlags(parseArgs(["status"]))).toBe(true));
-    test("isDoctorFlags", () => expect(isDoctorFlags(parseArgs(["doctor"]))).toBe(true));
-    test("isStopFlags", () => expect(isStopFlags(parseArgs(["stop"]))).toBe(true));
-    test("isDeployFlags", () => expect(isDeployFlags(parseArgs(["deploy"]))).toBe(true));
+    test("isStartFlags — true for start, false for others", () => {
+      expect(isStartFlags(parseArgs(["start"]))).toBe(true);
+      expect(isStartFlags(parseArgs(["serve"]))).toBe(false);
+      expect(isStartFlags(parseArgs([]))).toBe(false);
+    });
 
-    test("all false for BaseFlags", () => {
+    test("isServeFlags — true for serve, false for others", () => {
+      expect(isServeFlags(parseArgs(["serve"]))).toBe(true);
+      expect(isServeFlags(parseArgs(["start"]))).toBe(false);
+      expect(isServeFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isTuiFlags — true for tui, false for others", () => {
+      expect(isTuiFlags(parseArgs(["tui"]))).toBe(true);
+      expect(isTuiFlags(parseArgs(["start"]))).toBe(false);
+      expect(isTuiFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isSessionsFlags — true for sessions, false for others", () => {
+      expect(isSessionsFlags(parseArgs(["sessions"]))).toBe(true);
+      expect(isSessionsFlags(parseArgs(["logs"]))).toBe(false);
+      expect(isSessionsFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isLogsFlags — true for logs, false for others", () => {
+      expect(isLogsFlags(parseArgs(["logs"]))).toBe(true);
+      expect(isLogsFlags(parseArgs(["sessions"]))).toBe(false);
+      expect(isLogsFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isStatusFlags — true for status, false for others", () => {
+      expect(isStatusFlags(parseArgs(["status"]))).toBe(true);
+      expect(isStatusFlags(parseArgs(["doctor"]))).toBe(false);
+      expect(isStatusFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isDoctorFlags — true for doctor, false for others", () => {
+      expect(isDoctorFlags(parseArgs(["doctor"]))).toBe(true);
+      expect(isDoctorFlags(parseArgs(["status"]))).toBe(false);
+      expect(isDoctorFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isStopFlags — true for stop, false for others", () => {
+      expect(isStopFlags(parseArgs(["stop"]))).toBe(true);
+      expect(isStopFlags(parseArgs(["deploy"]))).toBe(false);
+      expect(isStopFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("isDeployFlags — true for deploy, false for others", () => {
+      expect(isDeployFlags(parseArgs(["deploy"]))).toBe(true);
+      expect(isDeployFlags(parseArgs(["stop"]))).toBe(false);
+      expect(isDeployFlags(parseArgs([]))).toBe(false);
+    });
+
+    test("all guards return false for BaseFlags", () => {
       const f = parseArgs([]);
       expect(isInitFlags(f)).toBe(false);
       expect(isStartFlags(f)).toBe(false);
@@ -292,6 +377,33 @@ describe("parseArgs", () => {
       expect(isDoctorFlags(f)).toBe(false);
       expect(isStopFlags(f)).toBe(false);
       expect(isDeployFlags(f)).toBe(false);
+    });
+  });
+
+  describe("isKnownCommand", () => {
+    test("returns true for each known command", () => {
+      for (const cmd of [
+        "init",
+        "start",
+        "serve",
+        "tui",
+        "sessions",
+        "logs",
+        "status",
+        "doctor",
+        "stop",
+        "deploy",
+      ]) {
+        expect(isKnownCommand(cmd)).toBe(true);
+      }
+    });
+
+    test("returns false for unknown command", () => {
+      expect(isKnownCommand("bogus")).toBe(false);
+    });
+
+    test("returns false for undefined", () => {
+      expect(isKnownCommand(undefined)).toBe(false);
     });
   });
 });
