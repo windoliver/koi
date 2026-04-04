@@ -297,6 +297,7 @@
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/memory": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
@@ -323,6 +324,13 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/mm/memory-fs": {
+      "name": "@koi/memory-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/mm/memory-tools": {
@@ -665,6 +673,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
     "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
+
+    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/mm/memory-fs"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 

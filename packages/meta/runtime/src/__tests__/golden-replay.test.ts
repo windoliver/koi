@@ -3326,3 +3326,116 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     expect((result.output as Record<string, unknown>).sum).toBe(7);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/memory-fs (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory-fs", () => {
+  test("createMemoryStore CRUD round-trip with dedup", async () => {
+    const { createMemoryStore } = await import("@koi/memory-fs");
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "koi-golden-memory-fs-"));
+    try {
+      const store = createMemoryStore({ dir });
+
+      // write creates a record
+      const result = await store.write({
+        name: "design patterns",
+        description: "Patterns for extensibility",
+        type: "feedback",
+        content:
+          "Rule: prefer composition over inheritance.\n**Why:** decoupled, testable modules.",
+      });
+      expect(result.action).toBe("created");
+      expect(result.record.name).toBe("design patterns");
+      expect(result.record.type).toBe("feedback");
+
+      // read round-trip
+      const loaded = await store.read(result.record.id);
+      expect(loaded?.content).toContain("prefer composition over inheritance");
+
+      // dedup skips near-duplicate
+      const dup = await store.write({
+        name: "design patterns v2",
+        description: "Same content",
+        type: "feedback",
+        content:
+          "Rule: prefer composition over inheritance.\n**Why:** decoupled, testable modules.",
+      });
+      expect(dup.action).toBe("skipped");
+      expect(dup.duplicateOf).toBe(result.record.id);
+
+      // update modifies content
+      const updated = await store.update(result.record.id, {
+        content: "Rule: prefer composition.\n**Why:** flexibility.",
+      });
+      expect(updated.content).toContain("flexibility");
+      expect(updated.name).toBe("design patterns");
+
+      // list returns records with type filter
+      const all = await store.list();
+      expect(all.length).toBe(1);
+      const feedbacks = await store.list({ type: "feedback" });
+      expect(feedbacks.length).toBe(1);
+      const users = await store.list({ type: "user" });
+      expect(users.length).toBe(0);
+
+      // delete removes record
+      const deleted = await store.delete(result.record.id);
+      expect(deleted).toBe(true);
+      const gone = await store.read(result.record.id);
+      expect(gone).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("MEMORY.md index rebuilt correctly after mutations", async () => {
+    const { createMemoryStore, readIndex } = await import("@koi/memory-fs");
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "koi-golden-memory-fs-idx-"));
+    try {
+      const store = createMemoryStore({ dir });
+
+      // Write two records
+      await store.write({
+        name: "Record A",
+        description: "First record",
+        type: "user",
+        content: "User information about preferences.",
+      });
+      await store.write({
+        name: "Record B",
+        description: "Second record",
+        type: "project",
+        content: "Project deadline is next Friday.",
+      });
+
+      // Index should contain both
+      const idx1 = await readIndex(dir);
+      expect(idx1.entries.length).toBe(2);
+      const names = idx1.entries.map((e) => e.title);
+      expect(names).toContain("Record A");
+      expect(names).toContain("Record B");
+
+      // Delete one — index should update
+      const records = await store.list();
+      const recordA = records.find((r) => r.name === "Record A");
+      expect(recordA).toBeDefined();
+      await store.delete(recordA!.id);
+
+      const idx2 = await readIndex(dir);
+      expect(idx2.entries.length).toBe(1);
+      expect(idx2.entries[0]?.title).toBe("Record B");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

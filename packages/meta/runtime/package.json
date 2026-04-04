@@ -23,6 +23,7 @@
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/memory": "workspace:*",
+    "@koi/memory-fs": "workspace:*",
     "@koi/memory-tools": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
