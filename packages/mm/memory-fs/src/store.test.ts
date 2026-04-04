@@ -257,6 +257,45 @@ describe("createMemoryStore", () => {
     });
   });
 
+  describe("threshold validation", () => {
+    test("rejects NaN threshold", () => {
+      expect(() => createMemoryStore({ dir: "/tmp/x", dedupThreshold: NaN })).toThrow(
+        "dedupThreshold must be between 0 and 1",
+      );
+    });
+
+    test("rejects negative threshold", () => {
+      expect(() => createMemoryStore({ dir: "/tmp/x", dedupThreshold: -0.1 })).toThrow(
+        "dedupThreshold must be between 0 and 1",
+      );
+    });
+
+    test("rejects threshold > 1", () => {
+      expect(() => createMemoryStore({ dir: "/tmp/x", dedupThreshold: 1.5 })).toThrow(
+        "dedupThreshold must be between 0 and 1",
+      );
+    });
+
+    test("rejects Infinity", () => {
+      expect(() => createMemoryStore({ dir: "/tmp/x", dedupThreshold: Infinity })).toThrow(
+        "dedupThreshold must be between 0 and 1",
+      );
+    });
+  });
+
+  describe("symlink and non-file handling", () => {
+    test("ignores non-.md files and directories during scan", async () => {
+      const dir = makeDir();
+      await mkdir(dir, { recursive: true });
+      // Create a directory ending in .md — should be skipped
+      await mkdir(join(dir, "bad.md"), { recursive: true });
+
+      const store = createMemoryStore({ dir });
+      const all = await store.list();
+      expect(all.length).toBe(0);
+    });
+  });
+
   describe("validation", () => {
     test("throws on empty name", async () => {
       const dir = makeDir();

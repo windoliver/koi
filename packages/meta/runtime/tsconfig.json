@@ -28,6 +28,7 @@
     { "path": "../../net/mcp" },
     { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-report" },
+    { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../security/middleware-permissions" },
     { "path": "../../security/permissions" },
     { "path": "../../lib/validation" }
