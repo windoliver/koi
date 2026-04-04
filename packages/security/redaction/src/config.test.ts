@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_REDACTION_CONFIG, validateRedactionConfig } from "./config.js";
+import { createAllSecretPatterns } from "./patterns/index.js";
 import type { RedactionConfig } from "./types.js";
 
 describe("validateRedactionConfig", () => {
@@ -62,6 +63,90 @@ describe("validateRedactionConfig", () => {
   test("accepts custom censor function", () => {
     const result = validateRedactionConfig({
       censor: () => "***",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects slow pattern in customPatterns", () => {
+    const result = validateRedactionConfig({
+      customPatterns: [
+        {
+          name: "slow-custom",
+          kind: "slow",
+          detect: (_text: string) => {
+            // Simulate a pattern that takes too long (>5ms threshold)
+            const end = performance.now() + 10;
+            while (performance.now() < end) {
+              /* busy-wait */
+            }
+            return [];
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("slow-custom");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("rejects slow pattern in patterns override", () => {
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "slow-override",
+          kind: "slow",
+          detect: (_text: string) => {
+            const end = performance.now() + 10;
+            while (performance.now() < end) {
+              /* busy-wait */
+            }
+            return [];
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("slow-override");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("skips ReDoS check on default patterns (trusted)", () => {
+    // Default patterns should always pass — they are curated built-ins
+    const result = validateRedactionConfig({});
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts factory-created patterns passed as patterns override", () => {
+    // Callers who rebuild/subset built-ins via createAllSecretPatterns()
+    // should not be rejected by the timing check
+    const builtins = createAllSecretPatterns();
+    const result = validateRedactionConfig({
+      patterns: builtins,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts subset of factory-created patterns as override", () => {
+    const builtins = createAllSecretPatterns();
+    const result = validateRedactionConfig({
+      patterns: [builtins[0]!, builtins[1]!],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts safe user-supplied patterns override", () => {
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "safe",
+          kind: "safe",
+          detect: () => [],
+        },
+      ],
     });
     expect(result.ok).toBe(true);
   });
