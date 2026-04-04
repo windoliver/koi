@@ -139,9 +139,10 @@ async function updateRecord(
     throw new Error("Failed to serialize updated memory record");
   }
 
-  // Atomic update: write temp file then rename over original
+  // Atomic update: write unique temp file then rename over original
   const filePath = join(dir, existing.filePath);
-  const tmpPath = join(dir, `.${existing.filePath}.tmp`);
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tmpPath = join(dir, `.${existing.filePath}.${suffix}.tmp`);
   await writeFile(tmpPath, serialized, "utf-8");
   await rename(tmpPath, filePath);
   const fileStat = await stat(filePath);
@@ -196,8 +197,10 @@ async function listRecords(
 
 async function scanRecords(dir: string): Promise<readonly MemoryRecord[]> {
   try {
-    const files = await readdir(dir);
-    const mdFiles = files.filter((f) => f.endsWith(".md") && f !== INDEX_FILENAME);
+    const entries = await readdir(dir, { withFileTypes: true });
+    const mdFiles = entries
+      .filter((e) => e.isFile() && e.name.endsWith(".md") && e.name !== INDEX_FILENAME)
+      .map((e) => e.name);
 
     const results = await Promise.all(mdFiles.map((f) => recordFromFile(dir, f)));
     return results.filter((r): r is NonNullable<typeof r> => r !== undefined);
