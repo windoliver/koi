@@ -68,10 +68,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 1. Acquire ledger slot (tree-wide process count)
   //    Long-lived — released on child termination, not on tool call completion.
   //    Fan-out (short-lived) is handled by the spawn guard middleware.
-  const acquired = options.spawnLedger.acquire();
-  // acquire() returns boolean | Promise<boolean> per L0 interface
-  const didAcquire = await acquired;
+  //    When acquireOrWait is available and a signal is provided, wait for a slot
+  //    instead of failing immediately at capacity (backpressure).
+  let didAcquire: boolean;
+  if (options.spawnLedger.acquireOrWait !== undefined && options.signal !== undefined) {
+    didAcquire = await options.spawnLedger.acquireOrWait(options.signal);
+  } else {
+    const acquired = options.spawnLedger.acquire();
+    // acquire() returns boolean | Promise<boolean> per L0 interface
+    didAcquire = await acquired;
+  }
   if (!didAcquire) {
+    // Distinguish abort (user/system cancellation) from true capacity exhaustion.
+    // acquireOrWait resolves false when the AbortSignal fires — not a RATE_LIMIT event.
+    // RATE_LIMIT is retryable: true; a cancelled spawn must NOT trigger retry logic.
+    if (options.spawnLedger.acquireOrWait !== undefined && options.signal?.aborted) {
+      throw KoiRuntimeError.from(
+        "INTERNAL",
+        "Spawn cancelled: abort signal fired while waiting for a process slot",
+        { retryable: false },
+      );
+    }
     const active = options.spawnLedger.activeCount();
     const cap = options.spawnLedger.capacity();
     throw KoiRuntimeError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
@@ -86,8 +103,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   // 3. Build inherited component provider (scope-filtered + denylist-filtered)
   //    When nonInteractive, also strip interactive/approval-capable tools.
-  const baseDenylist =
-    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined;
+  // Always exclude Spawn (and nonInteractive tools when applicable) from inheritance.
+  // Spawn carries a parent-bound closure; inheriting it would mis-attribute nested
+  // spawns to the ancestor. Each child that needs Spawn must get a fresh provider.
+  const baseDenylist = expandDenylistWithAlwaysExcluded(
+    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
+  );
   const toolDenylist =
     options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
   const baseAllowlist =
@@ -367,6 +388,26 @@ const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "ask-user",
   "ask_user",
 ]);
+
+/**
+ * Tool names always excluded from child tool inheritance.
+ * The Spawn tool carries a closure bound to the parent agent entity; if a child
+ * inherited it, nested spawn calls would be attributed to the ancestor rather than
+ * the actual spawning agent (wrong lineage, wrong inbox/report routing, wrong depth).
+ * Each child that needs Spawn must have a fresh provider attached during assembly.
+ */
+const ALWAYS_EXCLUDED_FROM_INHERITANCE: ReadonlySet<string> = new Set(["Spawn"]);
+
+/** Always exclude certain tools from child inheritance. */
+function expandDenylistWithAlwaysExcluded(
+  base: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const merged = new Set(base ?? []);
+  for (const tool of ALWAYS_EXCLUDED_FROM_INHERITANCE) {
+    merged.add(tool);
+  }
+  return merged;
+}
 
 /** Remove denied tool names from an allowlist. Returns a new Set. */
 function stripFromAllowlist(

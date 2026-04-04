@@ -530,6 +530,15 @@ export interface SpawnLedger {
    * Immutable after creation.
    */
   readonly capacity: () => number;
+
+  /**
+   * Wait for a spawn slot to become available.
+   * Resolves with `true` when acquired, `false` if cancelled via signal.
+   *
+   * Optional — callers fall back to `acquire()` if not implemented.
+   * Implementations may use event-driven notification for zero-spin waiting.
+   */
+  readonly acquireOrWait?: ((signal: AbortSignal) => Promise<boolean>) | undefined;
 }
 
 /**

@@ -7,6 +7,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../kernel/core" },
+    { "path": "../../lib/agent-runtime" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
     { "path": "../../lib/channel-cli" },
