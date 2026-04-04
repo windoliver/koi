@@ -70,16 +70,18 @@ export async function scanMemoryDirectory(
   const totalFiles = entries.length;
   const truncated = listResult.value.truncated;
 
-  // Step 2: Sort by modifiedAt descending (newest first), cap at maxFiles
-  const sorted = entries
-    .toSorted((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0))
-    .slice(0, maxFiles);
+  // Step 2: Sort by modifiedAt descending (newest first)
+  const sorted = entries.toSorted((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
 
-  // Step 3: Read and parse each file
+  // Step 3: Read and parse files until maxFiles valid memories are collected.
+  // Continues past failed reads/parses so corrupt files at the top don't
+  // starve out older valid memories.
   const memories: ScannedMemory[] = [];
   const skipped: SkippedFile[] = [];
 
   for (const entry of sorted) {
+    if (memories.length >= maxFiles) break;
+
     const readResult = await fs.read(entry.path);
     if (!readResult.ok) {
       skipped.push({ filePath: entry.path, reason: `read failed: ${readResult.error.message}` });

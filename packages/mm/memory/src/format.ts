@@ -32,24 +32,34 @@ const TRUSTING_RECALL_NOTE = [
 ].join("\n");
 
 // ---------------------------------------------------------------------------
+// Escaping
+// ---------------------------------------------------------------------------
+
+/**
+ * Escapes content so it cannot break out of the `<memory-data>` wrapper.
+ * Replaces closing tags (`</memory-data>`) with a neutralized form.
+ */
+function escapeMemoryContent(content: string): string {
+  return content.replace(/<\/memory-data>/gi, "&lt;/memory-data&gt;");
+}
+
+// ---------------------------------------------------------------------------
 // Formatting functions
 // ---------------------------------------------------------------------------
 
 /**
  * Formats a single scored memory as a Markdown block.
  *
- * Output:
- * ```
- * ### {name} ({type}) [score: 0.87]
- * {content}
- * ```
+ * Content is wrapped in `<memory-data>` tags with delimiter escaping
+ * to prevent trust-boundary breakout.
  *
  * The `[score: ...]` suffix is only included when `includeScore` is true.
  */
 export function formatSingleMemory(scored: ScoredMemory, includeScore?: boolean): string {
   const heading = `### ${scored.memory.record.name} (${scored.memory.record.type})`;
   const scoreSuffix = includeScore === true ? ` [score: ${scored.salienceScore.toFixed(2)}]` : "";
-  return `${heading}${scoreSuffix}\n<memory-data>\n${scored.memory.record.content}\n</memory-data>`;
+  const safeContent = escapeMemoryContent(scored.memory.record.content);
+  return `${heading}${scoreSuffix}\n<memory-data>\n${safeContent}\n</memory-data>`;
 }
 
 /**

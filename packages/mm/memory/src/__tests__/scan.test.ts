@@ -260,6 +260,23 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(1);
   });
 
+  test("cap applies to valid memories, not raw entries — skips corrupt and reaches older valid", async () => {
+    // 2 newest files are corrupt, 2 older files are valid — maxFiles=2 should still find both valid
+    const files: MockFile[] = [
+      { path: "/memory/bad1.md", content: "corrupt1", size: 8, modifiedAt: Date.now() },
+      { path: "/memory/bad2.md", content: "corrupt2", size: 8, modifiedAt: Date.now() - 1000 },
+      makeMemoryFile("Valid1", "user", "content1", 5),
+      makeMemoryFile("Valid2", "user", "content2", 10),
+    ];
+    const fs = createMockFs(files);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory", maxFiles: 2 });
+
+    expect(result.memories.length).toBe(2);
+    expect(result.skipped.length).toBe(2);
+    expect(result.memories[0]?.record.name).toBe("Valid1");
+    expect(result.memories[1]?.record.name).toBe("Valid2");
+  });
+
   test("populates record fields correctly", async () => {
     const file = makeMemoryFile("My Memory", "feedback", "Important feedback", 5);
     const fs = createMockFs([file]);
