@@ -213,12 +213,12 @@ describe("createSemanticRetryMiddleware", () => {
       expect(signal?.reason).toContain("TIMEOUT");
     });
 
-    it("does not set signal for abort action", async () => {
+    it("clears stale signal when retry budget is exhausted", async () => {
       const broker = createRetrySignalBroker();
       const handle = createSemanticRetryMiddleware({ signalWriter: broker, maxRetries: 1 });
       await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
 
-      // First failure — uses budget
+      // First failure — uses budget, sets signal
       try {
         await handle.middleware.wrapModelCall?.(
           createMinimalTurnCtx("s1"),
@@ -230,11 +230,9 @@ describe("createSemanticRetryMiddleware", () => {
       } catch {
         // expected
       }
+      expect(broker.getRetrySignal("s1")).toBeDefined();
 
-      // Clear signal from first failure
-      broker.clearRetrySignal("s1");
-
-      // Second failure — triggers escalation, uses up budget
+      // Second call: retry rewrite fires, but also fails → budget now 0
       try {
         await handle.middleware.wrapModelCall?.(
           createMinimalTurnCtx("s1", 1),
@@ -244,25 +242,12 @@ describe("createSemanticRetryMiddleware", () => {
           },
         );
       } catch {
-        // expected — rewrite of first failure
+        // expected
       }
 
-      // Third call triggers abort (budget=0)
-      try {
-        await handle.middleware.wrapModelCall?.(
-          createMinimalTurnCtx("s1", 2),
-          createMinimalRequest(),
-          async () => {
-            throw new Error("fail 3");
-          },
-        );
-      } catch {
-        // expected - abort
-      }
-
-      // After abort, the budget is exhausted so handleFailure won't set a new signal
-      // The old signal from the second failure may or may not be present
-      // The key check: abort action itself should clear the signal
+      // Budget exhausted — signal must be cleared so later steps
+      // are not mislabeled as retries
+      expect(broker.getRetrySignal("s1")).toBeUndefined();
     });
   });
 

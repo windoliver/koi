@@ -137,9 +137,12 @@ export function extractDecisionSignals(
     // Pattern matching against text content
     if (text.length > 0) {
       for (const entry of patterns) {
+        // Reset lastIndex to handle stateful /g and /y regexes safely
+        entry.pattern.lastIndex = 0;
         if (!seen.has(entry.kind) && entry.pattern.test(text)) {
           seen.add(entry.kind);
           // Extract a short summary: the sentence containing the match
+          entry.pattern.lastIndex = 0;
           const match = entry.pattern.exec(text);
           const summary = match !== null ? extractSentence(text, match.index) : text.slice(0, 200);
 

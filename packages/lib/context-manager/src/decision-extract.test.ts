@@ -168,5 +168,26 @@ describe("extractDecisionSignals", () => {
       const signals = extractDecisionSignals([msg("This was approved.")]);
       expect(signals[0]?.timestamp).toBe(1000);
     });
+
+    it("handles stateful /g regexes across multiple messages", () => {
+      const signals = extractDecisionSignals(
+        [msg("The price is $50."), msg("Another price is $100.")],
+        0,
+        {
+          skipDefaults: true,
+          patterns: [{ kind: "pricing", pattern: /price/gi }],
+        },
+      );
+      // Both messages should match despite global flag
+      expect(signals.length).toBe(2);
+    });
+
+    it("handles sticky /y regexes", () => {
+      const signals = extractDecisionSignals([msg("approved by the board")], 0, {
+        skipDefaults: true,
+        patterns: [{ kind: "approval", pattern: /approved/y }],
+      });
+      expect(signals.length).toBe(1);
+    });
   });
 });

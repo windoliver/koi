@@ -229,8 +229,12 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     );
 
     const classBudget = state.budgets[failureClass.kind] ?? 0;
-    // Guard: skip once budget for this failure class is exhausted
-    if (classBudget <= 0) return;
+    // Guard: when budget is exhausted, clear any stale retry signal to prevent
+    // later unrelated steps from being mislabeled as retries by event-trace.
+    if (classBudget <= 0) {
+      signalWriter?.clearRetrySignal(sessionId);
+      return;
+    }
 
     // Select action BEFORE decrementing so maxRetries:1 allows one retry
     const effectiveMax = budgetOverrides[failureClass.kind] ?? maxRetries;
