@@ -528,6 +528,13 @@ interface QueryConfig {
 
 async function recordTrajectory(config: QueryConfig): Promise<void> {
   const { name, prompt } = config;
+  const path = `${FIXTURES}/${name}.trajectory.json`;
+  if (!FORCE_RECORD && (await Bun.file(path).exists())) {
+    console.log(
+      `Skipping ${name}.trajectory.json (already exists — set FORCE_RECORD=true to re-record)`,
+    );
+    return;
+  }
   console.log(`\nRecording ${name}.trajectory.json (full-stack, all L2)...`);
 
   const trajDir = `/tmp/koi-record-${name}-${Date.now()}`;
