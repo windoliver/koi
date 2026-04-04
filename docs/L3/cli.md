@@ -88,6 +88,8 @@ koi tui
 koi tui --url http://localhost:9100/admin/api
 ```
 
+> **Status**: The command currently returns "not yet implemented". The engine worker infrastructure (`engine-worker.ts`) is in place and gated by `_IS_CONFIGURED`; full wiring is pending #1459 app shell integration.
+
 ### `koi serve`
 
 Headless mode for background deployment.
@@ -134,6 +136,7 @@ koi serve --nexus-url http://...    # Connect to remote Nexus
 ```
 packages/meta/cli/src/
 ├── args.ts                  ← CLI argument parsing (subcommand-aware)
+├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending #1459)
 ├── helpers.ts               ← Shared utilities (extractTextFromBlocks)
 ├── resolve-agent.ts         ← Manifest → runtime resolution via @koi/resolve
 ├── resolve-bootstrap.ts     ← Context source resolution
@@ -146,11 +149,21 @@ packages/meta/cli/src/
     └── test-helpers.ts      ← Shared test utilities
 ```
 
+### Engine Worker (`engine-worker.ts`)
+
+A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):
+
+- **Messages in** (`MainToWorkerMessage`): `stream_start`, `stream_interrupt`, `approval_response`, `shutdown`
+- **Messages out** (`WorkerToMainMessage`): `ready`, `engine_event`, `approval_request`, `engine_error`, `stream_done`
+- **Approval bridge**: Posts `approval_request` to the main thread when middleware needs HITL; resolves the local Promise when `approval_response` arrives
+- **`_IS_CONFIGURED` guard**: Until `createRuntime()` wiring lands in #1459, `stream_start` returns `engine_error` immediately rather than silently misbehaving
+- **Input type**: `WorkerEngineInput` — a clone-safe subset of `EngineInput` that excludes non-transferable fields (`callHandlers`, `AbortSignal`)
+
 ### Key Dependencies
 
 | Package | Layer | Used For |
 |---------|-------|----------|
-| `@koi/core` | L0 | Types: ContentBlock, EngineInput, InboundMessage, KoiMiddleware, sessionId |
+| `@koi/core` | L0 | Types: ContentBlock, EngineInput, WorkerToMainMessage/MainToWorkerMessage, WorkerEngineInput, sessionId (direct dependency as of #1484) |
 | `@koi/engine` | L1 | createKoi() runtime factory |
 | `@koi/engine-pi` | L2 | Default engine adapter (Pi protocol) |
 | `@koi/manifest` | L0u | Manifest loading and validation |

@@ -12,8 +12,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useMemo } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { createMemo, Show } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { PermissionPromptData, PermissionRiskLevel } from "../state/types.js";
 
@@ -77,64 +78,55 @@ export function formatInputPreview(input: Record<string, unknown>, maxLength = 2
 // Component
 // ---------------------------------------------------------------------------
 
-export const PermissionPrompt: React.NamedExoticComponent<PermissionPromptProps> = memo(function PermissionPrompt(
-  props: PermissionPromptProps,
-): React.ReactNode {
-  const { prompt, onRespond, focused } = props;
-
-  const inputPreview = useMemo(() => formatInputPreview(prompt.input), [prompt.input]);
-  const riskColor = RISK_COLORS[prompt.riskLevel];
-  const riskLabel = RISK_LABELS[prompt.riskLevel];
-
-  const handleKey = useCallback(
-    (key: KeyEvent) => {
-      if (!focused) return;
-      const decision = processPermissionKey(key.name);
-      if (decision !== null) {
-        key.preventDefault();
-        onRespond(prompt.requestId, decision);
-      }
-    },
-    [prompt.requestId, onRespond, focused],
-  );
+export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
+  const inputPreview = createMemo(() => formatInputPreview(props.prompt.input));
+  const riskColor = createMemo(() => RISK_COLORS[props.prompt.riskLevel]);
+  const riskLabel = createMemo(() => RISK_LABELS[props.prompt.riskLevel]);
 
   // Register keyboard handler — without this, y/n/a keys are never received
-  useKeyboard(handleKey);
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    const decision = processPermissionKey(key.name);
+    if (decision !== null) {
+      key.preventDefault();
+      props.onRespond(props.prompt.requestId, decision);
+    }
+  });
 
   return (
     <box
       flexDirection="column"
       border={true}
-      borderColor={riskColor}
+      borderColor={riskColor()}
       paddingLeft={1}
       paddingRight={1}
     >
       {/* Title */}
       <box flexDirection="row" gap={1}>
         <text fg="#E2E8F0"><b>{"Permission Required"}</b></text>
-        <text fg={riskColor}>{`[${riskLabel}]`}</text>
+        <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
       </box>
 
       {/* Tool info */}
       <box flexDirection="column" marginTop={1}>
-        <text fg="#94A3B8">{`Tool: `}<b>{prompt.toolId}</b></text>
-        <text fg="#94A3B8">{`Reason: ${prompt.reason}`}</text>
+        <text fg="#94A3B8">{`Tool: `}<b>{props.prompt.toolId}</b></text>
+        <text fg="#94A3B8">{`Reason: ${props.prompt.reason}`}</text>
       </box>
 
       {/* Args preview */}
       <box marginTop={1}>
-        <text fg="#64748B">{`Arguments:\n${inputPreview}`}</text>
+        <text fg="#64748B">{`Arguments:\n${inputPreview()}`}</text>
       </box>
 
       {/* Key hints — always-allow copy explicitly names the tool and scope */}
-      {focused ? (
+      <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
           <text fg="#4ADE80">{"[y] Allow once"}</text>
           <text fg="#F87171">{"[n] Deny"}</text>
-          <text fg="#60A5FA">{`[a] Always allow ${prompt.toolId} this session`}</text>
+          <text fg="#60A5FA">{`[a] Always allow ${props.prompt.toolId} this session`}</text>
           <text fg="#64748B">{"[Esc] Dismiss"}</text>
         </box>
-      ) : null}
+      </Show>
     </box>
   );
-});
+}

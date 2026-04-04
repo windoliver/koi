@@ -5,7 +5,8 @@
  * and tool name + error styling on failure. Arguments displayed via <code>.
  */
 
-import type { ReactNode } from "react";
+import type { JSX } from "solid-js";
+import { Show } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
 
 type ToolCallData = TuiAssistantBlock & { readonly kind: "tool_call" };
@@ -17,8 +18,8 @@ interface ToolCallBlockProps {
 /** Spinner frames for running tool calls. */
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
-function StatusIndicator({ status }: { readonly status: ToolCallData["status"] }): ReactNode {
-  switch (status) {
+function StatusIndicator(props: { readonly status: ToolCallData["status"] }): JSX.Element {
+  switch (props.status) {
     case "running":
       return <text fg="cyan">{SPINNER[0]}</text>;
     case "complete":
@@ -40,27 +41,27 @@ function formatResult(result: unknown): string {
   }
 }
 
-export function ToolCallBlock({ block }: ToolCallBlockProps): ReactNode {
-  const resultText = block.status === "complete" ? formatResult(block.result) : "";
+export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
+  const resultText = () => props.block.status === "complete" ? formatResult(props.block.result) : "";
 
   return (
     <box flexDirection="column" paddingLeft={1}>
       <box flexDirection="row" gap={1}>
-        <StatusIndicator status={block.status} />
+        <StatusIndicator status={props.block.status} />
         <text>
-          <b>{block.toolName}</b>
+          <b>{props.block.toolName}</b>
         </text>
       </box>
-      {block.args !== undefined && block.args !== "" && (
+      <Show when={props.block.args !== undefined && props.block.args !== ""}>
         <box paddingLeft={2}>
-          <text fg="gray">{block.args}</text>
+          <text fg="gray">{props.block.args}</text>
         </box>
-      )}
-      {resultText !== "" && (
+      </Show>
+      <Show when={resultText() !== ""}>
         <box paddingLeft={2}>
-          <text fg="gray">{resultText}</text>
+          <text fg="gray">{resultText()}</text>
         </box>
-      )}
+      </Show>
     </box>
   );
 }

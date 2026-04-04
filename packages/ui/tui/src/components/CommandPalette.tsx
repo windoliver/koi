@@ -12,8 +12,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { createMemo, createEffect, createSignal, useContext } from "solid-js";
 import {
   COMMAND_DEFINITIONS,
   filterCommands,
@@ -47,143 +48,133 @@ const getCommandDescription = (cmd: CommandDef): string => cmd.description;
 // Component
 // ---------------------------------------------------------------------------
 
-export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = memo(
-  function CommandPalette(props: CommandPaletteProps): React.ReactNode {
-    const { onSelect, onClose, focused } = props;
+export function CommandPalette(props: CommandPaletteProps): JSX.Element {
+  const store = useContext(StoreContext);
+  const sessionCount = useTuiStore((s) => s.sessions.length);
 
-    const store = useContext(StoreContext);
-    const sessionCount = useTuiStore((s) => s.sessions.length);
+  // Source the initial query from modal state so a restored palette has the
+  // query that was active before a permission-prompt interruption.
+  const storedQuery = useTuiStore((s) =>
+    s.modal?.kind === "command-palette" ? s.modal.query : "",
+  );
 
-    // Source the initial query from modal state so a restored palette has the
-    // query that was active before a permission-prompt interruption.
-    const storedQuery = useTuiStore((s) =>
-      s.modal?.kind === "command-palette" ? s.modal.query : "",
-    );
+  // queryRef is the synchronous source of truth for rapid keystroke sequences.
+  // Updating the ref + store happens immediately in the key handler, so the
+  // permission bridge (which reads store state synchronously) always sees the
+  // latest query when snapshotting before a permission-prompt takeover.
+  let queryRef = storedQuery();
+  const [query, setQuery] = createSignal(storedQuery());
 
-    // queryRef is the synchronous source of truth for rapid keystroke sequences.
-    // Updating the ref + store happens immediately in the key handler, so the
-    // permission bridge (which reads store state synchronously) always sees the
-    // latest query when snapshotting before a permission-prompt takeover.
-    const queryRef = useRef(storedQuery);
-    const [query, setQuery] = useState(storedQuery);
+  // Reconcile when storedQuery changes (bridge restore or first mount).
+  //
+  // Two cases:
+  // A) We own the modal (just restored) and local state is ahead of the store
+  //    (user typed during the interruption). Persist local value to the store —
+  //    our value is more recent and should win.
+  // B) We don't own the modal (being initialized or externally driven). Adopt
+  //    the stored value so the displayed query stays in sync.
+  //
+  // This makes the interruption handoff atomic from the user's perspective:
+  // characters typed while the permission prompt was showing are preserved
+  // when the palette comes back.
+  createEffect(() => {
+    const sq = storedQuery();
+    if (sq === queryRef) return; // already in sync
+    if (store?.getState().modal?.kind === "command-palette") {
+      // We own the modal — persist our (more recent) local query to the store
+      store.dispatch({
+        kind: "set_modal",
+        modal: { kind: "command-palette", query: queryRef },
+      });
+    } else {
+      // We don't own the modal — adopt the stored value
+      queryRef = sq;
+      setQuery(sq);
+    }
+  });
 
-    // Reconcile when storedQuery changes (bridge restore or first mount).
-    //
-    // Two cases:
-    // A) We own the modal (just restored) and local state is ahead of the store
-    //    (user typed during the interruption). Persist local value to the store —
-    //    our value is more recent and should win.
-    // B) We don't own the modal (being initialized or externally driven). Adopt
-    //    the stored value so the displayed query stays in sync.
-    //
-    // This makes the interruption handoff atomic from the user's perspective:
-    // characters typed while the permission prompt was showing are preserved
-    // when the palette comes back.
-    useEffect(() => {
-      if (storedQuery === queryRef.current) return; // already in sync
-      if (store?.getState().modal?.kind === "command-palette") {
-        // We own the modal — persist our (more recent) local query to the store
-        store.dispatch({
-          kind: "set_modal",
-          modal: { kind: "command-palette", query: queryRef.current },
-        });
-      } else {
-        // We don't own the modal — adopt the stored value
-        queryRef.current = storedQuery;
-        setQuery(storedQuery);
-      }
-    }, [storedQuery, store]);
+  const updateQuery = (next: string): void => {
+    queryRef = next; // synchronous — no batching issues
+    setQuery(next);  // trigger re-render
+    // Guard: only write to the modal slot when we still own it.
+    // A permission prompt may have taken over between keystrokes; never
+    // let a stale keystroke replace an active approval dialog.
+    if (store?.getState().modal?.kind === "command-palette") {
+      store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: next } });
+    }
+  };
 
-    const updateQuery = useCallback(
-      (next: string) => {
-        queryRef.current = next; // synchronous — no React batching
-        setQuery(next);          // trigger re-render
-        // Guard: only write to the modal slot when we still own it.
-        // A permission prompt may have taken over between keystrokes; never
-        // let a stale keystroke replace an active approval dialog.
-        if (store?.getState().modal?.kind === "command-palette") {
-          store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: next } });
-        }
-      },
-      [store],
-    );
+  // Memoised: recomputes only when sessionCount changes (not on every keystroke)
+  const sessionFiltered = createMemo(
+    () => filterCommands(COMMAND_DEFINITIONS, sessionCount()),
+  );
 
-    // Memoised: recomputes only when sessionCount changes (not on every keystroke)
-    const sessionFiltered = useMemo(
-      () => filterCommands(COMMAND_DEFINITIONS, sessionCount),
-      [sessionCount],
-    );
+  // Per-keystroke fuzzy filter (15 items, negligible cost — no memoisation needed)
+  const items = createMemo(() => {
+    const q = query();
+    return q.length === 0
+      ? sessionFiltered()
+      : fuzzyFilter(sessionFiltered(), q, getCommandLabel);
+  });
 
-    // Per-keystroke fuzzy filter (15 items, negligible cost — no memoisation needed)
-    const items =
-      query.length === 0
-        ? sessionFiltered
-        : fuzzyFilter(sessionFiltered, query, getCommandLabel);
+  // Capture printable chars + Backspace to build the query.
+  // queryRef (not the render-time query()) is used to compute the next
+  // value so bursty key events sequence correctly even before a re-render commits.
+  // Arrow keys and Enter are NOT prevented so <select> handles navigation.
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    if (key.name === "escape") {
+      key.preventDefault();
+      props.onClose();
+      return;
+    }
+    if (key.name === "backspace") {
+      key.preventDefault();
+      updateQuery(queryRef.slice(0, -1));
+      return;
+    }
+    // Single printable character (no Ctrl, no Meta modifier)
+    if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+      key.preventDefault();
+      updateQuery(queryRef + key.sequence);
+    }
+  });
 
-    // Capture printable chars + Backspace to build the query.
-    // queryRef.current (not the render-time `query`) is used to compute the next
-    // value so bursty key events sequence correctly even before a re-render commits.
-    // Arrow keys and Enter are NOT prevented so <select> handles navigation.
-    useKeyboard(
-      useCallback(
-        (key: KeyEvent) => {
-          if (!focused) return;
-          if (key.name === "escape") {
-            key.preventDefault();
-            onClose();
-            return;
-          }
-          if (key.name === "backspace") {
-            key.preventDefault();
-            updateQuery(queryRef.current.slice(0, -1));
-            return;
-          }
-          // Single printable character (no Ctrl, no Meta modifier)
-          if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
-            key.preventDefault();
-            updateQuery(queryRef.current + key.sequence);
-          }
-        },
-        [focused, onClose, updateQuery],
-      ),
-    );
-
-    return (
-      <box
-        flexDirection="column"
-        border={true}
-        borderColor="#60A5FA"
-        width={60}
-        position="absolute"
-        top={1}
-        left={2}
-        zIndex={20}
-      >
-        {/* Header */}
-        <box paddingLeft={1} paddingTop={1}>
-          <text fg="#60A5FA">
-            <b>{"Commands"}</b>
-          </text>
-        </box>
-
-        {/* Search query display */}
-        <box paddingLeft={1} paddingBottom={1}>
-          <text fg="#64748B">{"/ "}</text>
-          <text fg="#E2E8F0">{query}</text>
-          {focused ? <text fg="#60A5FA">{"▌"}</text> : null}
-        </box>
-
-        {/* Command list */}
-        <SelectOverlay
-          items={items}
-          getLabel={getCommandLabel}
-          getDescription={getCommandDescription}
-          onSelect={onSelect}
-          onClose={onClose}
-          focused={focused}
-          emptyText="No matching commands"
-        />
+  return (
+    <box
+      flexDirection="column"
+      border={true}
+      borderColor="#60A5FA"
+      width={60}
+      position="absolute"
+      top={1}
+      left={2}
+      zIndex={20}
+    >
+      {/* Header */}
+      <box paddingLeft={1} paddingTop={1}>
+        <text fg="#60A5FA">
+          <b>{"Commands"}</b>
+        </text>
       </box>
-    );
-  },
-);
+
+      {/* Search query display */}
+      <box paddingLeft={1} paddingBottom={1}>
+        <text fg="#64748B">{"/ "}</text>
+        <text fg="#E2E8F0">{query()}</text>
+        {props.focused ? <text fg="#60A5FA">{"▌"}</text> : null}
+      </box>
+
+      {/* Command list */}
+      <SelectOverlay
+        items={items()}
+        getLabel={getCommandLabel}
+        getDescription={getCommandDescription}
+        onSelect={props.onSelect}
+        onClose={props.onClose}
+        focused={props.focused}
+        emptyText="No matching commands"
+      />
+    </box>
+  );
+}

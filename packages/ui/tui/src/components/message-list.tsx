@@ -7,7 +7,8 @@
  */
 
 import type { SyntaxStyle } from "@opentui/core";
-import type { ReactNode } from "react";
+import type { JSX } from "solid-js";
+import { For } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
 
@@ -15,15 +16,15 @@ interface MessageListProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
-export function MessageList({ syntaxStyle }: MessageListProps): ReactNode {
+export function MessageList(props: MessageListProps): JSX.Element {
   const messages = useTuiStore((s) => s.messages);
 
   return (
     <scrollbox flexGrow={1} stickyScroll>
       <box flexDirection="column" gap={1}>
-        {messages.map((msg) => (
-          <MessageRow key={msg.id} message={msg} syntaxStyle={syntaxStyle} />
-        ))}
+        <For each={messages()}>
+          {(msg) => <MessageRow message={msg} syntaxStyle={props.syntaxStyle} />}
+        </For>
       </box>
     </scrollbox>
   );

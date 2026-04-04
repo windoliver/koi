@@ -1,0 +1,11 @@
+[test]
+# Register the Solid JSX transform (Babel + babel-preset-solid) for bun:test.
+# Required because @opentui/solid uses Solid's h()/createComponent() JSX factory,
+# which Bun's native TS transform does not emit. The plugin intercepts all .tsx
+# files and runs them through Babel before execution.
+preload = ["./node_modules/@opentui/solid/scripts/preload.ts"]
+
+# solid-js package.json maps the "node" condition to dist/server.js (SSR).
+# "browser" maps to dist/solid.js (the DOM/reactive build). OpenTUI's terminal
+# renderer requires the reactive build, not SSR. Force the browser condition.
+conditions = ["browser"]

@@ -7,8 +7,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useMemo } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { createMemo, Show } from "solid-js";
 import { handleSelectOverlayKey } from "./select-overlay-helpers.js";
 
 export { handleSelectOverlayKey };
@@ -35,64 +36,51 @@ export interface SelectOverlayProps<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Component (not memo — generic components cannot use memo directly)
+// Component
 // ---------------------------------------------------------------------------
 
-export function SelectOverlay<T>(props: SelectOverlayProps<T>): React.ReactNode {
-  const { items, getLabel, getDescription, onSelect, onClose, focused, emptyText = "No items" } =
-    props;
-
+export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
   // Map items → OpenTUI <select> option shape using array index as value key
-  const options = useMemo(
-    () =>
-      items.map((item, i) => ({
-        name: getLabel(item),
-        // SelectOption requires description: string — use "" when no descriptor provided
-        description: getDescription ? getDescription(item) : "",
-        value: String(i),
-      })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, getLabel, getDescription],
+  const options = createMemo(() =>
+    props.items.map((item, i) => ({
+      name: props.getLabel(item),
+      // SelectOption requires description: string — use "" when no descriptor provided
+      description: props.getDescription ? props.getDescription(item) : "",
+      value: String(i),
+    })),
   );
 
-  const handleSelect = useCallback(
-    (_index: number, option: { readonly value?: string } | null) => {
-      if (option === null || option.value === undefined) return;
-      const idx = Number(option.value);
-      const item = items[idx];
-      if (item !== undefined) onSelect(item);
-    },
-    [items, onSelect],
-  );
+  const handleSelect = (_index: number, option: { readonly value?: string } | null): void => {
+    if (option === null || option.value === undefined) return;
+    const idx = Number(option.value);
+    const item = props.items[idx];
+    if (item !== undefined) props.onSelect(item);
+  };
 
-  useKeyboard(
-    useCallback(
-      (key: KeyEvent) => {
-        if (!focused) return;
-        if (key.name === "escape") {
-          key.preventDefault();
-          onClose();
-        }
-      },
-      [focused, onClose],
-    ),
-  );
-
-  if (items.length === 0) {
-    return (
-      <box paddingLeft={1}>
-        <text fg="#64748B">{emptyText}</text>
-      </box>
-    );
-  }
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    if (key.name === "escape") {
+      key.preventDefault();
+      props.onClose();
+    }
+  });
 
   return (
-    <select
-      options={options}
-      focused={focused}
-      showDescription={getDescription !== undefined}
-      wrapSelection={true}
-      onSelect={handleSelect}
-    />
+    <Show
+      when={props.items.length > 0}
+      fallback={
+        <box paddingLeft={1}>
+          <text fg="#64748B">{props.emptyText ?? "No items"}</text>
+        </box>
+      }
+    >
+      <select
+        options={options()}
+        focused={props.focused}
+        showDescription={props.getDescription !== undefined}
+        wrapSelection={true}
+        onSelect={handleSelect}
+      />
+    </Show>
   );
 }
