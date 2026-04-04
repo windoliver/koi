@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.153Z",
+      "timestamp": "2026-04-04T04:55:44.946Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.153Z",
+      "timestamp": "2026-04-04T04:55:44.946Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T04:08:36.154Z",
+      "timestamp": "2026-04-04T04:55:44.947Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 152,
         "completion_tokens": 11
       },
-      "duration_ms": 668,
+      "duration_ms": 687,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.823Z",
+      "timestamp": "2026-04-04T04:55:45.634Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-local-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 668.5679170000003,
+      "duration_ms": 687.1605830000008,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.823Z",
+      "timestamp": "2026-04-04T04:55:45.635Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-local-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 668.7011249999996,
+      "duration_ms": 687.2963339999988,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.826Z",
+      "timestamp": "2026-04-04T04:55:45.637Z",
       "model_name": "hook:on-local-fs-tool",
       "message": "tool.succeeded:local_fs_read → on-local-fs-tool",
-      "duration_ms": 2.241874999999709,
+      "duration_ms": 2.298917000000074,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -124,7 +124,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.831Z",
+      "timestamp": "2026-04-04T04:55:45.643Z",
       "model_name": "middleware:hook-dispatch",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -134,7 +134,7 @@
           }
         ]
       },
-      "duration_ms": 8.818458000001556,
+      "duration_ms": 9.165540999998484,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -148,7 +148,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T04:08:36.822Z",
+      "timestamp": "2026-04-04T04:55:45.634Z",
       "tool_calls": [
         {
           "tool_call_id": "call_local_fs_read_7",
@@ -172,7 +172,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.833Z",
+      "timestamp": "2026-04-04T04:55:45.645Z",
       "model_name": "middleware:hooks",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -182,7 +182,7 @@
           }
         ]
       },
-      "duration_ms": 10.895375000000058,
+      "duration_ms": 11.2120410000025,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -196,7 +196,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:36.833Z",
+      "timestamp": "2026-04-04T04:55:45.645Z",
       "model_name": "middleware:permissions",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -206,7 +206,7 @@
           }
         ]
       },
-      "duration_ms": 11.035459000006085,
+      "duration_ms": 11.345500000003085,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,21 +220,21 @@
     {
       "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-04T04:08:36.833Z",
+      "timestamp": "2026-04-04T04:55:45.645Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
       "observation": {
         "results": [
           {
-            "content": "The file says: \"The local filesystem answer is 7.\"\n"
+            "content": "The file says \"The local filesystem answer is 7.\".\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 191,
-        "completion_tokens": 14
+        "prompt_tokens": 193,
+        "completion_tokens": 13
       },
-      "duration_ms": 608,
+      "duration_ms": 603,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -252,10 +252,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:37.442Z",
+      "timestamp": "2026-04-04T04:55:46.249Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-local-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 608.7145420000015,
+      "duration_ms": 603.2188749999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -269,10 +269,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T04:08:37.442Z",
+      "timestamp": "2026-04-04T04:55:46.249Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-local-fs-tool\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 608.9119590000046,
+      "duration_ms": 603.3389999999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

@@ -309,6 +309,16 @@ interface QueryConfig {
   readonly permissionBackend?: PermissionBackend;
   /** Denial escalation config for permissions middleware. */
   readonly denialEscalation?: boolean | DenialEscalationConfig;
+  /**
+   * Optional factory called after the ATIF store is created.
+   * Replaces `providers` for queries that need to inject store-aware middleware
+   * into child agents (e.g., spawn inheritance with shared trajectory store).
+   * When provided, `providers` is ignored.
+   */
+  readonly providerFactory?: (
+    store: ReturnType<typeof createAtifDocumentStore>,
+    docId: string,
+  ) => readonly ComponentProvider[];
 }
 
 // ---------------------------------------------------------------------------
@@ -487,11 +497,17 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     wrapMiddlewareWithTrace(mw, { store, docId }),
   );
 
+  // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
+  // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
+  // so the child's model calls appear in the same ATIF document with their own identity).
+  const resolvedProviders =
+    config.providerFactory !== undefined ? config.providerFactory(store, docId) : config.providers;
+
   const runtime = await createKoi({
     manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
     adapter: bridge,
     middleware: tracedMiddleware,
-    providers: [...config.providers],
+    providers: [...resolvedProviders],
     loopDetection: false,
   });
 
@@ -1133,20 +1149,49 @@ const queries: readonly QueryConfig[] = [
   },
 
   // 14. spawn-inheritance: tool narrowing via toolDenylist (#1425)
-  //     Parent spawns a child with toolDenylist=['Glob'] — child cannot use Glob.
-  //     Trajectory: parent → Spawn(toolDenylist) → child runs without Glob → result back.
+  //     Parent has Glob + Grep + ToolSearch (builtin search) + Spawn.
+  //     Parent spawns researcher with toolDenylist=['Glob'] — child inherits Grep + ToolSearch
+  //     but NOT Glob, and gets a fresh Spawn. Child's model call appears in the shared ATIF
+  //     document with agentName="researcher", proving Glob is absent at the model-request level.
   {
     name: "spawn-inheritance",
     prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
       "Use the Spawn tool with agentName='researcher' and toolDenylist=['Glob'] to delegate: " +
-      "'What is 2+2? Answer with just the number.' " +
-      "Then report the answer.",
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
     hooks: [],
-    providers: [spawnToolProvider],
+    providers: [], // unused — providerFactory takes precedence
     maxTurns: 2,
+    providerFactory: (store, docId) => {
+      // Child event trace: same store + docId as parent, child's own identity.
+      // Child steps appear in the trajectory tagged "researcher", making
+      // ModelRequest.tools visible — Glob absent proves denylist enforcement.
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        // Parent has Glob + Grep + ToolSearch so the denylist has something to deny
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
   },
 ];
 

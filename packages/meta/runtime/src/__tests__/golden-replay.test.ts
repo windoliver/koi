@@ -2855,12 +2855,35 @@ describe("Golden: @koi/engine spawn inheritance", () => {
 
 // ---------------------------------------------------------------------------
 // spawn-inheritance ATIF trajectory (golden file) — #1425
+//
+// Key design: child agent (researcher) shares the parent's ATIF store via
+// inheritedMiddleware, so child model calls appear in the same trajectory
+// with the child's own identity. This lets us assert on the child's
+// ModelRequest.tools — proving Glob is absent at the model-request boundary.
 // ---------------------------------------------------------------------------
 
+type SpawnInheritanceStep = {
+  readonly step_id: number;
+  readonly source?: string;
+  readonly outcome?: string;
+  readonly message?: string;
+  readonly extra?: {
+    readonly tools?: readonly { readonly name: string }[];
+    readonly requestModel?: string;
+    readonly responseModel?: string;
+  };
+  readonly tool_calls?: readonly {
+    readonly function_name?: string;
+    readonly arguments?: Record<string, unknown>;
+  }[];
+  readonly observation?: { readonly results?: readonly { readonly content?: string }[] };
+};
+
 describe("spawn-inheritance ATIF trajectory (golden file)", () => {
-  test("valid ATIF v1.6 with Spawn tool call using toolDenylist", async () => {
+  const path = `${FIXTURES}/spawn-inheritance.trajectory.json`;
+
+  test("valid ATIF v1.6 with shared parent+child trajectory", async () => {
     const { existsSync } = await import("node:fs");
-    const path = `${FIXTURES}/spawn-inheritance.trajectory.json`;
     if (!existsSync(path)) {
       throw new Error(
         "spawn-inheritance.trajectory.json not found. Re-record:\n" +
@@ -2871,37 +2894,60 @@ describe("spawn-inheritance ATIF trajectory (golden file)", () => {
     expect(doc.schema_version).toBe("ATIF-v1.6");
   });
 
-  test("Spawn tool called with toolDenylist=['Glob'] and returned output", async () => {
+  test("parent model call offers Glob — child model call does not (proves denylist at ModelRequest level)", async () => {
     const { existsSync } = await import("node:fs");
-    const path = `${FIXTURES}/spawn-inheritance.trajectory.json`;
-    if (!existsSync(path)) return; // skip gracefully if not recorded
+    if (!existsSync(path)) return;
 
     const doc = (await Bun.file(path).json()) as {
-      readonly steps: readonly {
-        readonly source?: string;
-        readonly outcome?: string;
-        readonly tool_calls?: readonly {
-          readonly function_name?: string;
-          readonly arguments?: Record<string, unknown>;
-        }[];
-        readonly observation?: { readonly results?: readonly { readonly content?: string }[] };
-      }[];
+      readonly steps: readonly SpawnInheritanceStep[];
     };
 
-    const toolSteps = doc.steps.filter((s) => s.source === "tool");
-    const spawnStep = toolSteps.find((s) =>
-      s.tool_calls?.some((tc) => tc.function_name === "Spawn"),
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+
+    // Parent model call: should have Glob in its tool list
+    const parentStep = agentSteps.find(
+      (s) =>
+        s.extra?.tools?.some((t) => t.name === "Spawn") &&
+        s.extra?.tools?.some((t) => t.name === "Glob"),
     );
+    expect(parentStep).toBeDefined();
+    const parentTools = parentStep?.extra?.tools?.map((t) => t.name) ?? [];
+    expect(parentTools).toContain("Glob");
+    expect(parentTools).toContain("Grep");
+    expect(parentTools).toContain("ToolSearch");
+    expect(parentTools).toContain("Spawn");
+
+    // Child model call (researcher): Glob MUST be absent — this is the key assertion.
+    // The child's message IS the delegated task and starts with "List your available tools".
+    // The parent's message starts with "You have Glob" — so startsWith distinguishes them.
+    const childStep = agentSteps.find((s) => s.message?.startsWith("List your available tools"));
+    expect(childStep).toBeDefined();
+    const childTools = childStep?.extra?.tools?.map((t) => t.name) ?? [];
+    expect(childTools).not.toContain("Glob"); // denied — absent from ModelRequest.tools
+    expect(childTools).toContain("Grep"); // inherited (not denied)
+    expect(childTools).toContain("ToolSearch"); // inherited (not denied)
+    // Spawn present (fresh provider for recursive delegation)
+    expect(childTools).toContain("Spawn");
+  });
+
+  test("Spawn tool called with toolDenylist=['Glob'] and child returned output", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const spawnStep = doc.steps
+      .filter((s) => s.source === "tool")
+      .find((s) => s.tool_calls?.some((tc) => tc.function_name === "Spawn"));
 
     expect(spawnStep).toBeDefined();
     expect(spawnStep?.outcome).toBe("success");
 
     const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
     expect(spawnCall?.arguments?.agentName).toBe("researcher");
-    expect(Array.isArray(spawnCall?.arguments?.toolDenylist)).toBe(true);
     expect((spawnCall?.arguments?.toolDenylist as string[]).includes("Glob")).toBe(true);
 
-    // Child returned an output
     const result = spawnStep?.observation?.results?.[0]?.content;
     expect(result).toBeDefined();
     expect(result?.length).toBeGreaterThan(0);
