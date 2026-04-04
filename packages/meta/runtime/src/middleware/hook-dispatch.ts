@@ -82,36 +82,43 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     return { _truncated: true, preview: serialized.slice(0, 2000) } as JsonObject;
   }
 
-  /** Extract a structured decision record from a hook execution result. */
+  /**
+   * Extract a structured decision record from a hook execution result.
+   * Fail-safe: serialization errors produce a fallback so tracing never
+   * interrupts the hook enforcement or tool execution path.
+   */
   function extractDecision(result: HookExecutionResult): JsonObject {
-    if (!result.ok) {
-      return { kind: "error", reason: truncateReason(result.error) } as JsonObject;
-    }
-    const { decision } = result;
-    const base = (() => {
-      switch (decision.kind) {
-        case "block":
-          return { kind: "block", reason: truncateReason(decision.reason) } as JsonObject;
-        case "modify":
-          return { kind: "modify", patch: truncatePayload(decision.patch) } as JsonObject;
-        case "transform":
-          return {
-            kind: "transform",
-            outputPatch: truncatePayload(decision.outputPatch),
-            ...(decision.metadata !== undefined
-              ? { metadata: truncatePayload(decision.metadata) }
-              : {}),
-          } as JsonObject;
-        case "continue":
-          return { kind: "continue" } as JsonObject;
+    try {
+      if (!result.ok) {
+        return { kind: "error", reason: truncateReason(result.error) } as JsonObject;
       }
-    })();
-    // Preserve fail-open context: hook actually failed but was swallowed by policy.
-    // Without this, a transient timeout appears identical to a genuine continue.
-    if (result.executionFailed === true) {
-      return { ...base, executionFailed: true } as JsonObject;
+      const { decision } = result;
+      const base = (() => {
+        switch (decision.kind) {
+          case "block":
+            return { kind: "block", reason: truncateReason(decision.reason) } as JsonObject;
+          case "modify":
+            return { kind: "modify", patch: truncatePayload(decision.patch) } as JsonObject;
+          case "transform":
+            return {
+              kind: "transform",
+              outputPatch: truncatePayload(decision.outputPatch),
+              ...(decision.metadata !== undefined
+                ? { metadata: truncatePayload(decision.metadata) }
+                : {}),
+            } as JsonObject;
+          case "continue":
+            return { kind: "continue" } as JsonObject;
+        }
+      })();
+      if (result.executionFailed === true) {
+        return { ...base, executionFailed: true } as JsonObject;
+      }
+      return base;
+    } catch {
+      // Fail-safe: non-serializable payloads (BigInt, circular, etc.)
+      return { kind: "unserializable" } as JsonObject;
     }
-    return base;
   }
 
   /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
