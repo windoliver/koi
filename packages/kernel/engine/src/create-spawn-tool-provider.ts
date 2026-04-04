@@ -137,7 +137,14 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
               toolDenylist: {
                 type: "array",
                 items: { type: "string" },
-                description: "Tool names to exclude from the spawned agent.",
+                description:
+                  "Tool names to exclude from the spawned agent. Mutually exclusive with toolAllowlist.",
+              },
+              toolAllowlist: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
               },
               timeoutMs: {
                 type: "number",
@@ -186,6 +193,9 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
               : {}),
             ...(Array.isArray(args.toolDenylist)
               ? { toolDenylist: args.toolDenylist as string[] }
+              : {}),
+            ...(Array.isArray(args.toolAllowlist)
+              ? { toolAllowlist: args.toolAllowlist as string[] }
               : {}),
           });
 
