@@ -313,9 +313,19 @@ function extractModelRequestText(request: ModelRequest): string {
   return full.length <= 500 ? full : `${full.slice(0, 500)}…`;
 }
 
+/** Compare two values by value (JSON serialization for non-primitives). */
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (typeof a === "object" && a !== null && b !== null) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+}
+
 /**
- * Shallow diff between two objects. Returns `{ changed, added, removed }` or
- * undefined if objects are identical by reference or have no differences.
+ * Diff two objects by value. Returns `{ changed, added, removed }` or
+ * undefined if objects are identical by value.
  */
 function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefined {
   const changed: Record<string, { readonly from: unknown; readonly to: unknown }> = {};
@@ -325,7 +335,7 @@ function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefi
   for (const key of Object.keys(before)) {
     if (!(key in after)) {
       removed.push(key);
-    } else if (before[key] !== after[key]) {
+    } else if (!valuesEqual(before[key], after[key])) {
       changed[key] = { from: before[key], to: after[key] };
     }
   }
@@ -378,7 +388,7 @@ function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
     messageCount: req.messages.length,
     metadataSnapshot: structuredClone(req.metadata ?? {}) as JsonObject,
     toolNames: tools.map((t) => t.name),
-    toolsHash: safeSnapshot(tools.map((t) => t.name)),
+    toolsHash: safeSnapshot(tools),
   };
 }
 
