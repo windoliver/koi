@@ -21,7 +21,7 @@ import {
 } from "@koi/core/memory";
 import { findDuplicate } from "./dedup.js";
 import { rebuildIndex } from "./index-file.js";
-import { deriveFilename } from "./slug.js";
+import { deriveFilename, slugifyMemoryName } from "./slug.js";
 import type { DedupResult, MemoryListFilter, MemoryStore, MemoryStoreConfig } from "./types.js";
 import { DEFAULT_DEDUP_THRESHOLD } from "./types.js";
 
@@ -83,11 +83,6 @@ async function writeRecord(
     };
   }
 
-  // Use raw readdir for collision checks — includes malformed/unreadable files
-  const allFiles = await listMdFiles(dir);
-  const filename = deriveFilename(input.name, allFiles);
-  const filePath = join(dir, filename);
-
   const serialized = serializeMemoryFrontmatter(
     { name: input.name, description: input.description, type: input.type },
     input.content,
@@ -96,8 +91,9 @@ async function writeRecord(
     throw new Error("Failed to serialize memory record — invalid frontmatter or empty content");
   }
 
-  await writeFile(filePath, serialized, "utf-8");
-  const fileStat = await stat(filePath);
+  // Atomically create file — retry with new name on EEXIST (concurrent write race)
+  const filename = await writeExclusive(dir, input.name, serialized);
+  const fileStat = await stat(join(dir, filename));
 
   // Re-parse to return sanitized values matching what's on disk
   const persisted = parseMemoryFrontmatter(serialized);
@@ -172,9 +168,8 @@ async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
   try {
     await unlink(join(dir, existing.filePath));
   } catch (e: unknown) {
-    // File already gone — treat as successful delete
-    if (isEnoent(e)) return false;
-    throw e;
+    // File already gone (race) — still rebuild index to clean up stale entry
+    if (!isEnoent(e)) throw e;
   }
 
   const remaining = records.filter((r) => r.id !== id);
@@ -229,8 +224,10 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
       createdAt: fileStat.birthtimeMs,
       updatedAt: fileStat.mtimeMs,
     };
-  } catch {
-    return undefined;
+  } catch (e: unknown) {
+    // File vanished between readdir and read — skip it
+    if (isEnoent(e)) return undefined;
+    throw e;
   }
 }
 
@@ -252,6 +249,36 @@ async function tryRebuildIndex(dir: string, records: readonly MemoryRecord[]): P
   }
 }
 
+/**
+ * Atomically create a new .md file using exclusive flag.
+ * Retries with a suffixed name on EEXIST (concurrent write race).
+ */
+async function writeExclusive(dir: string, name: string, content: string): Promise<string> {
+  const MAX_ATTEMPTS = 5;
+  // let — retry loop with incrementing attempt counter
+  let allFiles = await listMdFiles(dir);
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const filename = deriveFilename(name, allFiles);
+    try {
+      await writeFile(join(dir, filename), content, { encoding: "utf-8", flag: "wx" });
+      return filename;
+    } catch (e: unknown) {
+      if (isEexist(e)) {
+        // Refresh directory listing and retry
+        allFiles = await listMdFiles(dir);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  // Fallback: timestamp-based unique name
+  const fallback = `${slugifyMemoryName(name)}-${Date.now()}.md`;
+  await writeFile(join(dir, fallback), content, "utf-8");
+  return fallback;
+}
+
 /** List all .md filenames in a directory (raw readdir, includes malformed files). */
 async function listMdFiles(dir: string): Promise<ReadonlySet<string>> {
   try {
@@ -265,10 +292,19 @@ async function listMdFiles(dir: string): Promise<ReadonlySet<string>> {
 
 /** Check if an error is a filesystem ENOENT (file/dir not found). */
 function isEnoent(e: unknown): boolean {
+  return hasErrCode(e, "ENOENT");
+}
+
+/** Check if an error is a filesystem EEXIST (file already exists). */
+function isEexist(e: unknown): boolean {
+  return hasErrCode(e, "EEXIST");
+}
+
+function hasErrCode(e: unknown, code: string): boolean {
   return (
     typeof e === "object" &&
     e !== null &&
     "code" in e &&
-    (e as { readonly code: string }).code === "ENOENT"
+    (e as { readonly code: string }).code === code
   );
 }
