@@ -187,10 +187,19 @@ export function wrapMiddlewareWithTrace(
               // Non-cloneable input — delta capture skipped
             }
           }
-          let capturedInput: JsonObject | undefined;
+          // Snapshot forwarded input at next() boundary to avoid post-handoff mutations
+          let afterInputCopy: JsonObject | undefined;
+          let afterInputHash: string | undefined;
           const trackedNext: ToolHandler = async (req) => {
             nextCalled = true;
-            if (captureDeltas === true) capturedInput = req.input as JsonObject;
+            if (captureDeltas === true && beforeInputHash !== undefined) {
+              try {
+                afterInputCopy = structuredClone(req.input) as JsonObject;
+                afterInputHash = safeSnapshot(req.input);
+              } catch {
+                // Non-cloneable — skip delta
+              }
+            }
             return next(req);
           };
 
@@ -205,12 +214,13 @@ export function wrapMiddlewareWithTrace(
             try {
               if (
                 captureDeltas === true &&
-                capturedInput !== undefined &&
+                afterInputCopy !== undefined &&
+                afterInputHash !== undefined &&
                 beforeInputHash !== undefined &&
                 beforeInputCopy !== undefined &&
-                beforeInputHash !== safeSnapshot(capturedInput)
+                beforeInputHash !== afterInputHash
               ) {
-                deltaMeta = shallowDiff(beforeInputCopy, capturedInput) ?? undefined;
+                deltaMeta = shallowDiff(beforeInputCopy, afterInputCopy) ?? undefined;
               }
             } catch {
               // Fail-open: tracing never breaks the request path
