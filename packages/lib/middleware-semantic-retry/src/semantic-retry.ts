@@ -428,6 +428,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       // stop reasons as actual successes. Non-success stops (error, hook_blocked)
       // are provider/middleware failures surfaced via done chunk, not exceptions.
       let succeeded = false; // let: set true on done chunk with success stop reason
+      let streamedFailure = false; // let: set true on non-success done chunk
       try {
         for await (const chunk of next(effectiveRequest)) {
           if (chunk.kind === "done") {
@@ -437,12 +438,21 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
               stopReason !== "stop" &&
               stopReason !== "length" &&
               stopReason !== "tool_use";
-            if (!isNonSuccessStop) {
+            if (isNonSuccessStop) {
+              streamedFailure = true;
+            } else {
               succeeded = true;
             }
           }
           yield chunk;
         }
+
+        // Handle streamed failures (non-success done chunks) as retryable failures
+        if (streamedFailure) {
+          const streamError = new Error("Streamed model call failed with non-success stop reason");
+          await handleFailure(sessionId, state, streamError, effectiveRequest, ctx.turnIndex);
+        }
+
         // Mark successful retry
         if (succeeded && state.records.length > 0) {
           const lastIdx = state.records.length - 1;
