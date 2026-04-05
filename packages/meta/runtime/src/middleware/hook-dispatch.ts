@@ -11,6 +11,21 @@
  * - block: throws an error to prevent the operation
  * - modify: patches the request input before proceeding
  * - continue: no-op, proceed normally
+ *
+ * TODO(hook-dispatch-unification): this middleware currently runs in parallel
+ * with @koi/hooks createHookMiddleware, which dispatches the same tool events
+ * with full payload data and an agentExecutor wired via spawnFn. That path
+ * handles agent hooks; this path only handles command/http hooks (calls
+ * executeHooks with no agentExecutor) and records ATIF steps. The split means
+ * tool events fire twice per call, agent hooks silently no-op here, and
+ * observability is wired to the weaker dispatcher.
+ *
+ * Claude Code's production hook system uses a single dispatcher per event
+ * (see src/utils/hooks.ts:3450 executePostToolHooks) with full payload + an
+ * observer tap (src/utils/hooks/hookEvents.ts:61). We should mirror that:
+ * make @koi/hooks the sole dispatcher and turn this middleware into a pure
+ * observer that subscribes to hook-execution events and only records ATIF
+ * steps. Tracked as a follow-up to #1491.
  */
 
 import type {
