@@ -51,24 +51,38 @@ Centralized Nexus URL resolution with clear priority:
 
 ### `koi start`
 
-Interactive REPL mode for local development.
+Interactive REPL or single-prompt mode backed by a live OpenRouter model. Wires
+`@koi/model-openai-compat` → `EngineAdapter` (via `@koi/query-engine` `runTurn`) →
+`@koi/engine` `createKoi` → `@koi/harness` `createCliHarness`.
 
 ```bash
-koi start                           # Load ./koi.yaml, start REPL
-koi start path/to/koi.yaml          # Explicit manifest
-koi start --verbose                 # Show model, engine, token usage
-koi start --dry-run                 # Validate manifest without running
-koi start --nexus-url http://...    # Connect to remote Nexus
+koi start                           # Interactive REPL (stdin/stdout)
+koi start --prompt "list files"     # Single-prompt mode, then exit
+koi start -p "list files"           # Shorthand for --prompt
+koi start --verbose                 # Stream tool calls and thinking to stdout
+koi start --resume <session-id>     # Resume a prior session (tracking: #1504)
+koi start --no-tui                  # Force raw-stdout mode even if TUI is available
 ```
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--manifest` | string | `koi.yaml` | Path to manifest file |
-| `--verbose` / `-v` | boolean | false | Print startup info and per-turn metrics |
-| `--dry-run` | boolean | false | Validate manifest and exit |
-| `--nexus-url` | string | — | Nexus server URL (embed mode if omitted) |
+| `--prompt` / `-p` | string | — | Single-prompt text; omit for interactive REPL |
+| `--resume` | string | — | Session ID to resume (not yet implemented, #1504) |
+| `--no-tui` | boolean | false | Disable TUI adapter, use raw stdout |
+| `--manifest` | string | — | Agent manifest path (not yet implemented, #1264) |
+| `--verbose` / `-v` | boolean | false | Stream tool calls and turn delimiters |
+| `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
+| `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
+
+**Wiring (as of this PR):**
+
+- Model: `google/gemini-2.0-flash-001` via OpenRouter (`OPENROUTER_API_KEY` required)
+- Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
+- Turn limit: 50 interactive turns, 10 agent loop turns per prompt
+- Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message
+- SIGINT: aborts gracefully, exits with `ExitCode.FAILURE` so automation can detect cancellation
 
 ### `koi admin`
 
@@ -169,19 +183,15 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 
 | Package | Layer | Used For |
 |---------|-------|----------|
-| `@koi/core` | L0 | Types: ContentBlock, EngineInput, WorkerToMainMessage/MainToWorkerMessage, WorkerEngineInput, sessionId (direct dependency as of #1484) |
-| `@koi/tui` | L2 | TUI shell: store, permissionBridge, batcher, createTuiApp (tui command only) |
-| `@koi/engine` | L1 | createKoi() runtime factory |
-| `@koi/engine-pi` | L2 | Default engine adapter (Pi protocol) |
-| `@koi/manifest` | L0u | Manifest loading and validation |
-| `@koi/context` | L2 | Context extension from manifest sources |
-| `@koi/context-arena` | L3 | Conversation persistence bundle (serve only) |
-| `@koi/snapshot-chain-store` | L0u | In-memory ThreadStore (serve only) |
-| `@koi/nexus` | L3 | Nexus backend stack (embed or remote) |
-| `@koi/deploy` | L2 | HTTP health server (serve only) |
-| `@koi/shutdown` | L0u | Graceful shutdown handler + exit codes (serve only) |
-| `@koi/channel-cli` | L2 | stdin/stdout REPL channel (start only) |
-| `@koi/resolve` | L0u | BrickDescriptor-based middleware/model/channel resolution |
+| `@koi/core` | L0 | Types: ContentBlock, EngineInput, EngineAdapter, InboundMessage, TuiAdapter |
+| `@koi/engine` | L1 | `createKoi()` runtime factory |
+| `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge |
+| `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
+| `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
+| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop |
+| `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
+| `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only) |
 
 ---
 

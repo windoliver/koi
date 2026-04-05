@@ -449,4 +449,50 @@ describe("parseArgs", () => {
       expect(caught instanceof ParseError && caught.message).toContain("unknown flag");
     });
   });
+
+  describe("start — StartMode discriminated union", () => {
+    test("no --prompt → mode: interactive", () => {
+      const r = asFlags(isStartFlags, ["start"]);
+      expect(r.mode.kind).toBe("interactive");
+    });
+
+    test("--prompt text → mode: prompt with text", () => {
+      const r = asFlags(isStartFlags, ["start", "--prompt", "list files"]);
+      expect(r.mode.kind).toBe("prompt");
+      if (r.mode.kind === "prompt") {
+        expect(r.mode.text).toBe("list files");
+      }
+    });
+
+    test("-p shorthand for --prompt", () => {
+      const r = asFlags(isStartFlags, ["start", "-p", "summarise"]);
+      expect(r.mode.kind).toBe("prompt");
+      if (r.mode.kind === "prompt") {
+        expect(r.mode.text).toBe("summarise");
+      }
+    });
+
+    test("--prompt with manifest", () => {
+      const r = asFlags(isStartFlags, ["start", "--manifest", "a.yaml", "-p", "go"]);
+      expect(r.manifest).toBe("a.yaml");
+      expect(r.mode.kind).toBe("prompt");
+    });
+
+    test("--resume parses session ID", () => {
+      const r = asFlags(isStartFlags, ["start", "--resume", "ses_abc123"]);
+      expect(r.resume).toBe("ses_abc123");
+    });
+
+    test("no --resume → resume undefined", () => {
+      expect(asFlags(isStartFlags, ["start"]).resume).toBeUndefined();
+    });
+
+    test("--no-tui sets noTui: true", () => {
+      expect(asFlags(isStartFlags, ["start", "--no-tui"]).noTui).toBe(true);
+    });
+
+    test("noTui defaults to false", () => {
+      expect(asFlags(isStartFlags, ["start"]).noTui).toBe(false);
+    });
+  });
 });

@@ -115,9 +115,12 @@ if (isKnownCommand(flags.command)) {
   const { COMMAND_LOADERS } = await import("./registry.js");
   const loader = COMMAND_LOADERS[flags.command];
 
+  // Justified cast: loader returns CommandModule<XxxFlags>, but flags is CliFlags.
+  // The cast is safe because the parser already produced the correct flag type for
+  // this command. Single cast site — no guards needed inside individual commands.
   let mod: CommandModule;
   try {
-    mod = await loader();
+    mod = (await loader()) as CommandModule;
   } catch (e: unknown) {
     process.stderr.write(`koi ${flags.command}: failed to load command module\n`);
     if (e instanceof Error) process.stderr.write(`  ${e.message}\n`);

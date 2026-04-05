@@ -9,6 +9,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { MainToWorkerMessage, WorkerToMainMessage } from "@koi/core/worker-protocol";
+import type { TimerHandle } from "../batcher/event-batcher.js";
 import type { PermissionBridge } from "../bridge/permission-bridge.js";
 import { createInitialState } from "../state/initial.js";
 import { createStore } from "../state/store.js";
@@ -22,11 +23,11 @@ import { createEngineChannel } from "./engine-channel.js";
 function makeTimerStub() {
   let pending: (() => void) | null = null;
 
-  const schedule = mock((_fn: () => void, _ms: number): ReturnType<typeof setTimeout> => {
+  const schedule = mock((_fn: () => void, _ms: number): TimerHandle => {
     pending = _fn;
-    return 0 as unknown as ReturnType<typeof setTimeout>;
+    return 0;
   });
-  const cancel = mock((_id: ReturnType<typeof setTimeout>): void => {
+  const cancel = mock((_id: TimerHandle): void => {
     pending = null;
   });
 

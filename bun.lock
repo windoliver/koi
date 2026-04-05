@@ -173,6 +173,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/harness": {
+      "name": "@koi/harness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/hash": {
       "name": "@koi/hash",
       "version": "0.0.0",
@@ -300,7 +307,14 @@
       "name": "@koi/cli",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/harness": "workspace:*",
+        "@koi/model-openai-compat": "workspace:*",
+        "@koi/query-engine": "workspace:*",
+        "@koi/runtime": "workspace:*",
+        "@koi/tools-builtin": "workspace:*",
         "@koi/tui": "workspace:*",
       },
     },
@@ -316,6 +330,7 @@
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
@@ -743,6 +758,8 @@
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
+
+    "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 

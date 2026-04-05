@@ -33,7 +33,7 @@ describe("COMMAND_LOADERS", () => {
   test("each loader resolves to a module with a callable run export", async () => {
     for (const name of COMMAND_NAMES) {
       const loader = COMMAND_LOADERS[name];
-      const mod = await loader();
+      const mod = (await loader()) as { run?: unknown };
       expect(mod).toBeDefined();
       expect(mod.run).toBeTypeOf("function");
     }
