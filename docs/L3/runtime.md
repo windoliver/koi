@@ -99,3 +99,5 @@ Follow the Doc → Tests → Code workflow:
 > **Maintenance note (PR #1506):** Lint-only fixes applied to integrated packages (@koi/event-trace, @koi/model-openai-compat, @koi/mcp, @koi/middleware-permissions). No wiring changes; L2 package set is unchanged.
 
 > **Wiring (PR #1511):** `@koi/sandbox-os` added. Golden query `sandbox-exec` exercises the path-locked `run_sandboxed` tool under macOS Seatbelt / Linux bwrap. The golden query is trajectory-only (no cassette replay) — the sandbox executes live `ls` during recording; CI validates the fixture fields.
+
+> **Wiring (PR #1518):** `@koi/agent-runtime` wired via `config.agentDirs` shortcut. `RuntimeConfig` now accepts `agentDirs?: AgentResolverDirs` — `createRuntime()` calls `createAgentResolver(agentDirs)` internally when no explicit `resolver` is provided. Load warnings emitted via `console.warn`. Golden queries are 2 standalone assertions (no LLM) in `describe("Golden: @koi/agent-runtime")`; end-to-end spawn coverage is provided by the existing `spawn-agent` trajectory.

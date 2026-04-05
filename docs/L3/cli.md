@@ -76,11 +76,12 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
 
-**Wiring (as of this PR):**
+**Wiring (as of PR #1518):**
 
 - Model: `google/gemini-2.0-flash-001` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
+- **Agent spawn**: `createAgentResolver({ projectDir: cwd })` loads built-ins + project agents from `.koi/agents/`. A `Spawn` tool is registered via `createSpawnToolProvider` so the model can delegate tasks to researcher, coder, reviewer, or coordinator agents.
 - Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message
 - SIGINT: aborts gracefully, exits with `ExitCode.FAILURE` so automation can detect cancellation
 
