@@ -345,7 +345,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         {
           userMessages: state.userMessageBuffer.slice(),
           responseTexts: state.responseBuffer.slice(),
-          items: state.items,
+          items: cloneItems(state.items),
         },
         { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
       );
@@ -374,8 +374,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
     const outcome = await invokeDetectCompletionsCallback(
       config.detectCompletions,
-      entries,
-      state.items,
+      entries.slice(),
+      cloneItems(state.items),
       { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
     );
 
@@ -403,6 +403,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       acc = mergeByPosition(acc, detected);
     }
     return acc;
+  }
+
+  /**
+   * Defensive clone of session items before exposing to user callbacks.
+   * Readonly is only enforced at type level; without cloning, a buggy or
+   * malicious callback could mutate session state in place.
+   */
+  function cloneItems(items: readonly GoalItemWithId[]): readonly GoalItemWithId[] {
+    return items.map((i) => ({ id: i.id, text: i.text, completed: i.completed }));
   }
 
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */

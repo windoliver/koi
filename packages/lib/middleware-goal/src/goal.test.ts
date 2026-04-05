@@ -1201,6 +1201,62 @@ describe("isDrifting response-text buffer", () => {
   });
 });
 
+describe("callback input mutation safety", () => {
+  it("in-place item mutation inside callback cannot corrupt session state", async () => {
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      detectCompletions: (_texts, items) => {
+        // Buggy callback mutates its input (bypasses readonly at runtime)
+        const mutable = items as Array<{ id: string; text: string; completed: boolean }>;
+        if (mutable[0]) mutable[0].completed = true;
+        mutable.length = 0;
+        return [];
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("ok"));
+    await mw.onAfterTurn?.(ctx);
+
+    // Next turn's callback should still see the ORIGINAL unmutated item
+    let observedCompleted = true;
+    let observedCount = 0;
+    const mw2Config = {
+      ...mw,
+    };
+    void mw2Config; // keep prev ref alive
+
+    // Run another turn and inspect items via isDrifting callback
+    const mwWithDrift = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input) => {
+        observedCompleted = input.items[0]?.completed ?? true;
+        observedCount = input.items.length;
+        return false;
+      },
+      detectCompletions: (_texts, items) => {
+        const mutable = items as Array<{ id: string; text: string; completed: boolean }>;
+        if (mutable[0]) mutable[0].completed = true;
+        return [];
+      },
+    });
+    const session2 = makeSessionCtx();
+    await mwWithDrift.onSessionStart?.(session2);
+    const ctx2 = makeTurnCtx(session2);
+    await mwWithDrift.onBeforeTurn?.(ctx2);
+    await mwWithDrift.wrapModelCall?.(ctx2, makeModelRequest(), async () =>
+      makeModelResponse("ok"),
+    );
+    await mwWithDrift.onAfterTurn?.(ctx2);
+
+    expect(observedCompleted).toBe(false);
+    expect(observedCount).toBe(1);
+  });
+});
+
 describe("drift sees post-completion state", () => {
   it("isDrifting receives items updated by detectCompletions in the same turn", async () => {
     let observedCompleted: ReadonlyArray<{ id: string; completed: boolean }> = [];
