@@ -54,6 +54,7 @@ export interface CodeReplLoopDeps {
   readonly onEvent?: ((event: RlmEvent) => void) | undefined;
 }
 
+
 // ---------------------------------------------------------------------------
 // Preamble (wrapper functions prepended to model's code)
 // ---------------------------------------------------------------------------
@@ -175,8 +176,9 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
   const store = createInputStore(input, { maxInputBytes, chunkSize, previewLength });
   const tracker = createTokenTracker(contextWindowTokens);
   const semaphore = createSemaphore(maxConcurrency);
-  const costTracker =
-    resolved.costEstimator !== undefined ? createCostTracker(resolved.costEstimator) : undefined;
+  const costTracker = resolved.costEstimator !== undefined
+    ? createCostTracker(resolved.costEstimator)
+    : undefined;
   const meta = store.metadata();
 
   // let: set by SUBMIT host function
@@ -184,17 +186,9 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
   const sharedLog = createSharedLog();
 
   // Build host functions map
-  const hostFns = createHostFns(
-    store,
-    modelCall,
-    semaphore,
-    tracker,
-    config,
-    sharedLog,
-    (answer: string) => {
-      finalAnswer = answer;
-    },
-  );
+  const hostFns = createHostFns(store, modelCall, semaphore, tracker, config, sharedLog, (answer: string) => {
+    finalAnswer = answer;
+  });
 
   // Build system prompt
   const systemPrompt = generateSystemPrompt(
@@ -227,11 +221,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
     }
 
     // Cost budget check
-    if (
-      costTracker !== undefined &&
-      resolved.maxCostUsd !== undefined &&
-      costTracker.exceeded(resolved.maxCostUsd)
-    ) {
+    if (costTracker !== undefined && resolved.maxCostUsd !== undefined && costTracker.exceeded(resolved.maxCostUsd)) {
       stopReason = "budget_exceeded";
       break;
     }
@@ -258,11 +248,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
 
       metrics = addModelUsage(metrics, response);
       if (costTracker !== undefined && response.usage !== undefined) {
-        costTracker.add(
-          resolved.rootModel ?? "unknown",
-          response.usage.inputTokens,
-          response.usage.outputTokens,
-        );
+        costTracker.add(resolved.rootModel ?? "unknown", response.usage.inputTokens, response.usage.outputTokens);
       }
       tracker.add(response.content);
       responseContent = response.content;

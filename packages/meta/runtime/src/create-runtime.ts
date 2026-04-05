@@ -1,3 +1,4 @@
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ApprovalHandler,
   ChannelAdapter,
@@ -5,6 +6,7 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileSystemBackend,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -79,14 +81,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // config.filesystem === false is a kill switch; undefined means no filesystem.
   // Manifest.filesystem exists in L0 for the full createKoi() assembly path
   // but is NOT honored here — createRuntime() requires explicit host config.
-  const filesystemConfig = config.filesystem === false ? undefined : config.filesystem;
-  const hasFilesystem = filesystemConfig !== undefined;
-  const filesystemBackend = hasFilesystem
-    ? resolveFileSystem(filesystemConfig, config.cwd ?? process.cwd())
-    : undefined;
+  //
+  // Accepts either a FileSystemConfig (resolved here) or a pre-created
+  // FileSystemBackend (used when the caller needs async setup, e.g. local
+  // bridge transport with auth notification wiring via resolveFileSystemAsync).
+  const filesystemBackend = resolveFilesystemInput(config.filesystem, config.cwd);
+  // Extract operations from FileSystemConfig when present; fall back to
+  // config.filesystemOperations for pre-created backends (e.g. from resolveFileSystemAsync).
+  // Without this, pre-created backends default to read-only, silently dropping write/edit tools.
+  const filesystemOperations =
+    config.filesystem !== false &&
+    config.filesystem !== undefined &&
+    !isFileSystemBackend(config.filesystem)
+      ? config.filesystem.operations
+      : config.filesystemOperations;
   const filesystemProvider =
     filesystemBackend !== undefined
-      ? createFileSystemProvider(filesystemBackend, "fs", filesystemConfig?.operations)
+      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations)
       : undefined;
 
   // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -113,7 +124,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // (e.g., with custom sandboxing), the generated fs tool is excluded.
   const fsTools =
     filesystemBackend !== undefined
-      ? createFileSystemTools(filesystemBackend, "fs", filesystemConfig?.operations)
+      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations)
       : undefined;
   const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
   const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
@@ -170,10 +181,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? DEFAULT_PROCESS_SPAWN_LEDGER
       : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
 
+  // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
+  // Collect warnings/conflicts so they can be returned on RuntimeHandle for caller inspection.
+  let agentWarnings: import("@koi/agent-runtime").AgentLoadWarning[] = [];
+  let agentConflicts: import("@koi/agent-runtime").RegistryConflictWarning[] = [];
+  const effectiveResolver = (() => {
+    if (config.resolver !== undefined) return config.resolver;
+    if (config.agentDirs !== undefined) {
+      const result = createAgentResolver(config.agentDirs);
+      agentWarnings = [...result.warnings];
+      agentConflicts = [...result.conflicts];
+      for (const w of agentWarnings) {
+        console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
+      }
+      for (const c of agentConflicts) {
+        console.warn(
+          `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
+        );
+      }
+      return result.resolver;
+    }
+    return undefined;
+  })();
+
+  // Resolver already returns NOT_FOUND for poisoned agent types (parse failures block
+  // both the custom and built-in slots via failedTypes). Healthy agent types remain
+  // reachable regardless of warnings. Suppressing the entire provider on any warning
+  // would be over-broad: one bad custom-only file would disable all built-in delegation.
+  // Callers should inspect handle.agentWarnings and fail or log at their policy boundary.
   const spawnProvider =
-    config.resolver !== undefined
+    effectiveResolver !== undefined
       ? createSpawnToolProvider({
-          resolver: config.resolver,
+          resolver: effectiveResolver,
           spawnLedger: effectiveSpawnLedger,
           adapter,
           manifestTemplate: {
@@ -194,6 +233,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     debugInfo,
     trajectoryStore,
     spawnProvider,
+    agentWarnings,
+    agentConflicts,
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {
@@ -1048,6 +1089,36 @@ function injectCallHandlers(input: EngineInput, callHandlers: ComposedCallHandle
     case "resume":
       return { ...input, callHandlers };
   }
+}
+
+/**
+ * Type guard: distinguishes a pre-created FileSystemBackend from a FileSystemConfig.
+ * FileSystemBackend always has a `name` string and a `read` function.
+ */
+function isFileSystemBackend(v: unknown): v is FileSystemBackend {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).name === "string" &&
+    typeof (v as Record<string, unknown>).read === "function"
+  );
+}
+
+/**
+ * Resolve RuntimeConfig.filesystem to a FileSystemBackend or undefined.
+ *
+ * Handles three cases:
+ * - false / undefined → no filesystem
+ * - FileSystemBackend (pre-created, e.g. via resolveFileSystemAsync) → use as-is
+ * - FileSystemConfig → resolve synchronously via resolveFileSystem
+ */
+function resolveFilesystemInput(
+  input: RuntimeConfig["filesystem"],
+  cwd: string | undefined,
+): FileSystemBackend | undefined {
+  if (input === false || input === undefined) return undefined;
+  if (isFileSystemBackend(input)) return input;
+  return resolveFileSystem(input, cwd ?? process.cwd());
 }
 
 function injectSignal(input: EngineInput, signal: AbortSignal): EngineInput {

@@ -435,6 +435,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, sessions };
     }
 
+    case "set_slash_query":
+      return action.query === state.slashQuery ? state : { ...state, slashQuery: action.query };
+
     default:
       return state;
   }

@@ -17,15 +17,16 @@ import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { PermissionPromptData, PermissionRiskLevel } from "../state/types.js";
+import { COLORS } from "../theme.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
-  low: "#4ADE80",     // green
-  medium: "#FBBF24",  // amber
-  high: "#F87171",    // red
+  low: COLORS.success,
+  medium: COLORS.amber,
+  high: COLORS.danger,
 };
 
 const RISK_LABELS: Record<PermissionRiskLevel, string> = {
@@ -103,28 +104,28 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
     >
       {/* Title */}
       <box flexDirection="row" gap={1}>
-        <text fg="#E2E8F0"><b>{"Permission Required"}</b></text>
+        <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
         <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
       </box>
 
       {/* Tool info */}
       <box flexDirection="column" marginTop={1}>
-        <text fg="#94A3B8">{`Tool: `}<b>{props.prompt.toolId}</b></text>
-        <text fg="#94A3B8">{`Reason: ${props.prompt.reason}`}</text>
+        <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
+        <text fg={COLORS.textSecondary}>{`Reason: ${props.prompt.reason}`}</text>
       </box>
 
       {/* Args preview */}
       <box marginTop={1}>
-        <text fg="#64748B">{`Arguments:\n${inputPreview()}`}</text>
+        <text fg={COLORS.textMuted}>{`Arguments:\n${inputPreview()}`}</text>
       </box>
 
       {/* Key hints — always-allow copy explicitly names the tool and scope */}
       <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
-          <text fg="#4ADE80">{"[y] Allow once"}</text>
-          <text fg="#F87171">{"[n] Deny"}</text>
-          <text fg="#60A5FA">{`[a] Always allow ${props.prompt.toolId} this session`}</text>
-          <text fg="#64748B">{"[Esc] Dismiss"}</text>
+          <text fg={COLORS.success}>{"[y] Allow once"}</text>
+          <text fg={COLORS.danger}>{"[n] Deny"}</text>
+          <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+          <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
         </box>
       </Show>
     </box>

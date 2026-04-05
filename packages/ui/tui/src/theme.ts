@@ -34,6 +34,14 @@ export const COLORS = {
   fgDim: "#4A5568",
   border: "#2E3D4E",
   borderSubtle: "#1B2838",
+  // Component semantic colors (Tailwind-aligned)
+  success: "#4ADE80",
+  amber: "#FBBF24",
+  danger: "#F87171",
+  blueAccent: "#60A5FA",
+  textSecondary: "#94A3B8",
+  textMuted: "#64748B",
+  purple: "#A78BFA",
 } as const;
 
 // ---------------------------------------------------------------------------

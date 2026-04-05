@@ -133,5 +133,13 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     abortController.abort();
   }
 
-  return { call, close };
+  // HTTP transport has no stdio pipe — notifications are local-bridge-only.
+  function subscribe(): () => void {
+    return () => {};
+  }
+
+  // HTTP transport has no bridge subprocess — remote auth paste flow is local-only.
+  function submitAuthCode(_redirectUrl: string, _correlationId?: string): void {}
+
+  return { call, subscribe, submitAuthCode, close };
 }

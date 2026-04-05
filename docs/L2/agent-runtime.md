@@ -70,6 +70,31 @@ When a project agent and a built-in agent share the same `agentType`, the projec
 
 ## API
 
+### Convenience bootstrap (recommended)
+
+```typescript
+import { createAgentResolver } from "@koi/agent-runtime";
+
+const { resolver, warnings, conflicts } = createAgentResolver({
+  projectDir: process.cwd(), // scans .koi/agents/ for custom overrides
+  userDir: "/home/user",     // optional: ~/.koi/agents/
+});
+
+// warnings: unparseable .md files (fail-closed: poisons the agentType slot)
+// conflicts: same agentType in multiple files within one tier
+
+const result = await resolver.resolve("researcher");
+const summaries = await resolver.list();
+```
+
+`createAgentResolver` composes all four lower-level functions and is the preferred entry point. Pass `resolver` to `createRuntime({ resolver })` or directly to `createSpawnToolProvider`. `@koi/runtime` also accepts `config.agentDirs` as a shortcut that calls `createAgentResolver` internally.
+
+### `list()` / `resolve()` correctness
+
+`list()` returns `agentType` as the summary `name` field — not `manifest.name`. The LLM passes `agentType` to `agent_spawn`; returning a display label would cause routing failures. `resolve()` NOT_FOUND errors include available agent names to enable LLM self-correction.
+
+### Low-level pipeline (advanced use only)
+
 ```typescript
 import {
   getBuiltInAgents,
@@ -78,22 +103,10 @@ import {
   createDefinitionResolver,
 } from "@koi/agent-runtime";
 
-// 1. Load agents
 const builtIn = getBuiltInAgents();
-const { agents: custom, warnings } = loadCustomAgents({
-  projectDir: "/path/to/project",
-  userDir: "/home/user",
-});
-
-// 2. Create registry (deduplicates by priority)
+const { agents: custom, warnings } = loadCustomAgents({ projectDir: "/path/to/project" });
 const registry = createAgentDefinitionRegistry(builtIn, custom);
-
-// 3. Adapt to L0 AgentResolver contract
 const resolver = createDefinitionResolver(registry);
-
-// 4. Use
-const result = resolver.resolve("researcher");
-const summaries = resolver.list();
 ```
 
 ## Layer

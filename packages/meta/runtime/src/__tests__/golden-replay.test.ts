@@ -1808,6 +1808,48 @@ describe("Golden: @koi/fs-nexus", () => {
     const agentSteps = steps.filter((s) => s.source === "agent");
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
+
+  test("ATIF trajectory: gdrive OAuth E2E — auth_required → callback → token exchange", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/gdrive-oauth-e2e.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "gdrive-oauth-e2e.trajectory.json not found. Re-record via test-gdrive-auth.py",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly identifier: string;
+        readonly outcome: string;
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    const steps = trajectory.steps;
+
+    // Mount succeeds
+    const mountStep = steps.find((s) => s.identifier === "nexus.fs.mount");
+    expect(mountStep?.outcome).toBe("success");
+
+    // First read triggers auth failure (no token yet)
+    const firstRead = steps.find((s) => s.identifier === "fs.read");
+    expect(firstRead?.outcome).toBe("failure");
+
+    // OAuth URL generated with localhost redirect
+    const urlStep = steps.find((s) => s.identifier === "generate_auth_url");
+    expect(urlStep?.outcome).toBe("success");
+
+    // Browser callback received automatically
+    const callbackStep = steps.find((s) => s.identifier === "oauth_callback");
+    expect(callbackStep?.outcome).toBe("success");
+
+    // Token exchanged and stored successfully
+    const exchangeStep = steps.find((s) => s.identifier === "exchange_auth_code");
+    expect(exchangeStep?.outcome).toBe("success");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4237,6 +4279,79 @@ describe("Golden: @koi/tools-bash", () => {
 // ---------------------------------------------------------------------------
 // L2 golden queries: @koi/sandbox-os (2 queries)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/agent-runtime (2 queries, no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/agent-runtime", () => {
+  test("resolver resolves all built-in agents by type", async () => {
+    const { createAgentResolver } = await import("@koi/agent-runtime");
+    const { resolver, warnings, conflicts } = createAgentResolver();
+
+    expect(warnings).toHaveLength(0);
+    expect(conflicts).toHaveLength(0);
+
+    for (const agentType of ["researcher", "coder", "reviewer", "coordinator"]) {
+      const result = await resolver.resolve(agentType);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.name).toBeDefined();
+        expect(result.value.description).toBeDefined();
+        expect(result.value.manifest).toBeDefined();
+      }
+    }
+
+    // list() returns agentType as name for all (LLM routing correctness)
+    for (const summary of await resolver.list()) {
+      expect(summary.name).toBe(summary.key);
+    }
+  });
+
+  test("resolver resolves custom project agent overriding built-in", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createAgentResolver } = await import("@koi/agent-runtime");
+
+    const tempDir = await mkdtemp(join(tmpdir(), "golden-agent-runtime-"));
+    try {
+      const agentsDir = join(tempDir, ".koi", "agents");
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(
+        join(agentsDir, "researcher.md"),
+        [
+          "---",
+          "name: researcher",
+          "description: Project-level researcher override for golden test",
+          "model: haiku",
+          "---",
+          "",
+          "You are a project-specific researcher. Focus on repository context.",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { resolver, warnings } = createAgentResolver({ projectDir: tempDir });
+
+      expect(warnings).toHaveLength(0);
+
+      const result = await resolver.resolve("researcher");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // Custom agent uses haiku; built-in uses sonnet — confirms project override was applied
+        expect(result.value.manifest.model.name).toBe("haiku");
+        expect(result.value.name).toBe("researcher");
+      }
+
+      // Other built-ins unaffected
+      expect((await resolver.resolve("coder")).ok).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("Golden: @koi/sandbox-os", () => {
   test("createOsAdapterForTest returns adapter with correct name and platform metadata", async () => {

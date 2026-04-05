@@ -21,7 +21,11 @@ export type { McpLifecycleConfig } from "./middleware/mcp-lifecycle.js";
 export { recordMcpLifecycle } from "./middleware/mcp-lifecycle.js";
 export type { TraceWrapperConfig } from "./middleware/trace-wrapper.js";
 export { wrapMiddlewareWithTrace } from "./middleware/trace-wrapper.js";
-export { resolveFileSystem, validateFileSystemConfig } from "./resolve-filesystem.js";
+export {
+  resolveFileSystem,
+  resolveFileSystemAsync,
+  validateFileSystemConfig,
+} from "./resolve-filesystem.js";
 
 // Stubs (for direct use in tests)
 export { createStubAdapter } from "./stubs/stub-adapter.js";

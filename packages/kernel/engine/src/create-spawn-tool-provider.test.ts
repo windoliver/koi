@@ -5,7 +5,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { Agent, Tool } from "@koi/core";
-import { createSpawnToolProvider } from "./create-spawn-tool-provider.js";
+import { createSpawnExecutor, createSpawnToolProvider } from "./create-spawn-tool-provider.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 
 // ---------------------------------------------------------------------------
@@ -196,6 +196,56 @@ describe("createSpawnToolProvider", () => {
     await expect(
       tool.execute({ agentName: "unknown-agent", description: "Do something" }),
     ).rejects.toThrow("No such agent");
+  });
+
+  test("Spawn tool inputSchema matches committed snapshot (schema contract test)", async () => {
+    // Issue 9: treat the schema sent to the model as a contract.
+    // Any change to the schema must produce an explicit snapshot update in the diff,
+    // making schema changes deliberate and reviewable rather than silent drift.
+    const ledger = createInMemorySpawnLedger(10);
+    const resolver = createMockResolver();
+    const provider = createSpawnToolProvider({
+      resolver,
+      spawnLedger: ledger,
+      adapter: MOCK_ADAPTER,
+      manifestTemplate: MANIFEST_TEMPLATE,
+    });
+
+    const agent = createMockAgent();
+    const components = (await provider.attach(agent)) as ReadonlyMap<string, unknown>;
+    const tool = components.get("tool:Spawn") as Tool;
+    const schema = tool.descriptor.inputSchema;
+
+    expect(schema).toMatchSnapshot();
+  });
+
+  test("createSpawnExecutor is independently callable without a ComponentProvider", async () => {
+    // Issue 2: the executor is extracted as a named function so it can be tested
+    // in isolation without instantiating a full ComponentProvider or engine.
+    const mockSpawnFn = async () => ({
+      ok: true as const,
+      output: "executor-test-output",
+    });
+
+    const execute = createSpawnExecutor(mockSpawnFn);
+    const result = (await execute({
+      agentName: "test-agent",
+      description: "test task",
+    })) as { output: string };
+
+    expect(result.output).toBe("executor-test-output");
+  });
+
+  test("createSpawnExecutor propagates spawn failure as KoiRuntimeError", async () => {
+    const mockSpawnFn = async () => ({
+      ok: false as const,
+      error: { code: "NOT_FOUND" as const, message: "no such agent", retryable: false },
+    });
+
+    const execute = createSpawnExecutor(mockSpawnFn);
+    await expect(execute({ agentName: "missing", description: "fail task" })).rejects.toThrow(
+      "no such agent",
+    );
   });
 
   test("concurrent attach calls create independent SpawnFns", async () => {

@@ -807,6 +807,30 @@ describe("reduce — edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
+// set_slash_query
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_slash_query", () => {
+  test("sets slashQuery to a string", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_slash_query", query: "cl" });
+    expect(next.slashQuery).toBe("cl");
+  });
+
+  test("sets slashQuery to null", () => {
+    const state = { ...createInitialState(), slashQuery: "cl" as string | null };
+    const next = reduce(state, { kind: "set_slash_query", query: null });
+    expect(next.slashQuery).toBeNull();
+  });
+
+  test("returns same reference when query unchanged", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_slash_query", query: null });
+    expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_view
 // ---------------------------------------------------------------------------
 

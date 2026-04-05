@@ -57,45 +57,6 @@ export function piMessagesToInbound(messages: readonly Message[]): readonly Inbo
 }
 
 // ---------------------------------------------------------------------------
-// Role detection helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Detect whether an InboundMessage represents an assistant message.
- *
- * Conversation middleware stores assistant messages with agentId as senderId
- * (e.g., "koi-demo"), not literally "assistant". This helper checks all known
- * signals so callers don't have to replicate the detection logic:
- *
- * 1. senderId === "assistant" — from piMessageToInbound (pi → Koi forward path)
- * 2. metadata.originalRole === "assistant" — from conversation middleware reload
- * 3. metadata.role === "assistant" — from expandLabeledBlocks / channel adapters
- * 4. metadata.agentId matches senderId — legacy fallback for old history
- */
-function isAssistantInbound(msg: InboundMessage): boolean {
-  if (msg.senderId === "assistant") return true;
-  const meta = msg.metadata as Record<string, unknown> | undefined;
-  if (meta === undefined) return false;
-  if (meta.originalRole === "assistant") return true;
-  if (meta.role === "assistant") return true;
-  // Legacy: conversation middleware sets agentId in metadata; if senderId matches, it's assistant
-  if (typeof meta.agentId === "string" && msg.senderId === meta.agentId) return true;
-  return false;
-}
-
-/**
- * Detect whether an InboundMessage represents a tool result.
- */
-function isToolInbound(msg: InboundMessage): boolean {
-  if (msg.senderId === "tool") return true;
-  const meta = msg.metadata as Record<string, unknown> | undefined;
-  if (meta === undefined) return false;
-  if (meta.originalRole === "tool") return true;
-  if (meta.role === "tool") return true;
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Reverse conversion: Koi InboundMessage → pi Message
 // ---------------------------------------------------------------------------
 
@@ -107,8 +68,32 @@ function isToolInbound(msg: InboundMessage): boolean {
  * preserved recent messages only need valid role/content for the Anthropic API request.
  */
 export function inboundToPiMessage(msg: InboundMessage): Message {
-  if (isAssistantInbound(msg)) return inboundToAssistantMessage(msg);
-  if (isToolInbound(msg)) return inboundToToolResultMessage(msg);
+  if (msg.senderId === "assistant") {
+    return inboundToAssistantMessage(msg);
+  }
+  if (msg.senderId === "tool") {
+    return inboundToToolResultMessage(msg);
+  }
+  // Conversation middleware stores assistant messages with agentId as senderId
+  // (e.g., "koi-demo", "agent-1"). Detect these via fromHistory metadata + role,
+  // or by checking that senderId is not a known user/system pattern.
+  // The metadata.fromHistory + original role is the most reliable signal.
+  const meta = msg.metadata as Record<string, unknown> | undefined;
+  if (meta?.fromHistory === true) {
+    // ThreadMessage.role was "assistant" → senderId was set to agentId
+    // ThreadMessage.role was "tool" → senderId was set to "tool" (already caught above)
+    // ThreadMessage.role was "user" → senderId was set to userId or "user"
+    // ThreadMessage.role was "system" → senderId was set to "system"
+    // So if fromHistory is true and senderId is not "user"/"system"/"tool" or "system:*",
+    // it must be an assistant message with agentId as senderId.
+    if (
+      msg.senderId !== "user" &&
+      msg.senderId !== "system" &&
+      !msg.senderId.startsWith("system:")
+    ) {
+      return inboundToAssistantMessage(msg);
+    }
+  }
   // "user", "system:compactor", or any other senderId → UserMessage
   return inboundToUserMessage(msg);
 }
@@ -143,11 +128,11 @@ export function engineInputToPrompt(input: EngineInput): string {
       return input.text;
     case "messages": {
       // Search backwards for the last non-assistant message with text content.
-      // Assistant messages may use agentId as senderId (e.g., "koi-demo") rather
-      // than literal "assistant", so check metadata signals via isAssistantInbound.
+      // senderId is channel-specific and not always "user" — only "assistant" is
+      // a reliable sentinel for skipping model-generated messages.
       for (let i = input.messages.length - 1; i >= 0; i--) {
         const msg = input.messages[i];
-        if (msg && !isAssistantInbound(msg)) {
+        if (msg && msg.senderId !== "assistant") {
           const mapped = mapContentBlocksForEngine(msg.content, PI_CAPABILITIES);
           const textBlock = mapped.find((c) => c.kind === "text");
           if (textBlock?.kind === "text") {
@@ -179,12 +164,10 @@ export function engineInputToHistory(input: EngineInput): readonly Message[] {
     case "messages": {
       // Find the index of the last non-assistant message (the one used as prompt).
       // Everything before it is history that must be preserved.
-      // Assistant messages may use agentId as senderId (e.g., "koi-demo") rather
-      // than literal "assistant", so check metadata signals via isAssistantInbound.
       let lastUserIndex = -1;
       for (let i = input.messages.length - 1; i >= 0; i--) {
         const msg = input.messages[i];
-        if (msg && !isAssistantInbound(msg)) {
+        if (msg && msg.senderId !== "assistant") {
           const mapped = mapContentBlocksForEngine(msg.content, PI_CAPABILITIES);
           const textBlock = mapped.find((c) => c.kind === "text");
           if (textBlock?.kind === "text") {

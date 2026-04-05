@@ -22,6 +22,7 @@ import {
 } from "../commands/command-definitions.js";
 import { fuzzyFilter } from "../commands/fuzzy-match.js";
 import { StoreContext, useTuiStore } from "../store-context.js";
+import { COLORS } from "../theme.js";
 import { SelectOverlay } from "./SelectOverlay.js";
 
 // ---------------------------------------------------------------------------
@@ -144,7 +145,7 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
     <box
       flexDirection="column"
       border={true}
-      borderColor="#60A5FA"
+      borderColor={COLORS.blueAccent}
       width={60}
       position="absolute"
       top={1}
@@ -153,16 +154,16 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
     >
       {/* Header */}
       <box paddingLeft={1} paddingTop={1}>
-        <text fg="#60A5FA">
+        <text fg={COLORS.blueAccent}>
           <b>{"Commands"}</b>
         </text>
       </box>
 
       {/* Search query display */}
       <box paddingLeft={1} paddingBottom={1}>
-        <text fg="#64748B">{"/ "}</text>
-        <text fg="#E2E8F0">{query()}</text>
-        {props.focused ? <text fg="#60A5FA">{"▌"}</text> : null}
+        <text fg={COLORS.textMuted}>{"/ "}</text>
+        <text fg={COLORS.white}>{query()}</text>
+        {props.focused ? <text fg={COLORS.blueAccent}>{"▌"}</text> : null}
       </box>
 
       {/* Command list */}

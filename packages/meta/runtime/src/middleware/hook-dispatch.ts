@@ -50,8 +50,21 @@ export interface HookRegistryLike {
   readonly execute: (
     sessionId: string,
     event: HookEvent,
+    abortSignal?: AbortSignal,
   ) => Promise<readonly HookExecutionResult[]>;
   readonly cleanup: (sessionId: string) => void;
+  /**
+   * Returns true if the session has registered hooks. Optional so test
+   * doubles can omit it; when absent, the middleware falls back to
+   * fail-closed assumptions.
+   */
+  readonly has?: (sessionId: string) => boolean;
+  /**
+   * Returns true if the session has any registered hook whose filter
+   * matches the given event. Optional; when absent, the middleware
+   * falls back to `has` (then to fail-closed).
+   */
+  readonly hasMatching?: (sessionId: string, event: HookEvent) => boolean;
 }
 
 export interface HookDispatchConfig {
@@ -67,11 +80,15 @@ export interface HookDispatchConfig {
    * Optional hook registry for once-hook lifecycle tracking.
    * When provided, hooks are dispatched through the registry (which
    * handles once-hook consumption) instead of calling executeHooks directly.
-   * Requires registrySessionId to identify the session in the registry.
+   *
+   * The registry is keyed on the live runtime session (ctx.session.sessionId)
+   * for each dispatch — callers are responsible for calling
+   * registry.register(sessionId, agentId, hooks) for each session they want
+   * once-hook tracking on, and registry.cleanup(sessionId) at session end.
+   * Sessions that have not been registered produce no hook results (see
+   * HookRegistry.execute contract), so the middleware degrades cleanly.
    */
   readonly registry?: HookRegistryLike;
-  /** Session ID used for registry.execute(). Required when registry is set. */
-  readonly registrySessionId?: string;
 }
 
 /**
@@ -83,7 +100,61 @@ export interface HookDispatchConfig {
  * - modify: patches request.input before proceeding
  */
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
-  const { hooks, store, docId, signal, registry, registrySessionId } = config;
+  const { hooks, store, docId, signal, registry } = config;
+
+  /**
+   * Does ANY configured hook have a filter that could match post-tool
+   * events (tool.succeeded / tool.failed) for the given toolId? Used to
+   * gate cancel-redaction per-call: if no post-hook could have matched
+   * this specific tool, a late caller abort is not bypassing any
+   * fail-closed contract and we return the raw output.
+   *
+   * Registry path: we cannot introspect registered hooks from outside,
+   * so we fail closed (return true and redact on cancel).
+   */
+  function hasPostHookFor(
+    toolId: string,
+    sessionId: string,
+    agentId: string,
+    eventName: "tool.succeeded" | "tool.failed",
+  ): boolean {
+    if (registry !== undefined) {
+      // Prefer the tight `hasMatching` query — asks the registry whether
+      // any registered hook's filter matches THIS specific post-event for
+      // THIS specific tool. Falls back to `has` (any hooks at all), then
+      // to fail-closed when neither introspection method exists.
+      if (registry.hasMatching !== undefined) {
+        return registry.hasMatching(sessionId, {
+          event: eventName,
+          agentId,
+          sessionId,
+          toolName: toolId,
+        });
+      }
+      if (registry.has !== undefined) return registry.has(sessionId);
+      return true;
+    }
+    return hooks.some((h) => {
+      // Fail-open hooks (failClosed: false) are explicitly configured to
+      // preserve committed tool output on hook failure — redacting them
+      // under cancellation contradicts caller intent. Only fail-closed
+      // hooks justify cancel-redaction. Prompt hooks have no failClosed
+      // field (not applicable to their verdict model), so they default
+      // to fail-closed here — treat absent as true.
+      const failClosed = "failClosed" in h ? (h as { failClosed?: boolean }).failClosed : undefined;
+      if (failClosed === false) return false;
+      const filter = h.filter;
+      // No filter = match all events and tools.
+      if (filter === undefined) return true;
+      // Event-side check — specifically for the post-event we're about to fire.
+      const eventMatches =
+        filter.events === undefined || filter.events.some((ev) => ev === eventName || ev === "*");
+      if (!eventMatches) return false;
+      // Tool-side check: if filter.tools is present, this tool must be in it.
+      const toolMatches = filter.tools === undefined || filter.tools.includes(toolId);
+      return toolMatches;
+    });
+  }
 
   /**
    * Summarize a JsonObject payload for trace metadata. Records field names
@@ -146,16 +217,18 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     }
   }
 
-  /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
+  /**
+   * Dispatch hooks through the registry (once-hook aware, keyed on the live
+   * runtime session) or direct executeHooks. event.sessionId is the live
+   * session id from TurnContext, so the registry is addressed per-session
+   * and once-hook consumption stays scoped to the caller's session.
+   */
   async function dispatchHooks(
     event: HookEvent,
     abortSignal?: AbortSignal,
   ): Promise<readonly HookExecutionResult[]> {
-    if (registry !== undefined && registrySessionId !== undefined) {
-      // Use the configured session ID and override the event's sessionId
-      // to match what was registered. The registry enforces identity anyway.
-      const registryEvent: HookEvent = { ...event, sessionId: registrySessionId };
-      return registry.execute(registrySessionId, registryEvent);
+    if (registry !== undefined) {
+      return registry.execute(event.sessionId, event, abortSignal);
     }
     return executeHooks(hooks, event, abortSignal);
   }
@@ -234,7 +307,10 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * than no redaction). Returns the failure reason or undefined if all passed.
    */
   function checkPostHookFailures(results: readonly HookExecutionResult[]): string | undefined {
-    const failed = results.filter((r) => !r.ok);
+    // Only fail-closed hooks (failClosed: true or absent) drive redaction.
+    // failClosed: false is an explicit opt-out: the hook's failure should
+    // NOT suppress output (e.g. observational / telemetry hooks).
+    const failed = results.filter((r) => !r.ok && r.failClosed !== false);
     if (failed.length === 0) return undefined;
     return `Post-hook(s) failed: ${failed.map((r) => r.hookName).join(", ")}`;
   }
@@ -293,6 +369,18 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      // Fail closed on cancellation: if the caller has already aborted, abort
+      // the tool call before dispatching hooks. Otherwise registry-backed
+      // hooks short-circuit on the aborted signal (returning []), which
+      // aggregatePreDecisions would interpret as "continue" — bypassing
+      // fail-closed pre-hooks and letting the tool run under cancellation.
+      const effectiveSignal = ctx.signal ?? signal;
+      if (effectiveSignal?.aborted === true) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted before hook dispatch`,
+          "AbortError",
+        );
+      }
       // Pre-execution: tool.before — supports block/modify decisions
       const preEvent: HookEvent = {
         event: "tool.before",
@@ -300,8 +388,23 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         sessionId: ctx.session.sessionId as string,
         toolName: request.toolId,
       };
-      const preResults = await dispatchHooks(preEvent, ctx.signal ?? signal);
+      const preResults = await dispatchHooks(preEvent, effectiveSignal);
       await recordHookResults(preResults, `tool.before:${request.toolId}`);
+
+      // Re-check cancellation after dispatch. If the signal aborted while
+      // pre-hooks were running, the registry returned [] and aggregating
+      // that as "continue" would let the tool run under cancellation,
+      // bypassing any fail-closed pre-hooks that were interrupted. The
+      // explicit-undefined form avoids the narrowing that `?.aborted`
+      // would inherit from the pre-dispatch guard above — the signal can
+      // flip to aborted during the `await dispatchHooks(...)`.
+      // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
+      if (effectiveSignal !== undefined && effectiveSignal.aborted) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted during pre-hook dispatch`,
+          "AbortError",
+        );
+      }
 
       // Enforce pre-execution decisions
       const decision = aggregatePreDecisions(preResults);
@@ -334,8 +437,43 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           sessionId: ctx.session.sessionId as string,
           toolName: request.toolId,
         };
-        const postResults = await dispatchHooks(postEvent, ctx.signal ?? signal);
+        const postResults = await dispatchHooks(postEvent, effectiveSignal);
         await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
+
+        // Fail closed on cancellation: if the caller's signal aborted during
+        // post-hook dispatch AND the middleware is configured with at least
+        // one hook that could match post-tool events, registry.execute()
+        // may have returned [] under cancellation and silently skipped a
+        // fail-closed post-hook (output redaction, audit). The tool already
+        // ran and side effects are committed, so we redact defensively.
+        // When no post-hook candidate exists at all, a late abort is not
+        // bypassing any contract and the raw output is returned normally.
+        // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
+        const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
+        // Only redact when post-hooks actually got skipped: results must be
+        // empty (dispatched but short-circuited on cancel) AND a matching
+        // post-hook could have run. If postResults is non-empty, hooks DID
+        // run and checkPostHookFailures below will honor their decisions;
+        // redacting on top of that would be double-redaction and would
+        // corrupt successful tool output races with late aborts.
+        if (
+          postAborted &&
+          postResults.length === 0 &&
+          hasPostHookFor(
+            request.toolId,
+            ctx.session.sessionId as string,
+            ctx.session.agentId,
+            postEventName,
+          ) &&
+          response !== undefined
+        ) {
+          return {
+            output: "[output redacted: post-hooks skipped due to cancellation]",
+            ...(response.metadata !== undefined
+              ? { metadata: { ...response.metadata, committedButRedacted: true } }
+              : { metadata: { committedButRedacted: true } }),
+          };
+        }
 
         // Post-hook failures redact output (security: partial redaction is
         // worse than no redaction). The tool already ran and side effects

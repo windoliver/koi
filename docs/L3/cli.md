@@ -76,11 +76,12 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
 
-**Wiring (as of this PR):**
+**Wiring (as of PR #1518):**
 
 - Model: `google/gemini-2.0-flash-001` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
+- **No tools / no Spawn**: `koi start` runs without any tool inventory. `Spawn` is not registered because built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that are not available in this bare CLI path. Agent spawn support will land with manifest/tool wiring (#1264).
 - Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message
 - SIGINT: aborts gracefully, exits with `ExitCode.FAILURE` so automation can detect cancellation
 
@@ -95,18 +96,38 @@ koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 
 ### `koi tui`
 
-Interactive terminal console. Opens a full-screen OpenTUI terminal UI with conversation view,
-command palette (Ctrl+P), and view switching (sessions, doctor, help).
+Interactive terminal console. Opens a full-screen OpenTUI terminal UI with real model streaming,
+conversation history, command palette (Ctrl+P), and view switching (sessions, doctor, help).
 
 ```bash
 koi tui
 ```
 
-**Flags:** none yet — engine adapter wiring (`--agent <manifest>`) is pending full #1459 integration.
+**Environment variables:**
 
-**Current behaviour:** The TUI shell renders and accepts input. Submitting a message shows an
-`ENGINE_NOT_CONFIGURED` error until the engine adapter is wired in a follow-up PR. Requires a
-real TTY; exits 1 with an error message when stdout is not a terminal (e.g. CI pipes).
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | one of these | — | Key for OpenRouter (default provider) |
+| `OPENAI_API_KEY` | one of these | — | Key for OpenAI (`api.openai.com/v1`) |
+| `KOI_MODEL` | no | `google/gemini-2.0-flash-001` | Model name passed to the provider |
+| `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
+
+**Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
+base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
+so the key is not forwarded to OpenRouter.
+
+**Flags:** none — engine adapter is wired directly from environment variables. Manifest-based
+`--agent` wiring is pending full #1459 integration.
+
+**Behaviour:**
+- Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
+- Multi-turn conversation history is maintained in-process and replayed with every submit.
+- Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
+- `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.
+- Session picker: session resume is not yet implemented — selecting a session fails closed (aborts stream, clears state) and shows `SESSIONS_NOT_IMPLEMENTED`.
+- Unimplemented commands surface an explicit `COMMAND_NOT_IMPLEMENTED` error rather than silently no-oping.
+- Overlapping submits are rejected with `SUBMIT_IN_PROGRESS`; user must Ctrl+C first.
+- Requires a real TTY; exits 1 with an error message when stdout is not a terminal (e.g. CI pipes).
 
 ### `koi serve`
 

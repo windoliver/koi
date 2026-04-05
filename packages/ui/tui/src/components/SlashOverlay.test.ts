@@ -6,10 +6,10 @@ import { handleSlashOverlayKey } from "./SlashOverlay.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mockKey(name: string): KeyEvent {
+function mockKey(name: string, ctrl = false): KeyEvent {
   return {
     name,
-    ctrl: false,
+    ctrl,
     meta: false,
     shift: false,
     option: false,
@@ -28,11 +28,17 @@ function mockKey(name: string): KeyEvent {
 function mockCallbacks(): {
   readonly onSelect: () => void;
   readonly onDismiss: () => void;
+  readonly onMoveUp: () => void;
+  readonly onMoveDown: () => void;
   readonly selectCount: () => number;
   readonly dismissCount: () => number;
+  readonly upCount: () => number;
+  readonly downCount: () => number;
 } {
   let selectCalls = 0;
   let dismissCalls = 0;
+  let upCalls = 0;
+  let downCalls = 0;
   return {
     onSelect: () => {
       selectCalls++;
@@ -40,8 +46,16 @@ function mockCallbacks(): {
     onDismiss: () => {
       dismissCalls++;
     },
+    onMoveUp: () => {
+      upCalls++;
+    },
+    onMoveDown: () => {
+      downCalls++;
+    },
     selectCount: () => selectCalls,
     dismissCount: () => dismissCalls,
+    upCount: () => upCalls,
+    downCount: () => downCalls,
   };
 }
 
@@ -73,17 +87,50 @@ describe("handleSlashOverlayKey", () => {
     expect(cb.selectCount()).toBe(1);
   });
 
+  test("up navigates and returns true", () => {
+    const cb = mockCallbacks();
+    const consumed = handleSlashOverlayKey(mockKey("up"), cb);
+    expect(consumed).toBe(true);
+    expect(cb.upCount()).toBe(1);
+    expect(cb.selectCount()).toBe(0);
+  });
+
+  test("down navigates and returns true", () => {
+    const cb = mockCallbacks();
+    const consumed = handleSlashOverlayKey(mockKey("down"), cb);
+    expect(consumed).toBe(true);
+    expect(cb.downCount()).toBe(1);
+    expect(cb.selectCount()).toBe(0);
+  });
+
+  test("Ctrl+P navigates up and returns true", () => {
+    const cb = mockCallbacks();
+    const consumed = handleSlashOverlayKey(mockKey("p", true), cb);
+    expect(consumed).toBe(true);
+    expect(cb.upCount()).toBe(1);
+  });
+
+  test("Ctrl+N navigates down and returns true", () => {
+    const cb = mockCallbacks();
+    const consumed = handleSlashOverlayKey(mockKey("n", true), cb);
+    expect(consumed).toBe(true);
+    expect(cb.downCount()).toBe(1);
+  });
+
   test("unknown key returns false (not consumed)", () => {
     const cb = mockCallbacks();
     const consumed = handleSlashOverlayKey(mockKey("a"), cb);
     expect(consumed).toBe(false);
     expect(cb.selectCount()).toBe(0);
     expect(cb.dismissCount()).toBe(0);
+    expect(cb.upCount()).toBe(0);
+    expect(cb.downCount()).toBe(0);
   });
 
-  test("arrow keys are not consumed (handled by <select>)", () => {
-    const cb = mockCallbacks();
-    expect(handleSlashOverlayKey(mockKey("up"), cb)).toBe(false);
-    expect(handleSlashOverlayKey(mockKey("down"), cb)).toBe(false);
+  test("optional onMoveUp/onMoveDown can be omitted", () => {
+    // Passing callbacks without navigation handlers must not throw
+    const base = { onSelect: () => {}, onDismiss: () => {} };
+    expect(() => handleSlashOverlayKey(mockKey("up"), base)).not.toThrow();
+    expect(() => handleSlashOverlayKey(mockKey("down"), base)).not.toThrow();
   });
 });

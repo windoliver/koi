@@ -99,6 +99,20 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
   const { resolver, base, adapter, manifestTemplate, inheritedMiddleware } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
+    // Issue 16: fast-path for already-expired deadlines. If the caller set an absolute
+    // deadline and it has already passed (e.g. request was queued and delayed), fail
+    // immediately before doing any resolution or assembly work.
+    if (request.absoluteDeadlineMs !== undefined && request.absoluteDeadlineMs <= Date.now()) {
+      return {
+        ok: false,
+        error: {
+          code: "TIMEOUT",
+          message: `Spawn request for "${request.agentName}" was rejected: absoluteDeadlineMs (${request.absoluteDeadlineMs}) has already elapsed.`,
+          retryable: false,
+        },
+      };
+    }
+
     // Capture absolute deadline immediately so setup time (slot acquisition, assembly)
     // is deducted from the child's budget regardless of the delivery mode.
     // Callers that already set absoluteDeadlineMs (e.g. the Spawn tool) are respected;
@@ -148,6 +162,35 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     );
     if (permissionError !== undefined) {
       return { ok: false, error: permissionError };
+    }
+
+    // 3b. additionalTools ceiling guard — Issue 1.
+    //     A parent cannot inject tools into a child that the parent itself does not hold.
+    //     This enforces the invariant: children can only receive a subset of parent capabilities.
+    //     (Open Security Architecture SP-047: privilege cannot accumulate through delegation chains.)
+    if (request.additionalTools !== undefined && request.additionalTools.length > 0) {
+      const parentToolNames = new Set<string>();
+      for (const [token] of base.parentAgent.query<import("@koi/core").Tool>("tool:")) {
+        const tokenStr = token as string;
+        parentToolNames.add(tokenStr.slice("tool:".length));
+      }
+      const unknownTools = request.additionalTools.filter(
+        (desc) => !parentToolNames.has(desc.name),
+      );
+      if (unknownTools.length > 0) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message:
+              `Cannot spawn "${request.agentName}": additionalTools contains tool(s) not registered ` +
+              `on the parent agent — a parent cannot confer capabilities it does not hold. ` +
+              `Unknown tool(s): ${unknownTools.map((t) => t.name).join(", ")}. ` +
+              `Register the tool on the parent first, or remove it from additionalTools.`,
+            retryable: false,
+          },
+        };
+      }
     }
 
     // 4. Build middleware: inherited + system prompt injection

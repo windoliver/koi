@@ -35,9 +35,11 @@ describe.skipIf(!distExists)("build output", () => {
     }
   });
 
-  test("index bundle is under 21KB", async () => {
+  test("index bundle is under 22KB", async () => {
+    // Threshold updated: ToolFilterSpec + helpers (toolFilterFromManifest,
+    // toolFilterFromSpawnRequest) + AgentResolverQuery added to L0 for Issue #1240.
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(21504);
+    expect(size).toBeLessThan(22528);
   });
 });

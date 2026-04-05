@@ -69,6 +69,8 @@ export interface CreateTuiAppConfig {
    * The injected renderer is NOT destroyed on stop() — the caller owns its lifecycle.
    */
   readonly renderer?: CliRenderer | undefined;
+  readonly screenMode?: "split-footer" | undefined;
+  readonly footerHeight?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     onSubmit,
     onInterrupt,
     renderer: injectedRenderer,
+    screenMode,
+    footerHeight,
   } = config;
 
   let started = false;
@@ -155,7 +159,14 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           // Tests with an injected renderer never reach this branch.
           try {
             const { createCliRenderer } = await import("@opentui/core");
-            localRenderer = await createCliRenderer({ exitOnCtrlC: false });
+            localRenderer =
+              screenMode === "split-footer"
+                ? await createCliRenderer({
+                    exitOnCtrlC: false,
+                    screenMode,
+                    ...(footerHeight !== undefined ? { footerHeight } : {}),
+                  })
+                : await createCliRenderer({ exitOnCtrlC: false });
           } catch (e: unknown) {
             throw new Error("Failed to start TUI renderer", { cause: e });
           }

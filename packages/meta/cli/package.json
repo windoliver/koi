@@ -2,15 +2,42 @@
   "name": "@koi/cli",
   "description": "Interactive command-line interface for agent initialization and local execution",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "koi": "./dist/bin.js"
+  },
+  "files": [
+    "dist/"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/windoliver/koi.git",
+    "directory": "packages/meta/cli"
+  },
+  "homepage": "https://github.com/windoliver/koi",
+  "license": "SEE LICENSE IN LICENSE",
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "tui",
+    "llm"
+  ],
   "dependencies": {
+    "@opentui/core": "0.1.96",
+    "@opentui/solid": "0.1.96",
+    "solid-js": "1.9.11"
+  },
+  "devDependencies": {
     "@koi/channel-cli": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",

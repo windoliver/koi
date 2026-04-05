@@ -125,7 +125,7 @@ describe("ConversationView — focused prop", () => {
 // ---------------------------------------------------------------------------
 
 describe("ConversationView — onSubmit", () => {
-  test("onSubmit prop is wired to InputArea", async () => {
+  test("onSubmit is not called spuriously at mount", async () => {
     const onSubmit = mock((_text: string) => {});
     const store = createStore(createInitialState());
     const { renderOnce, renderer } = await testRender(
@@ -141,9 +141,8 @@ describe("ConversationView — onSubmit", () => {
       OPTS,
     );
     await renderOnce();
-    // onSubmit is wired — not invoked at render time
+    // onSubmit must not fire on mount — fires only on explicit Enter key from InputArea
     expect(onSubmit).not.toHaveBeenCalled();
     renderer.destroy();
   });
 });
-
