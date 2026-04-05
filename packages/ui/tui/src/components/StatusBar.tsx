@@ -35,11 +35,11 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
 function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
   if (!props.info) return <text fg="#64748B">{"no session"}</text>;
   return (
-    <text fg="#94A3B8">
-      {props.info.modelName}
+    <box flexDirection="row">
+      <text fg="#94A3B8">{props.info.modelName}</text>
       <text fg="#64748B">{" · "}</text>
-      {props.info.provider}
-    </text>
+      <text fg="#94A3B8">{props.info.provider}</text>
+    </box>
   );
 }
 
