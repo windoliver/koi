@@ -73,8 +73,8 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
     }
   });
 
-  test("has exactly 9 codes (no unexpected additions)", () => {
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(9);
+  test("has exactly 10 codes (no unexpected additions)", () => {
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(10);
   });
 });
 

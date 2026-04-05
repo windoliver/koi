@@ -362,7 +362,7 @@ describe("rlm_query tool", () => {
       tracker,
       depth: 0,
       startTime: Date.now() - 120_000, // 2 minutes ago
-      timeBudgetMs: 60_000, // 1 minute budget (already exhausted)
+      timeBudgetMs: 60_000,            // 1 minute budget (already exhausted)
     });
 
     const result = await tool.execute({ input: "sub-input" });

@@ -66,20 +66,21 @@ describe("bin.ts", () => {
   });
 
   describe("known commands — dispatch", () => {
-    // Stub commands exit 2 (FAILURE) to fail closed — automation must not treat
-    // a no-op stub as a successful operation.
+    // Stub commands (Phase 2i-3) exit 2 (FAILURE) to fail closed — automation
+    // must not treat a no-op stub as a successful operation.
     test("stub commands exit 2 (FAILURE)", async () => {
-      for (const cmd of ["init", "start", "serve", "logs", "status", "stop", "deploy"]) {
+      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
         const r = await runBin([cmd]);
         expect(r.exitCode).toBe(2);
         expect(r.stderr).toContain("Phase 2i-3");
       }
     });
 
-    test("koi start --manifest echoes manifest path to stderr", async () => {
-      const r = await runBin(["start", "--manifest", "my.yaml"]);
+    // start is wired — exits 2 with API key error when no key is set
+    test("koi start exits 2 with no API key message", async () => {
+      const r = await runBin(["start"], { OPENROUTER_API_KEY: "" });
       expect(r.exitCode).toBe(2);
-      expect(r.stderr).toContain("my.yaml");
+      expect(r.stderr).toContain("no API key");
     });
 
     test("koi tui exits 1 with TTY error outside a terminal", async () => {
@@ -189,6 +190,20 @@ describe("bin.ts", () => {
     });
   });
 
+  describe("--prompt empty value rejection", () => {
+    test("--prompt '' exits 1 with error (prevents silent fallback to interactive mode)", async () => {
+      const r = await runBin(["start", "--prompt", ""]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--prompt");
+    });
+
+    test("--prompt with whitespace-only exits 1", async () => {
+      const r = await runBin(["start", "--prompt", "   "]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--prompt");
+    });
+  });
+
   describe("--log-format validation", () => {
     test("invalid --log-format exits 1 with error", async () => {
       const r = await runBin(["start", "--log-format", "xml"]);
@@ -200,6 +215,12 @@ describe("bin.ts", () => {
     test("LOG_FORMAT env var with invalid value exits 1", async () => {
       const r = await runBin(["start"], { LOG_FORMAT: "xml" });
       expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--log-format");
+    });
+
+    test("--log-format json exits 2 (not yet implemented)", async () => {
+      const r = await runBin(["start", "--log-format", "json"], { OPENROUTER_API_KEY: "" });
+      expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("--log-format");
     });
   });
@@ -215,6 +236,43 @@ describe("bin.ts", () => {
       const r = await runBin(["serve", "-h"]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("koi");
+    });
+  });
+
+  describe("start command — new flags (Phase 2i-3)", () => {
+    // Unset API key so these flag-shape tests don't make real API calls.
+    const NO_KEY = { OPENROUTER_API_KEY: "" } as const;
+
+    test("--prompt accepted as known flag (exits 2, not 1)", async () => {
+      const r = await runBin(["start", "--prompt", "list files"], NO_KEY);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("-p shorthand accepted for --prompt", async () => {
+      const r = await runBin(["start", "-p", "go"], NO_KEY);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--resume accepted as known flag", async () => {
+      const r = await runBin(["start", "--resume", "ses_abc"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--no-tui accepted as known flag", async () => {
+      const r = await runBin(["start", "--no-tui"], NO_KEY);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("single-prompt mode exits 2 with no API key message", async () => {
+      const r = await runBin(["start", "--prompt", "list files"], {
+        OPENROUTER_API_KEY: "",
+      });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("no API key");
     });
   });
 });

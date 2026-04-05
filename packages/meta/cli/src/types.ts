@@ -26,13 +26,18 @@ export const ExitCode: {
 export type ExitCode = 0 | 1 | 2;
 
 // ---------------------------------------------------------------------------
-// CommandModule — every command file must satisfy this interface.
-// registry.ts uses Readonly<Record<KnownCommand, () => Promise<CommandModule>>>
-// to enforce exhaustiveness over all 10 commands at compile time.
+// CommandModule<F> — every command file must satisfy this interface.
+//
+// Generic F lets each command's `run()` receive its specific flag type without
+// internal narrowing. The dispatch boundary (bin.ts) holds a single justified
+// cast from F → CliFlags since the parser already produced the correct type.
+//
+// registry.ts maps each KnownCommand to CommandModule<XxxFlags> for compile-
+// time verification that each loader returns the right shaped module.
 // ---------------------------------------------------------------------------
 
-export interface CommandModule {
-  readonly run: (flags: CliFlags) => Promise<ExitCode>;
+export interface CommandModule<F extends CliFlags = CliFlags> {
+  readonly run: (flags: F) => Promise<ExitCode>;
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
@@ -33,6 +34,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/query-engine": "workspace:*",
+    "@koi/sandbox-os": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",

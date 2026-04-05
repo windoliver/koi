@@ -4,5 +4,15 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../../kernel/engine" },
+    { "path": "../../lib/channel-cli" },
+    { "path": "../../lib/harness" },
+    { "path": "../../mm/model-openai-compat" },
+    { "path": "../../lib/query-engine" },
+    { "path": "../runtime" },
+    { "path": "../../lib/tools-builtin" }
+  ]
 }

@@ -1,0 +1,142 @@
+/**
+ * Shared parser infrastructure — used by all per-command arg modules.
+ *
+ * Exports: ParseError, BaseFlags, typedParseArgs, parseIntFlag,
+ * resolveLogFormat, detectGlobalFlags, extractCommand, GLOBAL_RAW_FLAGS.
+ */
+
+import { parseArgs as nodeParseArgs } from "node:util";
+
+// ---------------------------------------------------------------------------
+// Parse error
+// ---------------------------------------------------------------------------
+
+export class ParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ParseError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Base flag types
+// ---------------------------------------------------------------------------
+
+export interface BaseFlags {
+  readonly command: string | undefined;
+  readonly version: boolean;
+  readonly help: boolean;
+}
+
+export type GlobalFlags = { readonly version: boolean; readonly help: boolean };
+
+// ---------------------------------------------------------------------------
+// Internal types (not exported — only used by per-command parsers)
+// ---------------------------------------------------------------------------
+
+type ParseToken =
+  | {
+      readonly kind: "option";
+      readonly name: string;
+      readonly rawName: string;
+      readonly value: string | undefined;
+      readonly inlineValue: boolean | undefined;
+    }
+  | { readonly kind: "positional"; readonly value: string }
+  | { readonly kind: "option-terminator" };
+
+type OptionConfig = {
+  readonly type: "string" | "boolean";
+  readonly short?: string;
+  readonly multiple?: boolean;
+  readonly default?: string | boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Shared parser helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed wrapper around node:util parseArgs with unknown-flag rejection.
+ *
+ * Isolates the single justified cast boundary with the external nodeParseArgs
+ * API (complex overloads + tokens: true return type). All callers get fully
+ * typed values via T with zero scattered casts.
+ */
+export function typedParseArgs<T extends Record<string, string | boolean | string[] | undefined>>(
+  config: {
+    readonly args: readonly string[];
+    readonly options: Readonly<Record<string, OptionConfig>>;
+    readonly allowPositionals?: boolean;
+  },
+  command: string,
+): { readonly values: T; readonly positionals: readonly string[] } {
+  const parseResult = nodeParseArgs({
+    args: [...config.args],
+    options: config.options,
+    strict: false,
+    allowPositionals: config.allowPositionals ?? false,
+    tokens: true,
+  } as unknown as Parameters<typeof nodeParseArgs>[0]) as unknown as {
+    readonly values: Record<string, string | boolean | string[] | undefined>;
+    readonly positionals: readonly string[];
+    readonly tokens: ReadonlyArray<ParseToken>;
+  };
+
+  const knownFlags = new Set(Object.keys(config.options));
+  for (const token of parseResult.tokens) {
+    if (token.kind === "option" && !knownFlags.has(token.name)) {
+      throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
+    }
+  }
+
+  return { values: parseResult.values as T, positionals: parseResult.positionals };
+}
+
+/**
+ * Validates a numeric CLI flag. Rejects non-integers, trailing junk (e.g. "123abc"),
+ * scientific notation (e.g. "1e3"), and out-of-range values.
+ */
+export function parseIntFlag(name: string, value: string, min: number, max: number): number {
+  const range = max === Number.MAX_SAFE_INTEGER ? `≥ ${min}` : `${min}–${max}`;
+  if (!/^-?\d+$/.test(value)) {
+    throw new ParseError(`--${name} must be an integer (${range}), got '${value}'`);
+  }
+  const n = Number.parseInt(value, 10);
+  if (n < min || n > max) {
+    throw new ParseError(`--${name} must be an integer (${range}), got '${value}'`);
+  }
+  return n;
+}
+
+/**
+ * Resolves log format from flag value or LOG_FORMAT env var.
+ * Throws ParseError on invalid values.
+ */
+export function resolveLogFormat(flagValue: string | undefined): "text" | "json" {
+  const raw = flagValue ?? process.env.LOG_FORMAT;
+  if (raw === undefined || raw === "text") return "text";
+  if (raw === "json") return "json";
+  throw new ParseError(`--log-format must be 'text' or 'json', got '${raw}'`);
+}
+
+export function detectGlobalFlags(argv: readonly string[]): GlobalFlags {
+  return {
+    version: argv.some((a) => a === "--version" || a === "-V"),
+    help: argv.some((a) => a === "--help" || a === "-h"),
+  };
+}
+
+export function extractCommand(argv: readonly string[]): {
+  readonly command: string | undefined;
+  readonly rest: readonly string[];
+} {
+  const first = argv[0];
+  if (first === undefined || first.startsWith("-")) {
+    return { command: undefined, rest: argv };
+  }
+  return { command: first, rest: argv.slice(1) };
+}
+
+/** Stripped from rest before command dispatch so parsers never see them as unknown flags. */
+export const GLOBAL_RAW_FLAGS: ReadonlySet<string> = new Set(["--help", "-h", "--version", "-V"]);

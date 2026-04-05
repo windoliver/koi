@@ -34,7 +34,12 @@ import {
   createSharedContextTool,
   getAllToolDescriptors,
 } from "./tools.js";
-import type { ReplLoopResult, RlmEvent, RlmMiddlewareConfig, RlmStopReason } from "./types.js";
+import type {
+  ReplLoopResult,
+  RlmEvent,
+  RlmMiddlewareConfig,
+  RlmStopReason,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Tool call metadata shape (same as engine-loop)
@@ -165,8 +170,9 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
   const store = createInputStore(input, { maxInputBytes, chunkSize, previewLength });
   const tracker = createTokenTracker(contextWindowTokens);
   const semaphore = createSemaphore(maxConcurrency);
-  const costTracker =
-    resolved.costEstimator !== undefined ? createCostTracker(resolved.costEstimator) : undefined;
+  const costTracker = resolved.costEstimator !== undefined
+    ? createCostTracker(resolved.costEstimator)
+    : undefined;
   const startTime = Date.now();
 
   // let: set by FINAL tool callback
@@ -270,11 +276,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     }
 
     // Cost budget check
-    if (
-      costTracker !== undefined &&
-      resolved.maxCostUsd !== undefined &&
-      costTracker.exceeded(resolved.maxCostUsd)
-    ) {
+    if (costTracker !== undefined && resolved.maxCostUsd !== undefined && costTracker.exceeded(resolved.maxCostUsd)) {
       stopReason = "budget_exceeded";
       break;
     }
@@ -317,11 +319,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
 
     metrics = addModelUsage(metrics, response);
     if (costTracker !== undefined && response.usage !== undefined) {
-      costTracker.add(
-        resolved.rootModel ?? "unknown",
-        response.usage.inputTokens,
-        response.usage.outputTokens,
-      );
+      costTracker.add(resolved.rootModel ?? "unknown", response.usage.inputTokens, response.usage.outputTokens);
     }
     tracker.add(response.content);
 

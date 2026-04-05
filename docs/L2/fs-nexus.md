@@ -69,12 +69,57 @@ interface NexusFileSystemConfig {
 
 ```typescript
 interface NexusTransport {
-  readonly call: <T>(method: string, params: JsonObject) => Promise<T>;
-  readonly close: () => Promise<void>;
+  readonly call: <T>(method: string, params: Record<string, unknown>) => Promise<Result<T, KoiError>>;
+  /** Subscribe to bridge notifications (auth_required/complete/progress). Returns unsubscribe fn. */
+  readonly subscribe: (handler: (n: BridgeNotification) => void) => () => void;
+  /** Remote OAuth paste-back: forward pasted redirect URL to bridge with correlation ID. */
+  readonly submitAuthCode: (redirectUrl: string, correlationId?: string) => void;
+  readonly close: () => void;
+  readonly mounts?: readonly string[];
 }
 
-function createHttpTransport(config: HttpTransportConfig): NexusTransport;
+function createHttpTransport(config: NexusFileSystemConfig): NexusTransport;
+/** Spawns bridge.py subprocess for local/OAuth-gated mounts. */
+function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;
 ```
+
+### Inline OAuth (local bridge transport)
+
+When mounting OAuth-gated connectors (gdrive, gmail, etc.) via the local bridge transport, the bridge drives the full OAuth flow inline — no separate CLI auth step needed.
+
+**Flow:**
+
+1. Agent calls `backend.read("/gdrive/my-drive/file.txt")`
+2. Bridge catches `AuthenticationError` → generates PKCE auth URL via `nexus.fs.generate_auth_url()`
+3. Bridge sends `auth_required` notification — Koi shows URL to user via channel
+4. **Local** (macOS/Linux desktop): localhost callback server catches browser redirect automatically
+5. **Remote** (SSH/headless): user pastes redirect URL back; Koi calls `transport.submitAuthCode(url, correlationId)`
+6. Bridge exchanges code via `nexus.fs.exchange_auth_code()` → token stored → retries original operation
+7. Bridge sends `auth_complete` notification
+
+**Wire auth notifications to a channel:**
+
+```typescript
+import { createAuthNotificationHandler, createLocalTransport } from "@koi/fs-nexus";
+
+const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
+const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
+// channel.send() fires on auth_required / auth_progress / auth_complete
+```
+
+**Notification types:**
+
+```typescript
+type BridgeNotification =
+  | { method: "auth_required"; params: { provider, user_email, auth_url, message,
+        mode: "local" | "remote", correlation_id?, instructions? } }
+  | { method: "auth_complete"; params: { provider, user_email } }
+  | { method: "auth_progress"; params: { provider, elapsed_seconds, message } };
+```
+
+**New L0 error code:** `AUTH_REQUIRED` (`retryable: true`) — raised when auth times out or code exchange fails.
+
+**nexus-fs version required:** `>= 0.4.6` (provides `AuthenticationError` with `.provider`/`.auth_url`, `generate_auth_url()`, `exchange_auth_code()`).
 
 ---
 
@@ -103,6 +148,8 @@ function createHttpTransport(config: HttpTransportConfig): NexusTransport;
 | 500 / server error | `INTERNAL` | true |
 | Timeout | `TIMEOUT` | true |
 | Connection refused | `EXTERNAL` | true |
+| Auth flow timed out / user abandoned (`-32007`) | `AUTH_REQUIRED` | true |
+| Auth succeeded but access denied — wrong OAuth scope (`-32004`) | `PERMISSION` | false |
 
 ---
 

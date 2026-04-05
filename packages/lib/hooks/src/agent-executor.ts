@@ -307,7 +307,17 @@ export class AgentHookExecutor implements HookExecutor {
         const message = e instanceof Error ? e.message : String(e);
         // Abort/timeout — transient, refund reserved tokens
         this.refundTokens(event.sessionId, worstCaseTokens);
-        return this.handleTransientFailure(hook.name, message, durationMs, failClosed);
+        // Distinguish CALLER cancellation from the hook's own timeout.
+        // `signal` here is a composed signal (caller + per-hook timeout),
+        // so signal.aborted alone would misclassify timeouts as aborts.
+        // Inspect signal.reason: its name is "TimeoutError" iff the
+        // timeout fired first, otherwise it's the caller's abort reason.
+        // Hook timeouts must count against onceRetries so broken/slow
+        // hooks can reach exhausted-blocker state.
+        const reason: unknown = signal.reason;
+        const isTimeout = reason instanceof Error && reason.name === "TimeoutError";
+        const isAbort = signal.aborted && !isTimeout;
+        return this.handleTransientFailure(hook.name, message, durationMs, failClosed, isAbort);
       }
     } finally {
       this.removeInFlight(event.sessionId);
@@ -323,6 +333,7 @@ export class AgentHookExecutor implements HookExecutor {
     error: string,
     durationMs: number,
     failClosed: boolean,
+    aborted = false,
   ): HookExecutionResult {
     if (failClosed) {
       return {
@@ -331,6 +342,7 @@ export class AgentHookExecutor implements HookExecutor {
         durationMs,
         decision: { kind: "block", reason: `Agent hook failed: ${error}` },
         executionFailed: true,
+        ...(aborted ? { aborted: true as const } : {}),
       };
     }
     return {
@@ -339,6 +351,7 @@ export class AgentHookExecutor implements HookExecutor {
       durationMs,
       decision: { kind: "continue" },
       executionFailed: true,
+      ...(aborted ? { aborted: true as const } : {}),
     };
   }
 

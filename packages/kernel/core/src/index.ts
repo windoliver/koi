@@ -1089,6 +1089,8 @@ export type {
   TranscriptPageOptions,
 } from "./transcript.js";
 export { transcriptEntryId } from "./transcript.js";
+// tui adapter — optional rich terminal UI attachment contract (TuiAdapter | null)
+export type { TuiAdapter } from "./tui-adapter.js";
 // user model — unified preference learning + sensor enrichment
 export type {
   SignalSink,

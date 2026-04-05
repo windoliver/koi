@@ -148,12 +148,20 @@ async function executeCommandHook(
     const durationMs = performance.now() - start;
 
     if (signal.aborted) {
+      // Distinguish caller cancellation from the hook's own timeout.
+      // The composed signal's reason.name is "TimeoutError" when the
+      // AbortSignal.timeout fired first, otherwise it's the caller's
+      // abort reason (default AbortError). Timeouts must count against
+      // onceRetries so slow/broken hooks can reach exhausted-blocker.
+      const reason: unknown = signal.reason;
+      const isTimeout = reason instanceof Error && reason.name === "TimeoutError";
       return {
         ok: false,
         hookName: hook.name,
         error: "aborted",
         durationMs,
         failClosed: hook.failClosed,
+        ...(isTimeout ? {} : { aborted: true as const }),
       };
     }
 
@@ -171,6 +179,21 @@ async function executeCommandHook(
     return { ok: true, hookName: hook.name, durationMs, decision };
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
+    // Normalize abort exceptions to the canonical "aborted" marker so the
+    // registry's once-hook refund predicate can recognize them without
+    // fragile substring matching on error messages.
+    if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+      const reason: unknown = signal.reason;
+      const isTimeout = reason instanceof Error && reason.name === "TimeoutError";
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: "aborted",
+        durationMs,
+        failClosed: hook.failClosed,
+        ...(isTimeout ? {} : { aborted: true as const }),
+      };
+    }
     const message = e instanceof Error ? e.message : String(e);
     return {
       ok: false,
@@ -292,6 +315,22 @@ async function executeHttpHook(
     return { ok: true, hookName: hook.name, durationMs, decision };
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
+    // Normalize abort exceptions to the canonical "aborted" marker (same as
+    // the command-hook path) so the registry's once-hook refund predicate
+    // can recognize HTTP cancellations without substring-matching error
+    // messages like "This operation was aborted".
+    if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+      const reason: unknown = signal.reason;
+      const isTimeout = reason instanceof Error && reason.name === "TimeoutError";
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: "aborted",
+        durationMs,
+        failClosed: hook.failClosed,
+        ...(isTimeout ? {} : { aborted: true as const }),
+      };
+    }
     const message = e instanceof Error ? e.message : String(e);
     return {
       ok: false,

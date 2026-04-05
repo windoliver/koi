@@ -6,6 +6,8 @@
  * list, search, delete, rename) work against any Nexus instance.
  */
 
+// Auth notification → channel wiring
+export { createAuthNotificationHandler } from "./auth-notifications.js";
 // Local transport (subprocess bridge — no HTTP server needed)
 export type { LocalTransportConfig } from "./local-transport.js";
 export { createLocalTransport } from "./local-transport.js";
@@ -14,7 +16,7 @@ export type { NexusFileSystemFullConfig } from "./nexus-filesystem-backend.js";
 export { createNexusFileSystem } from "./nexus-filesystem-backend.js";
 
 // Config & types
-export type { NexusFileSystemConfig, NexusTransport } from "./types.js";
+export type { BridgeNotification, NexusFileSystemConfig, NexusTransport } from "./types.js";
 
 // Validation
 export { validateNexusFileSystemConfig } from "./validate-config.js";

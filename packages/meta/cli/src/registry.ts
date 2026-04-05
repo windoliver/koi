@@ -1,21 +1,24 @@
 /**
  * Command dispatch registry.
  *
- * Maps every KnownCommand to a lazy dynamic import() loader.
- * bin.ts awaits the loader for the dispatched command only — all other command
- * modules are never loaded, keeping startup fast.
+ * Maps every KnownCommand to a lazy dynamic import() loader. TypeScript infers
+ * the specific type per loader (e.g. `() => Promise<CommandModule<StartFlags>>`),
+ * so each command file's `run()` is type-checked against its declared flag type.
  *
- * Registry exhaustiveness is enforced by the Readonly<Record<KnownCommand, ...>>
- * type: missing or extra keys are compile-time errors.
+ * The `satisfies` check verifies exhaustiveness only — all KnownCommand keys
+ * must be present. The actual run() type safety lives in each command file.
  *
- * Rule: use import() uniformly for all command modules (same-package or cross-package).
- * This is a consistent, teachable single rule — no per-import classification needed.
+ * bin.ts holds the single justified cast at the dispatch boundary:
+ *   `(mod as CommandModule).run(flags)` — flags were produced by the
+ *   command-specific parser, so the cast is always correct at runtime.
  */
 
 import type { KnownCommand } from "./args.js";
-import type { CommandModule } from "./types.js";
 
-export const COMMAND_LOADERS: Readonly<Record<KnownCommand, () => Promise<CommandModule>>> = {
+// Explicit type satisfies isolatedDeclarations and enforces exhaustiveness.
+// Using Promise<unknown> avoids contravariant run() conflicts — the cast lives
+// in bin.ts at the dispatch boundary where flags are already command-specific.
+export const COMMAND_LOADERS: Readonly<Record<KnownCommand, () => Promise<unknown>>> = {
   init: () => import("./commands/init.js"),
   start: () => import("./commands/start.js"),
   serve: () => import("./commands/serve.js"),

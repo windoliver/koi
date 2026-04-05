@@ -1,17 +1,41 @@
 import type { SandboxProfile } from "@koi/core";
 
 /**
+ * macOS uses top-level symlinks that seatbelt does NOT resolve:
+ *   /var  → /private/var
+ *   /tmp  → /private/tmp
+ *   /etc  → /private/etc
+ *
+ * Seatbelt matches rule paths literally, so `(subpath "/tmp/foo")` will NOT
+ * match `/private/tmp/foo` — the actual path seen by the kernel. Canonicalize
+ * all paths before writing rules to the profile.
+ */
+const MACOS_SYMLINK_PREFIXES: ReadonlyArray<readonly [string, string]> = [
+  ["/var", "/private/var"],
+  ["/tmp", "/private/tmp"],
+  ["/etc", "/private/etc"],
+] as const;
+
+function canonicalizeMacOsPath(path: string): string {
+  for (const [from, to] of MACOS_SYMLINK_PREFIXES) {
+    if (path === from || path.startsWith(`${from}/`)) {
+      return to + path.slice(from.length);
+    }
+  }
+  return path;
+}
+
+/**
  * Resolve a path for use in a seatbelt rule.
- * - ~/... → $HOME/...
+ * - ~/... → {home}/...  (home must be passed explicitly)
  * - Glob patterns (path/*) → base directory (path/)
  * - Relative paths are rejected (return null)
- * - Absolute paths returned as-is
+ * - Absolute paths are canonicalized (/tmp → /private/tmp etc.)
  */
-function resolvePath(path: string): string | null {
+function resolvePath(path: string, home: string | undefined): string | null {
   let resolved = path;
 
   if (resolved.startsWith("~/")) {
-    const home = process.env["HOME"];
     if (home === undefined) return null;
     resolved = `${home}${resolved.slice(1)}`;
   } else if (resolved.startsWith("~")) {
@@ -23,7 +47,9 @@ function resolvePath(path: string): string | null {
   }
 
   // Strip glob suffix — use the base directory as a subpath rule
-  return resolved.replace(/\/?\*.*$/, "");
+  resolved = resolved.replace(/\/?\*.*$/, "");
+
+  return canonicalizeMacOsPath(resolved);
 }
 
 function escapeSeatbeltPath(path: string): string {
@@ -40,8 +66,17 @@ function escapeSeatbeltPath(path: string): string {
  *   - denyRead entries overlay specific subtrees
  *   - deny all writes, then allow specific write paths
  *   - network: binary allow/deny
+ *
+ * @param opts.home - HOME directory for ~/... path expansion.
+ *   Defaults to process.env.HOME. Pass explicitly in tests or sandboxed contexts
+ *   where process.env.HOME may not reflect the intended user home directory.
  */
-export function generateSeatbeltProfile(profile: SandboxProfile): string {
+export function generateSeatbeltProfile(
+  profile: SandboxProfile,
+  opts?: { readonly home?: string },
+): string {
+  const home = opts?.home ?? process.env.HOME;
+
   const lines: string[] = [
     "(version 1)",
     "(deny default)",
@@ -59,7 +94,7 @@ export function generateSeatbeltProfile(profile: SandboxProfile): string {
 
   // Block sensitive read paths (applied after the broad allow above)
   for (const path of profile.filesystem.denyRead ?? []) {
-    const resolved = resolvePath(path);
+    const resolved = resolvePath(path, home);
     if (resolved !== null) {
       lines.push(`(deny file-read* (subpath "${escapeSeatbeltPath(resolved)}"))`);
     }
@@ -70,7 +105,7 @@ export function generateSeatbeltProfile(profile: SandboxProfile): string {
   lines.push('(allow file-write* (literal "/dev/null"))');
 
   for (const path of profile.filesystem.allowWrite ?? []) {
-    const resolved = resolvePath(path);
+    const resolved = resolvePath(path, home);
     if (resolved !== null) {
       lines.push(`(allow file-write* (subpath "${escapeSeatbeltPath(resolved)}"))`);
     }
@@ -79,7 +114,7 @@ export function generateSeatbeltProfile(profile: SandboxProfile): string {
   // denyWrite: in seatbelt, deny rules take precedence over allow rules,
   // so adding deny after allow correctly revokes write access to subtrees.
   for (const path of profile.filesystem.denyWrite ?? []) {
-    const resolved = resolvePath(path);
+    const resolved = resolvePath(path, home);
     if (resolved !== null) {
       lines.push(`(deny file-write* (subpath "${escapeSeatbeltPath(resolved)}"))`);
     }
@@ -92,5 +127,8 @@ export function generateSeatbeltProfile(profile: SandboxProfile): string {
 }
 
 export function buildSeatbeltPrefix(profileStr: string): readonly string[] {
+  // Passes profile inline via -p. For very large profiles (many hundreds of paths),
+  // consider writing to a temp file and using -f instead — avoids ARG_MAX limits
+  // and hides sensitive deny-list paths from process argument listings.
   return ["sandbox-exec", "-p", profileStr];
 }

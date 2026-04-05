@@ -92,10 +92,7 @@ export function validateRlmConfig(config: unknown): Result<RlmMiddlewareConfig, 
     return validationError("'depth' must be a non-negative number");
   }
 
-  if (
-    c.maxDepth !== undefined &&
-    (typeof c.maxDepth !== "number" || c.maxDepth < 0 || !Number.isInteger(c.maxDepth))
-  ) {
+  if (c.maxDepth !== undefined && (typeof c.maxDepth !== "number" || c.maxDepth < 0 || !Number.isInteger(c.maxDepth))) {
     return validationError("'maxDepth' must be a non-negative integer");
   }
 

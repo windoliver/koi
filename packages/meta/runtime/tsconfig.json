@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../lib/agent-runtime" },
+    { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
     { "path": "../../lib/channel-cli" },
@@ -32,6 +33,7 @@
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../security/middleware-permissions" },
+    { "path": "../../sandbox/sandbox-os" },
     { "path": "../../security/permissions" },
     { "path": "../../lib/validation" }
   ]
