@@ -1375,7 +1375,20 @@ function createChildBridge(): EngineAdapter {
   };
 }
 
-const { resolver: spawnResolver } = createAgentResolver({ projectDir: process.cwd() });
+const {
+  resolver: spawnResolver,
+  warnings: spawnWarnings,
+  conflicts: spawnConflicts,
+} = createAgentResolver({ projectDir: process.cwd() });
+for (const w of spawnWarnings) {
+  console.warn(`[record-cassettes] agent load warning: ${w.error.message} (${w.filePath})`);
+  process.exit(1); // fail loud — a poisoned agent type would produce wrong cassettes
+}
+for (const c of spawnConflicts) {
+  console.warn(
+    `[record-cassettes] agent conflict: "${c.agentType}" defined in multiple files — using first`,
+  );
+}
 const spawnToolProvider = createSpawnToolProvider({
   resolver: spawnResolver,
   spawnLedger: createInMemorySpawnLedger(5),

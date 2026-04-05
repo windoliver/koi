@@ -11,11 +11,9 @@
  * (--manifest, not yet implemented, tracking: #1264).
  */
 
-import { createAgentResolver } from "@koi/agent-runtime";
 import { createCliChannel } from "@koi/channel-cli";
 import type { EngineAdapter, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
-import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
-import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
+import { createKoi } from "@koi/engine";
 import { createCliHarness } from "@koi/harness";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
@@ -153,71 +151,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     },
   };
 
-  // Wire agent-runtime: built-ins only by default.
-  // Project agents (.koi/agents/) are NOT loaded automatically — loading repo-controlled
-  // agent files without explicit user consent is a trust-boundary expansion. A future
-  // --agent-dir flag or manifest opt-in will enable project-level agent overrides.
-  const {
-    resolver: agentResolver,
-    warnings: agentWarnings,
-    conflicts: agentConflicts,
-  } = createAgentResolver();
-  for (const w of agentWarnings) {
-    process.stderr.write(`[koi] agent load warning: ${w.error.message} (${w.filePath})\n`);
-  }
-  for (const c of agentConflicts) {
-    process.stderr.write(
-      `[koi] agent conflict: "${c.agentType}" defined in multiple files — using first\n`,
-    );
-  }
-
-  // Isolated child adapter — spawned agents must not inherit or mutate the parent's
-  // conversation transcript. Each child receives only its task description as context.
-  const childAdapter: EngineAdapter = {
-    engineId: "koi-cli-child",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const handlers = input.callHandlers;
-      if (handlers === undefined) {
-        throw new Error("callHandlers required — createKoi must inject them");
-      }
-      const text = input.kind === "text" ? input.text : "";
-      const userMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
-      return (async function* (): AsyncIterable<EngineEvent> {
-        for await (const event of runTurn({
-          callHandlers: handlers,
-          messages: [userMsg], // child sees only its task — no parent history
-          signal: input.signal,
-          maxTurns: DEFAULT_MAX_TURNS,
-        })) {
-          yield event;
-        }
-      })();
-    },
-  };
-
-  const spawnProvider = createSpawnToolProvider({
-    resolver: agentResolver,
-    spawnLedger: createInMemorySpawnLedger(DEFAULT_SPAWN_POLICY.maxTotalProcesses),
-    adapter: childAdapter,
-    manifestTemplate: {
-      name: "spawned-agent",
-      version: "0.0.0",
-      description: "Spawned sub-agent",
-      model: { name: model },
-    },
-    spawnPolicy: DEFAULT_SPAWN_POLICY,
-  });
-
+  // Spawn is not registered here: koi start provides no tool inventory (no Glob/Grep/web/task
+  // tools), so built-in agents like researcher/coder/coordinator cannot perform their defined
+  // workflows. Spawn support requires a full tool surface — tracked in #1264 (manifest flag).
   const runtime = await createKoi({
     manifest: { name: "koi", version: "0.0.1", model: { name: model } },
     adapter: engineAdapter,
-    providers: [spawnProvider],
   });
 
   const channel = createCliChannel({ theme: "default" });
