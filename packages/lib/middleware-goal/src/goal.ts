@@ -52,9 +52,22 @@ interface GoalSessionState {
 
 const MIN_KEYWORD_LENGTH = 4;
 
-/** Normalize text by stripping punctuation and lowercasing — shared between keyword extraction and matching. */
+/**
+ * Normalize text by collapsing separators to spaces, stripping remaining
+ * punctuation, and lowercasing — shared between keyword extraction and
+ * matching.
+ *
+ * Common identifier separators (`_`, `-`, `/`, `.`) are converted to
+ * spaces so that snake_case, kebab-case, and path-style references like
+ * `fix_ci_pipeline` or `src/auth/login.ts` tokenize into their segments.
+ * This keeps short acronyms participating in matching when they appear
+ * as distinct identifier segments.
+ */
 export function normalizeText(text: string): string {
-  return text.replace(/[^a-zA-Z0-9\s]/g, "").toLowerCase();
+  return text
+    .replace(/[_\-/.]/g, " ")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .toLowerCase();
 }
 
 /**
@@ -96,27 +109,31 @@ function tokenizeNormalized(normalized: string): ReadonlySet<string> {
 /**
  * Check whether a keyword matches within a set of tokens.
  *
- * Three-tier rule chosen to balance inflection tolerance against
- * false-positive risk as keyword length shrinks:
+ * Three-tier rule balances inflection tolerance against false-positive
+ * risk as keyword length shrinks:
  *
- * - len <= 2 (e.g. "ci", "ui", "7"): exact token equality only —
- *   prevents "ci" matching inside "specific" or "cinema".
- * - len === 3 (e.g. "fix", "add", "api"): token-prefix match —
- *   "fix" satisfies "fixing" and "fixups" but not "prefix";
- *   "api" satisfies "api"/"apis" but not "rapid".
- * - len >= 4 (e.g. "write", "trajectory"): substring within any
- *   token — handles inflections ("writes", "writeup") and
- *   separator-collapsed identifiers like "recordedTrajectoryPath"
- *   (normalizeText strips `-`/`_`/`/`, joining segments into one
- *   token) without opening up 3-char acronym false positives.
+ * - len <= 2 (e.g. "ci", "ui", "7"): exact token equality — prevents
+ *   "ci" matching inside "cinema".
+ * - len === 3 (e.g. "fix", "add", "api"): exact OR token-prefix with a
+ *   bounded inflection suffix (<=3 chars). "fix" satisfies "fixing"
+ *   (+ing), "fixed" (+ed), "fixups" (+ups), but not "additional" (+7)
+ *   or "addressing" (+7). This handles common inflection without
+ *   letting short verb roots swallow unrelated long words.
+ * - len >= 4 (e.g. "write", "trajectory"): substring within any token —
+ *   handles inflections and camelCase identifiers like
+ *   "recordedTrajectoryPath" that don't get split by normalization.
  */
+const MAX_INFLECTION_SUFFIX = 3;
 function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
   if (keyword.length <= 2) {
     return tokens.has(keyword);
   }
   if (keyword.length === 3) {
     for (const t of tokens) {
-      if (t.startsWith(keyword)) return true;
+      if (t === keyword) return true;
+      if (t.startsWith(keyword) && t.length - keyword.length <= MAX_INFLECTION_SUFFIX) {
+        return true;
+      }
     }
     return false;
   }

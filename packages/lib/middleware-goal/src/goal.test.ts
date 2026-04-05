@@ -82,10 +82,12 @@ describe("extractKeywords", () => {
     expect(kw.has("write")).toBe(true);
   });
 
-  it("lowercases and strips punctuation", () => {
+  it("lowercases and splits on separators", () => {
+    // hyphens, underscores, slashes, dots now act as token separators
     const kw = extractKeywords(["Implement auth-flow!"]);
     expect(kw.has("implement")).toBe(true);
-    expect(kw.has("authflow")).toBe(true);
+    expect(kw.has("auth")).toBe(true);
+    expect(kw.has("flow")).toBe(true);
   });
 
   it("falls back to short tokens when no 4+ char words exist", () => {
@@ -195,26 +197,41 @@ describe("detectCompletions", () => {
     expect(result[0]?.completed).toBe(true);
   });
 
-  it("does not substring-match 3-char keywords inside unrelated tokens", () => {
-    // "fix" (3 chars, token-prefix rule) must not match "prefix".
+  it("does not match 3-char keywords inside unrelated longer tokens", () => {
+    // "fix" must not match "prefix" (prefix doesn't start with "fix")
     const fixItems = [{ text: "Fix CI", completed: false }];
     expect(detectCompletions("completed prefix CI cleanup", fixItems)[0]?.completed).toBe(false);
 
-    // "api" must not match "rapid"; "add" must not match "rapid".
+    // "api" must not match "rapid" (doesn't start with "api")
     const addItems = [{ text: "Add API", completed: false }];
     expect(detectCompletions("completed rapid work", addItems)[0]?.completed).toBe(false);
 
-    // "add" must not match "address"/"addressing" only; pair with ui keyword
+    // "add" must not match "addressing" (suffix "ressing" is > 3 chars)
     const addUiItems = [{ text: "Add UI", completed: false }];
     expect(detectCompletions("completed addressing the backlog", addUiItems)[0]?.completed).toBe(
       false,
     );
+    // "add" must not match "additional" (suffix "itional" is > 3 chars)
+    expect(detectCompletions("completed additional UI polish", addUiItems)[0]?.completed).toBe(
+      false,
+    );
   });
 
-  it("matches multi-word objectives echoed inside camelCase/snake/path tokens", () => {
-    // normalizeText strips separators, so all three of these flatten into
-    // one composite token. Long keywords must still find their substring
-    // inside that token.
+  it("matches short keywords in snake_case/kebab-case/path identifiers", () => {
+    // normalizeText converts _/-/./ to spaces, so short keywords find their
+    // own token inside identifier-style references.
+    const items = [{ text: "Fix CI", completed: false }];
+    expect(detectCompletions("completed fix_ci_pipeline cleanup", items)[0]?.completed).toBe(true);
+    expect(detectCompletions("done fixing fix-ci-pipeline", items)[0]?.completed).toBe(true);
+    expect(detectCompletions("finished src/fix/ci/runner.ts rewrites", items)[0]?.completed).toBe(
+      true,
+    );
+  });
+
+  it("matches multi-word objectives echoed inside camelCase identifiers", () => {
+    // camelCase identifiers aren't split by normalizeText (only punctuation
+    // separators are), so long keywords must still find their substring
+    // inside the collapsed token.
     const items = [{ text: "recorded trajectory path", completed: false }];
     expect(
       detectCompletions("completed work on recordedTrajectoryPath today", items)[0]?.completed,
