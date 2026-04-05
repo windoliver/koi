@@ -1,0 +1,26 @@
+{
+  "name": "@koi/sandbox-os",
+  "description": "OS-level sandbox adapter with seatbelt and bubblewrap backends",
+  "version": "0.1.0",
+  "private": true,
+  "koi": {
+    "optional": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {}
+}

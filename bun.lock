@@ -395,6 +395,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/sandbox/sandbox-os": {
+      "name": "@koi/sandbox-os",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/security/middleware-exfiltration-guard": {
       "name": "@koi/middleware-exfiltration-guard",
       "version": "0.0.0",
@@ -718,6 +727,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
+
+    "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
