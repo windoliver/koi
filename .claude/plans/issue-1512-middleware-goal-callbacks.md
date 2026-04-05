@@ -35,9 +35,9 @@ tracked as a follow-up in the redesign issue.
 export type IsDriftingFn = (ctx: TurnContext) => boolean | Promise<boolean>;
 export type DetectCompletionsFn = (
   responseText: string,
-  items: readonly GoalItem[],
+  items: readonly GoalItemWithId[],
   ctx: TurnContext,
-) => readonly GoalItem[] | Promise<readonly GoalItem[]>;
+) => readonly string[] | Promise<readonly string[]>; // newly-completed item IDs
 ```
 
 **GoalMiddlewareConfig additions**:
@@ -47,17 +47,38 @@ interface GoalMiddlewareConfig {
   // ...existing...
   readonly isDrifting?: IsDriftingFn;
   readonly detectCompletions?: DetectCompletionsFn;
+  /** Max ms any single callback may run before it is aborted. Default: 5000. */
+  readonly callbackTimeoutMs?: number;
 }
 ```
 
+**Stable item IDs (split types to preserve backward compat)**:
+
+- Existing `GoalItem` (used as parameter type by the exported pure helpers
+  `detectCompletions` and `renderGoalBlock`) stays `{ text, completed }`. No
+  breaking change for external callers of those helpers.
+- New exported `GoalItemWithId extends GoalItem { readonly id: string }` is
+  used only for the `DetectCompletionsFn` input. IDs are auto-assigned at
+  session start as `goal-${index}` from the objective order, stable for the
+  session lifetime.
+- Middleware session state uses `GoalItemWithId`. `updateCompletions` merges
+  by ID lookup.
+
+This solves the positional-merge hazard: callbacks return IDs of
+newly-completed items and the middleware merges by ID lookup — reordering,
+dedup, or filtering in the callback's return cannot corrupt completion state.
+
 **Rationale**:
-- Matches v1's `isDrifting` shape (ctx-first).
+- `DetectCompletionsFn` returns `readonly string[]` (IDs) rather than full
+  `GoalItem[]`. This shape is LLM-judge-friendly (`["goal-0", "goal-2"]` JSON)
+  and structurally prevents wrong-objective completion bugs.
+- `IsDriftingFn` matches v1's ctx-first shape.
 - Both support sync + async per Koi's async-by-default rule for I/O interfaces.
 - Passing `ctx` gives callbacks access to session/run metadata for caching,
   telemetry, correlation.
 
-**GoalItem export**: the existing internal `GoalItem` interface is promoted to a
-public export so users can type their `detectCompletions` return value.
+**Public exports**: `GoalItem` (unchanged), `GoalItemWithId` (new),
+`IsDriftingFn`, `DetectCompletionsFn` all re-exported from `index.ts`.
 
 ## Implementation changes
 
@@ -70,17 +91,38 @@ public export so users can type their `detectCompletions` return value.
 | `docs/L2/middleware-goal.md` | Add "Custom Callbacks" section with LLM-judge example. |
 | `docs/L3/runtime.md` | Minor touch for doc-wiring CI gate. |
 
-## Error handling
+## Error handling & timeout contract
 
-Callback throws → swallow and fall back to heuristic for that call. Matches the
-existing `onComplete` pattern ("observability callbacks must not fail model
-calls"). No new `onCallbackError` hook unless explicitly requested.
+**Timeout**: every callback invocation is wrapped in `Promise.race` with
+`callbackTimeoutMs` (default 5000ms). On timeout the callback is treated as a
+failure case. This bounds the new async dependency the middleware introduces
+on the model-response path (`wrapModelCall` + `wrapModelStream` finally block).
+
+**Split failure policy by callback type**:
+
+- `isDrifting` error/timeout → **treat as `drifting = true`** (fail-safe:
+  shortens reminder interval to `baseInterval` so the user notices the judge
+  outage instead of having reminders silently suppressed). Matches v1
+  `archive/v1/packages/middleware/middleware-goal/src/reminder/goal-reminder.ts`
+  behavior.
+- `detectCompletions` error/timeout → **fall back to heuristic** for that call.
+  Completions are monotonic, so the safer failure is a missed completion
+  (detected next turn) rather than a false one.
+
+Both failures are swallowed (no thrown error reaches the model path). For
+observability, we keep the existing silent-swallow pattern — no new
+`onCallbackError` hook in this PR, but `onComplete` will still fire for any
+heuristic-detected completion during fallback.
 
 ## Backward compatibility
 
 - Defaults unchanged: when callbacks are absent, behavior is identical to today.
 - Callback signatures are additive (optional fields).
-- No renames or removed exports.
+- **No breaking changes to public API**: `GoalItem` is unchanged. New
+  `GoalItemWithId` is additive. Internal session state moves from `GoalItem`
+  to `GoalItemWithId`. `updateCompletions` merge switches from positional map
+  to ID lookup.
+- No renames or removed exports of public API.
 
 ## Call sites affected
 
@@ -94,10 +136,17 @@ New test cases in `goal.test.ts`:
 
 1. Custom `isDrifting` called with ctx, sync return respected.
 2. Custom `isDrifting` async (Promise) return respected.
-3. Custom `detectCompletions` called with text + items + ctx, return applied.
-4. Callback throws → falls back to heuristic, model call succeeds.
-5. No callbacks provided → default heuristic behavior unchanged (regression).
-6. Example: mocked LLM-based drift judge demonstrating the usage pattern.
+3. Custom `detectCompletions` called with text + items + ctx; returned IDs
+   merge correctly by lookup (reorder/dedup in callback return cannot misapply
+   completion state — positional-hazard regression guard).
+4. Custom `detectCompletions` with unknown IDs → no state change (ignored).
+5. `isDrifting` throws → treated as `drifting = true`, interval resets to base.
+6. `isDrifting` exceeds `callbackTimeoutMs` → same fail-safe behavior.
+7. `detectCompletions` throws → falls back to heuristic, model call succeeds.
+8. `detectCompletions` exceeds `callbackTimeoutMs` → same fallback.
+9. No callbacks provided → default heuristic behavior unchanged (regression).
+10. Example: mocked LLM-based drift judge demonstrating the usage pattern.
+11. GoalItem IDs stable across turns within a session.
 
 ## Estimated footprint
 
