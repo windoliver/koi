@@ -1,3 +1,4 @@
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ApprovalHandler,
   ChannelAdapter,
@@ -180,10 +181,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? DEFAULT_PROCESS_SPAWN_LEDGER
       : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
 
+  // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
+  // Collect warnings/conflicts so they can be returned on RuntimeHandle for caller inspection.
+  let agentWarnings: import("@koi/agent-runtime").AgentLoadWarning[] = [];
+  let agentConflicts: import("@koi/agent-runtime").RegistryConflictWarning[] = [];
+  const effectiveResolver = (() => {
+    if (config.resolver !== undefined) return config.resolver;
+    if (config.agentDirs !== undefined) {
+      const result = createAgentResolver(config.agentDirs);
+      agentWarnings = [...result.warnings];
+      agentConflicts = [...result.conflicts];
+      for (const w of agentWarnings) {
+        console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
+      }
+      for (const c of agentConflicts) {
+        console.warn(
+          `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
+        );
+      }
+      return result.resolver;
+    }
+    return undefined;
+  })();
+
+  // Resolver already returns NOT_FOUND for poisoned agent types (parse failures block
+  // both the custom and built-in slots via failedTypes). Healthy agent types remain
+  // reachable regardless of warnings. Suppressing the entire provider on any warning
+  // would be over-broad: one bad custom-only file would disable all built-in delegation.
+  // Callers should inspect handle.agentWarnings and fail or log at their policy boundary.
   const spawnProvider =
-    config.resolver !== undefined
+    effectiveResolver !== undefined
       ? createSpawnToolProvider({
-          resolver: config.resolver,
+          resolver: effectiveResolver,
           spawnLedger: effectiveSpawnLedger,
           adapter,
           manifestTemplate: {
@@ -204,6 +233,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     debugInfo,
     trajectoryStore,
     spawnProvider,
+    agentWarnings,
+    agentConflicts,
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {

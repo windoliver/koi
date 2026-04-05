@@ -10,6 +10,9 @@ export type {
 export { createAgentDefinitionRegistry } from "./agent-definition-registry.js";
 // built-in agents
 export { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./built-in/index.js";
+// top-level bootstrap helper
+export type { AgentResolverDirs, AgentResolverResult } from "./create-agent-resolver.js";
+export { createAgentResolver } from "./create-agent-resolver.js";
 // resolver adapter
 export { createDefinitionResolver } from "./definition-resolver.js";
 // frontmatter parser

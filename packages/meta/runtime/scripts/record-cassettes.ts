@@ -27,11 +27,7 @@
  *   @koi/fs-local             — local filesystem backend
  */
 
-import {
-  createAgentDefinitionRegistry,
-  createDefinitionResolver,
-  getBuiltInAgents,
-} from "@koi/agent-runtime";
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -1379,9 +1375,9 @@ function createChildBridge(): EngineAdapter {
   };
 }
 
-const spawnBuiltIns = getBuiltInAgents();
-const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
-const spawnResolver = createDefinitionResolver(spawnRegistry);
+// Built-ins only — cassette recording must be hermetic. Project-local .koi/agents/ overrides
+// would bake local untracked state into fixtures, making cassettes non-reproducible.
+const { resolver: spawnResolver } = createAgentResolver();
 const spawnToolProvider = createSpawnToolProvider({
   resolver: spawnResolver,
   spawnLedger: createInMemorySpawnLedger(5),

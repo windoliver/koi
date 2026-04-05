@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { ToolConfig } from "@koi/core";
 import { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./index.js";
 
 describe("getBuiltInAgents", () => {
@@ -23,7 +24,7 @@ describe("getBuiltInAgents", () => {
       agentType: a.agentType,
       source: a.source,
       model: a.manifest.model.name,
-      tools: a.manifest.tools?.map((t) => t.name) ?? [],
+      tools: a.manifest.tools?.map((t: ToolConfig) => t.name) ?? [],
     }));
 
     expect(shapes).toMatchSnapshot();
@@ -49,5 +50,30 @@ describe("getBuiltInAgents", () => {
     expect(coordinator).toBeDefined();
     expect(coordinator?.manifest.model.name).toBe("opus");
     expect(coordinator?.source).toBe("built-in");
+  });
+
+  test("exact agent type set: researcher, coder, reviewer, coordinator", () => {
+    const agents = getBuiltInAgents();
+    expect(agents.map((a) => a.agentType).sort()).toEqual([
+      "coder",
+      "coordinator",
+      "researcher",
+      "reviewer",
+    ]);
+  });
+
+  test("all built-in agents have substantial whenToUse (> 50 chars)", () => {
+    const agents = getBuiltInAgents();
+    for (const agent of agents) {
+      expect(agent.whenToUse.length).toBeGreaterThan(50);
+    }
+  });
+
+  test("all built-in agents have a non-trivial systemPrompt (> 100 chars)", () => {
+    const agents = getBuiltInAgents();
+    for (const agent of agents) {
+      expect(agent.systemPrompt).toBeDefined();
+      expect((agent.systemPrompt ?? "").length).toBeGreaterThan(100);
+    }
   });
 });
