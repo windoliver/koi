@@ -50,6 +50,12 @@ export type BridgeNotification =
         readonly mode: "local" | "remote";
         /** Only present when mode is "remote". Instructions to show the user. */
         readonly instructions?: string | undefined;
+        /**
+         * Opaque token present when mode is "remote". Must be echoed back in
+         * transport.submitAuthCode() so the bridge can reject stale pastes
+         * from previous auth attempts.
+         */
+        readonly correlation_id?: string | undefined;
       };
     }
   | {
@@ -97,10 +103,13 @@ export interface NexusTransport {
    * Called by the channel adapter when it receives a pasted redirect URL from
    * the user after an `auth_required` notification with `mode: "remote"`.
    *
-   * The bridge extracts `?code=...` from the URL and completes the exchange.
+   * `correlationId` must match the `correlation_id` from the `auth_required`
+   * notification — the bridge rejects submissions that don't match to prevent
+   * stale pastes from a previous auth attempt being consumed by a new one.
+   *
    * No-op on HTTP transport (remote auth is local-bridge-only).
    */
-  readonly submitAuthCode: (redirectUrl: string) => void;
+  readonly submitAuthCode: (redirectUrl: string, correlationId?: string) => void;
   /** Close the transport, aborting any pending requests. */
   readonly close: () => void;
   /** Mount points discovered during startup (local transport only). */

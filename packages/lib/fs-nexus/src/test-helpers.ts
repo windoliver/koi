@@ -315,7 +315,7 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
     subscribe(): () => void {
       return () => {};
     },
-    submitAuthCode(): void {},
+    submitAuthCode(_redirectUrl: string, _correlationId?: string): void {},
     close(): void {
       closed = true;
     },

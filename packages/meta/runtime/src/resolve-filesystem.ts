@@ -142,8 +142,14 @@ function isLocalBridgeOptions(v: unknown): v is LocalBridgeOptions {
  *     process.cwd(),
  *     createAuthNotificationHandler(channel),
  *   );
- *   const { backend, operations } = await resolveFileSystemAsync(..., handler);
+ *   const { backend, operations, transport } = await resolveFileSystemAsync(..., handler);
  *   const runtime = createRuntime({ filesystem: backend, filesystemOperations: operations });
+ *
+ *   // Remote OAuth (mode: "remote"): wire pasted redirect URLs back to the bridge.
+ *   // When the channel receives a user message that looks like a redirect URL,
+ *   // call transport.submitAuthCode(url, notification.params.correlation_id).
+ *   // This is the caller's responsibility — resolveFileSystemAsync() cannot
+ *   // wire the inbound channel handler because it has no channel reference.
  *   // On shutdown: await backend.dispose?.()
  *
  * @param config - Manifest filesystem config.
@@ -159,6 +165,13 @@ export async function resolveFileSystemAsync(
 ): Promise<{
   readonly backend: FileSystemBackend;
   readonly operations: readonly ("read" | "write" | "edit")[] | undefined;
+  /**
+   * The underlying local bridge transport, only present when
+   * `filesystem.options.transport === "local"`. Callers must use this to
+   * forward pasted redirect URLs for the remote OAuth flow via
+   * `transport.submitAuthCode(url, correlationId)`.
+   */
+  readonly transport: import("@koi/fs-nexus").NexusTransport | undefined;
 }> {
   const fsBackend = config?.backend ?? "local";
   // Preserve operation grants from the config — callers must forward these to
@@ -167,7 +180,7 @@ export async function resolveFileSystemAsync(
 
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
   if (fsBackend === "local") {
-    return { backend: createLocalFileSystem(cwd), operations };
+    return { backend: createLocalFileSystem(cwd), operations, transport: undefined };
   }
 
   const options = config?.options;
@@ -196,20 +209,29 @@ export async function resolveFileSystemAsync(
       authTimeoutMs: options.authTimeoutMs,
     });
 
-    const unsubscribe =
-      onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
+    // If backend construction fails, close the already-started subprocess to
+    // avoid leaking it. Without this try/catch, any error below this point
+    // (e.g. invalid mountPoint validation) would orphan the bridge process.
+    let nexusBackend: ReturnType<typeof createNexusFileSystem>;
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
-    // Derive mount point: explicit config wins, then fall back to the bridge's
-    // actual mount (transport.mounts[0] without leading slash). Without this,
-    // local and gdrive paths resolve against the HTTP default ("fs"), not the
-    // bridge's real namespace, and every I/O call will fail.
-    const derivedMountPoint = options.mountPoint ?? transport.mounts?.[0]?.slice(1);
+      // Derive mount point: explicit config wins, then fall back to the bridge's
+      // actual mount (transport.mounts[0] without leading slash). Without this,
+      // local and gdrive paths resolve against the HTTP default ("fs"), not the
+      // bridge's real namespace, and every I/O call will fail.
+      const derivedMountPoint = options.mountPoint ?? transport.mounts?.[0]?.slice(1);
 
-    const nexusBackend = createNexusFileSystem({
-      url: "local://bridge",
-      transport,
-      ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
-    });
+      nexusBackend = createNexusFileSystem({
+        url: "local://bridge",
+        transport,
+        ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
+      });
+    } catch (e: unknown) {
+      transport.close();
+      throw e;
+    }
 
     // Wrap dispose to clean up the subscription and transport subprocess
     const backend: FileSystemBackend = {
@@ -221,7 +243,7 @@ export async function resolveFileSystemAsync(
         transport.close();
       },
     };
-    return { backend, operations };
+    return { backend, operations, transport };
   }
 
   // Nexus HTTP transport — synchronous resolution
@@ -229,5 +251,5 @@ export async function resolveFileSystemAsync(
   if (!validated.ok) {
     throw new Error(`Invalid nexus filesystem config: ${validated.error.message}`);
   }
-  return { backend: createNexusFileSystem(validated.value), operations };
+  return { backend: createNexusFileSystem(validated.value), operations, transport: undefined };
 }

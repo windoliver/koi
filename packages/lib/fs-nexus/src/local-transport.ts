@@ -173,15 +173,17 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
 
   const lineReader = createLineReader(proc.stdout);
 
-  // Wait for the "ready" signal from the bridge
-  const readyLine = await Promise.race([
-    lineReader.nextLine(),
-    rejectAfter(startupTimeout, "Bridge process did not start within timeout"),
-    procExit(proc),
-  ]);
-
+  // Wait for the "ready" signal from the bridge.
+  // Any failure here (timeout, process exit, parse error) must clean up the
+  // subprocess — without this, a repeated startup failure leaks processes.
   let mounts: readonly string[] = [];
   try {
+    const readyLine = await Promise.race([
+      lineReader.nextLine(),
+      rejectAfter(startupTimeout, "Bridge process did not start within timeout"),
+      procExit(proc),
+    ]);
+
     const ready = JSON.parse(readyLine) as {
       readonly ready?: boolean;
       readonly mounts?: readonly string[];
@@ -281,14 +283,15 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
           }
         }
       } catch (e: unknown) {
-        // Reader died (stream ended, process killed, etc.) — close and reject all.
-        // Issue 16-A: guaranteed cleanup even on unexpected reader error.
-        close();
+        // Reader died (stream ended, process killed, protocol error, etc.).
+        // Capture the real cause BEFORE calling close(), which clears pendingRequests.
         const err = e instanceof Error ? e : new Error(String(e));
-        for (const [, pending] of pendingRequests) {
+        const snapshot = [...pendingRequests.values()];
+        pendingRequests.clear(); // prevent close() from double-rejecting
+        close();
+        for (const pending of snapshot) {
           pending.reject(err);
         }
-        pendingRequests.clear();
       }
     })();
   }
@@ -416,12 +419,15 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   // ---------------------------------------------------------------------------
   // submitAuthCode() — forward pasted redirect URL to bridge (remote OAuth flow)
   // ---------------------------------------------------------------------------
-  function submitAuthCode(redirectUrl: string): void {
+  function submitAuthCode(redirectUrl: string, correlationId?: string): void {
     if (closed) return;
     const msg = JSON.stringify({
       jsonrpc: "2.0",
       method: "auth_submit",
-      params: { redirect_url: redirectUrl },
+      params: {
+        redirect_url: redirectUrl,
+        ...(correlationId !== undefined ? { correlation_id: correlationId } : {}),
+      },
     });
     proc.stdin.write(`${msg}\n`);
     void proc.stdin.flush();

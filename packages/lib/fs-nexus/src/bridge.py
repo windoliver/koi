@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import socket
 import sys
 import urllib.parse
@@ -94,22 +95,36 @@ def _can_open_browser() -> bool:
 # Free port selection
 # ---------------------------------------------------------------------------
 
-def _find_free_port() -> int:
-    """Bind to port 0 to let the OS pick a free port, then release and return it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _bind_free_port() -> tuple[socket.socket, int]:
+    """
+    Bind to port 0, let the OS pick a free port, and return BOTH the bound
+    socket and the port number.
+
+    The caller MUST keep the socket open (with SO_REUSEPORT/SO_REUSEADDR)
+    until the HTTP server has taken ownership of the port.  Releasing it
+    first leaves a TOCTOU race where another process can claim the port
+    between the `close()` and the `HTTPServer.__init__()` bind.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 0))
+    return s, s.getsockname()[1]
 
 
 # ---------------------------------------------------------------------------
 # Localhost callback server (local flow)
 # ---------------------------------------------------------------------------
 
-def _run_callback_server(port: int, code_holder: list, done: Event) -> None:
+def _run_callback_server(
+    pre_bound_sock: socket.socket, code_holder: list, done: Event
+) -> None:
     """
-    Run a one-shot HTTP server on localhost:PORT that captures ?code=...
-    from the OAuth redirect and sets the done Event.
-    Runs in a daemon thread — the main asyncio loop is unblocked.
+    Run a one-shot HTTP server using a pre-bound socket, capturing ?code=...
+    from the OAuth redirect.
+
+    The caller passes the already-bound socket to eliminate the TOCTOU race
+    between port selection and HTTPServer.__init__().  The socket is closed
+    once the HTTP server takes over.
     """
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -128,8 +143,13 @@ def _run_callback_server(port: int, code_holder: list, done: Event) -> None:
         def log_message(self, *args):  # suppress HTTP request logs
             pass
 
-    httpd = HTTPServer(("127.0.0.1", port), Handler)
-    httpd.timeout = 1.0  # check done flag every second
+    # HTTPServer takes over the pre-bound socket; close our reference so the
+    # server holds the only handle.
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    httpd.socket.close()
+    httpd.socket = pre_bound_sock
+    pre_bound_sock.listen(1)
+    httpd.timeout = 1.0
     while not done.is_set():
         httpd.handle_request()
     httpd.server_close()
@@ -163,7 +183,11 @@ async def handle_auth(fs, exc) -> bool:
     timeout_s = timeout_ms / 1000
 
     local = _can_open_browser()
-    port = _find_free_port() if local else None
+    if local:
+        # Keep the bound socket alive until the callback server takes ownership.
+        _sock, port = _bind_free_port()
+    else:
+        _sock, port = None, None
     redirect_uri = f"http://127.0.0.1:{port}/callback" if local else "urn:ietf:wg:oauth:2.0:oob"
 
     # Ask nexus-fs for the auth URL and code_verifier.
@@ -188,10 +212,12 @@ async def handle_auth(fs, exc) -> bool:
         done = Event()
         server_thread = Thread(
             target=_run_callback_server,
-            args=(port, code_holder, done),
+            args=(_sock, code_holder, done),
             daemon=True,
         )
         server_thread.start()
+        # Socket ownership transferred to server thread; clear our reference.
+        _sock = None
 
         _notify("auth_required", {
             "provider": provider,
@@ -226,14 +252,27 @@ async def handle_auth(fs, exc) -> bool:
     else:
         # ---------------------------------------------------------------
         # Remote flow: show URL, wait for user to paste redirect URL back
-        # via auth_submit JSON-RPC request from Koi
+        # via auth_submit JSON-RPC request from Koi.
+        #
+        # A correlation ID is included in auth_required and must be echoed
+        # back in auth_submit to prevent stale or out-of-order pastes from
+        # being consumed by the wrong auth attempt.
         # ---------------------------------------------------------------
+        # Drain any stale submissions from previous attempts before waiting.
+        while not _auth_submit_queue.empty():
+            try:
+                _auth_submit_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        correlation_id = secrets.token_hex(8)
         _notify("auth_required", {
             "provider": provider,
             "user_email": user_email,
             "auth_url": auth_url,
             "message": f"Authorize {provider} to continue",
             "mode": "remote",
+            "correlation_id": correlation_id,
             "instructions": (
                 "Open the URL in your browser. "
                 "When the page shows a connection error, copy the full URL "
@@ -241,20 +280,32 @@ async def handle_auth(fs, exc) -> bool:
             ),
         })
 
-        try:
-            redirect_url = await asyncio.wait_for(
-                _auth_submit_queue.get(), timeout=timeout_s
-            )
-        except asyncio.TimeoutError:
-            return False
+        code = None
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        while asyncio.get_event_loop().time() < deadline:
+            remaining = deadline - asyncio.get_event_loop().time()
+            try:
+                submission = await asyncio.wait_for(
+                    _auth_submit_queue.get(), timeout=min(remaining, 30)
+                )
+            except asyncio.TimeoutError:
+                break
 
-        # Extract code from pasted redirect URL
-        parsed = urllib.parse.urlparse(redirect_url)
-        params = urllib.parse.parse_qs(parsed.query)
-        codes = params.get("code", [])
-        if not codes:
+            # Validate correlation ID — reject submissions for other flows.
+            sub_id = submission.get("correlation_id") if isinstance(submission, dict) else None
+            if sub_id != correlation_id:
+                continue  # stale — keep waiting
+
+            redirect_url = submission.get("redirect_url", "") if isinstance(submission, dict) else submission
+            parsed = urllib.parse.urlparse(redirect_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            codes = params.get("code", [])
+            if codes:
+                code = codes[0]
+                break
+
+        if not code:
             return False
-        code = codes[0]
 
     # Exchange the authorization code for a stored token.
     # code_verifier is None for providers that don't use PKCE (e.g. Google);
@@ -582,11 +633,14 @@ async def main():
         method = request.get("method", "")
 
         # auth_submit: Koi forwarded the user's pasted redirect URL (remote flow).
-        # Route to the pending handle_auth() coroutine via the shared queue.
+        # Route as a structured dict so handle_auth() can validate correlation_id.
         # No response needed — this is a one-way signal.
         if method == "auth_submit":
-            redirect_url = request.get("params", {}).get("redirect_url", "")
-            await _auth_submit_queue.put(redirect_url)
+            params = request.get("params", {})
+            await _auth_submit_queue.put({
+                "redirect_url": params.get("redirect_url", ""),
+                "correlation_id": params.get("correlation_id"),
+            })
             continue
 
         response = await handle_request(fs, request)
