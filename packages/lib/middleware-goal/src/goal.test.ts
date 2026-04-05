@@ -217,8 +217,26 @@ describe("detectCompletions", () => {
     );
   });
 
+  it("matches short keywords inside camelCase identifiers", () => {
+    // camelCase boundary is a tokenization hint: fixCiPipeline → fix ci pipeline
+    const items = [{ text: "Fix CI", completed: false }];
+    expect(detectCompletions("completed fixCiPipeline today", items)[0]?.completed).toBe(true);
+    const apiItems = [{ text: "Add API", completed: false }];
+    expect(detectCompletions("done addApiClient handler", apiItems)[0]?.completed).toBe(true);
+  });
+
+  it("preserves dotted version tokens as distinguishing keywords", () => {
+    // "Release v1.2.3" must keep v123 as a keyword so that "released docs" alone
+    // does not satisfy the objective (would be a false completion).
+    const items = [{ text: "Release v1.2.3", completed: false }];
+    expect(detectCompletions("completed release of initial docs", items)[0]?.completed).toBe(false);
+    expect(detectCompletions("completed release v1.2.3 successfully", items)[0]?.completed).toBe(
+      true,
+    );
+  });
+
   it("matches short keywords in snake_case/kebab-case/path identifiers", () => {
-    // normalizeText converts _/-/./ to spaces, so short keywords find their
+    // normalizeText converts _/-// to spaces, so short keywords find their
     // own token inside identifier-style references.
     const items = [{ text: "Fix CI", completed: false }];
     expect(detectCompletions("completed fix_ci_pipeline cleanup", items)[0]?.completed).toBe(true);

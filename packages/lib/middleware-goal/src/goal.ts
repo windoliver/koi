@@ -53,19 +53,25 @@ interface GoalSessionState {
 const MIN_KEYWORD_LENGTH = 4;
 
 /**
- * Normalize text by collapsing separators to spaces, stripping remaining
- * punctuation, and lowercasing — shared between keyword extraction and
- * matching.
+ * Normalize text for keyword extraction and matching.
  *
- * Common identifier separators (`_`, `-`, `/`, `.`) are converted to
- * spaces so that snake_case, kebab-case, and path-style references like
- * `fix_ci_pipeline` or `src/auth/login.ts` tokenize into their segments.
- * This keeps short acronyms participating in matching when they appear
- * as distinct identifier segments.
+ * Splits identifier boundaries so that short acronyms participate in
+ * matching when they appear as distinct segments:
+ *
+ * - camelCase boundary (lower→upper) becomes a space: `fixCiPipeline`
+ *   → `fix ci pipeline`.
+ * - Common separators `_`, `-`, `/` become spaces: `fix_ci_pipeline`,
+ *   `fix-ci-pipeline`, `src/fix/ci/runner.ts` all tokenize their parts.
+ * - `.` is preserved (stripped, not split) so dotted versions like
+ *   `Release v1.2.3` keep `v123` as a distinguishing token instead of
+ *   collapsing to a bare `release` keyword.
+ *
+ * Remaining punctuation is stripped, then lowercased.
  */
 export function normalizeText(text: string): string {
   return text
-    .replace(/[_\-/.]/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_\-/]/g, " ")
     .replace(/[^a-zA-Z0-9\s]/g, "")
     .toLowerCase();
 }
