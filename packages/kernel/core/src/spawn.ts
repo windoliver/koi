@@ -154,6 +154,65 @@ export interface SpawnInheritanceConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Canonical tool filter spec — shared representation for both manifest ceilings
+// and per-spawn runtime options.
+//
+// Eliminates the structural mismatch between:
+//   - ManifestSpawnConfig.tools: { policy?: ...; list?: ... }  (manifest YAML shape)
+//   - SpawnRequest.toolDenylist / toolAllowlist               (two-field ergonomic API)
+//
+// L1 code normalizes both to ToolFilterSpec before applying filters.
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical representation of a tool filter: a policy paired with an explicit list.
+ *
+ * Both fields are required in this normalized form so callers never need to
+ * handle `undefined` policy or `undefined` list after normalization.
+ */
+export interface ToolFilterSpec {
+  readonly policy: "allowlist" | "denylist";
+  readonly list: readonly string[];
+}
+
+/**
+ * Normalizes a `ManifestSpawnConfig.tools` block to a canonical `ToolFilterSpec`.
+ *
+ * When `tools` is absent, returns `undefined` (no ceiling declared).
+ * Missing `policy` defaults to `"denylist"`. Missing `list` defaults to `[]`.
+ */
+export function toolFilterFromManifest(
+  tools:
+    | { readonly policy?: "allowlist" | "denylist"; readonly list?: readonly string[] }
+    | undefined,
+): ToolFilterSpec | undefined {
+  if (tools === undefined) return undefined;
+  return {
+    policy: tools.policy ?? "denylist",
+    list: tools.list ?? [],
+  };
+}
+
+/**
+ * Normalizes the tool filter fields of a `SpawnRequest` to a canonical `ToolFilterSpec`.
+ *
+ * When neither `toolAllowlist` nor `toolDenylist` is set, returns `undefined`
+ * (no per-spawn filter declared — inherit manifest ceiling only).
+ *
+ * Note: callers must ensure `validateSpawnRequest` has passed before calling this,
+ * since it guards against both fields being set simultaneously.
+ */
+export function toolFilterFromSpawnRequest(request: SpawnRequest): ToolFilterSpec | undefined {
+  if (request.toolAllowlist !== undefined) {
+    return { policy: "allowlist", list: request.toolAllowlist };
+  }
+  if (request.toolDenylist !== undefined) {
+    return { policy: "denylist", list: request.toolDenylist };
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn request validation
 // ---------------------------------------------------------------------------
 
