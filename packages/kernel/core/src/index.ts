@@ -14,6 +14,7 @@ export { AGENT_DEFINITION_PRIORITY } from "./agent-definition.js";
 // agent resolver — dynamic agent discovery for delegation tools
 export type {
   AgentResolver,
+  AgentResolverQuery,
   LiveAgentHandle,
   TaskableAgent,
   TaskableAgentSummary,
@@ -998,8 +999,13 @@ export type {
   SpawnInheritanceConfig,
   SpawnRequest,
   SpawnResult,
+  ToolFilterSpec,
 } from "./spawn.js";
-export { validateSpawnRequest } from "./spawn.js";
+export {
+  toolFilterFromManifest,
+  toolFilterFromSpawnRequest,
+  validateSpawnRequest,
+} from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
   ChildSpec,
