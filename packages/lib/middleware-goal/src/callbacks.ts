@@ -8,6 +8,7 @@ import type { InboundMessage, TurnContext } from "@koi/core";
 import type {
   DetectCompletionsFn,
   DriftJudgeInput,
+  DriftUserMessage,
   GoalItemWithId,
   IsDriftingFn,
   OnCallbackErrorFn,
@@ -252,36 +253,35 @@ function fireErrorHook(
 }
 
 /**
- * Sanitize an inbound message list before exposing it to user callbacks.
+ * Sanitize an inbound message list into the minimal `DriftUserMessage`
+ * DTO before exposing it to user callbacks.
  *
  * - Drops assistant/system/tool-authored messages (callbacks see only
  *   user-authored content — trust boundary).
  * - Drops synthetic `[Completion blocked] ...` stop-gate retry messages.
- * - Strips non-text content blocks (file/image/tool/custom) so file
- *   attachments, tool outputs, and hidden content cannot exfiltrate to
- *   external LLM judges.
- * - Deep-clones the result (fresh content arrays) so callback mutation
- *   cannot poison session-state references.
+ * - Drops messages with `metadata.role !== "user"`.
+ * - Reduces to text content; concatenates multiple text blocks with
+ *   newlines.
+ * - Returns a purpose-built DTO, NOT a full InboundMessage — no file/
+ *   image blocks, no threadId, no metadata, no pinned flag are exposed.
  */
 export function sanitizeUserMessages(
   messages: readonly InboundMessage[],
-): readonly InboundMessage[] {
-  const result: InboundMessage[] = [];
+): readonly DriftUserMessage[] {
+  const result: DriftUserMessage[] = [];
   for (const m of messages) {
     if (isNonUserSender(m.senderId)) continue;
     if (hasNonUserRole(m)) continue;
     if (isSyntheticRetry(m)) continue;
-    const textBlocks: Array<{ readonly kind: "text"; readonly text: string }> = [];
+    const texts: string[] = [];
     for (const block of m.content) {
-      if (block.kind === "text") {
-        textBlocks.push({ kind: "text", text: block.text });
-      }
+      if (block.kind === "text") texts.push(block.text);
     }
-    if (textBlocks.length === 0) continue;
+    if (texts.length === 0) continue;
     result.push({
       senderId: m.senderId,
       timestamp: m.timestamp,
-      content: textBlocks,
+      text: texts.join("\n"),
     });
   }
   return result;
@@ -325,11 +325,4 @@ function isSyntheticRetry(m: InboundMessage): boolean {
     }
   }
   return false;
-}
-
-// Legacy export kept for backward compatibility of any external users.
-export function filterSyntheticRetryMessages(
-  messages: readonly InboundMessage[],
-): readonly InboundMessage[] {
-  return sanitizeUserMessages(messages);
 }

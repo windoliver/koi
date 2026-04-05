@@ -12,6 +12,8 @@ import type {
 } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
 
+import type { DriftUserMessage } from "./index.js";
+
 import {
   computeNextInterval,
   createGoalMiddleware,
@@ -816,7 +818,7 @@ describe("isDrifting callback", () => {
   });
 
   it("filters synthetic stop-gate retry messages from userMessages buffer", async () => {
-    let capturedMessages: readonly InboundMessage[] = [];
+    let capturedMessages: readonly DriftUserMessage[] = [];
     const mw = createGoalMiddleware({
       objectives: ["Write tests"],
       isDrifting: (input) => {
@@ -847,9 +849,7 @@ describe("isDrifting callback", () => {
     await mw.onAfterTurn?.(ctx1);
 
     // The synthetic retry message must NOT be in the buffer
-    const texts = capturedMessages.flatMap((m) =>
-      m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
-    );
+    const texts = capturedMessages.map((m) => m.text);
     expect(texts.some((t) => t.startsWith("[Completion blocked]"))).toBe(false);
     expect(texts.some((t) => t === "please write tests")).toBe(true);
   });
@@ -1101,18 +1101,14 @@ describe("turn-scoped state (overlap safety)", () => {
       baseInterval: 1,
       maxInterval: 1,
       isDrifting: async (input, ctx) => {
-        const texts = input.userMessages.flatMap((m) =>
-          m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
-        );
+        const texts = input.userMessages.map((m) => m.text);
         if (ctx.turnIndex === 0) {
           observedByTurn0.push(texts);
           await new Promise<void>((resolve) => {
             turn0Gate = resolve;
           });
           // Re-read after gate release — must STILL show original snapshot
-          const t2 = input.userMessages.flatMap((m) =>
-            m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
-          );
+          const t2 = input.userMessages.map((m) => m.text);
           observedByTurn0.push(t2);
         }
         return false;
@@ -1308,7 +1304,7 @@ describe("cancellation safety", () => {
 
 describe("isDrifting message sanitization", () => {
   it("strips assistant / tool / system / file content from userMessages", async () => {
-    let captured: readonly InboundMessage[] = [];
+    let captured: readonly DriftUserMessage[] = [];
     const mw = createGoalMiddleware({
       objectives: ["Write tests"],
       isDrifting: (input) => {
@@ -1346,15 +1342,13 @@ describe("isDrifting message sanitization", () => {
     expect(senders).not.toContain("tool");
     expect(senders).not.toContain("system");
     // text-only user messages survive
-    const texts = captured.flatMap((m) =>
-      m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
-    );
+    const texts = captured.map((m) => m.text);
     expect(texts).toContain("user question");
     expect(texts).toContain("user text ok");
   });
 
   it("rejects messages with metadata.role assistant/tool regardless of senderId", async () => {
-    let captured: readonly InboundMessage[] = [];
+    let captured: readonly DriftUserMessage[] = [];
     const mw = createGoalMiddleware({
       objectives: ["Write tests"],
       isDrifting: (input) => {
@@ -1390,14 +1384,12 @@ describe("isDrifting message sanitization", () => {
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("x"));
     await mw.onAfterTurn?.(ctx);
 
-    const texts = captured.flatMap((m) =>
-      m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
-    );
+    const texts = captured.map((m) => m.text);
     expect(texts).toEqual(["actual user text"]);
   });
 
   it("rejects prefixed assistant:/tool: sender IDs from userMessages", async () => {
-    let captured: readonly InboundMessage[] = [];
+    let captured: readonly DriftUserMessage[] = [];
     const mw = createGoalMiddleware({
       objectives: ["Write tests"],
       isDrifting: (input) => {
@@ -1433,20 +1425,13 @@ describe("isDrifting message sanitization", () => {
       isDrifting: (input) => {
         call += 1;
         if (call === 1) {
-          // Buggy mutation: try to overwrite text inside received messages
-          const mutable = input.userMessages as unknown as Array<{
-            content: Array<{ kind: string; text: string }>;
-          }>;
+          // Buggy mutation: try to overwrite text (DriftUserMessage is
+          // readonly at type level; runtime mutation is still attempted).
+          const mutable = input.userMessages as unknown as Array<{ text: string }>;
           const first = mutable[0];
-          if (first) {
-            const block = first.content[0];
-            if (block) block.text = "MUTATED";
-          }
+          if (first) first.text = "MUTATED";
         } else {
-          const first = input.userMessages[0];
-          const block = first?.content[0];
-          firstTurnTextOnSecondCall =
-            block !== undefined && block.kind === "text" ? block.text : undefined;
+          firstTurnTextOnSecondCall = input.userMessages[0]?.text;
         }
         return false;
       },

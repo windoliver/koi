@@ -29,6 +29,7 @@ import {
   DEFAULT_CALLBACK_TIMEOUT_MS,
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
+  type DriftUserMessage,
   type GoalItem,
   type GoalItemWithId,
   type GoalMiddlewareConfig,
@@ -59,7 +60,7 @@ interface PerTurnState {
   /** Immutable snapshot of the rolling user-messages buffer at turn start.
    *  Used as drift-callback input so turn N cannot observe turn N+1's
    *  appended messages under overlap. */
-  userMessagesSnapshot: readonly InboundMessage[];
+  userMessagesSnapshot: readonly DriftUserMessage[];
 }
 
 interface GoalSessionState {
@@ -67,7 +68,7 @@ interface GoalSessionState {
   readonly currentInterval: number;
   readonly lastReminderTurn: number;
   /** Rolling buffer of user-facing messages (sanitized). Used by isDrifting callback. */
-  userMessageBuffer: InboundMessage[];
+  userMessageBuffer: DriftUserMessage[];
   /** Active per-turn state, keyed by `ctx.turnId`. Entries are created at
    * onBeforeTurn and removed at onAfterTurn (or implicitly on session end). */
   turns: Map<string, PerTurnState>;
@@ -457,13 +458,11 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
    * callbacks. Prevents callback-side mutation from poisoning the
    * session-state buffer for subsequent turns.
    */
-  function cloneMessages(messages: readonly InboundMessage[]): readonly InboundMessage[] {
+  function cloneMessages(messages: readonly DriftUserMessage[]): readonly DriftUserMessage[] {
     return messages.map((m) => ({
       senderId: m.senderId,
       timestamp: m.timestamp,
-      content: m.content.map((b) =>
-        b.kind === "text" ? { kind: "text" as const, text: b.text } : { ...b },
-      ),
+      text: m.text,
     }));
   }
 
@@ -499,23 +498,35 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         maxInterval,
       );
       const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
-      // Compare-and-swap: never move lastReminderTurn backwards.
-      if (ctx.turnIndex < latest.lastReminderTurn) return;
+      // lastReminderTurn was already advanced synchronously in
+      // consumeInjection; here we only settle currentInterval based on
+      // the (possibly async) drift judge result.
       sessions.set(ctx.session.sessionId, {
         ...latest,
         currentInterval: nextInterval,
-        lastReminderTurn: ctx.turnIndex,
       });
     }
   }
 
-  /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
-  function consumeInjection(sid: SessionId, turnIdStr: string): boolean {
+  /**
+   * Consume shouldInject on first model call in a turn. Returns whether to inject.
+   *
+   * Advances `lastReminderTurn` synchronously here (CAS: never
+   * decreases) so the next turn's `onBeforeTurn` sees the injection
+   * immediately, preventing double-injection in drift-only mode where
+   * `onBeforeTurn` does not await the prior turn's drift callback.
+   * Interval adjustment still lands later in `processTurnCallbacks`
+   * based on the drift judge's decision.
+   */
+  function consumeInjection(sid: SessionId, turnIdStr: string, turnIndex: number): boolean {
     const state = sessions.get(sid);
     const turn = state?.turns.get(turnIdStr);
-    if (!turn?.shouldInject) return false;
+    if (!state || !turn?.shouldInject) return false;
     turn.shouldInject = false;
     turn.injectedThisTurn = true;
+    if (turnIndex > state.lastReminderTurn) {
+      sessions.set(sid, { ...state, lastReminderTurn: turnIndex });
+    }
     return true;
   }
 
@@ -609,7 +620,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       if (!state) return next(request);
       const turnKey = String(ctx.turnId);
 
-      const inject = consumeInjection(ctx.session.sessionId, turnKey);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const enrichedRequest = inject
         ? {
             ...request,
@@ -640,7 +651,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       }
 
       const turnKey = String(ctx.turnId);
-      const inject = consumeInjection(ctx.session.sessionId, turnKey);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const enrichedRequest = inject
         ? {
             ...request,

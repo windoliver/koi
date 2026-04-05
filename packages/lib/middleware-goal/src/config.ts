@@ -2,7 +2,7 @@
  * Goal middleware configuration and validation.
  */
 
-import type { InboundMessage, KoiError, Result, SessionId, TurnContext, TurnId } from "@koi/core";
+import type { KoiError, Result, SessionId, TurnContext, TurnId } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
 /** Lightweight goal state used by the exported pure helpers. */
@@ -17,10 +17,30 @@ export interface GoalItemWithId extends GoalItem {
   readonly id: string;
 }
 
+/**
+ * Redacted user-message view passed to the `isDrifting` callback.
+ *
+ * This is a purpose-built DTO — NOT a full `InboundMessage`. Only the
+ * subset of fields safe to expose across the external-callback trust
+ * boundary is included. File/image/tool content blocks, `threadId`,
+ * `metadata`, and `pinned` are all intentionally omitted so they cannot
+ * be exfiltrated to LLM-backed judges.
+ */
+export interface DriftUserMessage {
+  readonly senderId: string;
+  readonly timestamp: number;
+  readonly text: string;
+}
+
 /** Input passed to a custom `isDrifting` callback. */
 export interface DriftJudgeInput {
-  /** Last-N user-facing messages (synthetic stop-gate retry messages filtered out). */
-  readonly userMessages: readonly InboundMessage[];
+  /**
+   * Last-N user-authored messages reduced to text content. Synthetic
+   * stop-gate retry messages, non-user senders, and messages with
+   * `metadata.role !== "user"` are filtered out; non-text content
+   * blocks are dropped.
+   */
+  readonly userMessages: readonly DriftUserMessage[];
   /** Per-model-call assistant responses buffered during the turn. */
   readonly responseTexts: readonly string[];
   /** Current goal state with stable IDs. */

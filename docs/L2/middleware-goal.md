@@ -83,6 +83,13 @@ const mw = createGoalMiddleware({
 });
 ```
 
+**Drift input is redacted**: `input.userMessages` is a `DriftUserMessage[]`
+(NOT `InboundMessage[]`) — the middleware reduces each message to `{ senderId,
+timestamp, text }` and drops non-text content, `threadId`, `metadata`, and
+`pinned` fields before exposing it across the trust boundary. Only messages
+with `metadata.role === "user"` (or no role) from non-assistant/tool sender
+IDs reach the callback.
+
 **Cooperative cancellation**: callbacks receive a composed `AbortSignal` on
 their `ctx` that fires when the timeout expires OR the turn is cancelled
 upstream. Callbacks MUST honor it to stop in-flight work.
