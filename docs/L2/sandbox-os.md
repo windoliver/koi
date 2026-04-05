@@ -147,6 +147,29 @@ Validates the profile before any platform-specific code runs. Returns typed erro
   macOS dyld requires broad read access (deny-default for reads breaks system frameworks).
 - **Empty required fields**: `defaultReadAccess` is required (no default).
 
+### `collectStream(stream, budget, onChunk?): Promise<{ text: string; truncated: boolean }>`
+
+Exported from `adapter.ts` for testing and advanced callers. Drains a `ReadableStream<Uint8Array>`
+into a string against a shared `ByteBudget`. Shared across stdout and stderr to enforce a
+combined cap — the caller passes the same `budget` object to both streams.
+
+```typescript
+interface ByteBudget { remaining: number; }
+
+// Usage: enforce a 1 MB combined stdout+stderr cap
+const budget = { remaining: 1_048_576 };
+const [out, err] = await Promise.all([
+  collectStream(proc.stdout, budget),
+  collectStream(proc.stderr, budget),
+]);
+// out.truncated || err.truncated → combined cap was hit
+```
+
+Key behaviour:
+- Continues draining after budget exhaustion (prevents pipe-full deadlock on child processes)
+- `onChunk` is only called for bytes that fit within the budget (streaming callbacks see clean data)
+- Mutates `budget.remaining` in-place — not thread-safe across unrelated callers
+
 ### `normalizeResult(result: SandboxAdapterResult): Result<SandboxAdapterResult, SandboxError>`
 
 Maps a completed `SandboxAdapterResult` to a semantic `SandboxError` using this priority
@@ -275,9 +298,20 @@ export const SENSITIVE_CREDENTIAL_PATHS: readonly string[] = [
 for the broad-read requirement. Sensitive read paths are blocked with `(deny file-read*)`.
 Writes use an explicit allowlist.
 
-**Profile pre-computation**: `generateSeatbeltProfile(profile)` is called once at
+**Profile pre-computation**: `generateSeatbeltProfile(profile, opts?)` is called once at
 `adapter.create(profile)` time and the resulting `.sb` string is stored on the instance.
 Every `exec()` call reuses the pre-computed string.
+
+**macOS symlink canonicalization**: macOS exposes `/tmp`, `/var`, and `/etc` as symlinks
+to `/private/tmp`, `/private/var`, and `/private/etc`. Seatbelt matches rule paths
+**literally** against the resolved kernel path, so `(subpath "/tmp/foo")` does NOT
+match `/private/tmp/foo`. `generateSeatbeltProfile` automatically canonicalizes these
+prefixes before emitting rules. This is transparent to callers — profile paths may use
+either form.
+
+**`opts.home` parameter**: the `home` option on `generateSeatbeltProfile` overrides
+`process.env.HOME` for `~/...` path expansion. Always pass `opts.home` explicitly in
+tests or sandboxed contexts where `HOME` may differ from the intended user directory.
 
 **Network**: binary on/off only via `(allow network*)` / `(deny network*)`. `allowedHosts`
 is not expressible in Seatbelt without IP address resolution at profile time (fragile).
@@ -404,6 +438,26 @@ Platform-agnostic tests (profile validation, `normalizeResult`, preset construct
 | bwrap deny ordering | `--tmpfs /home/.ssh` index > `--ro-bind /home /home` index in generated args |
 | bwrap resource limits | maxPids set without maxOpenFiles still applies ulimit via sh wrapper |
 | platform × model compat | 4 combinations (open/closed × seatbelt/bwrap) tested via injected PlatformInfo |
+| seatbelt path canonicalization | `/tmp`, `/var`, `/etc` paths rewritten to `/private/*`; non-symlink paths pass through unchanged |
+| `opts.home` override | `generateSeatbeltProfile({...}, { home: "/custom" })` expands `~/` without reading `process.env.HOME` |
+| `collectStream` | 7 unit tests: full read, budget truncation, empty stream, budget decrement, shared budget, `onChunk`, `onChunk` stops at truncation |
+| exec truncation integration | `SANDBOX_INTEGRATION=1`: output capped at `maxOutputBytes` returns `truncated: true` |
+
+### Seatbelt enforcement integration tests
+
+Full enforcement tests run only when `SANDBOX_INTEGRATION=1` is set on macOS:
+
+```bash
+SANDBOX_INTEGRATION=1 bun test packages/sandbox/sandbox-os/src/platform/seatbelt.test.ts
+```
+
+| Test | What it proves |
+|------|---------------|
+| Write to allowed /tmp path succeeds | `allowWrite: ["/tmp"]` correctly permits writes |
+| Write to non-allowed sibling path denied | Narrower `allowWrite` correctly blocks adjacent paths |
+| Sandboxed process runs and returns stdout | Basic exec round-trip under Seatbelt |
+| Timeout kills sandboxed process | `timeoutMs` fires; `timedOut: true`, `durationMs < 5000` |
+| Network denied when policy is false | `bash /dev/tcp` returns "not permitted" (EPERM from Seatbelt) |
 
 ### Test injection pattern
 

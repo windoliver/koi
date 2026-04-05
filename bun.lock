@@ -330,6 +330,7 @@
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/sandbox-os": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -404,8 +405,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
     },
     "packages/security/middleware-exfiltration-guard": {

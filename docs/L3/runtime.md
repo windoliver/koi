@@ -55,6 +55,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
 | `@koi/tasks` | In-memory task board store | `task-board` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead | `glob-use` |
+| `@koi/sandbox-os` | OS-level sandbox executor (macOS Seatbelt / Linux bwrap) with path-locked `run_sandboxed` tool | `sandbox-exec` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |
 
 > **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board` are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/`.
@@ -95,3 +96,5 @@ Follow the Doc → Tests → Code workflow:
 | `check:doc-wiring` | Modified L2 packages and changed L3 wiring have updated docs |
 
 > **Maintenance note (PR #1506):** Lint-only fixes applied to integrated packages (@koi/event-trace, @koi/model-openai-compat, @koi/mcp, @koi/middleware-permissions). No wiring changes; L2 package set is unchanged.
+
+> **Wiring (PR #1511):** `@koi/sandbox-os` added. Golden query `sandbox-exec` exercises the path-locked `run_sandboxed` tool under macOS Seatbelt / Linux bwrap. The golden query is trajectory-only (no cassette replay) — the sandbox executes live `ls` during recording; CI validates the fixture fields.

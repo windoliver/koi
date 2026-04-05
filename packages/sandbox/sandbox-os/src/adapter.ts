@@ -40,7 +40,7 @@ interface ByteBudget {
  * Truncates when the shared budget is exhausted, enforcing a combined cap.
  * Calls onChunk for each decoded text chunk before truncation.
  */
-async function collectStream(
+export async function collectStream(
   stream: ReadableStream<Uint8Array>,
   budget: ByteBudget,
   onChunk?: (chunk: string) => void,
