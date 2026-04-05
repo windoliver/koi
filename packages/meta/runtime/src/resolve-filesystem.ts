@@ -114,6 +114,12 @@ interface LocalBridgeOptions {
    * Default: "fs" (the createNexusFileSystem default).
    */
   readonly mountPoint?: string | undefined;
+  /**
+   * Environment variables forwarded to the bridge subprocess.
+   * Use for credentials the bridge needs (AWS keys, GCS credentials, etc.).
+   * Merged with and overrides the parent process environment.
+   */
+  readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
 function isLocalBridgeOptions(v: unknown): v is LocalBridgeOptions {
@@ -207,6 +213,7 @@ export async function resolveFileSystemAsync(
       startupTimeoutMs: options.startupTimeoutMs,
       callTimeoutMs: options.callTimeoutMs,
       authTimeoutMs: options.authTimeoutMs,
+      env: options.env,
     });
 
     // If backend construction fails, close the already-started subprocess to

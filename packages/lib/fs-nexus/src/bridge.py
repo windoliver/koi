@@ -218,9 +218,18 @@ async def handle_auth(fs, exc) -> bool:
         # Local flow: start callback server, send auth_required, await code
         # ---------------------------------------------------------------
         code_holder: list[str] = []
+        server_exc: list[BaseException] = []  # captures thread-level failures
         done = Event()
+
+        def _server_target(sock, codes, evt):
+            try:
+                _run_callback_server(sock, codes, evt)
+            except BaseException as _e:  # noqa: BLE001
+                server_exc.append(_e)
+                evt.set()  # unblock the wait loop so handle_auth sees the failure
+
         server_thread = Thread(
-            target=_run_callback_server,
+            target=_server_target,
             args=(_sock, code_holder, done),
             daemon=True,
         )
@@ -252,6 +261,12 @@ async def handle_auth(fs, exc) -> bool:
 
         done.set()  # stop server even if we timed out
         server_thread.join(timeout=2)
+
+        # Re-raise real infrastructure failures instead of masking them as
+        # user timeout — an empty code_holder from a server crash is not
+        # the same as a genuine auth abandonment.
+        if server_exc:
+            raise server_exc[0]
 
         if not code_holder:
             return False

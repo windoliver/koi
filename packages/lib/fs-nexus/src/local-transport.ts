@@ -373,9 +373,22 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
           timer,
         });
 
-        // Write to stdin — errors surface through the reader loop dying.
-        proc.stdin.write(`${request}\n`);
-        void proc.stdin.flush();
+        // Write to stdin. Synchronous write errors (bridge exited, pipe closed)
+        // are caught and resolved as a transport error. flush() is fire-and-forget
+        // but its rejections are routed through close() → reader-loop cleanup.
+        // Write and flush to stdin. Both are synchronous in Bun. Catch write
+        // errors and resolve the pending request with a transport error instead
+        // of letting the exception propagate as an unhandled rejection.
+        try {
+          proc.stdin.write(`${request}\n`);
+          proc.stdin.flush();
+        } catch (writeErr: unknown) {
+          pendingRequests.delete(requestId);
+          clearTimeout(timer);
+          close();
+          resolve({ ok: false, error: mapNexusError(writeErr, method) });
+          return;
+        }
       });
     });
 
@@ -431,8 +444,13 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
         ...(correlationId !== undefined ? { correlation_id: correlationId } : {}),
       },
     });
-    proc.stdin.write(`${msg}\n`);
-    void proc.stdin.flush();
+    try {
+      proc.stdin.write(`${msg}\n`);
+      proc.stdin.flush();
+    } catch {
+      // flush() is synchronous in Bun — write errors mean bridge is gone.
+      close();
+    }
   }
 
   return { call, subscribe, submitAuthCode, close, mounts };
