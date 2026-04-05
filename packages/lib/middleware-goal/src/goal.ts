@@ -393,10 +393,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   ): Promise<void> {
     if (!config.detectCompletions || entries.length === 0) return;
 
+    // Refresh session state immediately before invoking the callback so
+    // the items passed in reflect any updates from prior-turn callbacks
+    // that just resolved via the per-session pendingWork chain.
+    const current = sessions.get(ctx.session.sessionId) ?? state;
+
     const outcome = await invokeDetectCompletionsCallback(
       config.detectCompletions,
       entries.slice(),
-      cloneItems(state.items),
+      cloneItems(current.items),
       { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
     );
 

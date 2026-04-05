@@ -198,19 +198,37 @@ function describeValue(v: unknown): string {
  * Classify a caught error into upstream-abort vs timeout vs error.
  * Upstream-abort does NOT fire the error hook — it is not a callback
  * failure, it is cooperative cancellation.
+ *
+ * Only errors whose shape matches abort semantics (AbortError name, or
+ * matching ctx.signal.reason identity) are classified as aborted. A
+ * real parser/network/runtime failure that happens to land during the
+ * same microtask as cancellation stays in the error path so the
+ * observability hook still fires and heuristic fallback still runs.
  */
 function classifyCallbackError<T>(
   err: unknown,
   kind: "isDrifting" | "detectCompletions",
   opts: CallbackHarnessOptions,
 ): CallbackOutcome<T> {
-  const timeout = isTimeoutAbort(err);
-  const upstreamAborted = opts.ctx.signal?.aborted === true && !timeout;
-  if (upstreamAborted) {
+  if (isTimeoutAbort(err)) {
+    fireErrorHook(opts.onError, kind, err, opts.ctx);
+    return { ok: false, reason: "timeout" };
+  }
+  if (isUpstreamAbortError(err, opts.ctx.signal)) {
     return { ok: false, reason: "aborted" };
   }
   fireErrorHook(opts.onError, kind, err, opts.ctx);
-  return { ok: false, reason: timeout ? "timeout" : "error" };
+  return { ok: false, reason: "error" };
+}
+
+/** Match only genuine abort-shaped failures, not arbitrary errors that
+ * happened to occur while the signal was aborted. */
+function isUpstreamAbortError(err: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal === undefined || !signal.aborted) return false;
+  if (err instanceof Error && err.name === "AbortError") return true;
+  if (err === signal.reason) return true;
+  if (err instanceof Error && err.message === "aborted") return true; // our raceSignal reason
+  return false;
 }
 
 function fireErrorHook(
