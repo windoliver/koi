@@ -26,8 +26,9 @@ const ENTRIES = [
   "src/worker/engine-channel.ts",
 ];
 
-// Clean dist
+// Clean dist + tsbuildinfo so tsc incremental cache doesn't skip declaration emit
 rmSync(OUTDIR, { recursive: true, force: true });
+rmSync("tsconfig.tsbuildinfo", { force: true });
 mkdirSync(OUTDIR, { recursive: true });
 
 // 1. Build JS — Solid plugin transforms .tsx files via Babel.
