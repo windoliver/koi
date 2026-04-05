@@ -224,6 +224,30 @@ describe("createBashTool — cancellation and timeout", () => {
     ).rejects.toBeDefined();
   });
 
+  test("cancellation kills descendant processes (process group kill)", async () => {
+    // Verify that child processes spawned by bash are also killed on cancellation.
+    // Strategy: bash spawns a background 'sleep 1' that would write a marker file
+    // after 500ms.  We cancel after 100ms.  After waiting 1s the marker must not exist,
+    // proving the descendant was killed (not orphaned).
+    const markerFile = `/tmp/koi-pgid-test-${Date.now()}.marker`;
+    const controller = new AbortController();
+
+    const execPromise = tool.execute(
+      { command: `sleep 0.4 && touch ${markerFile} &\nwait` },
+      { signal: controller.signal },
+    );
+
+    // Cancel before the background sleep would write the marker
+    setTimeout(() => controller.abort(), 100);
+    await execPromise.catch(() => {});
+
+    // Wait longer than the sleep duration so the orphan would have written by now
+    await new Promise((r) => setTimeout(r, 800));
+
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(markerFile)).toBe(false);
+  });
+
   test("subsequent execution works after cancellation", async () => {
     const controller = new AbortController();
 

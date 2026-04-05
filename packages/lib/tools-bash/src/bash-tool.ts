@@ -1,3 +1,5 @@
+import { spawn as spawnChild } from "node:child_process";
+import { Readable } from "node:stream";
 import { type BashPolicy, classifyBashCommand, DEFAULT_BASH_POLICY } from "@koi/bash-security";
 import type { JsonObject, Tool, ToolExecuteOptions } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
@@ -150,6 +152,11 @@ export function createBashTool(config?: BashToolConfig): Tool {
 /**
  * Spawn bash and collect output with AbortSignal support and output budgeting.
  * Not exported — internal to this module.
+ *
+ * Process group kill: `detached: true` puts bash in its own process group so
+ * that `process.kill(-pid, signal)` terminates bash AND all descendants.
+ * Without this, long-running child processes survive after the tool reports
+ * completion/cancellation, creating a rollback hazard.
  */
 async function spawnBash(
   command: string,
@@ -184,31 +191,51 @@ async function spawnBash(
     };
   }
 
-  const proc = Bun.spawn(
-    // --noprofile --norc: skip /etc/profile and ~/.bashrc to prevent profile-based code execution
-    // set -euo pipefail: exit on error, unset vars, pipefail — fail-safe shell defaults
-    ["bash", "--noprofile", "--norc", "-c", `set -euo pipefail\n${command}`],
+  // detached: true (Unix) — bash starts as the leader of a new process group.
+  // PGID == proc.pid, so `process.kill(-pid, sig)` kills every descendant.
+  // --noprofile --norc: skip /etc/profile and ~/.bashrc to prevent profile-based code execution
+  // set -euo pipefail: exit on error, unset vars, pipefail — fail-safe shell defaults
+  const proc = spawnChild(
+    "bash",
+    ["--noprofile", "--norc", "-c", `set -euo pipefail\n${command}`],
     {
       cwd,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
       env: SAFE_ENV,
+      detached: true,
     },
   );
 
-  // Wire abort to SIGTERM + escalate to SIGKILL after grace period
+  // Convert Node.js Readable to Web ReadableStream for drainStream
+  const stdoutStream: ReadableStream<Uint8Array> | null =
+    proc.stdout !== null ? (Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>) : null;
+  const stderrStream: ReadableStream<Uint8Array> | null =
+    proc.stderr !== null ? (Readable.toWeb(proc.stderr) as ReadableStream<Uint8Array>) : null;
+
+  // Wire abort — kill the entire process group, not just the shell
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const onAbort = (): void => {
+    const pid = proc.pid;
+    if (pid === undefined) return;
     try {
-      proc.kill("SIGTERM");
+      process.kill(-pid, "SIGTERM"); // Negative PID targets the process group
     } catch {
-      // already exited
-    }
-    killTimer = setTimeout(() => {
       try {
-        proc.kill("SIGKILL");
+        proc.kill("SIGTERM");
       } catch {
         // already exited
+      }
+    }
+    killTimer = setTimeout(() => {
+      if (pid === undefined) return;
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
       }
     }, SIGKILL_ESCALATION_MS);
   };
@@ -223,11 +250,14 @@ async function spawnBash(
   // Both streams are drained concurrently to prevent pipe-buffer deadlock:
   // a subprocess blocked writing to a full pipe will never exit.
   const budget = { remaining: maxOutputBytes };
+  const exited = new Promise<number>((resolve) => {
+    proc.on("exit", (code) => resolve(code ?? 1));
+  });
   const [stdoutResult, stderrResult] = await Promise.all([
-    drainStream(proc.stdout, budget),
-    drainStream(proc.stderr, budget),
+    drainStream(stdoutStream, budget),
+    drainStream(stderrStream, budget),
   ]);
-  const exitCode = await proc.exited;
+  const exitCode = await exited;
 
   // Cleanup
   effectiveSignal?.removeEventListener("abort", onAbort);
@@ -237,7 +267,7 @@ async function spawnBash(
   const truncated = stdoutResult.truncated || stderrResult.truncated;
   const totalBytes = stdoutResult.byteCount + stderrResult.byteCount;
 
-  const result: BashSuccessResult = {
+  return {
     stdout: stdoutResult.text,
     stderr: stderrResult.text,
     exitCode,
@@ -250,7 +280,6 @@ async function spawnBash(
         }
       : {}),
   };
-  return result;
 }
 
 interface DrainResult {
