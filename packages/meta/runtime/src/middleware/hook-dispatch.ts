@@ -112,27 +112,24 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * Registry path: we cannot introspect registered hooks from outside,
    * so we fail closed (return true and redact on cancel).
    */
-  function hasPostHookFor(toolId: string, sessionId: string, agentId: string): boolean {
+  function hasPostHookFor(
+    toolId: string,
+    sessionId: string,
+    agentId: string,
+    eventName: "tool.succeeded" | "tool.failed",
+  ): boolean {
     if (registry !== undefined) {
       // Prefer the tight `hasMatching` query — asks the registry whether
-      // any registered hook's filter matches tool.succeeded/tool.failed for
-      // this specific tool. Falls back to `has` (any hooks at all), then
+      // any registered hook's filter matches THIS specific post-event for
+      // THIS specific tool. Falls back to `has` (any hooks at all), then
       // to fail-closed when neither introspection method exists.
       if (registry.hasMatching !== undefined) {
-        return (
-          registry.hasMatching(sessionId, {
-            event: "tool.succeeded",
-            agentId,
-            sessionId,
-            toolName: toolId,
-          }) ||
-          registry.hasMatching(sessionId, {
-            event: "tool.failed",
-            agentId,
-            sessionId,
-            toolName: toolId,
-          })
-        );
+        return registry.hasMatching(sessionId, {
+          event: eventName,
+          agentId,
+          sessionId,
+          toolName: toolId,
+        });
       }
       if (registry.has !== undefined) return registry.has(sessionId);
       return true;
@@ -141,10 +138,9 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       const filter = h.filter;
       // No filter = match all events and tools.
       if (filter === undefined) return true;
-      // Event-side check.
+      // Event-side check — specifically for the post-event we're about to fire.
       const eventMatches =
-        filter.events === undefined ||
-        filter.events.some((ev) => ev === "tool.succeeded" || ev === "tool.failed" || ev === "*");
+        filter.events === undefined || filter.events.some((ev) => ev === eventName || ev === "*");
       if (!eventMatches) return false;
       // Tool-side check: if filter.tools is present, this tool must be in it.
       const toolMatches = filter.tools === undefined || filter.tools.includes(toolId);
@@ -452,7 +448,12 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         if (
           postAborted &&
           postResults.length === 0 &&
-          hasPostHookFor(request.toolId, ctx.session.sessionId as string, ctx.session.agentId) &&
+          hasPostHookFor(
+            request.toolId,
+            ctx.session.sessionId as string,
+            ctx.session.agentId,
+            postEventName,
+          ) &&
           response !== undefined
         ) {
           return {
