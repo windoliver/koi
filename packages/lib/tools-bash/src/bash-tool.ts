@@ -53,13 +53,21 @@ type BashResult = BashSuccessResult | BashBlockedResult;
  * Create a bash execution tool that guards every command through the
  * @koi/bash-security classifier pipeline before spawning.
  *
- * Security:
- * - classifyBashCommand() runs: allowlist → injection → path → command
+ * Security model (what IS enforced):
+ * - classifyBashCommand() pipeline: allowlist → injection → path → command
  * - Spawn uses `bash --noprofile --norc` to prevent profile-based escalation
  * - `set -euo pipefail` is prepended to every command string
  * - Environment is replaced with a minimal safe set (no inherited env vars)
- * - AbortSignal is wired to SIGTERM with SIGKILL escalation after 3s
+ * - Working directory (`cwd`) is validated against `workspaceRoot`
+ * - AbortSignal wired to SIGTERM → SIGKILL (process group, all descendants)
  * - Output is capped at BashPolicy.maxOutputBytes (default 1 MB)
+ *
+ * Known limitation (what is NOT enforced):
+ * - File path arguments *inside* the command string are NOT validated.
+ *   A command like `cat /etc/passwd` passes even if cwd is within the workspace.
+ *   This tool relies on the denylist (reverse shells, escalation, etc.) and the
+ *   allowlist (if configured) for command-level control.  For full filesystem
+ *   confinement inject an OS sandbox via `wrapCommand` at the L3 integration layer.
  */
 export function createBashTool(config?: BashToolConfig): Tool {
   // workspaceRoot gates cwd containment.  When omitted the cwd is still
@@ -78,9 +86,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
     descriptor: {
       name: "Bash",
       description:
-        "Execute a bash command. Commands are validated against security classifiers " +
-        "before execution. Dangerous patterns (reverse shells, privilege escalation, " +
-        "injection vectors) are blocked. Use cwd to set the working directory.",
+        "Execute a bash command. The working directory is validated against the workspace root. " +
+        "Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are " +
+        "blocked by classifier. File path arguments inside the command string are NOT further " +
+        "restricted — for full filesystem confinement use an OS sandbox via wrapCommand.",
       inputSchema: {
         type: "object",
         properties: {
@@ -249,9 +258,19 @@ async function spawnBash(
   // Collect stdout and stderr with a shared byte budget.
   // Both streams are drained concurrently to prevent pipe-buffer deadlock:
   // a subprocess blocked writing to a full pipe will never exit.
+  //
+  // 'error' handler is required: if bash cannot be spawned (e.g. the cwd path
+  // does not exist on disk despite passing validatePath's fallback-to-resolve),
+  // Node emits 'error' instead of 'exit'.  Without a listener that is an
+  // uncaught exception; with one we capture the message and return a blocked result.
   const budget = { remaining: maxOutputBytes };
+  let spawnError: Error | undefined;
   const exited = new Promise<number>((resolve) => {
     proc.on("exit", (code) => resolve(code ?? 1));
+    proc.on("error", (err: Error) => {
+      spawnError = err;
+      resolve(1);
+    });
   });
   const [stdoutResult, stderrResult] = await Promise.all([
     drainStream(stdoutStream, budget),
@@ -263,6 +282,17 @@ async function spawnBash(
   effectiveSignal?.removeEventListener("abort", onAbort);
   clearTimeout(timer);
   if (killTimer !== undefined) clearTimeout(killTimer);
+
+  // Spawn failed (e.g. cwd does not exist) — return a blocked result rather
+  // than a success with exit code 1, so callers can distinguish the two cases.
+  if (spawnError !== undefined) {
+    return {
+      error: "Failed to spawn bash subprocess",
+      category: "injection",
+      reason: spawnError.message,
+      pattern: "",
+    };
+  }
 
   const truncated = stdoutResult.truncated || stderrResult.truncated;
   const totalBytes = stdoutResult.byteCount + stderrResult.byteCount;

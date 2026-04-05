@@ -62,6 +62,19 @@ describe("createBashTool — security blocking", () => {
     expect(result.error).toBeDefined();
   });
 
+  test("spawn failure on non-existent cwd returns error, does not hang", async () => {
+    // validatePath falls back to resolve() for paths that don't yet exist, so
+    // a non-existent cwd passes path validation but fails at spawn time.
+    // The 'error' handler on the child process must surface this as a blocked result.
+    const restricted = createBashTool({ workspaceRoot: "/" }); // allow any cwd for this test
+    const result = (await restricted.execute(
+      { command: "echo hi", cwd: "/this/path/does/not/exist/koi-test" },
+      {},
+    )) as Record<string, unknown>;
+    expect(result.error).toBeDefined();
+    expect(typeof result.reason).toBe("string");
+  });
+
   test("blocked result includes reason and pattern fields", async () => {
     const result = await exec("sudo whoami");
     expect(result.error).toBeDefined();
