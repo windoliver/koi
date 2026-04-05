@@ -128,6 +128,11 @@ export async function invokeIsDriftingCallback(
   try {
     const resultPromise = Promise.resolve(callback(input, callbackCtx));
     const value = await raceSignal(resultPromise, signal);
+    if (typeof value !== "boolean") {
+      const err = new TypeError(`isDrifting callback returned ${typeof value}, expected boolean`);
+      fireErrorHook(opts.onError, "isDrifting", err, opts.ctx);
+      return { ok: false, reason: "error" };
+    }
     return { ok: true, value };
   } catch (err: unknown) {
     return classifyCallbackError(err, "isDrifting", opts);
@@ -156,12 +161,37 @@ export async function invokeDetectCompletionsCallback(
   try {
     const resultPromise = Promise.resolve(callback(responseTexts, items, callbackCtx));
     const value = await raceSignal(resultPromise, signal);
-    return { ok: true, value };
+    const validated = validateCompletedIds(value);
+    if (validated === null) {
+      const err = new TypeError(
+        `detectCompletions callback returned ${describeValue(value)}, expected string[]`,
+      );
+      fireErrorHook(opts.onError, "detectCompletions", err, opts.ctx);
+      return { ok: false, reason: "error" };
+    }
+    return { ok: true, value: validated };
   } catch (err: unknown) {
     return classifyCallbackError(err, "detectCompletions", opts);
   } finally {
     cleanup();
   }
+}
+
+/** Returns a safe `string[]` copy when input is an array of strings; null otherwise. */
+function validateCompletedIds(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value)) return null;
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    result.push(item);
+  }
+  return result;
+}
+
+function describeValue(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array with non-string element";
+  return typeof v;
 }
 
 /**

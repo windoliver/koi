@@ -1124,7 +1124,7 @@ describe("cancellation safety", () => {
       onComplete: (obj) => completed.push(obj),
       detectCompletions: async (_texts, _items, ctx) => {
         // wait until upstream aborts
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((_resolve, reject) => {
           ctx.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         });
         return [];
@@ -1155,7 +1155,7 @@ describe("cancellation safety", () => {
     const mw = createGoalMiddleware({
       objectives: ["Write tests"],
       isDrifting: async (_input, ctx) => {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((_resolve, reject) => {
           ctx.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         });
         return true;
@@ -1231,7 +1231,7 @@ describe("isDrifting message sanitization", () => {
         call += 1;
         if (call === 1) {
           // Buggy mutation: try to overwrite text inside received messages
-          const mutable = input.userMessages as Array<{
+          const mutable = input.userMessages as unknown as Array<{
             content: Array<{ kind: string; text: string }>;
           }>;
           const first = mutable[0];
@@ -1380,6 +1380,49 @@ describe("drift sees post-completion state", () => {
 
     expect(observedCompleted[0]?.completed).toBe(true);
     expect(observedCompleted[1]?.completed).toBe(false);
+  });
+});
+
+describe("callback return-value validation", () => {
+  it("detectCompletions malformed return (undefined/null/object/mixed) falls back to heuristic", async () => {
+    const badReturns = [undefined, null, {}, "not-an-array", [1, 2, 3], ["ok", 42]] as const;
+    for (const bad of badReturns) {
+      const errors: string[] = [];
+      const mw = createGoalMiddleware({
+        objectives: ["Write tests"],
+        detectCompletions: (() => bad) as never,
+        onCallbackError: (info) => errors.push(info.reason),
+      });
+      const session = makeSessionCtx();
+      await mw.onSessionStart?.(session);
+      const ctx = makeTurnCtx(session);
+      await mw.onBeforeTurn?.(ctx);
+      await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+        makeModelResponse("completed write tests"),
+      );
+      // must not throw
+      await mw.onAfterTurn?.(ctx);
+      expect(errors).toEqual(["error"]);
+    }
+  });
+
+  it("isDrifting malformed return (non-boolean) falls back to drifting=true", async () => {
+    const badReturns = [undefined, null, 1, "true", {}] as const;
+    for (const bad of badReturns) {
+      const errors: string[] = [];
+      const mw = createGoalMiddleware({
+        objectives: ["Write tests"],
+        isDrifting: (() => bad) as never,
+        onCallbackError: (info) => errors.push(info.reason),
+      });
+      const session = makeSessionCtx();
+      await mw.onSessionStart?.(session);
+      const ctx = makeTurnCtx(session);
+      await mw.onBeforeTurn?.(ctx);
+      await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("x"));
+      await mw.onAfterTurn?.(ctx);
+      expect(errors).toEqual(["error"]);
+    }
   });
 });
 
