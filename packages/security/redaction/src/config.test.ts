@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_REDACTION_CONFIG, validateRedactionConfig } from "./config.js";
 import { createAllSecretPatterns } from "./patterns/index.js";
-import type { RedactionConfig } from "./types.js";
+import type { RedactionConfig, SecretPattern } from "./types.js";
 
 describe("validateRedactionConfig", () => {
   test("returns defaults for undefined config", () => {
@@ -164,5 +164,74 @@ describe("DEFAULT_REDACTION_CONFIG", () => {
 
   test("uses redact censor", () => {
     expect(DEFAULT_REDACTION_CONFIG.censor).toBe("redact");
+  });
+
+  test("config object is frozen — cannot swap fields to poison defaults", () => {
+    expect(Object.isFrozen(DEFAULT_REDACTION_CONFIG)).toBe(true);
+    expect(() => {
+      (DEFAULT_REDACTION_CONFIG as { censor: unknown }).censor = "mask";
+    }).toThrow();
+  });
+
+  test("patterns array is frozen — cannot replace entries to poison process-wide", () => {
+    // Regression for #1495: without this freeze a caller could mutate
+    // DEFAULT_REDACTION_CONFIG.patterns[0] to a slow/throwing detector and
+    // every future createRedactor() that relied on defaults would ship it.
+    expect(Object.isFrozen(DEFAULT_REDACTION_CONFIG.patterns)).toBe(true);
+    const evil: SecretPattern = { name: "evil", kind: "evil", detect: () => [] };
+    expect(() => {
+      (DEFAULT_REDACTION_CONFIG.patterns as SecretPattern[])[0] = evil;
+    }).toThrow();
+  });
+});
+
+describe("validateRedactionConfig — branding bypass regression (#1495)", () => {
+  test("fake pattern with forged trust symbols is still ReDoS-probed", () => {
+    // An attacker can enumerate symbols on a built-in (yields none with the
+    // WeakSet-based registry, but historically leaked the trust symbol) and
+    // re-attach them to a hostile object. The probe must still run.
+    const fake: SecretPattern = {
+      name: "forged",
+      kind: "forged",
+      detect: (_text: string) => {
+        const end = performance.now() + 10;
+        while (performance.now() < end) {
+          /* busy-wait to trip the ReDoS threshold */
+        }
+        return [];
+      },
+    };
+    // Stamp arbitrary-looking trust symbols — must not grant trust.
+    Object.defineProperty(fake, Symbol("koi.redaction.trusted"), { value: true });
+    Object.defineProperty(fake, Symbol.for("koi.redaction.trusted"), { value: true });
+
+    const result = validateRedactionConfig({ patterns: [fake] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("forged");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("detector that throws unconditionally during probe is rejected", () => {
+    // Reviewer-requested regression: throw-during-probe must fail validation,
+    // not be deferred to runtime (which would turn every redact call into
+    // [REDACTION_FAILED]).
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "thrower",
+          kind: "boom",
+          detect: (_text: string) => {
+            throw new Error("detector crash");
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("thrower");
+      expect(result.error.message).toContain("exception");
+    }
   });
 });

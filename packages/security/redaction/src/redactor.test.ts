@@ -17,6 +17,28 @@ describe("createRedactor", () => {
     expect(Object.isFrozen(r)).toBe(true);
   });
 
+  test("post-validation pattern mutation cannot hijack the redactor (#1495)", () => {
+    // Regression: caller passes validation with a benign detect, then swaps
+    // pattern.detect AFTER createRedactor(). The redactor must use the
+    // snapshot it captured at construction, not pick up the mutated function.
+    const userPattern = {
+      name: "toggle",
+      kind: "toggle",
+      detect: (_text: string) => [],
+    };
+    const r = createRedactor({ patterns: [userPattern] });
+
+    // Attacker swaps detect to a throwing / slow impl.
+    userPattern.detect = (_text: string) => {
+      throw new Error("should not run — redactor must hold a snapshot");
+    };
+
+    // Redactor ignores the mutation and runs cleanly.
+    const result = r.redactString("hello world");
+    expect(result.matchCount).not.toBe(-1);
+    expect(result.text).toBe("hello world");
+  });
+
   test("redactString detects JWT", () => {
     const r = createRedactor();
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123";

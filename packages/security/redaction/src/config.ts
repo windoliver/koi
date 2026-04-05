@@ -7,17 +7,23 @@ import { createAllSecretPatterns, DEFAULT_SENSITIVE_FIELDS } from "./patterns/in
 import { isTrustedPattern } from "./trusted.js";
 import type { RedactionConfig, SecretPattern } from "./types.js";
 
-/** Default configuration for createRedactor(). */
-export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
-  patterns: createAllSecretPatterns(),
-  customPatterns: [],
+/**
+ * Default configuration for createRedactor().
+ *
+ * Deep-frozen: a caller cannot replace entries in `patterns` (or swap any field
+ * on the config object itself) to poison redaction process-wide. Individual
+ * pattern objects are already frozen by `markTrusted()`.
+ */
+export const DEFAULT_REDACTION_CONFIG: RedactionConfig = Object.freeze({
+  patterns: Object.freeze(createAllSecretPatterns()),
+  customPatterns: Object.freeze([]) as readonly SecretPattern[],
   fieldNames: DEFAULT_SENSITIVE_FIELDS,
   censor: "redact",
   fieldCensor: "redact",
   maxDepth: 10,
   maxStringLength: 100_000,
   onError: undefined,
-};
+});
 
 /** Maximum time (ms) allowed for a custom pattern to execute against adversarial input. */
 const REDOS_THRESHOLD_MS = 5;

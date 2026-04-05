@@ -34,8 +34,15 @@ export function createRedactor(config?: Partial<RedactionConfig>): Redactor {
 
   const cfg = validated.value;
 
-  // Merge built-in + custom patterns
-  const allPatterns: readonly SecretPattern[] = [...cfg.patterns, ...cfg.customPatterns];
+  // Merge built-in + custom patterns, snapshotting each into an internal frozen
+  // wrapper. Without this, a caller can pass validation with a benign `detect`,
+  // then swap `pattern.detect` on their original object after createRedactor()
+  // returns — the validated pattern reference held by the redactor would pick
+  // up the mutated function at runtime (TOCTOU). Snapshotting captures the
+  // validated `detect` reference by value at construction time.
+  const allPatterns: readonly SecretPattern[] = [...cfg.patterns, ...cfg.customPatterns].map((p) =>
+    Object.freeze({ name: p.name, kind: p.kind, detect: p.detect }),
+  );
 
   // Pre-compile field matcher
   const fieldMatcher = createFieldMatcher(cfg.fieldNames);
