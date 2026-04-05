@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
