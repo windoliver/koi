@@ -307,12 +307,13 @@ export class AgentHookExecutor implements HookExecutor {
         const message = e instanceof Error ? e.message : String(e);
         // Abort/timeout — transient, refund reserved tokens
         this.refundTokens(event.sessionId, worstCaseTokens);
-        // Distinguish abort from other transient failures (spawn crash,
-        // verdict-parse errors) so the registry can refund once-hooks under
-        // cancellation races without burning retry budget.
-        const isAbort =
-          signal.aborted ||
-          (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError"));
+        // Distinguish CALLER cancellation from other transient failures
+        // (spawn crash, verdict-parse errors, hook-deadline TimeoutError).
+        // A hook exceeding its own timeout budget is a genuine transient
+        // failure that MUST increment onceRetries so broken/slow hooks
+        // can reach exhausted-blocker state. Only caller-signal aborts
+        // (signal.aborted === true) should be refunded under cancellation.
+        const isAbort = signal.aborted;
         return this.handleTransientFailure(hook.name, message, durationMs, failClosed, isAbort);
       }
     } finally {

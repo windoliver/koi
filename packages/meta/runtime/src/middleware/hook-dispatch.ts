@@ -53,6 +53,12 @@ export interface HookRegistryLike {
     abortSignal?: AbortSignal,
   ) => Promise<readonly HookExecutionResult[]>;
   readonly cleanup: (sessionId: string) => void;
+  /**
+   * Returns true if the session has registered hooks. Optional so test
+   * doubles can omit it; when absent, the middleware falls back to
+   * fail-closed assumptions.
+   */
+  readonly has?: (sessionId: string) => boolean;
 }
 
 export interface HookDispatchConfig {
@@ -100,8 +106,15 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * Registry path: we cannot introspect registered hooks from outside,
    * so we fail closed (return true and redact on cancel).
    */
-  function hasPostHookFor(toolId: string): boolean {
-    if (registry !== undefined) return true;
+  function hasPostHookFor(toolId: string, sessionId: string): boolean {
+    if (registry !== undefined) {
+      // If the registry exposes `has`, use it to avoid redacting when the
+      // session was never registered (registry.execute returns [] for
+      // unregistered sessions, so no post-hook could have run). If the
+      // registry doesn't expose `has`, fail closed.
+      if (registry.has !== undefined) return registry.has(sessionId);
+      return true;
+    }
     return hooks.some((h) => {
       const filter = h.filter;
       // No filter = match all events and tools.
@@ -408,7 +421,11 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         // bypassing any contract and the raw output is returned normally.
         // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
         const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
-        if (postAborted && hasPostHookFor(request.toolId) && response !== undefined) {
+        if (
+          postAborted &&
+          hasPostHookFor(request.toolId, ctx.session.sessionId as string) &&
+          response !== undefined
+        ) {
           return {
             output: "[output redacted: post-hooks skipped due to cancellation]",
             ...(response.metadata !== undefined

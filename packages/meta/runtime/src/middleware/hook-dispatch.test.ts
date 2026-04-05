@@ -556,6 +556,30 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
   });
 
+  test("registry with has(): unregistered session does NOT redact on late abort", async () => {
+    // Regression: hasPostHookFor on the registry path must use registry.has()
+    // when available. An unregistered session has no hooks the registry
+    // could dispatch, so redaction would be unnecessary data-loss.
+    const controller = new AbortController();
+    const registry: HookRegistryLike = {
+      register: () => {},
+      execute: async () => [],
+      cleanup: () => {},
+      has: () => false, // session not registered
+    };
+    const mw = createHookDispatchMiddleware({ hooks: [], registry });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => {
+      controller.abort();
+      return { output: "PLAIN_UNREGISTERED" };
+    };
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "t", input: {} } as never, next);
+    expect(result?.output).toBe("PLAIN_UNREGISTERED");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
+  });
+
   test("late abort during post-hook dispatch redacts tool output (fail-closed)", async () => {
     // Regression: if the caller cancels AFTER the tool succeeded but BEFORE
     // post-hooks run, registry.execute() returns [] on the aborted signal.
