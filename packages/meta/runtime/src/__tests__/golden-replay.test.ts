@@ -3984,3 +3984,77 @@ describe("Golden: @koi/memory-fs", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// sandbox-exec trajectory: @koi/sandbox-os run_sandboxed via Seatbelt/bwrap
+// ---------------------------------------------------------------------------
+
+describe("sandbox-exec ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with run_sandboxed in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "run_sandboxed")).toBe(true);
+  });
+
+  test("has TOOL step for run_sandboxed with echo output", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.observation?.results !== undefined,
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain("hello from sandbox");
+  });
+
+  test("model response references sandbox output", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+    const finalResponse =
+      modelSteps[modelSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse.toLowerCase()).toContain("hello from sandbox");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/sandbox-os (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-os", () => {
+  test("createOsAdapterForTest returns adapter with correct name and platform metadata", async () => {
+    const { createOsAdapterForTest } = await import("@koi/sandbox-os");
+    const adapter = createOsAdapterForTest({ platform: "seatbelt", available: true });
+    expect(adapter.name).toBe("@koi/sandbox-os");
+    expect(adapter.platform.platform).toBe("seatbelt");
+    expect(adapter.platform.available).toBe(true);
+  });
+
+  test("validateProfile rejects defaultReadAccess 'closed' on seatbelt with VALIDATION error", async () => {
+    const { validateProfile } = await import("@koi/sandbox-os");
+    const result = validateProfile(
+      { filesystem: { defaultReadAccess: "closed" }, network: { allow: false }, resources: {} },
+      "seatbelt",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("dyld");
+    }
+  });
+});

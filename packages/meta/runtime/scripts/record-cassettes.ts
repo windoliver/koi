@@ -75,6 +75,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createOsAdapterForTest, detectPlatform } from "@koi/sandbox-os";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -878,6 +879,64 @@ const webProvider = createWebProvider({
 });
 
 // ---------------------------------------------------------------------------
+// @koi/sandbox-os — run_sandboxed: executes /bin/echo inside OS sandbox
+// Only enabled on supported platforms (macOS seatbelt, Linux bwrap).
+// ---------------------------------------------------------------------------
+
+let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
+
+const _sandboxPlatformResult = detectPlatform();
+if (_sandboxPlatformResult.ok) {
+  const _sandboxAdapter = createOsAdapterForTest({
+    platform: _sandboxPlatformResult.value,
+    available: true,
+  });
+
+  const _runSandboxedResult = buildTool({
+    name: "run_sandboxed",
+    description:
+      "Run /bin/echo inside the OS sandbox (macOS Seatbelt or Linux bubblewrap) and return the captured stdout.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "Text to echo inside the sandbox" },
+      },
+      required: ["message"],
+    },
+    origin: "primordial",
+    execute: async (args: JsonObject): Promise<unknown> => {
+      const instance = await _sandboxAdapter.create({
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: false },
+        resources: {},
+      });
+      try {
+        const r = await instance.exec("/bin/echo", [String(args.message)]);
+        return {
+          stdout: r.stdout.trim(),
+          exitCode: r.exitCode,
+          timedOut: r.timedOut,
+          platform: _sandboxAdapter.platform.platform,
+        };
+      } finally {
+        await instance.destroy();
+      }
+    },
+  });
+
+  if (_runSandboxedResult.ok) {
+    const _runSandboxedTool = _runSandboxedResult.value;
+    sandboxProvider = createSingleToolProvider({
+      name: "run-sandboxed",
+      toolName: "run_sandboxed",
+      createTool: () => _runSandboxedTool,
+    });
+  } else {
+    console.warn(`buildTool(run_sandboxed) failed: ${_runSandboxedResult.error.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
 // ---------------------------------------------------------------------------
 
@@ -1678,6 +1737,31 @@ const queries: readonly QueryConfig[] = [
     ],
     maxTurns: 5,
   },
+
+  // sandbox-exec: @koi/sandbox-os — run_sandboxed tool validates Seatbelt/bwrap triggers
+  //   agent calls run_sandboxed → sandbox executes /bin/echo → stdout captured in ATIF
+  //   Only included when platform detection succeeds (macOS or Linux).
+  ...(sandboxProvider !== undefined
+    ? [
+        {
+          name: "sandbox-exec",
+          prompt: 'Use the run_sandboxed tool to echo "hello from sandbox" and report the output.',
+          permissionMode: "bypass" as const,
+          permissionRules: BYPASS_RULES,
+          permissionDescription: "bypass (allow all)",
+          hooks: [
+            {
+              kind: "command" as const,
+              name: "on-sandbox-tool",
+              cmd: ["echo", "sandbox-tool-done"],
+              filter: { events: ["tool.succeeded"] },
+            },
+          ],
+          providers: [sandboxProvider],
+          maxTurns: 2,
+        },
+      ]
+    : []),
 
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.

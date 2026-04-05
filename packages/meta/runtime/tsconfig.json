@@ -32,6 +32,7 @@
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../security/middleware-permissions" },
+    { "path": "../../sandbox/sandbox-os" },
     { "path": "../../security/permissions" },
     { "path": "../../lib/validation" }
   ]
