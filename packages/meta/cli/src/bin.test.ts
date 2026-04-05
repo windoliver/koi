@@ -75,6 +75,12 @@ describe("bin.ts", () => {
         expect(r.stderr).toContain("Phase 2i-3");
       }
     });
+
+    test("koi start --manifest echoes manifest path to stderr", async () => {
+      const r = await runBin(["start", "--manifest", "my.yaml"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("my.yaml");
+    });
   });
 
   describe("unknown commands", () => {
