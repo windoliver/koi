@@ -57,6 +57,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead | `glob-use` |
 | `@koi/sandbox-os` | OS-level sandbox executor (macOS Seatbelt / Linux bwrap) with path-locked `run_sandboxed` tool | `sandbox-exec` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |
+| `@koi/harness` | CLI harness: single-prompt + interactive REPL wiring, TUI adapter bridge, fail-closed stream guards | standalone |
 
 > **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board` are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/`.
 

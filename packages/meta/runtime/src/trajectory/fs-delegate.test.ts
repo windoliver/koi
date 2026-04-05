@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmdir } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import type { AtifDocument } from "./atif-types.js";
 import { createFsAtifDelegate } from "./fs-delegate.js";
 
@@ -27,7 +27,7 @@ describe("createFsAtifDelegate", () => {
 
   afterEach(async () => {
     try {
-      await rmdir(TEST_DIR, { recursive: true });
+      await rm(TEST_DIR, { recursive: true, force: true });
     } catch {
       // ignore
     }

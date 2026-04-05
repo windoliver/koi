@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import { createEventBatcher } from "./event-batcher.js";
+import { createEventBatcher, type TimerHandle } from "./event-batcher.js";
 
 // ---------------------------------------------------------------------------
 // Timer stub helpers
@@ -17,12 +17,12 @@ function makeTimerStub() {
   let pending: (() => void) | null = null;
   let cancelled = false;
 
-  const schedule = mock((_fn: () => void, _ms: number): ReturnType<typeof setTimeout> => {
+  const schedule = mock((_fn: () => void, _ms: number): TimerHandle => {
     pending = _fn;
     cancelled = false;
-    return 0 as unknown as ReturnType<typeof setTimeout>;
+    return 0;
   });
-  const cancel = mock((_id: ReturnType<typeof setTimeout>): void => {
+  const cancel = mock((_id: TimerHandle): void => {
     cancelled = true;
     pending = null;
   });
@@ -212,12 +212,12 @@ describe("EventBatcher — error resilience", () => {
     // Two separate timers needed — one per burst
     const timers: Array<ReturnType<typeof makeTimerStub>> = [];
     let timerIdx = 0;
-    const schedule = (_fn: () => void, _ms: number): ReturnType<typeof setTimeout> => {
+    const schedule = (_fn: () => void, _ms: number): TimerHandle => {
       if (timerIdx >= timers.length) timers.push(makeTimerStub());
       // biome-ignore lint/style/noNonNullAssertion: timer pushed on line above when timerIdx >= timers.length
       const t = timers[timerIdx++]!;
       t.schedule(_fn, _ms);
-      return 0 as unknown as ReturnType<typeof setTimeout>;
+      return 0;
     };
 
     const batcher = createEventBatcher<string>(

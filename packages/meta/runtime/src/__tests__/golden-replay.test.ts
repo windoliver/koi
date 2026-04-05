@@ -4065,6 +4065,76 @@ describe("Golden: @koi/memory-fs", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/harness (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/harness", () => {
+  test("createCliHarness returns harness with runSinglePrompt and runInteractive", async () => {
+    const { createCliHarness } = await import("@koi/harness");
+
+    const runtime = {
+      run: () =>
+        (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "completed" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+            },
+          };
+        })(),
+    };
+    const channel = {
+      name: "test",
+      capabilities: {
+        text: true,
+        images: false,
+        files: false,
+        buttons: false,
+        audio: false,
+        video: false,
+        threads: false,
+        supportsA2ui: false,
+      },
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+    };
+
+    const harness = createCliHarness({ runtime, channel, tui: null });
+    expect(typeof harness.runSinglePrompt).toBe("function");
+    expect(typeof harness.runInteractive).toBe("function");
+  });
+
+  test("shouldRender and renderEngineEvent correctly classify events", async () => {
+    const { shouldRender, renderEngineEvent } = await import("@koi/harness");
+
+    // text_delta always renders
+    expect(shouldRender({ kind: "text_delta", delta: "hi" }, false)).toBe(true);
+    expect(renderEngineEvent({ kind: "text_delta", delta: "hi" }, false)).toBe("hi");
+
+    // tool_call_delta never renders regardless of verbose
+    expect(shouldRender({ kind: "tool_call_delta", callId: "c1" as never, delta: "x" }, true)).toBe(
+      false,
+    );
+
+    // done renders as newline
+    const doneEvent = {
+      kind: "done" as const,
+      output: {
+        content: [],
+        stopReason: "completed" as const,
+        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+      },
+    };
+    expect(shouldRender(doneEvent, false)).toBe(true);
+    expect(renderEngineEvent(doneEvent, false)).toBe("\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // sandbox-exec trajectory: @koi/sandbox-os run_sandboxed via Seatbelt/bwrap
 // ---------------------------------------------------------------------------
 
