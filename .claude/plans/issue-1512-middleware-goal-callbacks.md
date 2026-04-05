@@ -84,24 +84,55 @@ dedup, or filtering in the callback's return cannot corrupt completion state.
 
 | File | Change |
 |------|--------|
-| `config.ts` | Add 2 type aliases, 2 optional config fields, validate them as functions in `validateGoalConfig`. |
-| `goal.ts` | Export `GoalItem` type. Wrap heuristic calls at 2 sites (`isDrifting` in `onAfterTurn`, `detectCompletions` in `updateCompletions`) with "callback if provided, else heuristic" logic. Make `updateCompletions` async and await it at call sites. |
+| `config.ts` | Add type aliases (`IsDriftingFn`, `DetectCompletionsFn`, `OnCallbackErrorFn`), `GoalItemWithId` interface, 3 optional config fields (`isDrifting`, `detectCompletions`, `callbackTimeoutMs`, `onCallbackError`), validate callbacks as functions + `callbackTimeoutMs` as finite positive integer with a sane upper bound (e.g. 60000ms) in `validateGoalConfig`. |
+| `goal.ts` | Export `GoalItem`, `GoalItemWithId` types. Buffer response text into session state during `wrapModelCall`/`wrapModelStream` (sync). Move callback evaluation (`detectCompletions` + `isDrifting`) into `onAfterTurn`. Add `composeTimeoutSignal(ctx.signal, timeoutMs)` helper. Invoke callbacks with composed-signal ctx wrapped in Promise.race + timeout. Apply split failure policy. Merge completions by ID lookup. |
 | `index.ts` | Re-export `GoalItem`, `IsDriftingFn`, `DetectCompletionsFn`. |
 | `goal.test.ts` | New test cases for callback invocation, async support, error fallback, and default-behavior preservation. |
 | `docs/L2/middleware-goal.md` | Add "Custom Callbacks" section with LLM-judge example. |
 | `docs/L3/runtime.md` | Minor touch for doc-wiring CI gate. |
 
-## Error handling & timeout contract
+## Cancellation, latency & error handling
 
-**Timeout**: every callback invocation is wrapped in `Promise.race` with
-`callbackTimeoutMs` (default 5000ms). On timeout the callback is treated as a
-failure case. This bounds the new async dependency the middleware introduces
-on the model-response path (`wrapModelCall` + `wrapModelStream` finally block).
+### Off-path execution (no response-tail latency)
 
-**Split failure policy by callback type**:
+Callback evaluation moves **off the `wrapModelCall`/`wrapModelStream`
+critical path** entirely:
+
+- `wrapModelCall`/`wrapModelStream` buffer the response text into session
+  state (sync, fast). Response is returned to the user immediately after the
+  model finishes.
+- `onAfterTurn` (already async, runs between turns) invokes both callbacks:
+  first `detectCompletions` against the buffered text + current items, then
+  `isDrifting` + interval update.
+
+This removes user-visible latency from slow LLM judges. Completion state still
+settles before the next turn, so `onComplete` semantics are preserved. Minor
+behavior change: `onComplete` fires in `onAfterTurn` instead of during
+`wrapModelCall` (still once per completion, no functional difference for
+downstream consumers).
+
+### Cooperative cancellation
+
+Callbacks receive cancellation via `TurnContext.signal` (`AbortSignal`, already
+present in `@koi/core`'s `TurnContext`). The middleware creates a **composed
+signal** that aborts when EITHER:
+
+- the upstream `ctx.signal` fires (turn cancelled), OR
+- `callbackTimeoutMs` elapses.
+
+Callbacks are passed a `ctx` whose `signal` is the composed signal.
+Implementations **MUST** honor it to stop in-flight work (e.g. model fetches,
+scorer runs) and avoid token/cost leakage after fallback.
+
+This is documented as part of the callback contract. The middleware still
+wraps the call in `Promise.race` with the timeout so it can fall back even
+if the callback is uncooperative, but signal-aware callbacks also stop their
+background work.
+
+### Split failure policy by callback type
 
 - `isDrifting` error/timeout → **treat as `drifting = true`** (fail-safe:
-  shortens reminder interval to `baseInterval` so the user notices the judge
+  shortens reminder interval to `baseInterval` so operators notice the judge
   outage instead of having reminders silently suppressed). Matches v1
   `archive/v1/packages/middleware/middleware-goal/src/reminder/goal-reminder.ts`
   behavior.
@@ -109,10 +140,23 @@ on the model-response path (`wrapModelCall` + `wrapModelStream` finally block).
   Completions are monotonic, so the safer failure is a missed completion
   (detected next turn) rather than a false one.
 
-Both failures are swallowed (no thrown error reaches the model path). For
-observability, we keep the existing silent-swallow pattern — no new
-`onCallbackError` hook in this PR, but `onComplete` will still fire for any
-heuristic-detected completion during fallback.
+### Failure visibility (new `onCallbackError` hook)
+
+Silent-swallow is replaced by a structured failure surface. New optional
+config:
+
+```ts
+readonly onCallbackError?: (info: {
+  readonly callback: "isDrifting" | "detectCompletions";
+  readonly reason: "error" | "timeout";
+  readonly error?: unknown;
+  readonly sessionId: SessionId;
+  readonly turnId: TurnId;
+}) => void;
+```
+
+Called once per failure. Errors inside `onCallbackError` itself are swallowed
+(observability must not fail the turn).
 
 ## Backward compatibility
 
@@ -126,31 +170,56 @@ heuristic-detected completion during fallback.
 
 ## Call sites affected
 
-- `goal.ts:344` — `isDrifting(ctx.messages, allKeywords)` in `onAfterTurn`
-- `goal.ts:264` — `detectCompletions(text, current.items)` in `updateCompletions`
-- `goal.ts:375` + `goal.ts:416` — callers of `updateCompletions` need `await`
+- `goal.ts:264` (`updateCompletions` inner call to `detectCompletions`) and
+  `goal.ts:344` (`isDrifting` call) both **relocate** to `onAfterTurn`. Both
+  wrapped in the callback-if-provided + timeout + composed-signal harness.
+- `goal.ts:375` + `goal.ts:416` — callers inside `wrapModelCall` and
+  `wrapModelStream` finally: no longer call `updateCompletions` with detect
+  logic; instead they simply **append the buffered response text** to
+  session state (a fast synchronous state write). The heavy work happens
+  in `onAfterTurn`.
+- `onSessionStart` (`goal.ts:317`) — assigns `id: goal-${index}` at
+  initialization so every session item has a stable ID from turn 0.
 
 ## Test plan
 
 New test cases in `goal.test.ts`:
 
-1. Custom `isDrifting` called with ctx, sync return respected.
+1. Custom `isDrifting` called with ctx (sync), return respected.
 2. Custom `isDrifting` async (Promise) return respected.
-3. Custom `detectCompletions` called with text + items + ctx; returned IDs
-   merge correctly by lookup (reorder/dedup in callback return cannot misapply
-   completion state — positional-hazard regression guard).
+3. Custom `detectCompletions` IDs merge by lookup (reorder/dedup in callback
+   return cannot misapply completion state — positional-hazard guard).
 4. Custom `detectCompletions` with unknown IDs → no state change (ignored).
-5. `isDrifting` throws → treated as `drifting = true`, interval resets to base.
-6. `isDrifting` exceeds `callbackTimeoutMs` → same fail-safe behavior.
-7. `detectCompletions` throws → falls back to heuristic, model call succeeds.
-8. `detectCompletions` exceeds `callbackTimeoutMs` → same fallback.
-9. No callbacks provided → default heuristic behavior unchanged (regression).
-10. Example: mocked LLM-based drift judge demonstrating the usage pattern.
-11. GoalItem IDs stable across turns within a session.
+5. `isDrifting` throws → fires `onCallbackError(reason="error")`, treated
+   as drifting, interval resets to base.
+6. `isDrifting` exceeds `callbackTimeoutMs` → fires
+   `onCallbackError(reason="timeout")`, treated as drifting.
+7. `detectCompletions` throws → fires `onCallbackError`, falls back to
+   heuristic, model call succeeds.
+8. `detectCompletions` timeout → fires `onCallbackError`, heuristic fallback.
+9. **Response-path latency**: slow callback (2000ms) does NOT delay
+   `wrapModelCall` return — assert that the model response arrives before
+   `onAfterTurn` resolves the callback.
+10. **Cancellation**: callback receives an `AbortSignal` on its ctx that
+    fires at `callbackTimeoutMs`; assert signal.aborted === true inside
+    the callback when the timer elapses.
+11. **Upstream abort**: when `ctx.signal` aborts before timeout, the
+    composed signal fires immediately.
+12. `onCallbackError` hook itself throws → swallowed, turn continues.
+13. `callbackTimeoutMs` validation: rejects 0, negative, NaN, Infinity,
+    non-integer, values above the documented upper bound.
+14. No callbacks provided → default heuristic behavior unchanged
+    (regression guard).
+15. GoalItem IDs stable across turns within a session.
+16. Example: mocked LLM-based drift judge demonstrating the usage pattern
+    and cooperative cancellation.
 
 ## Estimated footprint
 
-~80-100 LOC code, ~80 LOC tests, ~30 LOC docs. Well under the 300-line PR budget.
+~120-160 LOC code (including signal composition helper, onAfterTurn
+refactor, error hook), ~140 LOC tests (16 cases), ~40 LOC docs. Larger
+than the original estimate due to the cancellation + off-path-execution
+requirements but still within the 300-line PR budget.
 
 ## Open design questions
 
