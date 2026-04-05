@@ -34,10 +34,15 @@ function stripControlChars(text: string): string {
   return (
     text
       // ANSI/OSC escape sequences: ESC [ ... m, ESC ] ... BEL/ST, etc.
-      .replace(/\x1B[@-Z\\-_]|[\x80-\x9F]|\x1B\[[0-?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "")
+      .replace(
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: control chars are the subject of this sanitizer
+        /\u001B[@-Z\\-_]|[\u0080-\u009F]|\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g,
+        "",
+      )
       // Remaining C0 control characters (except TAB 0x09 — harmless in terminals)
       // and DEL (0x7F)
-      .replace(/[\x00-\x08\x0A-\x1F\x7F]/g, "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: control chars are the subject of this sanitizer
+      .replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, "")
   );
 }
 

@@ -36,7 +36,7 @@ function makeLine(kind: string, text: string, timestamp: number): string {
 
 async function writeSession(chatDir: string, id: string, lines: string[]): Promise<void> {
   await mkdir(chatDir, { recursive: true });
-  await writeFile(join(chatDir, `${id}.jsonl`), lines.join("\n") + "\n");
+  await writeFile(join(chatDir, `${id}.jsonl`), `${lines.join("\n")}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ describe("loadSessionSummary", () => {
     const path = join(tmpDir, "abc123.jsonl");
     await writeFile(
       path,
-      [makeLine("user", "hello there", 1000), makeLine("assistant", "hi", 2000)].join("\n") + "\n",
+      `${[makeLine("user", "hello there", 1000), makeLine("assistant", "hi", 2000)].join("\n")}\n`,
     );
 
     const result = await loadSessionSummary(path, "my-agent");
@@ -78,7 +78,7 @@ describe("loadSessionSummary", () => {
   test("truncates long first user message to 80 chars", async () => {
     const longText = "x".repeat(100);
     const path = join(tmpDir, "long.jsonl");
-    await writeFile(path, makeLine("user", longText, 1000) + "\n");
+    await writeFile(path, `${makeLine("user", longText, 1000)}\n`);
 
     const result = await loadSessionSummary(path, "a");
     expect(result?.firstUserMessage).toHaveLength(80);
@@ -89,11 +89,11 @@ describe("loadSessionSummary", () => {
     const path = join(tmpDir, "mixed.jsonl");
     await writeFile(
       path,
-      [
+      `${[
         makeLine("user", "hi", 1000),
         "NOT VALID JSON {{{",
         makeLine("assistant", "hello", 2000),
-      ].join("\n") + "\n",
+      ].join("\n")}\n`,
     );
 
     const result = await loadSessionSummary(path, "a");

@@ -312,6 +312,7 @@ describe("E2E: .mcp.json → normalize → resolve → connect → tool call", (
     // Step 2: Resolve the stdio server
     const stdioServer = loadResult.value.servers.find((s) => s.name === "test-server");
     expect(stdioServer).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: expect() above guarantees defined
     const resolved = resolveServerConfig(stdioServer!);
     expect(resolved.timeoutMs).toBe(30_000);
 
@@ -394,15 +395,15 @@ describe("E2E: CC config normalization", () => {
     }
   });
 
-  test("env var expansion with ${VAR:-default}", () => {
+  test(`env var expansion with \${VAR:-default}`, () => {
     process.env.E2E_MCP_URL = "https://real.example.com";
     delete process.env.E2E_MISSING;
     try {
       const result = loadMcpJsonString(
         JSON.stringify({
           mcpServers: {
-            a: { type: "http", url: "${E2E_MCP_URL}" },
-            b: { type: "http", url: "https://${E2E_MISSING:-fallback.com}/mcp" },
+            a: { type: "http", url: `\${E2E_MCP_URL}` },
+            b: { type: "http", url: `https://\${E2E_MISSING:-fallback.com}/mcp` },
           },
         }),
       );

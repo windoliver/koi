@@ -133,6 +133,7 @@ describe("validateRedactionConfig", () => {
   test("accepts subset of factory-created patterns as override", () => {
     const builtins = createAllSecretPatterns();
     const result = validateRedactionConfig({
+      // biome-ignore lint/style/noNonNullAssertion: createAllSecretPatterns always returns ≥2 entries
       patterns: [builtins[0]!, builtins[1]!],
     });
     expect(result.ok).toBe(true);
