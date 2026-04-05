@@ -281,18 +281,22 @@ function isNonUserSender(senderId: string): boolean {
 }
 
 /**
- * Check if a message's `metadata.role` marks it as assistant/tool content.
+ * Check if a message's `metadata.role` marks it as non-user content.
+ *
+ * Whitelist approach: any `metadata.role` that is not `"user"` is
+ * rejected. This covers `assistant`, `tool`, `system`, and any future
+ * or adapter-specific role values. Only messages with `role === "user"`
+ * or no role metadata at all can reach external callbacks.
  *
  * Per Koi convention (see `packages/mm/model-openai-compat/src/request-mapper.ts`),
- * `metadata.role` is authoritative for assistant/tool actors even when
- * the senderId is unrelated. We filter these regardless of trust mode —
- * the conservative choice for an external-callback trust boundary.
+ * `metadata.role` is authoritative for actor identity.
  */
 function hasNonUserRole(message: InboundMessage): boolean {
   const meta = message.metadata as { readonly role?: unknown } | undefined;
   const role = meta?.role;
-  if (typeof role !== "string") return false;
-  return role === "assistant" || role === "tool";
+  if (role === undefined) return false;
+  if (typeof role !== "string") return true; // unexpected type → reject
+  return role !== "user";
 }
 
 function isSyntheticRetry(m: InboundMessage): boolean {

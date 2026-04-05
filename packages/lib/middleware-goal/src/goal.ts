@@ -542,10 +542,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
 
-      // Wait for any in-flight deferred completion/drift processing from
-      // previous turns to finish so this turn's prompt injection sees
-      // the latest item state. Per-session serialization of callback work.
-      await state.pendingWork;
+      // Only block on prior turns when `detectCompletions` is configured —
+      // item state mutation must be visible before this turn renders the
+      // goal-injection block. Drift-only callbacks do NOT block the next
+      // turn: interval updates land best-effort via CAS and at worst are
+      // one turn late, which is preferable to a session-wide latency
+      // cliff when the drift judge is slow or remote.
+      if (deferCompletions) await state.pendingWork;
 
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       const turn: PerTurnState = {
