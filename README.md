@@ -54,9 +54,17 @@ export OPENROUTER_API_KEY=sk-or-...
 export OPENAI_API_KEY=sk-...
 
 koi tui          # open interactive terminal console
+koi start        # headless REPL (no TUI)
 ```
 
 Inside the TUI: type a message and press Enter, or type `/` for slash commands.
+
+**From source** (without global install):
+
+```bash
+bun run packages/meta/cli/src/bin.ts tui      # TUI from source
+bun run packages/meta/cli/src/bin.ts start     # headless REPL from source
+```
 
 ## Architecture
 
