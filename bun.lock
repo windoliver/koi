@@ -71,6 +71,10 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/bash-security": {
+      "name": "@koi/bash-security",
+      "version": "0.0.0",
+    },
     "packages/lib/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -270,6 +274,14 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/lib/tools-bash": {
+      "name": "@koi/tools-bash",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/bash-security": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/tools-builtin": {
       "name": "@koi/tools-builtin",
       "version": "0.0.0",
@@ -323,6 +335,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -349,6 +362,7 @@
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
+        "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
@@ -723,6 +737,8 @@
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
+    "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
@@ -810,6 +826,8 @@
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tools-bash": ["@koi/tools-bash@workspace:packages/lib/tools-bash"],
 
     "@koi/tools-builtin": ["@koi/tools-builtin@workspace:packages/lib/tools-builtin"],
 

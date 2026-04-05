@@ -18,6 +18,8 @@
     { "path": "packages/lib/git-utils" },
     { "path": "packages/lib/hash" },
     { "path": "packages/lib/shutdown" },
+    { "path": "packages/lib/bash-security" },
+    { "path": "packages/lib/tools-bash" },
     { "path": "packages/lib/tools-core" },
     { "path": "packages/lib/validation" },
     { "path": "packages/lib/context-manager" },

@@ -1,0 +1,26 @@
+{
+  "name": "@koi/tools-bash",
+  "description": "Bash shell execution tool with security classifiers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/bash-security": "workspace:*",
+    "@koi/core": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}
