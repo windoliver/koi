@@ -75,7 +75,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
-import { createOsAdapterForTest, detectPlatform } from "@koi/sandbox-os";
+import { createOsAdapterForTest, detectPlatform, restrictiveProfile } from "@koi/sandbox-os";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -879,8 +879,13 @@ const webProvider = createWebProvider({
 });
 
 // ---------------------------------------------------------------------------
-// @koi/sandbox-os — run_sandboxed: executes /bin/echo inside OS sandbox
+// @koi/sandbox-os — run_sandboxed: executes arbitrary commands inside OS sandbox
 // Only enabled on supported platforms (macOS seatbelt, Linux bwrap).
+//
+// Design: the sandbox PROFILE is server-side config — LLM supplies only the
+// command path and its arguments. Restrictions (network disabled, credential
+// paths denied via restrictiveProfile) are enforced by the server, never by
+// the caller.
 // ---------------------------------------------------------------------------
 
 let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
@@ -892,28 +897,38 @@ if (_sandboxPlatformResult.ok) {
     available: true,
   });
 
+  // Profile is config: network off + credential paths read-denied.
+  // LLM never controls which paths are blocked or whether network is allowed.
+  const _sandboxProfile = restrictiveProfile();
+
   const _runSandboxedResult = buildTool({
     name: "run_sandboxed",
     description:
-      "Run /bin/echo inside the OS sandbox (macOS Seatbelt or Linux bubblewrap) and return the captured stdout.",
+      "Execute a command inside the OS sandbox. Network access is disabled and sensitive credential paths are read-protected. Provide only the executable path and its arguments.",
     inputSchema: {
       type: "object",
       properties: {
-        message: { type: "string", description: "Text to echo inside the sandbox" },
+        command: {
+          type: "string",
+          description: "Absolute path to the executable, e.g. /bin/ls or /bin/bash",
+        },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description: "Command arguments",
+        },
       },
-      required: ["message"],
+      required: ["command"],
     },
     origin: "primordial",
     execute: async (args: JsonObject): Promise<unknown> => {
-      const instance = await _sandboxAdapter.create({
-        filesystem: { defaultReadAccess: "open" },
-        network: { allow: false },
-        resources: {},
-      });
+      const instance = await _sandboxAdapter.create(_sandboxProfile);
       try {
-        const r = await instance.exec("/bin/echo", [String(args.message)]);
+        const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
+        const r = await instance.exec(String(args.command), cmdArgs);
         return {
           stdout: r.stdout.trim(),
+          stderr: r.stderr.trim(),
           exitCode: r.exitCode,
           timedOut: r.timedOut,
           platform: _sandboxAdapter.platform.platform,
@@ -1739,13 +1754,15 @@ const queries: readonly QueryConfig[] = [
   },
 
   // sandbox-exec: @koi/sandbox-os — run_sandboxed tool validates Seatbelt/bwrap triggers
-  //   agent calls run_sandboxed → sandbox executes /bin/echo → stdout captured in ATIF
+  //   agent calls run_sandboxed with command+args → sandbox executes the command → ATIF captures output
+  //   Profile is server-side config (restrictiveProfile). LLM supplies only command + args.
   //   Only included when platform detection succeeds (macOS or Linux).
   ...(sandboxProvider !== undefined
     ? [
         {
           name: "sandbox-exec",
-          prompt: 'Use the run_sandboxed tool to echo "hello from sandbox" and report the output.',
+          prompt:
+            "Use the run_sandboxed tool to list the files in /usr/bin. Report what command you ran and how many executables were found.",
           permissionMode: "bypass" as const,
           permissionRules: BYPASS_RULES,
           permissionDescription: "bypass (allow all)",
