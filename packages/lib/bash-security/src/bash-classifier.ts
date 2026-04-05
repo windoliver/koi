@@ -130,12 +130,74 @@ const RECON_PATTERNS: readonly ThreatPattern[] = [
   },
 ] as const;
 
+/**
+ * Data-exfiltration patterns — outbound data transfer utilities.
+ *
+ * These block the most common paths for copying workspace data off-machine.
+ * They complement (not replace) OS-level network isolation: an attacker who
+ * can run arbitrary interpreters can always use library-level HTTP/socket APIs
+ * that are not caught by regex.  Use `wrapCommand` with network-isolated
+ * sandboxing for full egress control.
+ */
+const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
+  {
+    // scp copies files to/from remote hosts — direct exfiltration path
+    regex: /\bscp\b/,
+    category: "data-exfiltration",
+    reason: "scp can copy workspace files to remote systems",
+  },
+  {
+    // sftp — interactive or batch file transfer over SSH
+    regex: /\bsftp\b/,
+    category: "data-exfiltration",
+    reason: "sftp can transfer files to remote systems",
+  },
+  {
+    // ftp — plaintext file transfer
+    regex: /\bftp\b/,
+    category: "data-exfiltration",
+    reason: "ftp can transfer files to remote systems",
+  },
+  {
+    // rsync with remote path notation: user@host:path or ::module
+    regex: /\brsync\b[^#\n]*(\w+@[\w.-]+:|::[\w-]+)/,
+    category: "data-exfiltration",
+    reason: "rsync to a remote path can copy workspace data off-machine",
+  },
+  {
+    // ssh with a remote host — can execute commands or open tunnels
+    regex: /\bssh\b/,
+    category: "data-exfiltration",
+    reason: "ssh can execute remote commands or tunnel data out-of-band",
+  },
+  {
+    // curl file upload: -T / --upload-file
+    regex: /\bcurl\b[^#\n]*(-T\b|--upload-file\b)/,
+    category: "data-exfiltration",
+    reason: "curl --upload-file/-T transmits files to a remote server",
+  },
+  {
+    // curl POST/form data: -d, --data*, -F, --form*
+    regex:
+      /\bcurl\b[^#\n]*(-d\b|--data\b|--data-binary\b|--data-raw\b|--data-urlencode\b|-F\b|--form\b|--form-string\b)/,
+    category: "data-exfiltration",
+    reason: "curl with data/form flags can POST file contents to a remote server",
+  },
+  {
+    // wget POST: --post-data, --post-file, or explicit --method=POST
+    regex: /\bwget\b[^#\n]*(--post-data\b|--post-file\b|--method[= ]POST)/,
+    category: "data-exfiltration",
+    reason: "wget with POST flags can send data to a remote server",
+  },
+] as const;
+
 /** All classifier patterns ordered by threat severity (reverse-shell first). */
 const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
   ...REVERSE_SHELL_PATTERNS,
   ...PRIVILEGE_PATTERNS,
   ...PERSISTENCE_PATTERNS,
   ...RECON_PATTERNS,
+  ...EXFILTRATION_PATTERNS,
 ] as const;
 
 /**

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { COMMAND_BYPASS_CASES, SAFE_CASES } from "./__tests__/bypass-cases.js";
+import {
+  COMMAND_BYPASS_CASES,
+  EXFILTRATION_BYPASS_CASES,
+  SAFE_CASES,
+} from "./__tests__/bypass-cases.js";
 import { classifyCommand } from "./bash-classifier.js";
 
 describe("classifyCommand", () => {
@@ -154,6 +158,24 @@ describe("classifyCommand", () => {
         expect(classifyCommand(input).ok).toBe(!shouldBlock);
       });
     }
+  });
+
+  describe("blocks data exfiltration", () => {
+    for (const { input, shouldBlock, description } of EXFILTRATION_BYPASS_CASES) {
+      test(`${shouldBlock ? "blocks" : "allows"}: ${description}`, () => {
+        expect(classifyCommand(input).ok).toBe(!shouldBlock);
+      });
+    }
+  });
+
+  describe("allows safe curl/wget (no exfil flags)", () => {
+    test("curl GET without post/upload flags", () => {
+      expect(classifyCommand("curl -o /tmp/file.txt https://example.com/file.txt").ok).toBe(true);
+    });
+
+    test("wget GET without post flags", () => {
+      expect(classifyCommand("wget -O /tmp/page.html https://example.com").ok).toBe(true);
+    });
   });
 
   describe("ClassificationResult shape", () => {
