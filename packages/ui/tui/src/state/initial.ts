@@ -26,5 +26,6 @@ export function createInitialState(): TuiState {
     cumulativeMetrics: INITIAL_METRICS,
     agentStatus: "idle",
     sessions: [],
+    slashQuery: null,
   };
 }

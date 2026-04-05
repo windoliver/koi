@@ -1,17 +1,14 @@
 /**
  * `koi tui` — interactive terminal console.
- *
- * TODO(Phase 2i-3): Launch the TUI channel adapter.
- * Reference: packages/ui/tui
  */
 
-import type { TuiFlags } from "../args/tui.js";
+import type { CliFlags } from "../args.js";
+import { isTuiFlags } from "../args.js";
+import { runTuiCommand } from "../tui-command.js";
 import { ExitCode } from "../types.js";
 
-export async function run(flags: TuiFlags): Promise<ExitCode> {
-  process.stderr.write(`koi tui: interactive console coming in Phase 2i-3\n`);
-  if (flags.agent !== undefined) {
-    process.stderr.write(`  agent: ${flags.agent}\n`);
-  }
-  return ExitCode.FAILURE;
+export async function run(flags: CliFlags): Promise<ExitCode> {
+  if (!isTuiFlags(flags)) return ExitCode.FAILURE;
+  await runTuiCommand(flags);
+  return ExitCode.OK;
 }

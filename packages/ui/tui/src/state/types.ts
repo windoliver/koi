@@ -186,6 +186,7 @@ export interface TuiState {
   // --- Session picker data ---
   /** Saved sessions, sorted most-recent-first, capped at MAX_SESSIONS. */
   readonly sessions: readonly SessionSummary[];
+  readonly slashQuery: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,4 +228,5 @@ export type TuiAction =
       /** Injected by the host from persistence; TUI never performs I/O. */
       readonly kind: "set_session_list";
       readonly sessions: readonly SessionSummary[];
-    };
+    }
+  | { readonly kind: "set_slash_query"; readonly query: string | null };
