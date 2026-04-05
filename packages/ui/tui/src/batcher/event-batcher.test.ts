@@ -214,6 +214,7 @@ describe("EventBatcher — error resilience", () => {
     let timerIdx = 0;
     const schedule = (_fn: () => void, _ms: number): ReturnType<typeof setTimeout> => {
       if (timerIdx >= timers.length) timers.push(makeTimerStub());
+      // biome-ignore lint/style/noNonNullAssertion: timer pushed on line above when timerIdx >= timers.length
       const t = timers[timerIdx++]!;
       t.schedule(_fn, _ms);
       return 0 as unknown as ReturnType<typeof setTimeout>;

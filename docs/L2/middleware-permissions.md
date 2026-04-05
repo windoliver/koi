@@ -727,3 +727,5 @@ L2  @koi/middleware-permissions ◄───────────────
 ```
 
 **Dev-only dependencies** (`@koi/engine`, `@koi/engine-loop`, `@koi/engine-pi`, `@koi/test-utils`) are used in tests but are not runtime imports.
+
+> **Maintenance note (PR #1506):** Added `biome-ignore lint/style/noNonNullAssertion` annotations with justification comments to bounds-checked index accesses in the batch permission resolver. The `uncachedIndices`/`validated` array indexing invariant (`j < both arrays' lengths`) is preserved; restructuring to remove `!` would break the length-check guard. No functional changes.
