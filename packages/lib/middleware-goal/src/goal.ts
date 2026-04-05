@@ -20,9 +20,9 @@ import type {
 import { KoiRuntimeError } from "@koi/errors";
 
 import {
-  filterSyntheticRetryMessages,
   invokeDetectCompletionsCallback,
   invokeIsDriftingCallback,
+  sanitizeUserMessages,
 } from "./callbacks.js";
 import {
   DEFAULT_BASE_INTERVAL,
@@ -343,7 +343,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const outcome = await invokeIsDriftingCallback(
         config.isDrifting,
         {
-          userMessages: state.userMessageBuffer.slice(),
+          userMessages: cloneMessages(state.userMessageBuffer),
           responseTexts: state.responseBuffer.slice(),
           items: cloneItems(state.items),
         },
@@ -414,6 +414,21 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     return items.map((i) => ({ id: i.id, text: i.text, completed: i.completed }));
   }
 
+  /**
+   * Defensive deep-clone of user-messages buffer before exposing to
+   * callbacks. Prevents callback-side mutation from poisoning the
+   * session-state buffer for subsequent turns.
+   */
+  function cloneMessages(messages: readonly InboundMessage[]): readonly InboundMessage[] {
+    return messages.map((m) => ({
+      senderId: m.senderId,
+      timestamp: m.timestamp,
+      content: m.content.map((b) =>
+        b.kind === "text" ? { kind: "text" as const, text: b.text } : { ...b },
+      ),
+    }));
+  }
+
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
   function consumeInjection(sid: SessionId): boolean {
     const state = sessions.get(sid);
@@ -463,9 +478,12 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       state.injectedThisTurn = false;
       if (bufferResponses) state.responseBuffer.length = 0;
 
-      // Append real user-facing messages into rolling buffer (for isDrifting callback).
-      const filtered = filterSyntheticRetryMessages(ctx.messages);
-      for (const m of filtered) state.userMessageBuffer.push(m);
+      // Append sanitized user-authored text messages into rolling buffer.
+      // sanitizeUserMessages filters non-user senders, synthetic retry
+      // messages, and strips non-text blocks; also deep-clones so callback
+      // mutation cannot poison buffered state.
+      const sanitized = sanitizeUserMessages(ctx.messages);
+      for (const m of sanitized) state.userMessageBuffer.push(m);
       const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
       if (excess > 0) state.userMessageBuffer.splice(0, excess);
     },

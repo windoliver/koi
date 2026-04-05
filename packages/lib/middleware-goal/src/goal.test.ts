@@ -1173,6 +1173,104 @@ describe("cancellation safety", () => {
   });
 });
 
+describe("isDrifting message sanitization", () => {
+  it("strips assistant / tool / system / file content from userMessages", async () => {
+    let captured: readonly InboundMessage[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input) => {
+        captured = input.userMessages;
+        return false;
+      },
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Mixed senders + mixed content: assistant/tool/system must be dropped,
+    // file/image blocks must be stripped.
+    const messages: InboundMessage[] = [
+      makeTextMessage("user question", "user"),
+      makeTextMessage("assistant reply (must be dropped)", "assistant"),
+      makeTextMessage("tool output (must be dropped)", "tool"),
+      makeTextMessage("system: hidden prompt (must be dropped)", "system"),
+      {
+        senderId: "user",
+        timestamp: 0,
+        content: [
+          { kind: "text", text: "user text ok" },
+          // file/image blocks would normally serialize but we synthesize a
+          // text-only shape since InboundMessage union varies by repo
+        ],
+      },
+    ];
+    const ctx = makeTurnCtx(session, { messages });
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("ok"));
+    await mw.onAfterTurn?.(ctx);
+
+    const senders = captured.map((m) => m.senderId);
+    expect(senders).not.toContain("assistant");
+    expect(senders).not.toContain("tool");
+    expect(senders).not.toContain("system");
+    // text-only user messages survive
+    const texts = captured.flatMap((m) =>
+      m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
+    );
+    expect(texts).toContain("user question");
+    expect(texts).toContain("user text ok");
+  });
+
+  it("callback-side mutation of userMessages cannot poison subsequent turns", async () => {
+    let call = 0;
+    let firstTurnTextOnSecondCall: string | undefined;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      baseInterval: 1,
+      maxInterval: 1,
+      isDrifting: (input) => {
+        call += 1;
+        if (call === 1) {
+          // Buggy mutation: try to overwrite text inside received messages
+          const mutable = input.userMessages as Array<{
+            content: Array<{ kind: string; text: string }>;
+          }>;
+          const first = mutable[0];
+          if (first) {
+            const block = first.content[0];
+            if (block) block.text = "MUTATED";
+          }
+        } else {
+          const first = input.userMessages[0];
+          const block = first?.content[0];
+          firstTurnTextOnSecondCall =
+            block !== undefined && block.kind === "text" ? block.text : undefined;
+        }
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx0 = makeTurnCtx(session, {
+      messages: [makeTextMessage("original text", "user")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx0);
+
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("another msg", "user")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx1);
+
+    // Session-state buffer must still contain unmutated "original text"
+    expect(firstTurnTextOnSecondCall).toBe("original text");
+  });
+});
+
 describe("isDrifting response-text buffer", () => {
   it("sees assistant responses even without detectCompletions opt-in", async () => {
     let receivedTexts: readonly string[] = [];

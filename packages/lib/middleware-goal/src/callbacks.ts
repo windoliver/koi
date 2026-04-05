@@ -204,21 +204,59 @@ function fireErrorHook(
 }
 
 /**
- * Filter synthetic stop-gate retry system messages out of a message
- * buffer. The engine inserts `[Completion blocked] ...` system messages
- * on retry turns (`packages/kernel/engine/src/koi.ts:706-718`); these
- * should not reach the drift judge.
+ * Sanitize an inbound message list before exposing it to user callbacks.
+ *
+ * - Drops assistant/system/tool-authored messages (callbacks see only
+ *   user-authored content — trust boundary).
+ * - Drops synthetic `[Completion blocked] ...` stop-gate retry messages.
+ * - Strips non-text content blocks (file/image/tool/custom) so file
+ *   attachments, tool outputs, and hidden content cannot exfiltrate to
+ *   external LLM judges.
+ * - Deep-clones the result (fresh content arrays) so callback mutation
+ *   cannot poison session-state references.
  */
+export function sanitizeUserMessages(
+  messages: readonly InboundMessage[],
+): readonly InboundMessage[] {
+  const result: InboundMessage[] = [];
+  for (const m of messages) {
+    if (isNonUserSender(m.senderId)) continue;
+    if (isSyntheticRetry(m)) continue;
+    const textBlocks: Array<{ readonly kind: "text"; readonly text: string }> = [];
+    for (const block of m.content) {
+      if (block.kind === "text") {
+        textBlocks.push({ kind: "text", text: block.text });
+      }
+    }
+    if (textBlocks.length === 0) continue;
+    result.push({
+      senderId: m.senderId,
+      timestamp: m.timestamp,
+      content: textBlocks,
+    });
+  }
+  return result;
+}
+
+function isNonUserSender(senderId: string): boolean {
+  if (senderId === "system" || senderId === "assistant" || senderId === "tool") return true;
+  if (senderId.startsWith("system:")) return true;
+  return false;
+}
+
+function isSyntheticRetry(m: InboundMessage): boolean {
+  if (m.senderId !== "system") return false;
+  for (const block of m.content) {
+    if (block.kind === "text" && block.text.startsWith("[Completion blocked]")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Legacy export kept for backward compatibility of any external users.
 export function filterSyntheticRetryMessages(
   messages: readonly InboundMessage[],
 ): readonly InboundMessage[] {
-  return messages.filter((m) => {
-    if (m.senderId !== "system") return true;
-    for (const block of m.content) {
-      if (block.kind === "text" && block.text.startsWith("[Completion blocked]")) {
-        return false;
-      }
-    }
-    return true;
-  });
+  return sanitizeUserMessages(messages);
 }
