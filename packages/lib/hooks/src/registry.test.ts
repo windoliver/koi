@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
-import type { HookConfig, HookEvent } from "@koi/core";
+import type { HookConfig, HookEvent, HookExecutionResult } from "@koi/core";
 import * as executorModule from "./executor.js";
 import type { HookRegistry } from "./registry.js";
 import { createHookRegistry } from "./registry.js";
@@ -597,6 +597,314 @@ describe("createHookRegistry", () => {
       const passedEvent = spy.mock.calls[0]?.[1];
       // Same object reference — no copy needed
       expect(passedEvent).toBe(baseEvent);
+
+      spy.mockRestore();
+    });
+  });
+
+  // Regression tests for issue #1490: the per-call abortSignal must
+  // short-circuit before claiming once-hooks. Otherwise a canceled tool call
+  // or turn would burn once-hook retry budget (eventually exhausting the
+  // hook entirely, or — for fail-closed hooks — turning it into a permanent
+  // blocker) without the hook ever meaningfully running.
+  describe("per-call abortSignal short-circuits once-hook accounting", () => {
+    it("aborted-before-dispatch does not consume a once-hook", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "setup-check",
+        cmd: ["echo"],
+        once: true,
+      };
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "setup-check", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      const controller = new AbortController();
+      controller.abort();
+      const aborted = await registry.execute("s1", baseEvent, controller.signal);
+      // No hook work done on an aborted call.
+      expect(aborted).toEqual([]);
+      expect(spy).toHaveBeenCalledTimes(0);
+
+      // Once-hook must still be available on a subsequent live call.
+      const live = await registry.execute("s1", baseEvent);
+      expect(live).toHaveLength(1);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const calledHooks = spy.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(calledHooks).toHaveLength(1);
+      expect(calledHooks[0]?.name).toBe("setup-check");
+
+      spy.mockRestore();
+    });
+
+    it("aborted call does not increment onceRetries or exhaust a fail-closed once-hook", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "guard",
+        cmd: ["echo"],
+        once: true,
+        failClosed: true,
+      };
+      // If short-circuit is missing, 3 aborted calls would exhaust
+      // MAX_ONCE_RETRIES (3) and convert the hook into a permanent blocker.
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "guard", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [onceHook]);
+
+      const controller = new AbortController();
+      controller.abort();
+      for (let i = 0; i < 5; i++) {
+        const res = await registry.execute("s1", baseEvent, controller.signal);
+        expect(res).toEqual([]);
+      }
+
+      // Live call after many aborts must still fire the hook (not blocked
+      // by an exhausted-blocker entry). The hook also must not be marked
+      // consumed. These both prove once-hook state was never touched.
+      const live = await registry.execute("s1", baseEvent);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.ok).toBe(true);
+      if (live[0]?.ok) {
+        // No synthetic "exhausted retry budget" block.
+        expect(live[0].decision.kind).toBe("continue");
+      }
+
+      spy.mockRestore();
+    });
+
+    it("signal aborted mid-flight rolls back claimed once-hooks without incrementing retries", async () => {
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "guard",
+        cmd: ["echo"],
+        once: true,
+        failClosed: true,
+      };
+      // Simulate mid-flight cancellation: executor returns after the signal
+      // is aborted, with an abort-shaped failed result (mirroring how the
+      // real executor reports aborts).
+      const controller = new AbortController();
+      const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        controller.abort();
+        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0 }];
+      });
+
+      registry.register("s1", "agent-1", [onceHook]);
+      const res = await registry.execute("s1", baseEvent, controller.signal);
+      // Registry returned [] because it detected mid-flight cancellation.
+      expect(res).toEqual([]);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      spy.mockRestore();
+
+      // Critical: the once-hook must still be runnable and must NOT be
+      // marked as an exhausted-blocker. Run 4 more cancelled calls to
+      // verify the retry counter never ticked (MAX_ONCE_RETRIES = 3).
+      // If mid-flight aborts incremented onceRetries, the hook would be
+      // exhausted by now. Use fresh controllers to keep each call aborted.
+      const spy2 = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0 }];
+      });
+      for (let i = 0; i < 4; i++) {
+        const c = new AbortController();
+        // Synchronously abort before the registry sees the signal — exercises
+        // the already-aborted short-circuit path instead of mid-flight.
+        c.abort();
+        await registry.execute("s1", baseEvent, c.signal);
+      }
+      spy2.mockRestore();
+
+      // Hook must still fire on a real call. If it had become an exhausted
+      // blocker, the registry would return a synthetic "retry budget" block.
+      const spy3 = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "guard", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+      const live = await registry.execute("s1", baseEvent);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.ok).toBe(true);
+      if (live[0]?.ok) expect(live[0].decision.kind).toBe("continue");
+      spy3.mockRestore();
+    });
+
+    it("late abort after successful once-hook execution keeps the hook consumed", async () => {
+      // Race: executor returns a SUCCESSFUL result, then the caller's signal
+      // aborts before the registry post-processes. Refunding here would
+      // break the once-only invariant — the hook already ran (with side
+      // effects), and a refund would let it run again on retry.
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "deduct-credit",
+        cmd: ["echo"],
+        once: true,
+      };
+      const controller = new AbortController();
+      const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        // Hook completes successfully first.
+        const result: readonly HookExecutionResult[] = [
+          { ok: true, hookName: "deduct-credit", durationMs: 1, decision: { kind: "continue" } },
+        ];
+        // THEN the caller aborts (e.g., turn cancellation arrives late).
+        controller.abort();
+        return result;
+      });
+
+      registry.register("s1", "agent-1", [onceHook]);
+      const res = await registry.execute("s1", baseEvent, controller.signal);
+      // Late-abort path returns [] (registry yields to cancellation).
+      expect(res).toEqual([]);
+
+      spy.mockRestore();
+
+      // The once-hook must NOT be runnable again — it already committed
+      // its work before the signal aborted. Run a fresh call; the hook
+      // should not appear in the execution list.
+      const spy2 = spyOn(executorModule, "executeHooks").mockResolvedValue([]);
+      await registry.execute("s1", baseEvent);
+      const secondCallHooks = spy2.mock.calls[0]?.[0] as readonly HookConfig[];
+      expect(secondCallHooks).toHaveLength(0); // hook stayed consumed
+      spy2.mockRestore();
+    });
+
+    it("genuine non-abort failure + late caller abort still increments onceRetries", async () => {
+      // Race where the hook finishes with a real deterministic failure
+      // (e.g. "exit code 1: permission denied"), THEN the caller aborts.
+      // The failure is not an abort artifact, so it MUST count against the
+      // retry budget — otherwise a broken fail-closed hook would be
+      // retriable forever whenever the caller happens to cancel.
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "broken-guard",
+        cmd: ["echo"],
+        once: true,
+        failClosed: true,
+      };
+      const controller = new AbortController();
+      // Drive MAX_ONCE_RETRIES (3) successive "genuine failure + late abort"
+      // cycles. If the refund predicate is too broad, the hook stays
+      // re-runnable indefinitely and the assertion below fails.
+      const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+        const result: readonly HookExecutionResult[] = [
+          {
+            ok: false,
+            hookName: "broken-guard",
+            error: "exit code 1: permission denied",
+            durationMs: 1,
+            failClosed: true,
+          },
+        ];
+        controller.abort();
+        return result;
+      });
+
+      registry.register("s1", "agent-1", [onceHook]);
+      // First cycle: uses the controller captured above.
+      await registry.execute("s1", baseEvent, controller.signal);
+      spy.mockRestore();
+
+      // Two more cycles with fresh controllers — each call: real failure,
+      // then caller aborts. After 3 total failures, the fail-closed hook
+      // should be an exhausted blocker.
+      for (let i = 0; i < 2; i++) {
+        const c = new AbortController();
+        const spyN = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+          const result: readonly HookExecutionResult[] = [
+            {
+              ok: false,
+              hookName: "broken-guard",
+              error: "exit code 1: permission denied",
+              durationMs: 1,
+              failClosed: true,
+            },
+          ];
+          c.abort();
+          return result;
+        });
+        await registry.execute("s1", baseEvent, c.signal);
+        spyN.mockRestore();
+      }
+
+      // Now call with NO abort — the hook must be reported as exhausted
+      // (synthetic block result), proving onceRetries incremented to
+      // MAX_ONCE_RETRIES and the hook was moved to exhaustedBlockers.
+      const liveResult = await registry.execute("s1", baseEvent);
+      expect(liveResult).toHaveLength(1);
+      expect(liveResult[0]?.ok).toBe(true);
+      if (liveResult[0]?.ok) {
+        expect(liveResult[0].decision.kind).toBe("block");
+        if (liveResult[0].decision.kind === "block") {
+          expect(liveResult[0].decision.reason).toContain("exhausted retry budget");
+        }
+      }
+    });
+
+    it("late abort after agent-hook executionFailed (non-abort) still increments onceRetries", async () => {
+      // Regression: executionFailed === true is NOT an abort marker — agent
+      // hooks set it for any transient failure (spawn failure, verdict
+      // parse error, token-budget contention). A late caller abort that
+      // happens to race with such a failure must NOT refund the once-hook,
+      // or broken agent hooks could be retried indefinitely when callers
+      // keep cancelling.
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "agent-guard",
+        cmd: ["echo"],
+        once: true,
+        failClosed: true,
+      };
+      // Drive 3 cycles of "transient non-abort failure + late abort" and
+      // verify the hook ends up as an exhausted blocker.
+      for (let i = 0; i < 3; i++) {
+        const c = new AbortController();
+        const spyN = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+          const result: readonly HookExecutionResult[] = [
+            {
+              ok: true,
+              hookName: "agent-guard",
+              durationMs: 1,
+              decision: { kind: "continue" },
+              executionFailed: true, // non-abort transient failure shape
+            },
+          ];
+          c.abort();
+          return result;
+        });
+        if (i === 0) registry.register("s1", "agent-1", [onceHook]);
+        await registry.execute("s1", baseEvent, c.signal);
+        spyN.mockRestore();
+      }
+
+      // Post-MAX_ONCE_RETRIES: fail-closed hook must be an exhausted blocker.
+      const live = await registry.execute("s1", baseEvent);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.ok).toBe(true);
+      if (live[0]?.ok) {
+        expect(live[0].decision.kind).toBe("block");
+        if (live[0].decision.kind === "block") {
+          expect(live[0].decision.reason).toContain("exhausted retry budget");
+        }
+      }
+    });
+
+    it("non-aborted signal still flows through and does not short-circuit", async () => {
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "test-cmd", durationMs: 1, decision: { kind: "continue" } },
+      ]);
+
+      registry.register("s1", "agent-1", [commandHook]);
+
+      const controller = new AbortController();
+      // NOT aborted.
+      await registry.execute("s1", baseEvent, controller.signal);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      // executeHooks received a signal (combined with session controller via
+      // AbortSignal.any) — we just assert a signal was passed.
+      const passedSignal = spy.mock.calls[0]?.[2];
+      expect(passedSignal).toBeInstanceOf(AbortSignal);
 
       spy.mockRestore();
     });

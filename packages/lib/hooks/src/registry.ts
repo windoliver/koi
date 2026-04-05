@@ -83,10 +83,17 @@ export interface HookRegistry {
     hooks: readonly HookConfig[],
     envPolicy?: HookEnvPolicy | undefined,
   ) => void;
-  /** Execute matching hooks for a session event. Returns empty array if session not registered. */
+  /**
+   * Execute matching hooks for a session event. Returns empty array if session
+   * not registered. Optional abortSignal is a per-call cancellation signal
+   * (e.g. from a tool call or turn) and is combined with the session-level
+   * controller so hook execution can be canceled promptly when the caller
+   * gives up, independent of session cleanup.
+   */
   readonly execute: (
     sessionId: string,
     event: HookEvent,
+    abortSignal?: AbortSignal,
   ) => Promise<readonly HookExecutionResult[]>;
   /** Cleanup a session — abort in-flight hooks and remove registration. Idempotent. */
   readonly cleanup: (sessionId: string) => void;
@@ -127,7 +134,16 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
   async function doExecute(
     state: SessionState,
     safeEvent: HookEvent,
+    callSignal?: AbortSignal,
   ): Promise<readonly HookExecutionResult[]> {
+    // Short-circuit canceled calls BEFORE claiming once-hooks. Treating an
+    // already-aborted call as a failed attempt would bump onceRetries and
+    // eventually exhaust the retry budget (even marking fail-closed hooks as
+    // permanent blockers) without the hook ever meaningfully running. A
+    // canceled call must be a no-op for once-hook accounting.
+    if (callSignal?.aborted === true || state.controller.signal.aborted) {
+      return [];
+    }
     // Check for exhausted fail-closed once-hooks that still match this event.
     // These produce a synthetic block result without running any hooks.
     for (const idx of state.exhaustedBlockers) {
@@ -171,13 +187,20 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       (_h, idx) => !state.consumed.has(idx) || claimedSet.has(idx),
     );
 
+    // Combine session-level and per-call signals so either can cancel hook
+    // execution. AbortSignal.any short-circuits if any input is already aborted.
+    const effectiveSignal =
+      callSignal !== undefined
+        ? AbortSignal.any([state.controller.signal, callSignal])
+        : state.controller.signal;
+
     // let justified: mutable — set inside try, returned after finally
     let results: readonly HookExecutionResult[];
     try {
       results = await executeHooks(
         hooksToRun,
         safeEvent,
-        state.controller.signal,
+        effectiveSignal,
         state.envPolicy,
         options?.agentExecutor,
       );
@@ -195,6 +218,15 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     for (const idx of claimedIndices) {
       state.inFlight.delete(idx);
     }
+
+    // Mid-flight cancellation: did the caller's signal abort while hooks were
+    // running? Re-read fresh because the pre-claim short-circuit above
+    // narrowed `callSignal?.aborted` to false, but the signal can flip
+    // during the executeHooks() await. The explicit-undefined form sidesteps
+    // that narrowing.
+    // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
+    const callerCancelled =
+      callSignal !== undefined && callSignal.aborted && !state.controller.signal.aborted;
 
     // Un-consume once-hooks that failed — they get another chance,
     // up to MAX_ONCE_RETRIES to prevent infinite respawns from
@@ -222,6 +254,32 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
             !result.ok ||
             (result.ok && result.executionFailed === true)
           ) {
+            // When the caller cancelled, refund results whose error string
+            // is an explicit abort marker emitted by executor.ts — "aborted"
+            // (command hooks) or contains "AbortError" (HTTP/generic
+            // throw-on-aborted path).
+            //
+            // Known limitation: agent-hook aborts surface as `ok: true` with
+            // `executionFailed: true` and the error message buried inside
+            // `decision.reason` (agent-executor.ts:handleTransientFailure).
+            // That shape is indistinguishable from a non-abort transient
+            // failure (spawn crash, verdict parse error), so we intentionally
+            // do NOT refund it here — treating executionFailed as abort-shaped
+            // would let a broken agent once-hook be retried indefinitely under
+            // cancellation races. The trade-off: a fail-closed agent once-hook
+            // can exhaust its retry budget faster if the caller repeatedly
+            // aborts after transient failures. Fixing this properly requires
+            // an explicit abort marker on HookExecutionResult; tracked as a
+            // follow-up.
+            const looksAborted =
+              !!result &&
+              !result.ok &&
+              (result.error === "aborted" || result.error.includes("AbortError"));
+            if (callerCancelled && looksAborted) {
+              state.consumed.delete(origIdx);
+              matchIdx++;
+              continue;
+            }
             // Check bounded retry — permanently consume after MAX_ONCE_RETRIES
             const retries = (state.onceRetries.get(origIdx) ?? 0) + 1;
             state.onceRetries.set(origIdx, retries);
@@ -245,6 +303,11 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       }
     }
 
+    // Return [] to the cancelled caller so they don't act on results they
+    // asked to abort. Once-hook state has already been reconciled above.
+    if (callerCancelled) {
+      return [];
+    }
     return results;
   }
 
@@ -256,8 +319,9 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
   function serializeOnceExecution(
     state: SessionState,
     safeEvent: HookEvent,
+    callSignal?: AbortSignal,
   ): Promise<readonly HookExecutionResult[]> {
-    const resultPromise = state.executeChain.then(() => doExecute(state, safeEvent));
+    const resultPromise = state.executeChain.then(() => doExecute(state, safeEvent, callSignal));
     // Chain the next call behind this one (swallow rejection to keep chain alive)
     state.executeChain = resultPromise.then(
       () => {},
@@ -295,9 +359,19 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       });
     },
 
-    async execute(sessionId: string, event: HookEvent): Promise<readonly HookExecutionResult[]> {
+    async execute(
+      sessionId: string,
+      event: HookEvent,
+      abortSignal?: AbortSignal,
+    ): Promise<readonly HookExecutionResult[]> {
       const state = sessions.get(sessionId);
       if (state === undefined || state.cleaned) {
+        return [];
+      }
+      // Canceled-before-dispatch: return early without mutating once-hook
+      // state or queueing serialized work. doExecute re-checks the signal
+      // after the serialization await so late cancellations are also safe.
+      if (abortSignal?.aborted === true) {
         return [];
       }
       // Suppress all hooks for hook-agent sessions (recursion prevention)
@@ -325,9 +399,9 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
           matchesHookFilter(h.filter, safeEvent),
       );
       if (needsSerialize) {
-        return serializeOnceExecution(state, safeEvent);
+        return serializeOnceExecution(state, safeEvent, abortSignal);
       }
-      return doExecute(state, safeEvent);
+      return doExecute(state, safeEvent, abortSignal);
     },
 
     cleanup(sessionId: string): void {

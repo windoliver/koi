@@ -468,8 +468,14 @@ declare function redactEventData(data: JsonObject | undefined, config: HookRedac
 interface HookRegistry {
     /** Register hooks for a session with its trusted agent identity. Replaces any existing registration. */
     readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[], envPolicy?: HookEnvPolicy | undefined) => void;
-    /** Execute matching hooks for a session event. Returns empty array if session not registered. */
-    readonly execute: (sessionId: string, event: HookEvent) => Promise<readonly HookExecutionResult[]>;
+    /**
+     * Execute matching hooks for a session event. Returns empty array if session
+     * not registered. Optional abortSignal is a per-call cancellation signal
+     * (e.g. from a tool call or turn) and is combined with the session-level
+     * controller so hook execution can be canceled promptly when the caller
+     * gives up, independent of session cleanup.
+     */
+    readonly execute: (sessionId: string, event: HookEvent, abortSignal?: AbortSignal) => Promise<readonly HookExecutionResult[]>;
     /** Cleanup a session — abort in-flight hooks and remove registration. Idempotent. */
     readonly cleanup: (sessionId: string) => void;
     /** Returns true if the session has registered hooks. */

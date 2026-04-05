@@ -50,6 +50,7 @@ export interface HookRegistryLike {
   readonly execute: (
     sessionId: string,
     event: HookEvent,
+    abortSignal?: AbortSignal,
   ) => Promise<readonly HookExecutionResult[]>;
   readonly cleanup: (sessionId: string) => void;
 }
@@ -67,11 +68,15 @@ export interface HookDispatchConfig {
    * Optional hook registry for once-hook lifecycle tracking.
    * When provided, hooks are dispatched through the registry (which
    * handles once-hook consumption) instead of calling executeHooks directly.
-   * Requires registrySessionId to identify the session in the registry.
+   *
+   * The registry is keyed on the live runtime session (ctx.session.sessionId)
+   * for each dispatch — callers are responsible for calling
+   * registry.register(sessionId, agentId, hooks) for each session they want
+   * once-hook tracking on, and registry.cleanup(sessionId) at session end.
+   * Sessions that have not been registered produce no hook results (see
+   * HookRegistry.execute contract), so the middleware degrades cleanly.
    */
   readonly registry?: HookRegistryLike;
-  /** Session ID used for registry.execute(). Required when registry is set. */
-  readonly registrySessionId?: string;
 }
 
 /**
@@ -83,7 +88,7 @@ export interface HookDispatchConfig {
  * - modify: patches request.input before proceeding
  */
 export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMiddleware {
-  const { hooks, store, docId, signal, registry, registrySessionId } = config;
+  const { hooks, store, docId, signal, registry } = config;
 
   /**
    * Summarize a JsonObject payload for trace metadata. Records field names
@@ -146,16 +151,18 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     }
   }
 
-  /** Dispatch hooks through registry (once-hook aware) or direct executeHooks. */
+  /**
+   * Dispatch hooks through the registry (once-hook aware, keyed on the live
+   * runtime session) or direct executeHooks. event.sessionId is the live
+   * session id from TurnContext, so the registry is addressed per-session
+   * and once-hook consumption stays scoped to the caller's session.
+   */
   async function dispatchHooks(
     event: HookEvent,
     abortSignal?: AbortSignal,
   ): Promise<readonly HookExecutionResult[]> {
-    if (registry !== undefined && registrySessionId !== undefined) {
-      // Use the configured session ID and override the event's sessionId
-      // to match what was registered. The registry enforces identity anyway.
-      const registryEvent: HookEvent = { ...event, sessionId: registrySessionId };
-      return registry.execute(registrySessionId, registryEvent);
+    if (registry !== undefined) {
+      return registry.execute(event.sessionId, event, abortSignal);
     }
     return executeHooks(hooks, event, abortSignal);
   }
@@ -293,6 +300,18 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      // Fail closed on cancellation: if the caller has already aborted, abort
+      // the tool call before dispatching hooks. Otherwise registry-backed
+      // hooks short-circuit on the aborted signal (returning []), which
+      // aggregatePreDecisions would interpret as "continue" — bypassing
+      // fail-closed pre-hooks and letting the tool run under cancellation.
+      const effectiveSignal = ctx.signal ?? signal;
+      if (effectiveSignal?.aborted === true) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted before hook dispatch`,
+          "AbortError",
+        );
+      }
       // Pre-execution: tool.before — supports block/modify decisions
       const preEvent: HookEvent = {
         event: "tool.before",
@@ -300,8 +319,23 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         sessionId: ctx.session.sessionId as string,
         toolName: request.toolId,
       };
-      const preResults = await dispatchHooks(preEvent, ctx.signal ?? signal);
+      const preResults = await dispatchHooks(preEvent, effectiveSignal);
       await recordHookResults(preResults, `tool.before:${request.toolId}`);
+
+      // Re-check cancellation after dispatch. If the signal aborted while
+      // pre-hooks were running, the registry returned [] and aggregating
+      // that as "continue" would let the tool run under cancellation,
+      // bypassing any fail-closed pre-hooks that were interrupted. The
+      // explicit-undefined form avoids the narrowing that `?.aborted`
+      // would inherit from the pre-dispatch guard above — the signal can
+      // flip to aborted during the `await dispatchHooks(...)`.
+      // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
+      if (effectiveSignal !== undefined && effectiveSignal.aborted) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted during pre-hook dispatch`,
+          "AbortError",
+        );
+      }
 
       // Enforce pre-execution decisions
       const decision = aggregatePreDecisions(preResults);
@@ -334,7 +368,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
           sessionId: ctx.session.sessionId as string,
           toolName: request.toolId,
         };
-        const postResults = await dispatchHooks(postEvent, ctx.signal ?? signal);
+        const postResults = await dispatchHooks(postEvent, effectiveSignal);
         await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
 
         // Post-hook failures redact output (security: partial redaction is
