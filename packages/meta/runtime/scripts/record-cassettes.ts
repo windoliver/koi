@@ -898,16 +898,21 @@ if (_sandboxAdapterResult.ok) {
   // LLM never controls which paths are blocked or whether network is allowed.
   const _sandboxProfile = restrictiveProfile();
 
+  // Command allowlist: only safe, read-only inspection commands are permitted.
+  // This prevents the recording model from exfiltrating host files via /bin/cat, find, etc.
+  // The golden query only needs ls, so this set is intentionally minimal.
+  const _SANDBOXED_ALLOWLIST = new Set(["/bin/ls", "/usr/bin/ls", "/bin/echo", "/bin/date"]);
+
   const _runSandboxedResult = buildTool({
     name: "run_sandboxed",
     description:
-      "Execute a command inside the OS sandbox. Network access is disabled and sensitive credential paths are read-protected. Provide only the executable path and its arguments.",
+      "Execute an allowed read-only command inside the OS sandbox. Only /bin/ls, /bin/echo, and /bin/date are permitted. Network access is disabled. Provide the executable path and its arguments.",
     inputSchema: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: "Absolute path to the executable, e.g. /bin/ls or /bin/bash",
+          description: "Absolute path to the executable. Allowed: /bin/ls, /bin/echo, /bin/date",
         },
         args: {
           type: "array",
@@ -919,6 +924,13 @@ if (_sandboxAdapterResult.ok) {
     },
     origin: "primordial",
     execute: async (args: JsonObject): Promise<unknown> => {
+      const cmd = String(args.command);
+      if (!_SANDBOXED_ALLOWLIST.has(cmd)) {
+        return {
+          error: `Command not permitted: ${cmd}`,
+          allowed: [..._SANDBOXED_ALLOWLIST],
+        };
+      }
       const instance = await _sandboxAdapter.create(_sandboxProfile);
       try {
         const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
@@ -932,7 +944,7 @@ if (_sandboxAdapterResult.ok) {
           LANG: process.env.LANG ?? "en_US.UTF-8",
         };
         // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
-        const r = await instance.exec(String(args.command), cmdArgs, {
+        const r = await instance.exec(cmd, cmdArgs, {
           env: safeEnv,
           timeoutMs: 10_000,
         });
