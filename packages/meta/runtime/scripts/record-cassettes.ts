@@ -76,6 +76,7 @@ import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import { createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -2021,6 +2022,31 @@ const queries: readonly QueryConfig[] = [
         },
       ]
     : []),
+
+  // bash-exec: @koi/tools-bash — Bash tool with security classifiers
+  {
+    name: "bash-exec",
+    prompt: 'Use the Bash tool to run the command "echo hello-from-bash" and tell me the output.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-bash-tool",
+        cmd: ["echo", "bash-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () => createBashTool({ workspaceRoot: process.cwd() }),
+      }),
+    ],
+    maxTurns: 2,
+  },
 
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.

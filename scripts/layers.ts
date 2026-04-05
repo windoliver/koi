@@ -16,6 +16,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  * Importable by both L1 and L2 packages.
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/bash-security",
   "@koi/channel-base",
   "@koi/config",
   "@koi/context-manager",
@@ -41,7 +42,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/engine-reconcile",
 ]);
 
-export const L2_PACKAGES: ReadonlySet<string> = new Set(["@koi/sandbox-os"]);
+export const L2_PACKAGES: ReadonlySet<string> = new Set(["@koi/sandbox-os", "@koi/tools-bash"]);
 
 /**
  * Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration.

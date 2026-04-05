@@ -34,6 +34,8 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/query-engine": "workspace:*",
+    "@koi/bash-security": "workspace:*",
+    "@koi/tools-bash": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
