@@ -76,15 +76,37 @@ describe("extractKeywords", () => {
     expect(kw.has("tests")).toBe(true);
   });
 
-  it("excludes short words", () => {
-    const kw = extractKeywords(["Do it now"]);
-    expect(kw.size).toBe(0);
+  it("excludes short words when long words are present", () => {
+    const kw = extractKeywords(["Write unit tests now"]);
+    expect(kw.has("now")).toBe(false);
+    expect(kw.has("write")).toBe(true);
   });
 
   it("lowercases and strips punctuation", () => {
     const kw = extractKeywords(["Implement auth-flow!"]);
     expect(kw.has("implement")).toBe(true);
     expect(kw.has("authflow")).toBe(true);
+  });
+
+  it("falls back to short tokens when no 4+ char words exist", () => {
+    const kw = extractKeywords(["Add UI"]);
+    expect(kw.has("add")).toBe(true);
+    expect(kw.has("ui")).toBe(true);
+  });
+
+  it("falls back for ticket-id / numeric objectives", () => {
+    const kw = extractKeywords(["Fix CI", "7 + 5"]);
+    expect(kw.has("fix")).toBe(true);
+    expect(kw.has("ci")).toBe(true);
+    expect(kw.has("7")).toBe(true);
+    expect(kw.has("5")).toBe(true);
+  });
+
+  it("keeps long words when mixed with a short-only objective", () => {
+    // Global keyword set across objectives: long words win if present
+    const kw = extractKeywords(["Write tests", "Add UI"]);
+    expect(kw.has("write")).toBe(true);
+    expect(kw.has("tests")).toBe(true);
   });
 });
 
@@ -141,6 +163,13 @@ describe("detectCompletions", () => {
     const result = detectCompletions("done with implement and authentication work", items);
     expect(result[0]?.completed).toBe(true);
   });
+
+  it("marks short-only objectives as complete via fallback keywords", () => {
+    // "Add UI" has no 4+ char tokens, but fallback should enable matching
+    const items = [{ text: "Add UI", completed: false }];
+    const result = detectCompletions("completed: add UI polish", items);
+    expect(result[0]?.completed).toBe(true);
+  });
 });
 
 describe("isDrifting", () => {
@@ -159,6 +188,15 @@ describe("isDrifting", () => {
   it("returns false for empty keywords", () => {
     const messages = [makeTextMessage("Anything.")];
     expect(isDrifting(messages, new Set())).toBe(false);
+  });
+
+  it("detects drift against short-only keyword set (fallback)", () => {
+    // e.g. objectives=["Fix CI"] → fallback keywords {"fix","ci"}
+    const keywords = new Set(["fix", "ci"]);
+    const drifting = [makeTextMessage("Let me refactor the logging subsystem.")];
+    expect(isDrifting(drifting, keywords)).toBe(true);
+    const onTopic = [makeTextMessage("Running ci now to see if fix holds.")];
+    expect(isDrifting(onTopic, keywords)).toBe(false);
   });
 
   it("checks only last 3 messages", () => {

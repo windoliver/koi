@@ -57,17 +57,27 @@ export function normalizeText(text: string): string {
   return text.replace(/[^a-zA-Z0-9\s]/g, "").toLowerCase();
 }
 
-/** Extract keywords (>= 4 chars) from objective text for matching. */
+/**
+ * Extract keywords (>= 4 chars) from objective text for matching.
+ *
+ * Falls back to all non-empty tokens (including short words and numerals)
+ * when no 4+ char words exist. This keeps short/symbolic objectives such
+ * as "Add UI", "Fix CI", or "7 + 5" participating in drift detection and
+ * completion tracking instead of silently disabling the middleware.
+ */
 export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
-  const keywords = new Set<string>();
+  const longKeywords = new Set<string>();
+  const allKeywords = new Set<string>();
   for (const obj of objectives) {
     for (const word of normalizeText(obj).split(/\s+/)) {
+      if (word.length === 0) continue;
+      allKeywords.add(word);
       if (word.length >= MIN_KEYWORD_LENGTH) {
-        keywords.add(word);
+        longKeywords.add(word);
       }
     }
   }
-  return keywords;
+  return longKeywords.size > 0 ? longKeywords : allKeywords;
 }
 
 /** Render a markdown todo block from goal items. */
