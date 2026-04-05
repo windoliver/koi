@@ -31,6 +31,14 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     reason: "base64 decode piped to shell executes obfuscated commands",
   },
   {
+    // Directory traversal sequences in the command body attempt filesystem escape.
+    // Absolute paths should be used instead; ../ in a command arg accesses files
+    // outside the working directory without explicit operator knowledge.
+    regex: /\.\.(\/|\\)/,
+    category: "injection",
+    reason: "Directory traversal sequence (../) in command can access files outside workspace",
+  },
+  {
     // ANSI-C hex-escaped strings like $'\x72\x6d' obfuscate dangerous commands
     regex: /\$'(\\x[0-9a-fA-F]{2}|\\[0-7]{3})/,
     category: "injection",

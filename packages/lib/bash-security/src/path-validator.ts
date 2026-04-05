@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { matchPatterns } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
@@ -67,10 +68,25 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
     };
   }
 
-  // 3. Canonicalize and base-directory containment check
+  // 3. Symlink-safe canonicalization and base-directory containment check.
+  //    path.resolve() is a pure string operation — it does NOT follow symlinks,
+  //    so a symlink under the workspace root pointing outside passes the prefix
+  //    check.  realpathSync() resolves the actual filesystem target.
+  //    Fall back to string-based resolve when a path does not yet exist
+  //    (e.g. a new directory about to be created) so we do not over-block.
   if (baseDir !== undefined) {
-    const canonicalBase = resolve(baseDir);
-    const canonicalPath = resolve(baseDir, path);
+    let canonicalBase: string;
+    let canonicalPath: string;
+    try {
+      canonicalBase = realpathSync(baseDir);
+    } catch {
+      canonicalBase = resolve(baseDir);
+    }
+    try {
+      canonicalPath = realpathSync(resolve(baseDir, path));
+    } catch {
+      canonicalPath = resolve(baseDir, path);
+    }
     // Must be exactly the base or a descendant (with trailing slash to prevent prefix collision)
     const isContained =
       canonicalPath === canonicalBase || canonicalPath.startsWith(`${canonicalBase}/`);

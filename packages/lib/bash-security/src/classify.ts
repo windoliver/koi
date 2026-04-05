@@ -26,7 +26,10 @@ export function classifyBashCommand(
 ): ClassificationResult {
   const { cwd, policy, workspaceRoot } = opts ?? {};
 
-  // 1. Allowlist gate — if configured, command must match at least one prefix
+  // 1. Allowlist gate — if configured, command must match at least one prefix.
+  //    When an allowlist is active we also reject compound-command operators
+  //    (;  &&  ||  |  \n  `  $() ) so that an attacker cannot chain an allowed
+  //    prefix with an arbitrary follow-on command:  `git status; rm -rf /tmp`
   if (policy?.allowlist !== undefined && policy.allowlist.length > 0) {
     const allowlisted = policy.allowlist.some((prefix) => command.startsWith(prefix));
     if (!allowlisted) {
@@ -34,6 +37,18 @@ export function classifyBashCommand(
         ok: false,
         reason: "Command does not match any configured allowlist prefix",
         pattern: policy.allowlist.join(" | "),
+        category: "injection",
+      };
+    }
+    // Compound operators would let the attacker append arbitrary code after the
+    // allowed prefix.  Reject them so the allowlist is a meaningful boundary.
+    const compoundMatch = /[;|&`\n]|\$\(/.exec(command);
+    if (compoundMatch !== null) {
+      return {
+        ok: false,
+        reason:
+          "Compound command operators are disallowed when an allowlist is active — use a single simple command",
+        pattern: compoundMatch[0],
         category: "injection",
       };
     }
