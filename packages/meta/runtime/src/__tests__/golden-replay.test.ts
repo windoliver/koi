@@ -4001,6 +4001,18 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
     expect(doc.agent.tool_definitions?.some((t) => t.name === "run_sandboxed")).toBe(true);
   });
 
+  test("tool call uses path-only schema — no command or args in trajectory", async () => {
+    // The run_sandboxed tool uses a path-locked design: model supplies only the directory
+    // path to list; arbitrary command/args are not accepted. Assert the fixture reflects this.
+    const raw = await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).text();
+    // Model-emitted tool calls should include "path" key
+    expect(raw).toContain('"path"');
+    // No arbitrary command/args fields — the hardening must hold across re-recordings
+    const hasArbitraryCommand =
+      /"function_name"\s*:\s*"run_sandboxed"[\s\S]{0,400}"command"\s*:/.test(raw);
+    expect(hasArbitraryCommand).toBe(false);
+  });
+
   test("TOOL step has auditable entry_count from sandbox stdout", async () => {
     const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
       readonly steps: readonly {

@@ -921,10 +921,10 @@ if (_sandboxAdapterResult.ok) {
     execute: async (args: JsonObject): Promise<unknown> => {
       const dirPath = String(args.path);
       if (!_SANDBOXED_PATH_ALLOWLIST.has(dirPath)) {
-        return {
-          error: `Path not permitted: ${dirPath}`,
-          allowed: [..._SANDBOXED_PATH_ALLOWLIST],
-        };
+        // Throw so the framework marks this as tool.failed — not a silent success.
+        throw new Error(
+          `Path not permitted: ${dirPath}. Allowed: ${[..._SANDBOXED_PATH_ALLOWLIST].join(", ")}`,
+        );
       }
       const instance = await _sandboxAdapter.create(_sandboxProfile);
       try {
