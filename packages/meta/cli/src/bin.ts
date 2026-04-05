@@ -81,6 +81,31 @@ if (flags.command === undefined) {
 
 // Dispatch to implemented command handlers
 if (isTuiFlags(flags)) {
+  // solid-js maps the "node" condition (Bun's default) to dist/server.js which
+  // is the SSR build — it disables reactivity and crashes OpenTUI's renderer.
+  // Re-exec the same command with --conditions browser so both @koi/tui and
+  // @opentui/solid resolve solid-js to dist/solid.js (the reactive build).
+  // The env marker prevents infinite re-exec loops.
+  if (process.env["KOI_TUI_BROWSER_SOLID"] !== "1") {
+    const baseEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (typeof v === "string") baseEnv[k] = v;
+    }
+    const proc = Bun.spawn(
+      [process.execPath, "--conditions", "browser", ...process.argv.slice(1)],
+      {
+        stdout: "inherit",
+        stderr: "inherit",
+        stdin: "inherit",
+        env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
+      },
+    );
+    // The child inherits the same process group as the parent, so terminal
+    // signals (Ctrl+C → SIGINT) are already delivered to both processes by the
+    // kernel. No explicit forwarding needed — it would cause double delivery
+    // and bypass the child's graceful stop() shutdown path.
+    process.exit(await proc.exited);
+  }
   const { runTuiCommand } = await import("./tui-command.js");
   await runTuiCommand(flags);
   process.exit(0);

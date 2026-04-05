@@ -16,7 +16,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Switch, Match, useContext } from "solid-js";
+import { Show, Switch, Match, createMemo, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { CommandDef } from "./commands/command-definitions.js";
@@ -116,6 +116,14 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
 
   const hasModal = () => modal() !== null;
 
+  // Narrows the modal to a permission-prompt for type-safe child access.
+  // Using createMemo avoids a type assertion and keeps the child render pure.
+  const permissionModal = createMemo(() => {
+    const m = modal();
+    if (m !== null && m.kind === "permission-prompt") return m;
+    return null;
+  });
+
   // ── Global keyboard handler ───────────────────────────────────────────────
   // Reads state at event-time via store.getState() — no stale-closure risk.
   useKeyboard((event: KeyEvent): void => {
@@ -208,32 +216,34 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
         </Match>
       </Switch>
 
-      {/* Modal layer — overlays the active view (Decision 3A: single slot) */}
-      <Switch>
-        <Match when={modal()?.kind === "command-palette"}>
-          <CommandPalette
-            onSelect={handleCommandSelect}
-            onClose={dismissModal}
+      {/* Modal layer — overlays the active view (Decision 3A: single slot).
+          Uses Show instead of Switch because Switch returns "" when no Match
+          fires, and OpenTUI throws on orphan text nodes inserted into a box.
+          Show returns null when its condition is false, which insertExpression
+          handles safely via cleanChildren. */}
+      <Show when={modal()?.kind === "command-palette"}>
+        <CommandPalette
+          onSelect={handleCommandSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
+      <Show when={permissionModal()}>
+        {(m: Accessor<TuiModal & { readonly kind: "permission-prompt" }>) => (
+          <PermissionPrompt
+            prompt={m().prompt}
+            onRespond={props.onPermissionRespond}
             focused={true}
           />
-        </Match>
-        <Match when={modal()?.kind === "permission-prompt" ? (modal() as TuiModal & { kind: "permission-prompt" }) : undefined}>
-          {(permModal: Accessor<TuiModal & { kind: "permission-prompt" }>) => (
-            <PermissionPrompt
-              prompt={permModal().prompt}
-              onRespond={props.onPermissionRespond}
-              focused={true}
-            />
-          )}
-        </Match>
-        <Match when={modal()?.kind === "session-picker"}>
-          <SessionPicker
-            onSelect={handleSessionSelect}
-            onClose={dismissModal}
-            focused={true}
-          />
-        </Match>
-      </Switch>
+        )}
+      </Show>
+      <Show when={modal()?.kind === "session-picker"}>
+        <SessionPicker
+          onSelect={handleSessionSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
     </box>
   );
 }

@@ -154,4 +154,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.once("SIGTERM", shutdown);
 
   await result.value.start();
+  // Block until stop() completes (SIGINT/SIGTERM/quit command all call stop()
+  // and then process.exit — done() resolves right before that exit).
+  await result.value.done();
 }
