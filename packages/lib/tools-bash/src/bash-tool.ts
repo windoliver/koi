@@ -60,9 +60,10 @@ type BashResult = BashSuccessResult | BashBlockedResult;
  * - Output is capped at BashPolicy.maxOutputBytes (default 1 MB)
  */
 export function createBashTool(config?: BashToolConfig): Tool {
-  // workspaceRoot is optional — when provided, cwd is validated against it.
-  // When omitted, no containment check is performed.
-  const workspaceRoot = config?.workspaceRoot;
+  // workspaceRoot gates cwd containment.  When omitted the cwd is still
+  // validated against process.cwd() so the tool is never fully unconstrained:
+  // a caller that does not set workspaceRoot gets process.cwd() as the fence.
+  const workspaceRoot = config?.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = {
     ...DEFAULT_BASH_POLICY,
     ...config?.policy,
@@ -89,7 +90,8 @@ export function createBashTool(config?: BashToolConfig): Tool {
             type: "string",
             description:
               "Working directory for the command. Must be within the workspace root. " +
-              "Defaults to workspace root.",
+              "Defaults to workspace root. Note: file path arguments inside the command " +
+              "string are not additionally validated — use absolute paths under the workspace.",
           },
           timeoutMs: {
             type: "number",
@@ -101,6 +103,9 @@ export function createBashTool(config?: BashToolConfig): Tool {
       tags: ["shell", "execution"],
     },
     origin: "primordial",
+    // DEFAULT_UNSANDBOXED_POLICY: this tool intentionally runs without OS-level
+    // sandboxing.  Callers that need confinement should inject wrapCommand in
+    // BashToolConfig to run commands inside a sandbox (e.g. sandbox-exec, nsjail).
     policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<BashResult> => {
       const signal = options?.signal;
@@ -116,15 +121,16 @@ export function createBashTool(config?: BashToolConfig): Tool {
         };
       }
 
-      const cwd = typeof args.cwd === "string" ? args.cwd : (workspaceRoot ?? process.cwd());
+      const cwd = typeof args.cwd === "string" ? args.cwd : workspaceRoot;
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
 
       // Security classification pipeline (allowlist → injection → path → command)
-      // exactOptionalPropertyTypes: build opts without undefined fields
+      // workspaceRoot is always set (defaults to process.cwd()) so containment
+      // is always enforced — cwd must resolve inside workspaceRoot.
       const classifyOpts = {
         cwd,
-        ...(policy !== undefined ? { policy } : {}),
-        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+        policy,
+        workspaceRoot,
       };
       const classification = classifyBashCommand(command, classifyOpts);
       if (!classification.ok) {

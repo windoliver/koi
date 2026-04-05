@@ -144,10 +144,12 @@ describe("createBashTool — integration (real subprocess)", () => {
   });
 
   test("cwd is used as working directory", async () => {
-    const result = await exec("pwd", { cwd: "/tmp" });
+    // Use a subdirectory of process.cwd() so it stays within the default workspace root.
+    // createBashTool() defaults workspaceRoot to process.cwd(); /tmp would be blocked.
+    const subdir = realpathSync(process.cwd());
+    const result = await exec("pwd", { cwd: subdir });
     expect(result.exitCode).toBe(0);
-    // /tmp is a symlink to /private/tmp on macOS — use realpathSync to match
-    expect(String(result.stdout).trim()).toBe(realpathSync("/tmp"));
+    expect(String(result.stdout).trim()).toBe(subdir);
   });
 
   test("result includes durationMs", async () => {

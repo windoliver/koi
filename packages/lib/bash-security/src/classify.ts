@@ -58,7 +58,10 @@ export function classifyBashCommand(
   const injection = detectInjection(command);
   if (!injection.ok) return injection;
 
-  // 3. Path validation — if cwd provided
+  // 3. Path validation — validates cwd against workspaceRoot.
+  //    Note: file/path arguments embedded in the command string are NOT validated
+  //    here — that would require shell parsing.  Callers must either use an
+  //    OS-level sandbox (wrapCommand) or restrict commands via the allowlist.
   if (cwd !== undefined) {
     const pathResult = validatePath(cwd, workspaceRoot);
     if (!pathResult.ok) return pathResult;
