@@ -75,7 +75,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
-import { createOsAdapterForTest, detectPlatform, restrictiveProfile } from "@koi/sandbox-os";
+import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -890,12 +890,9 @@ const webProvider = createWebProvider({
 
 let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
 
-const _sandboxPlatformResult = detectPlatform();
-if (_sandboxPlatformResult.ok) {
-  const _sandboxAdapter = createOsAdapterForTest({
-    platform: _sandboxPlatformResult.value,
-    available: true,
-  });
+const _sandboxAdapterResult = createOsAdapter();
+if (_sandboxAdapterResult.ok) {
+  const _sandboxAdapter = _sandboxAdapterResult.value;
 
   // Profile is config: network off + credential paths read-denied.
   // LLM never controls which paths are blocked or whether network is allowed.
@@ -927,14 +924,21 @@ if (_sandboxPlatformResult.ok) {
         const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
         const r = await instance.exec(String(args.command), cmdArgs);
         const stdout = r.stdout.trim();
+        // Only emit entry_count when output is complete — truncated output yields a partial
+        // count that is misleading for audit purposes. Callers should rerun with a narrower
+        // command or check `truncated` before trusting the count.
         const entryCount =
-          stdout.length > 0 ? stdout.split("\n").filter((l) => l.trim()).length : 0;
+          !r.truncated && r.exitCode === 0 && stdout.length > 0
+            ? stdout.split("\n").filter((l) => l.trim()).length
+            : undefined;
         return {
           stdout,
           stderr: r.stderr.trim(),
           exitCode: r.exitCode,
           timedOut: r.timedOut,
-          entry_count: entryCount,
+          ...(r.truncated === true ? { truncated: true } : {}),
+          ...(r.signal !== undefined ? { signal: r.signal } : {}),
+          ...(entryCount !== undefined ? { entry_count: entryCount } : {}),
           platform: _sandboxAdapter.platform.platform,
         };
       } finally {
