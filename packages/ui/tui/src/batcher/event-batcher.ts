@@ -63,7 +63,7 @@ export function createEventBatcher<T>(
   // `let` justified: reassigned on each flush cycle and by dispose()
   let buffer: T[] = [];
   let microtaskPending = false;
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushTimer: ReturnType<typeof doSetTimeout> | null = null;
   let disposed = false;
 
   function scheduleFlush(): void {
