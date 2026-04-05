@@ -1,0 +1,55 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`createSpawnToolProvider Spawn tool inputSchema matches committed snapshot (schema contract test) 1`] = `
+{
+  "properties": {
+    "agentName": {
+      "description": "Name of the agent to spawn (e.g. "researcher", "coder", "reviewer"). Must match a known agent definition.",
+      "type": "string",
+    },
+    "description": {
+      "description": "The task for the spawned agent to perform.",
+      "type": "string",
+    },
+    "maxTokens": {
+      "description": "Maximum tokens per model call.",
+      "type": "number",
+    },
+    "maxTurns": {
+      "description": "Maximum conversation turns before stopping.",
+      "type": "number",
+    },
+    "nonInteractive": {
+      "description": "If true, the agent cannot prompt the user for input.",
+      "type": "boolean",
+    },
+    "systemPrompt": {
+      "description": "Optional additional system instructions for the spawned agent.",
+      "type": "string",
+    },
+    "timeoutMs": {
+      "description": "Wall-clock deadline in milliseconds. Agent is stopped when elapsed. Default: 300000 (5 minutes).",
+      "type": "number",
+    },
+    "toolAllowlist": {
+      "description": "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "toolDenylist": {
+      "description": "Tool names to exclude from the spawned agent. Mutually exclusive with toolAllowlist.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "agentName",
+    "description",
+  ],
+  "type": "object",
+}
+`;
