@@ -37,7 +37,12 @@ function makeSessionCtx(sid?: SessionId): SessionContext {
 
 function makeTurnCtx(
   session: SessionContext,
-  opts?: { turnIndex?: number; messages?: readonly InboundMessage[] },
+  opts?: {
+    turnIndex?: number;
+    messages?: readonly InboundMessage[];
+    stopBlocked?: true;
+    signal?: AbortSignal;
+  },
 ): TurnContext {
   return {
     session,
@@ -45,6 +50,8 @@ function makeTurnCtx(
     turnId: turnId(runId("r1"), opts?.turnIndex ?? 0),
     messages: opts?.messages ?? [],
     metadata: {},
+    ...(opts?.stopBlocked !== undefined ? { stopBlocked: opts.stopBlocked } : {}),
+    ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
   };
 }
 
@@ -679,5 +686,441 @@ describe("createGoalMiddleware", () => {
       }
     }
     expect(completed).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Callback API tests
+// ---------------------------------------------------------------------------
+
+describe("isDrifting callback", () => {
+  it("is called with DriftJudgeInput + ctx, sync return respected", async () => {
+    const calls: Array<{ messages: number; responseTexts: number; items: number }> = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input, _ctx) => {
+        calls.push({
+          messages: input.userMessages.length,
+          responseTexts: input.responseTexts.length,
+          items: input.items.length,
+        });
+        return false; // on-topic
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx = makeTurnCtx(session, {
+      messages: [makeTextMessage("user asks about tests")],
+    });
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("here is the answer");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.items).toBe(1);
+    expect(calls[0]?.messages).toBe(1);
+  });
+
+  it("async (Promise) return respected", async () => {
+    let driftReturn = true;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: async (_input, _ctx) => driftReturn,
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, {
+      messages: [makeTextMessage("user msg")],
+    });
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("ok");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    const cap = mw.describeCapabilities?.(ctx);
+    expect(cap).toBeDefined();
+    // drift=true resets interval to base; verify by running another turn
+    driftReturn = false;
+    const ctx2 = makeTurnCtx(session, { turnIndex: 1, messages: [] });
+    await mw.onBeforeTurn?.(ctx2);
+    await mw.onAfterTurn?.(ctx2);
+  });
+
+  it("throws → fail-safe to drifting=true, fires onCallbackError(reason=error)", async () => {
+    const errors: Array<{ callback: string; reason: string }> = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: () => {
+        throw new Error("LLM down");
+      },
+      onCallbackError: (info) => errors.push({ callback: info.callback, reason: info.reason }),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("x");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    expect(errors).toEqual([{ callback: "isDrifting", reason: "error" }]);
+  });
+
+  it("exceeds callbackTimeoutMs → fail-safe to drifting, fires onCallbackError(reason=timeout)", async () => {
+    const errors: Array<{ callback: string; reason: string }> = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      callbackTimeoutMs: 20,
+      isDrifting: () => new Promise<boolean>((_res) => setTimeout(() => _res(false), 200)),
+      onCallbackError: (info) => errors.push({ callback: info.callback, reason: info.reason }),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("x");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    expect(errors).toEqual([{ callback: "isDrifting", reason: "timeout" }]);
+  });
+
+  it("callback receives AbortSignal on ctx that fires at timeout", async () => {
+    const { promise: callbackFinished, resolve: finish } = Promise.withResolvers<boolean>();
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      callbackTimeoutMs: 20,
+      isDrifting: async (_input, ctx) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        finish(ctx.signal?.aborted === true);
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("x");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    const observedAborted = await callbackFinished;
+    expect(observedAborted).toBe(true);
+  });
+
+  it("filters synthetic stop-gate retry messages from userMessages buffer", async () => {
+    let capturedMessages: readonly InboundMessage[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input) => {
+        capturedMessages = input.userMessages;
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Real user turn
+    const ctx0 = makeTurnCtx(session, {
+      messages: [makeTextMessage("please write tests", "user")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    const handler: ModelHandler = async () => makeModelResponse("ok");
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx0);
+
+    // Retry turn with synthetic [Completion blocked] system msg
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("[Completion blocked] retry reason", "system")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx1);
+
+    // The synthetic retry message must NOT be in the buffer
+    const texts = capturedMessages.flatMap((m) =>
+      m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
+    );
+    expect(texts.some((t) => t.startsWith("[Completion blocked]"))).toBe(false);
+    expect(texts.some((t) => t === "please write tests")).toBe(true);
+  });
+
+  it("is skipped on stop-gate blocked turns", async () => {
+    let calls = 0;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: () => {
+        calls += 1;
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, { stopBlocked: true });
+    await mw.onBeforeTurn?.(ctx);
+    const handler: ModelHandler = async () => makeModelResponse("x");
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
+
+    expect(calls).toBe(0);
+  });
+});
+
+describe("detectCompletions callback", () => {
+  it("is called once per turn with per-model-call response list", async () => {
+    const calls: Array<{ texts: string[]; itemCount: number }> = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests", "Fix bug"],
+      detectCompletions: (texts, items, _ctx) => {
+        calls.push({ texts: [...texts], itemCount: items.length });
+        return [];
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+
+    // model → tool → model pattern: 2 calls in one turn
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("first"));
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("second"));
+    await mw.onAfterTurn?.(ctx);
+
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.texts).toEqual(["first", "second"]);
+    expect(calls[0]?.itemCount).toBe(2);
+  });
+
+  it("returned IDs merge by lookup (reorder/filter safe)", async () => {
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests", "Fix bug", "Deploy"],
+      onComplete: (obj) => completed.push(obj),
+      // Callback returns IDs in reverse and with a duplicate/unknown
+      detectCompletions: (_texts, items) => {
+        const ids = items.map((i) => i.id);
+        const id0 = ids[0];
+        const id2 = ids[2];
+        if (id0 === undefined || id2 === undefined) return [];
+        return [id2, id0, id2, "goal-nonexistent"];
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("ok"));
+    await mw.onAfterTurn?.(ctx);
+
+    // "Write tests" (idx 0) and "Deploy" (idx 2) marked; "Fix bug" still pending
+    expect(completed.sort()).toEqual(["Deploy", "Write tests"]);
+  });
+
+  it("onComplete fires at turn boundary (not mid-turn) under callback opt-in", async () => {
+    const order: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      onComplete: (obj) => order.push(`complete:${obj}`),
+      detectCompletions: (_texts, items) => items.map((i) => i.id),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => {
+      order.push("model-response");
+      return makeModelResponse("I completed the tests");
+    });
+    order.push("after-wrapModelCall");
+    await mw.onAfterTurn?.(ctx);
+    order.push("after-onAfterTurn");
+
+    // onComplete must NOT fire between model-response and after-wrapModelCall
+    expect(order).toEqual([
+      "model-response",
+      "after-wrapModelCall",
+      "complete:Write tests",
+      "after-onAfterTurn",
+    ]);
+  });
+
+  it("throws → falls back to heuristic", async () => {
+    const completed: string[] = [];
+    const errors: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write integration tests"],
+      onComplete: (obj) => completed.push(obj),
+      detectCompletions: () => {
+        throw new Error("judge down");
+      },
+      onCallbackError: (info) => errors.push(info.reason),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("I have completed the integration tests successfully."),
+    );
+    await mw.onAfterTurn?.(ctx);
+
+    expect(errors).toEqual(["error"]);
+    expect(completed).toEqual(["Write integration tests"]);
+  });
+
+  it("stop-gate blocked turn processes all entries except the last", async () => {
+    const received: string[][] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      detectCompletions: (texts) => {
+        received.push([...texts]);
+        return [];
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, { stopBlocked: true });
+    await mw.onBeforeTurn?.(ctx);
+
+    // three model calls, last one was stop-gate vetoed
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("first"));
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("second"));
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("vetoed"));
+    await mw.onAfterTurn?.(ctx);
+
+    expect(received).toEqual([["first", "second"]]);
+  });
+
+  it("response buffer resets at turn boundary", async () => {
+    const received: string[][] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      detectCompletions: (texts) => {
+        received.push([...texts]);
+        return [];
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx0 = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("a"));
+    await mw.onAfterTurn?.(ctx0);
+
+    const ctx1 = makeTurnCtx(session, { turnIndex: 1 });
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () => makeModelResponse("b"));
+    await mw.onAfterTurn?.(ctx1);
+
+    expect(received).toEqual([["a"], ["b"]]);
+  });
+
+  it("timeout → fires onCallbackError + falls back to heuristic", async () => {
+    const errors: string[] = [];
+    const completed: string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      callbackTimeoutMs: 20,
+      onComplete: (obj) => completed.push(obj),
+      detectCompletions: () => new Promise((res) => setTimeout(() => res([]), 200)),
+      onCallbackError: (info) => errors.push(info.reason),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("completed: write tests task done"),
+    );
+    await mw.onAfterTurn?.(ctx);
+
+    expect(errors).toEqual(["timeout"]);
+    expect(completed).toEqual(["Write tests"]);
+  });
+
+  it("partial opt-in (only isDrifting): detectCompletions stays per-call synchronous", async () => {
+    const completed: string[] = [];
+    let driftCalled = 0;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      onComplete: (obj) => completed.push(obj),
+      isDrifting: () => {
+        driftCalled += 1;
+        return false;
+      },
+      // detectCompletions NOT provided
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+
+    let orderMarker = "";
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => {
+      return makeModelResponse("completed write tests task");
+    });
+    orderMarker = "after-call";
+    // With partial opt-in, onComplete should have fired mid-call (before this marker)
+    expect(completed).toEqual(["Write tests"]);
+    expect(orderMarker).toBe("after-call");
+
+    await mw.onAfterTurn?.(ctx);
+    expect(driftCalled).toBe(1);
+  });
+});
+
+describe("callbackTimeoutMs validation", () => {
+  it("rejects zero, negative, NaN, non-integer, or > MAX_CALLBACK_TIMEOUT_MS", () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 100000]) {
+      const result = validateGoalConfig({ objectives: ["x"], callbackTimeoutMs: bad });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("accepts finite positive integer <= MAX_CALLBACK_TIMEOUT_MS", () => {
+    for (const ok of [1, 500, 5000, 60000]) {
+      const result = validateGoalConfig({ objectives: ["x"], callbackTimeoutMs: ok });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("rejects non-function isDrifting / detectCompletions / onCallbackError", () => {
+    expect(
+      validateGoalConfig({
+        objectives: ["x"],
+        isDrifting: "not-a-function" as unknown as undefined,
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGoalConfig({
+        objectives: ["x"],
+        detectCompletions: 123 as unknown as undefined,
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGoalConfig({
+        objectives: ["x"],
+        onCallbackError: {} as unknown as undefined,
+      }).ok,
+    ).toBe(false);
   });
 });

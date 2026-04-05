@@ -20,9 +20,17 @@ import type {
 import { KoiRuntimeError } from "@koi/errors";
 
 import {
+  filterSyntheticRetryMessages,
+  invokeDetectCompletionsCallback,
+  invokeIsDriftingCallback,
+} from "./callbacks.js";
+import {
   DEFAULT_BASE_INTERVAL,
+  DEFAULT_CALLBACK_TIMEOUT_MS,
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
+  type GoalItem,
+  type GoalItemWithId,
   type GoalMiddlewareConfig,
   validateGoalConfig,
 } from "./config.js";
@@ -31,19 +39,21 @@ import {
 // Session state
 // ---------------------------------------------------------------------------
 
-interface GoalItem {
-  readonly text: string;
-  readonly completed: boolean;
-}
+/** Max user messages buffered across turns for the isDrifting callback. */
+const MESSAGE_BUFFER_SIZE = 10;
 
 interface GoalSessionState {
-  readonly items: readonly GoalItem[];
+  readonly items: readonly GoalItemWithId[];
   readonly currentInterval: number;
   readonly lastReminderTurn: number;
   /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn, consumed by first model call. */
   shouldInject: boolean;
   /** Whether injection was performed this turn (for onAfterTurn interval update). */
   injectedThisTurn: boolean;
+  /** Per-turn response texts (one per wrapModelCall / wrapModelStream). Used when detectCompletions callback is configured. */
+  responseBuffer: string[];
+  /** Rolling buffer of user-facing messages (retry system msgs filtered out). Used by isDrifting callback. */
+  userMessageBuffer: InboundMessage[];
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +175,10 @@ const COMPLETION_SIGNALS = /\b(?:completed|done|finished|accomplished)\b|\[x\]|�
  * prevents false positives from single generic words like "write" or
  * "integration" appearing in unrelated completion text.
  */
-export function detectCompletions(
+export function detectCompletions<T extends GoalItem>(
   responseText: string,
-  items: readonly GoalItem[],
-): readonly GoalItem[] {
+  items: readonly T[],
+): readonly T[] {
   if (!COMPLETION_SIGNALS.test(responseText)) {
     return items;
   }
@@ -246,48 +256,137 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const header = config.header ?? DEFAULT_GOAL_HEADER;
   const baseInterval = config.baseInterval ?? DEFAULT_BASE_INTERVAL;
   const maxInterval = config.maxInterval ?? DEFAULT_MAX_INTERVAL;
+  const callbackTimeoutMs = config.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS;
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
+  const deferCompletions = config.detectCompletions !== undefined;
 
   /**
-   * Detect completions in text and update session state + fire callbacks.
-   * Monotonic: completed objectives never revert to pending, even if a
-   * later model call in the same turn lacks the completion signal.
-   * Persists state before invoking callbacks so callback failures cannot
-   * leave stale state.
+   * Apply heuristic completion detection to a single response text.
+   * Monotonic: completed objectives never revert to pending.
+   * Persists state BEFORE invoking `onComplete` callbacks so callback
+   * failures cannot leave stale state.
    */
-  function updateCompletions(sid: SessionId, text: string): void {
+  function applyHeuristicCompletions(sid: SessionId, text: string): void {
     // Always read the latest state from the map to avoid stale snapshots
     const current = sessions.get(sid);
     if (!current) return;
 
     const detected = detectCompletions(text, current.items);
+    const merged = mergeByPosition(current.items, detected);
 
-    // Merge monotonically: true stays true
-    const merged = current.items.map((item, i) => {
+    // Persist state BEFORE invoking callbacks
+    sessions.set(sid, { ...current, items: merged });
+    fireOnCompleteForTransitions(current.items, merged);
+  }
+
+  /** Merge monotonically (position-based — only for heuristic path where items preserve order). */
+  function mergeByPosition(
+    prev: readonly GoalItemWithId[],
+    detected: readonly GoalItemWithId[],
+  ): readonly GoalItemWithId[] {
+    return prev.map((item, i) => {
       const det = detected[i];
       if (item.completed) return item;
       if (det?.completed) return det;
       return item;
     });
+  }
 
-    // Persist state BEFORE invoking callbacks
-    sessions.set(sid, { ...current, items: merged });
+  /** Merge callback result (IDs of newly-completed items) monotonically into items. */
+  function mergeByIds(
+    prev: readonly GoalItemWithId[],
+    completedIds: readonly string[],
+  ): readonly GoalItemWithId[] {
+    const completedSet = new Set(completedIds);
+    return prev.map((item) => {
+      if (item.completed) return item;
+      if (completedSet.has(item.id)) return { ...item, completed: true };
+      return item;
+    });
+  }
 
-    // Fire callbacks with error isolation — never fail the model call
-    if (config.onComplete) {
-      for (let i = 0; i < merged.length; i++) {
-        const prev = current.items[i];
-        const curr = merged[i];
-        if (prev && curr && !prev.completed && curr.completed) {
-          try {
-            config.onComplete(curr.text);
-          } catch {
-            // Swallow: observability callbacks must not fail model calls
-          }
+  /** Fire onComplete for items that transitioned from pending → completed. */
+  function fireOnCompleteForTransitions(
+    prev: readonly GoalItemWithId[],
+    next: readonly GoalItemWithId[],
+  ): void {
+    if (!config.onComplete) return;
+    for (let i = 0; i < next.length; i++) {
+      const p = prev[i];
+      const n = next[i];
+      if (p && n && !p.completed && n.completed) {
+        try {
+          config.onComplete(n.text);
+        } catch {
+          // Observability must not fail the turn
         }
       }
     }
+  }
+
+  /**
+   * Evaluate drift for this turn, using the callback if configured.
+   * On callback error/timeout, fail-safe to drifting=true so reminders
+   * fire more aggressively (v1 semantics).
+   */
+  async function resolveDrift(state: GoalSessionState, ctx: TurnContext): Promise<boolean> {
+    if (config.isDrifting) {
+      const result = await invokeIsDriftingCallback(
+        config.isDrifting,
+        {
+          userMessages: state.userMessageBuffer.slice(),
+          responseTexts: state.responseBuffer.slice(),
+          items: state.items,
+        },
+        { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
+      );
+      if (result === undefined) return true; // fail-safe
+      return result;
+    }
+    return isDrifting(state.userMessageBuffer, allKeywords);
+  }
+
+  /**
+   * Invoke the user's detectCompletions callback with the turn's buffered
+   * response texts. On error/timeout, fall back to heuristic (monotonic,
+   * safer to miss a completion than falsely complete). Merges results by
+   * ID and fires onComplete for transitions.
+   */
+  async function processDeferredCompletions(
+    state: GoalSessionState,
+    entries: readonly string[],
+    ctx: TurnContext,
+  ): Promise<void> {
+    if (!config.detectCompletions || entries.length === 0) return;
+
+    const completedIds = await invokeDetectCompletionsCallback(
+      config.detectCompletions,
+      entries,
+      state.items,
+      { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
+    );
+
+    const next =
+      completedIds !== undefined
+        ? mergeByIds(state.items, completedIds)
+        : applyHeuristicFallback(state.items, entries);
+
+    sessions.set(ctx.session.sessionId, { ...state, items: next });
+    fireOnCompleteForTransitions(state.items, next);
+  }
+
+  /** Fallback heuristic: run detectCompletions on each entry, merge monotonically. */
+  function applyHeuristicFallback(
+    items: readonly GoalItemWithId[],
+    entries: readonly string[],
+  ): readonly GoalItemWithId[] {
+    let acc = items;
+    for (const text of entries) {
+      const detected = detectCompletions(text, acc);
+      acc = mergeByPosition(acc, detected);
+    }
+    return acc;
   }
 
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
@@ -314,7 +413,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async onSessionStart(ctx) {
-      const items: readonly GoalItem[] = config.objectives.map((text) => ({
+      const items: readonly GoalItemWithId[] = config.objectives.map((text, index) => ({
+        id: `goal-${String(index)}`,
         text,
         completed: false,
       }));
@@ -324,6 +424,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         lastReminderTurn: -1,
         shouldInject: true,
         injectedThisTurn: false,
+        responseBuffer: [],
+        userMessageBuffer: [],
       });
     },
 
@@ -334,26 +436,47 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
       state.injectedThisTurn = false;
+      if (deferCompletions) state.responseBuffer.length = 0;
+
+      // Append real user-facing messages into rolling buffer (for isDrifting callback).
+      const filtered = filterSyntheticRetryMessages(ctx.messages);
+      for (const m of filtered) state.userMessageBuffer.push(m);
+      const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
+      if (excess > 0) state.userMessageBuffer.splice(0, excess);
     },
 
     async onAfterTurn(ctx) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
 
+      // stop-gate vetoed turns: process completions from accepted earlier model
+      // calls (all but last entry), skip drift update entirely.
+      const blocked = ctx.stopBlocked === true;
+
+      if (deferCompletions) {
+        const entries = blocked ? state.responseBuffer.slice(0, -1) : state.responseBuffer;
+        await processDeferredCompletions(state, entries, ctx);
+      }
+
+      if (blocked) return;
+
       if (state.injectedThisTurn) {
-        const drifting = isDrifting(ctx.messages, allKeywords);
+        const drifting = await resolveDrift(state, ctx);
         const nextInterval = computeNextInterval(
           state.currentInterval,
           drifting,
           baseInterval,
           maxInterval,
         );
-        sessions.set(ctx.session.sessionId, {
-          ...state,
-          currentInterval: nextInterval,
-          lastReminderTurn: ctx.turnIndex,
-          shouldInject: false,
-        });
+        const latest = sessions.get(ctx.session.sessionId);
+        if (latest) {
+          sessions.set(ctx.session.sessionId, {
+            ...latest,
+            currentInterval: nextInterval,
+            lastReminderTurn: ctx.turnIndex,
+            shouldInject: false,
+          });
+        }
       }
     },
 
@@ -371,8 +494,11 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      // Detect completions in response
-      updateCompletions(ctx.session.sessionId, response.content);
+      if (deferCompletions) {
+        state.responseBuffer.push(response.content);
+      } else {
+        applyHeuristicCompletions(ctx.session.sessionId, response.content);
+      }
 
       return response;
     },
@@ -411,9 +537,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         }
         succeeded = true;
       } finally {
-        // Only detect completions if stream completed successfully
+        // Only update state if stream completed successfully
         if (succeeded) {
-          updateCompletions(ctx.session.sessionId, bufferedText);
+          if (deferCompletions) {
+            state.responseBuffer.push(bufferedText);
+          } else {
+            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+          }
         }
       }
     },
