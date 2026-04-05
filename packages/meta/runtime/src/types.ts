@@ -1,4 +1,8 @@
-import type { AgentResolverDirs } from "@koi/agent-runtime";
+import type {
+  AgentLoadWarning,
+  AgentResolverDirs,
+  RegistryConflictWarning,
+} from "@koi/agent-runtime";
 import type {
   AgentResolver,
   ApprovalHandler,
@@ -185,11 +189,26 @@ export interface RuntimeHandle {
   readonly trajectoryStore: TrajectoryDocumentStore | undefined;
 
   /**
-   * Spawn tool provider. Only populated when `config.resolver` is provided.
+   * Spawn tool provider. Only populated when `config.resolver` or `config.agentDirs` is provided.
    * Pass this to `createKoi({ providers: [handle.spawnProvider] })` to register
    * the `Spawn` tool and enable agent-to-agent delegation for that agent.
    */
   readonly spawnProvider: ComponentProvider | undefined;
+
+  /**
+   * Agent load warnings from `config.agentDirs` resolution (unparseable .md files).
+   * Only populated when `config.agentDirs` is used (not when `config.resolver` is explicit).
+   * A warning for a built-in agent type means that type is poisoned — callers should
+   * inspect this and decide whether to fail, log, or proceed with reduced spawn coverage.
+   */
+  readonly agentWarnings: readonly AgentLoadWarning[];
+
+  /**
+   * Same-tier agent conflicts from `config.agentDirs` resolution.
+   * The first definition wins; the rest are ignored. Non-empty means some `.koi/agents/`
+   * files were silently skipped — callers should log or surface these to operators.
+   */
+  readonly agentConflicts: readonly RegistryConflictWarning[];
 
   /**
    * Resolved filesystem backend. Only populated when filesystem is explicitly

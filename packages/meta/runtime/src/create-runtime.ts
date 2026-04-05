@@ -172,19 +172,24 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
 
   // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
+  // Collect warnings/conflicts so they can be returned on RuntimeHandle for caller inspection.
+  let agentWarnings: import("@koi/agent-runtime").AgentLoadWarning[] = [];
+  let agentConflicts: import("@koi/agent-runtime").RegistryConflictWarning[] = [];
   const effectiveResolver = (() => {
     if (config.resolver !== undefined) return config.resolver;
     if (config.agentDirs !== undefined) {
-      const { resolver, warnings, conflicts } = createAgentResolver(config.agentDirs);
-      for (const w of warnings) {
+      const result = createAgentResolver(config.agentDirs);
+      agentWarnings = [...result.warnings];
+      agentConflicts = [...result.conflicts];
+      for (const w of agentWarnings) {
         console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
       }
-      for (const c of conflicts) {
+      for (const c of agentConflicts) {
         console.warn(
           `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
         );
       }
-      return resolver;
+      return result.resolver;
     }
     return undefined;
   })();
@@ -213,6 +218,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     debugInfo,
     trajectoryStore,
     spawnProvider,
+    agentWarnings,
+    agentConflicts,
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {

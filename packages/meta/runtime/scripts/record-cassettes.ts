@@ -1375,20 +1375,9 @@ function createChildBridge(): EngineAdapter {
   };
 }
 
-const {
-  resolver: spawnResolver,
-  warnings: spawnWarnings,
-  conflicts: spawnConflicts,
-} = createAgentResolver({ projectDir: process.cwd() });
-for (const w of spawnWarnings) {
-  console.warn(`[record-cassettes] agent load warning: ${w.error.message} (${w.filePath})`);
-  process.exit(1); // fail loud — a poisoned agent type would produce wrong cassettes
-}
-for (const c of spawnConflicts) {
-  console.warn(
-    `[record-cassettes] agent conflict: "${c.agentType}" defined in multiple files — using first`,
-  );
-}
+// Built-ins only — cassette recording must be hermetic. Project-local .koi/agents/ overrides
+// would bake local untracked state into fixtures, making cassettes non-reproducible.
+const { resolver: spawnResolver } = createAgentResolver();
 const spawnToolProvider = createSpawnToolProvider({
   resolver: spawnResolver,
   spawnLedger: createInMemorySpawnLedger(5),
