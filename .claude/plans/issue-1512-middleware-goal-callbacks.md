@@ -47,9 +47,14 @@ export type DetectCompletionsFn = (
 
 **Why messages passed explicitly (not via `ctx.messages`)**: the Koi engine
 constructs `onAfterTurn` contexts with `messages: []`
-(`packages/kernel/engine/src/koi.ts:756`), so `ctx.messages` is empty when
-these callbacks run. The middleware buffers the turn's messages (from
-`onBeforeTurn`'s `ctx.messages`) and passes them to `isDrifting` explicitly.
+(`packages/kernel/engine/src/koi.ts:756`). The middleware captures the
+`request.messages` snapshot inside `wrapModelCall`/`wrapModelStream` (the
+full conversation the model actually saw) and passes it to `isDrifting`.
+**Not** `onBeforeTurn`'s `ctx.messages`, because on stop-gate retries that
+contains only a synthetic `[Completion blocked] ...` system message
+(`packages/kernel/engine/src/koi.ts:706-718`, `801-808`), which would
+make the drift judge operate on retry metadata instead of the actual
+conversation.
 
 **Why responseTexts is an array**: preserves per-model-call boundaries to
 prevent cross-call keyword aggregation (`model → tool → model` turn).
@@ -134,8 +139,27 @@ No coupling between `isDrifting` and `detectCompletions` mode changes.
 - `onAfterTurn` invokes the callback **once** with the full list
   of per-call response texts (array). Single timeout bounds the
   whole turn's evaluation.
-- `onComplete` fires at turn boundary instead of mid-turn.
 - `isDrifting` heuristic is unchanged unless also opted in.
+
+**⚠️ CONTRACT CHANGE — explicit when opting into `detectCompletions`**:
+This opt-in **changes `onComplete` timing** from synchronous per-model-call
+(today) to once-per-turn at turn boundary. Ordering and failure surface
+change materially for downstream consumers:
+
+- `onComplete` fires **after** all model/tool work in the turn, not
+  between model calls.
+- If the turn never reaches `onAfterTurn` (process crash, run
+  cancellation before turn end), `onComplete` **is skipped** for
+  completions detected that turn.
+- In a `model → tool → model` turn, existing heuristic-mode callers
+  see `onComplete` fire between calls; under `detectCompletions`
+  opt-in, they fire only at turn end.
+
+The JSDoc on `GoalMiddlewareConfig.detectCompletions` and
+`GoalMiddlewareConfig.onComplete` both document this tightly so callers
+see it at the point of opt-in. Users requiring synchronous
+`onComplete` durability do NOT provide `detectCompletions` and keep
+the heuristic path.
 
 **Neither callback provided** (default): behavior identical to today —
 no new latency, no buffering, no deferred state, no volatility window.
@@ -232,10 +256,15 @@ Called once per failure. Errors inside `onCallbackError` itself are swallowed
 - `goal.ts:317` (`onSessionStart`) — assigns `id: goal-${index}`;
   initializes an empty per-turn response-text buffer and a
   turn-messages buffer.
-- `onBeforeTurn` — captures `ctx.messages` into turn-messages buffer
-  (used by `isDrifting` callback since `ctx.messages` is `[]` in
-  `onAfterTurn`). Clears per-turn response-text buffer if
-  `detectCompletions` callback is configured.
+- `onBeforeTurn` — clears per-turn response-text buffer if
+  `detectCompletions` callback is configured. Does NOT capture
+  `ctx.messages` (see below).
+- `wrapModelCall` / `wrapModelStream` — captures the latest
+  `request.messages` snapshot into session state (a rolling
+  buffer, bounded to the last K messages — e.g. 10). This is the
+  source of truth for the `isDrifting` callback's message input
+  and survives stop-gate retry turns since it reflects the actual
+  model request, not the synthetic retry `onBeforeTurn` input.
 - `goal.ts:375` + `goal.ts:416` — `wrapModelCall` / `wrapModelStream`
   finally:
   - If `detectCompletions` callback is **not** configured: unchanged
@@ -311,8 +340,18 @@ New test cases in `goal.test.ts`:
     callback invocation.
 23. **Per-turn latency budget**: single timeout bounds the entire
     callback invocation in `onAfterTurn`, not per-entry N × timeout.
-24. **isDrifting receives non-empty messages**: buffered from
-    `onBeforeTurn`, passed explicitly (not via `ctx.messages`).
+24. **isDrifting receives real conversation**: messages sourced from
+    `wrapModelCall`'s `request.messages` snapshot, not
+    `onBeforeTurn`'s `ctx.messages` (which contains only synthetic
+    stop-gate retry system messages on retries).
+25. **Stop-gate retry message sanity**: when a turn retries after
+    stop-gate veto, the `isDrifting` callback still sees the real
+    user transcript on the retry, not `[Completion blocked] ...`.
+26. **`onComplete` timing contract — explicit**: under
+    `detectCompletions` opt-in, `onComplete` fires at turn boundary
+    (not mid-turn). Turn that never reaches `onAfterTurn` (crash,
+    cancel) → `onComplete` is skipped for that turn's detections.
+    This is a documented CONTRACT CHANGE of opting in.
 
 ## Estimated footprint
 
