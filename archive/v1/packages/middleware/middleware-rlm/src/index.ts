@@ -12,10 +12,9 @@ export { createRlmMiddleware } from "./rlm.js";
 export { createRlmBundle } from "./rlm-bundle.js";
 export { RLM_PROCESS_TOOL_NAME } from "./rlm-tool-descriptor.js";
 export {
-  createRlmToolsProvider,
   createRlmVirtualizeMiddleware,
-  type RlmAuditEvent,
   type RlmVirtualizeConfig,
+  type RlmAuditEvent,
 } from "./rlm-virtualize.js";
 export type {
   ChunkDescriptor,

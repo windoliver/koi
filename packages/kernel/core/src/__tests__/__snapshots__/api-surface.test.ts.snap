@@ -2503,7 +2503,7 @@ exports[`@koi/core API surface ./errors has stable type surface 1`] = `
  *   switch (code) {
  *     case "VALIDATION": return "bad input";
  *     case "NOT_FOUND":  return "missing";
- *     // ... all 9 codes ...
+ *     // ... all 10 codes ...
  *     default: {
  *       const _exhaustive: never = code;
  *       throw new Error(\`Unhandled code: \${String(_exhaustive)}\`);
@@ -2526,7 +2526,18 @@ type KoiErrorCode = "VALIDATION" | "NOT_FOUND" | "PERMISSION" | "CONFLICT" | "RA
  * Common browser automation pattern: call browser_snapshot to obtain fresh
  * [ref=eN] markers, then retry the action with the new ref.
  */
- | "STALE_REF";
+ | "STALE_REF"
+/**
+ * An operation requires OAuth authorization that has not been granted yet.
+ * The caller should surface an authorization URL to the user and retry
+ * once the user completes the OAuth flow.
+ *
+ * Distinct from PERMISSION (permanent denial). AUTH_REQUIRED is recoverable —
+ * the user can complete authorization and the operation will succeed.
+ *
+ * retryable: true — the same operation should succeed after authorization.
+ */
+ | "AUTH_REQUIRED";
 interface KoiError {
     readonly code: KoiErrorCode;
     readonly message: string;

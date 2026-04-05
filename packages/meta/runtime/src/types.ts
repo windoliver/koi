@@ -122,17 +122,29 @@ export interface RuntimeConfig {
    * implementation is used.
    *
    * - `undefined`: falls back to `manifest.filesystem` if a manifest is provided.
-   * - `FileSystemConfig`: explicitly configures the backend.
+   * - `FileSystemConfig`: explicitly configures the backend (resolved synchronously).
+   * - `FileSystemBackend`: a pre-created backend (e.g., from resolveFileSystemAsync
+   *   when using the local bridge transport with auth notification wiring).
    * - `false`: explicitly disables filesystem, overriding any manifest config.
    *   Use this to prevent manifest-supplied filesystem grants from taking effect.
    */
-  readonly filesystem?: FileSystemConfig | false | undefined;
+  readonly filesystem?: FileSystemConfig | FileSystemBackend | false | undefined;
 
   /**
    * Working directory for the local filesystem backend. Required when
    * filesystem.backend is "local" (or absent). Defaults to process.cwd().
    */
   readonly cwd?: string | undefined;
+
+  /**
+   * Which filesystem operations to expose as agent tools when `filesystem` is a
+   * pre-created `FileSystemBackend` (e.g., from `resolveFileSystemAsync()`).
+   * Ignored when `filesystem` is a `FileSystemConfig` — operations come from the config.
+   *
+   * Default: `["read"]` (the `createFileSystemProvider` default).
+   * Set explicitly to `["read", "write", "edit"]` to restore mutation tools.
+   */
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

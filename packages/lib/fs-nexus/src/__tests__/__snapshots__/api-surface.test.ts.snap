@@ -1,8 +1,34 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
-"import { N as NexusTransport, a as NexusFileSystemConfig } from './types-CBnD242n.js';
-import { FileSystemBackend, Result, KoiError } from '@koi/core';
+"import { ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
+import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-BN28JvQl.js';
+
+/**
+ * Channel wiring for bridge auth notifications.
+ *
+ * Converts BridgeNotification events from transport.subscribe() into
+ * user-facing channel messages during inline OAuth flows.
+ *
+ * Usage:
+ *   const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
+ *   const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
+ *   const backend = createNexusFileSystem({ transport, url: "local://unused" });
+ *   // call unsubscribe() when the transport is closed
+ */
+
+/**
+ * Creates a BridgeNotification handler that sends user-facing messages to a
+ * channel when OAuth authorization is required, in progress, or complete.
+ *
+ * Wire the returned function to \`transport.subscribe()\`:
+ *
+ *   const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
+ *
+ * The handler is non-blocking — channel.send() is fire-and-forget via void.
+ * Errors from channel.send() are swallowed to avoid breaking the reader loop.
+ */
+declare function createAuthNotificationHandler(channel: ChannelAdapter): (n: BridgeNotification) => void;
 
 /**
  * Local subprocess transport — spawns a Python bridge process that
@@ -13,6 +39,11 @@ import { FileSystemBackend, Result, KoiError } from '@koi/core';
  * Usage:
  *   const transport = await createLocalTransport({ mountUri: "local://./workspace" });
  *   // transport implements NexusTransport — plug into createNexusFileSystem
+ *
+ * Auth notifications:
+ *   transport.subscribe(n => {
+ *     if (n.method === "auth_required") showLink(n.params.auth_url);
+ *   });
  */
 
 interface LocalTransportConfig {
@@ -42,6 +73,19 @@ interface LocalTransportConfig {
     readonly env?: Readonly<Record<string, string>> | undefined;
     /** Per-RPC call timeout (ms). Default: 30_000. Kills bridge on expiry. */
     readonly callTimeoutMs?: number | undefined;
+    /**
+     * Max time to wait for the user to complete an OAuth flow (ms). Default: 300_000 (5 min).
+     * When auth_required is received, the pending call's timeout is extended to this value
+     * so the user has time to authorize in their browser.
+     * Forwarded to bridge as NEXUS_AUTH_TIMEOUT_MS env variable.
+     */
+    readonly authTimeoutMs?: number | undefined;
+    /**
+     * @internal Test-only override for the bridge script path.
+     * Allows unit tests to inject a mock bridge without nexus-fs installed.
+     * Never set this in production code.
+     */
+    readonly _bridgePath?: string | undefined;
 }
 /**
  * Spawn a local nexus-fs bridge process and return a NexusTransport.
@@ -49,7 +93,9 @@ interface LocalTransportConfig {
  * The bridge imports SlimNexusFS, mounts the given URI, and speaks
  * JSON-RPC 2.0 over stdin/stdout. No HTTP server needed.
  *
- * Call \`transport.close()\` to kill the subprocess.
+ * Call \`transport.close()\` to kill the subprocess and reject all pending calls.
+ * Subscribe to \`transport.subscribe()\` to receive auth_required / auth_complete
+ * / auth_progress notifications during inline OAuth flows.
  */
 declare function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;
 
@@ -76,13 +122,13 @@ declare function createNexusFileSystem(config: NexusFileSystemFullConfig): FileS
 /** Validate NexusFileSystemConfig at the system boundary. */
 declare function validateNexusFileSystemConfig(config: unknown): Result<NexusFileSystemConfig, KoiError>;
 
-export { type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
+export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
 "
 `;
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-CBnD242n.js';
+import { N as NexusTransport } from './types-BN28JvQl.js';
 
 /**
  * Reusable FileSystemBackend contract test suite.

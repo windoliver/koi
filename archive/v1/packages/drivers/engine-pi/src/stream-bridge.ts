@@ -257,12 +257,9 @@ export function createBridgeStreamFn(
     // Accepts optional messageOverride to apply middleware-modified messages.
     // Filter invalid signal from pi-agent-core options — pi may pass signal: {}
     // (empty object) which causes fetch() to abort immediately with "Connection error".
-    const safeOptions =
-      options !== undefined
-        ? Object.fromEntries(
-            Object.entries(options).filter(([k, v]) => k !== "signal" || v instanceof AbortSignal),
-          )
-        : undefined;
+    const safeOptions = options !== undefined
+      ? Object.fromEntries(Object.entries(options).filter(([k, v]) => k !== "signal" || v instanceof AbortSignal))
+      : undefined;
 
     const callBoundStream = (
       overrides?: Record<string, unknown>,
@@ -345,6 +342,14 @@ export function createBridgeStreamFn(
         // message_update events (text_delta, toolcall_start, etc.) are silently dropped.
         stream.push({ type: "start", partial: builder.partial });
 
+        if (process.env.KOI_DEBUG_EVENTS === "1") {
+          const fs = require("fs");
+          const msgCount = modelRequest.messages?.length ?? 0;
+          const toolCount = modelRequest.tools?.length ?? 0;
+          const totalChars = (modelRequest.messages ?? []).reduce((sum: number, m: {readonly content: readonly {readonly kind: string; readonly text?: string}[]}) => sum + m.content.reduce((s: number, b: {readonly kind: string; readonly text?: string}) => s + (b.kind === "text" ? (b.text?.length ?? 0) : 0), 0), 0);
+          fs.appendFileSync("/tmp/koi-events.log", `[stream-bridge] modelStream call: ${String(msgCount)} msgs, ${String(totalChars)} chars, ${String(toolCount)} tools\n`);
+        }
+
         for await (const chunk of modelStream(modelRequest)) {
           // Update partial content for all chunk types
           builder.processChunk(chunk);
@@ -419,17 +424,24 @@ export function createBridgeStreamFn(
         }
 
         // If we got here without a done chunk, end the stream
+        if (process.env.KOI_DEBUG_EVENTS === "1") {
+          const fs = require("fs");
+          fs.appendFileSync("/tmp/koi-events.log", `[stream-bridge] stream ended without done chunk, text=${String(builder.partial.content.length)} blocks\n`);
+        }
         const finalMessage = builder.finalize(usage);
         stream.push({ type: "done", reason: "stop", message: finalMessage });
         stream.end(finalMessage);
       } catch (error: unknown) {
+        if (process.env.KOI_DEBUG_EVENTS === "1") {
+          const fs = require("fs");
+          fs.appendFileSync("/tmp/koi-events.log", `[stream-bridge] CATCH ERROR: ${error instanceof Error ? error.message : String(error)}\n${error instanceof Error ? error.stack : ""}\n`);
+        }
         // Clean up nonce entry if terminal was never reached (prevents memory leak)
         piParamsStore.delete(nonce);
-        const errText = error instanceof Error ? error.message : String(error);
         const errMessage: AssistantMessage = {
           ...builder.partial,
           stopReason: "error",
-          errorMessage: errText,
+          errorMessage: error instanceof Error ? error.message : String(error),
         };
         stream.push({ type: "error", reason: "error", error: errMessage });
         stream.end(errMessage);
