@@ -1220,6 +1220,33 @@ describe("isDrifting message sanitization", () => {
     expect(texts).toContain("user text ok");
   });
 
+  it("rejects prefixed assistant:/tool: sender IDs from userMessages", async () => {
+    let captured: readonly InboundMessage[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input) => {
+        captured = input.userMessages;
+        return false;
+      },
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, {
+      messages: [
+        makeTextMessage("user msg", "user"),
+        makeTextMessage("hidden asst 1", "assistant:tool-runner"),
+        makeTextMessage("hidden asst 2", "assistant:main"),
+        makeTextMessage("tool out 1", "tool:shell"),
+      ],
+    });
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx);
+
+    const senders = captured.map((m) => m.senderId);
+    expect(senders).toEqual(["user"]);
+  });
+
   it("callback-side mutation of userMessages cannot poison subsequent turns", async () => {
     let call = 0;
     let firstTurnTextOnSecondCall: string | undefined;

@@ -384,12 +384,18 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     // is that completions from the aborted turn are lost.
     if (!outcome.ok && outcome.reason === "aborted") return;
 
-    const next = outcome.ok
-      ? mergeByIds(state.items, outcome.value)
-      : applyHeuristicFallback(state.items, entries);
+    // Re-read session state after the await: another turn for the same
+    // session may have run during the callback (up to callbackTimeoutMs),
+    // and we must not roll back its buffer/flag fields.
+    const latest = sessions.get(ctx.session.sessionId);
+    if (!latest) return;
 
-    sessions.set(ctx.session.sessionId, { ...state, items: next });
-    fireOnCompleteForTransitions(state.items, next);
+    const next = outcome.ok
+      ? mergeByIds(latest.items, outcome.value)
+      : applyHeuristicFallback(latest.items, entries);
+
+    sessions.set(ctx.session.sessionId, { ...latest, items: next });
+    fireOnCompleteForTransitions(latest.items, next);
   }
 
   /** Fallback heuristic: run detectCompletions on each entry, merge monotonically. */

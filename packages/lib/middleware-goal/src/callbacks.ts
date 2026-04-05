@@ -270,7 +270,12 @@ export function sanitizeUserMessages(
 
 function isNonUserSender(senderId: string): boolean {
   if (senderId === "system" || senderId === "assistant" || senderId === "tool") return true;
+  // Reject namespaced actor IDs symmetrically — any `system:` / `assistant:` /
+  // `tool:` prefix is treated as non-user content to prevent hidden
+  // prompts/tool output from leaking to external callbacks.
   if (senderId.startsWith("system:")) return true;
+  if (senderId.startsWith("assistant:")) return true;
+  if (senderId.startsWith("tool:")) return true;
   return false;
 }
 
