@@ -211,8 +211,17 @@ export async function resolveFileSystemAsync(
 
   const options = config?.options;
 
-  // Local bridge transport — async subprocess setup + auth wiring
+  // Local bridge transport — async subprocess setup + auth wiring.
+  // If the caller explicitly set transport:"local", validate and fail fast
+  // rather than silently falling through to the HTTP nexus path.
+  const isExplicitLocalBridge =
+    typeof options === "object" &&
+    options !== null &&
+    (options as Record<string, unknown>).transport === "local";
   const localBridgeParsed = parseLocalBridgeOptions(options);
+  if (isExplicitLocalBridge && !localBridgeParsed.ok) {
+    throw new Error(localBridgeParsed.error);
+  }
   if (localBridgeParsed.ok) {
     const options = localBridgeParsed.value; // validated — overrides outer `options`
     // Multi-mount is not supported in this path: the bridge reports multiple mounts

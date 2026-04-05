@@ -432,12 +432,20 @@ async def dispatch(fs, method, params):
         content = data.decode("utf-8") if isinstance(data, bytes) else str(data)
 
         applied = 0
-        for edit in edits:
+        for i, edit in enumerate(edits):
             if isinstance(edit, (list, tuple)):
+                if len(edit) < 2:
+                    raise ValueError(f"Edit entry {i}: sequence must have at least 2 elements (old_text, new_text), got {len(edit)}")
                 old_text, new_text = edit[0], edit[1]
+                if not isinstance(old_text, str) or not isinstance(new_text, str):
+                    raise ValueError(f"Edit entry {i}: old_text and new_text must be strings")
+            elif isinstance(edit, dict):
+                old_text = edit.get("old_text", edit.get("oldText"))
+                new_text = edit.get("new_text", edit.get("newText"))
+                if not isinstance(old_text, str) or not isinstance(new_text, str):
+                    raise ValueError(f"Edit entry {i}: missing or non-string old_text/new_text fields")
             else:
-                old_text = edit.get("old_text", edit.get("oldText", ""))
-                new_text = edit.get("new_text", edit.get("newText", ""))
+                raise ValueError(f"Edit entry {i}: must be a list/tuple or dict, got {type(edit).__name__}")
 
             if old_text not in content:
                 raise ValueError(f'Edit hunk not found: "{old_text[:50]}"')
@@ -492,6 +500,7 @@ async def dispatch(fs, method, params):
 
         file_list = await fs.ls(search_path, detail=False, recursive=True)
         results = []
+        skipped = []
 
         for fp in file_list or []:
             if len(results) >= max_results:
@@ -501,16 +510,25 @@ async def dispatch(fs, method, params):
                 continue
             try:
                 data = await fs.read(fp)
-                text = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                # Only skip binary/non-decodable files; re-raise other errors.
+                try:
+                    text = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                except (UnicodeDecodeError, ValueError):
+                    skipped.append({"path": fp, "reason": "not utf-8"})
+                    continue
                 for i, line in enumerate(text.split("\n"), 1):
                     if regex.search(line):
                         results.append({"path": fp, "line_number": i, "line_text": line})
                         if len(results) >= max_results:
                             break
-            except Exception:
-                continue
+            except (UnicodeDecodeError, ValueError):
+                skipped.append({"path": fp, "reason": "not utf-8"})
+            except FileNotFoundError:
+                skipped.append({"path": fp, "reason": "not found"})
+            # All other exceptions (permission errors, backend faults) propagate
+            # so the caller gets a real error instead of silent incomplete results.
 
-        return {"results": results}
+        return {"results": results, "skipped": skipped}
 
     if method == "delete":
         await fs.delete(path)
