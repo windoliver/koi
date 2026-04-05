@@ -50,24 +50,99 @@ interface GoalSessionState {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-const MIN_KEYWORD_LENGTH = 4;
-
-/** Normalize text by stripping punctuation and lowercasing — shared between keyword extraction and matching. */
+/**
+ * Normalize text for keyword extraction and matching.
+ *
+ * Splits identifier boundaries so that short acronyms participate in
+ * matching when they appear as distinct segments:
+ *
+ * - camelCase boundary (lower→upper) becomes a space: `fixCiPipeline`
+ *   → `fix ci pipeline`.
+ * - Common separators `_`, `-`, `/` become spaces: `fix_ci_pipeline`,
+ *   `fix-ci-pipeline`, `src/fix/ci/runner.ts` all tokenize their parts.
+ * - `.` is preserved (stripped, not split) so dotted versions like
+ *   `Release v1.2.3` keep `v123` as a distinguishing token instead of
+ *   collapsing to a bare `release` keyword.
+ *
+ * Remaining punctuation is stripped, then lowercased.
+ */
 export function normalizeText(text: string): string {
-  return text.replace(/[^a-zA-Z0-9\s]/g, "").toLowerCase();
+  return text
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_\-/]/g, " ")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .toLowerCase();
 }
 
-/** Extract keywords (>= 4 chars) from objective text for matching. */
+/**
+ * Extract keywords from objective text for matching.
+ *
+ * All non-empty tokens are kept, including short acronyms and numerals.
+ * Short tokens would previously be dropped when a long word was present
+ * in the same objective, but that erases distinguishing segments of
+ * compound objectives like "iOS support" or "CI/CD pipeline" — leaving
+ * only "support"/"pipeline" as generic keywords that false-trigger on
+ * unrelated completion text. Keeping every token raises the majority
+ * threshold and preserves acronyms as distinguishing signals.
+ *
+ * Match-time strictness is handled in matchesToken (exact for <=2,
+ * prefix+bounded-suffix for 3, substring for >=4) so short tokens
+ * cannot silently match inside longer words.
+ */
 export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
-  const keywords = new Set<string>();
+  const result = new Set<string>();
   for (const obj of objectives) {
     for (const word of normalizeText(obj).split(/\s+/)) {
-      if (word.length >= MIN_KEYWORD_LENGTH) {
-        keywords.add(word);
-      }
+      if (word.length > 0) result.add(word);
     }
   }
-  return keywords;
+  return result;
+}
+
+/** Tokenize normalized text into a set of words for token-based matching. */
+function tokenizeNormalized(normalized: string): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  for (const t of normalized.split(/\s+/)) {
+    if (t.length > 0) tokens.add(t);
+  }
+  return tokens;
+}
+
+/**
+ * Check whether a keyword matches within a set of tokens.
+ *
+ * Three-tier rule balances inflection tolerance against false-positive
+ * risk as keyword length shrinks:
+ *
+ * - len <= 2 (e.g. "ci", "ui", "7"): exact token equality — prevents
+ *   "ci" matching inside "cinema".
+ * - len === 3 (e.g. "fix", "add", "api"): exact OR token-prefix with a
+ *   bounded inflection suffix (<=3 chars). "fix" satisfies "fixing"
+ *   (+ing), "fixed" (+ed), "fixups" (+ups), but not "additional" (+7)
+ *   or "addressing" (+7). This handles common inflection without
+ *   letting short verb roots swallow unrelated long words.
+ * - len >= 4 (e.g. "write", "trajectory"): substring within any token —
+ *   handles inflections and camelCase identifiers like
+ *   "recordedTrajectoryPath" that don't get split by normalization.
+ */
+const MAX_INFLECTION_SUFFIX = 3;
+function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
+  if (keyword.length <= 2) {
+    return tokens.has(keyword);
+  }
+  if (keyword.length === 3) {
+    for (const t of tokens) {
+      if (t === keyword) return true;
+      if (t.startsWith(keyword) && t.length - keyword.length <= MAX_INFLECTION_SUFFIX) {
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const t of tokens) {
+    if (t.includes(keyword)) return true;
+  }
+  return false;
 }
 
 /** Render a markdown todo block from goal items. */
@@ -98,13 +173,14 @@ export function detectCompletions(
     return items;
   }
 
-  const normalized = normalizeText(responseText);
+  const textTokens = tokenizeNormalized(normalizeText(responseText));
   return items.map((item) => {
     if (item.completed) return item;
     const keywords = extractKeywords([item.text]);
     if (keywords.size === 0) return item;
 
-    const matchCount = [...keywords].filter((kw) => normalized.includes(kw)).length;
+    // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
+    const matchCount = [...keywords].filter((kw) => matchesToken(kw, textTokens)).length;
     // Require majority match: at least half the keywords, minimum 2 if available
     const threshold = keywords.size === 1 ? 1 : Math.max(2, Math.ceil(keywords.size / 2));
     if (matchCount >= threshold) {
@@ -121,18 +197,21 @@ export function isDrifting(
 ): boolean {
   if (keywords.size === 0) return false;
   const recent = messages.slice(-3);
-  const text = normalizeText(
-    recent
-      .map((m) =>
-        m.content
-          .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-          .map((b) => b.text)
-          .join(" "),
-      )
-      .join(" "),
+  const textTokens = tokenizeNormalized(
+    normalizeText(
+      recent
+        .map((m) =>
+          m.content
+            .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+            .map((b) => b.text)
+            .join(" "),
+        )
+        .join(" "),
+    ),
   );
 
-  return ![...keywords].some((kw) => text.includes(kw));
+  // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
+  return ![...keywords].some((kw) => matchesToken(kw, textTokens));
 }
 
 /** Compute next interval based on drift. */
