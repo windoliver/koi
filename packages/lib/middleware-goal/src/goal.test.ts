@@ -195,6 +195,22 @@ describe("detectCompletions", () => {
     expect(result[0]?.completed).toBe(true);
   });
 
+  it("does not substring-match 3-char keywords inside unrelated tokens", () => {
+    // "fix" (3 chars, token-prefix rule) must not match "prefix".
+    const fixItems = [{ text: "Fix CI", completed: false }];
+    expect(detectCompletions("completed prefix CI cleanup", fixItems)[0]?.completed).toBe(false);
+
+    // "api" must not match "rapid"; "add" must not match "rapid".
+    const addItems = [{ text: "Add API", completed: false }];
+    expect(detectCompletions("completed rapid work", addItems)[0]?.completed).toBe(false);
+
+    // "add" must not match "address"/"addressing" only; pair with ui keyword
+    const addUiItems = [{ text: "Add UI", completed: false }];
+    expect(detectCompletions("completed addressing the backlog", addUiItems)[0]?.completed).toBe(
+      false,
+    );
+  });
+
   it("matches multi-word objectives echoed inside camelCase/snake/path tokens", () => {
     // normalizeText strips separators, so all three of these flatten into
     // one composite token. Long keywords must still find their substring

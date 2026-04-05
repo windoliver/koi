@@ -96,18 +96,29 @@ function tokenizeNormalized(normalized: string): ReadonlySet<string> {
 /**
  * Check whether a keyword matches within a set of tokens.
  *
- * Short keywords (< 3 chars, e.g. "ci", "ui", "7") require exact token
- * equality, so they cannot match inside longer words like "specific" or
- * "cinema". Longer keywords (>= 3 chars) match as a substring within any
- * single token, so inflected forms ("fixing" satisfies "fix") and
- * separator-collapsed identifiers ("recordedTrajectoryPath",
- * "recorded_trajectory_path", "fixtures/recorded-trajectory-path.json"
- * — all normalize to one joined token) still satisfy their keywords.
+ * Three-tier rule chosen to balance inflection tolerance against
+ * false-positive risk as keyword length shrinks:
+ *
+ * - len <= 2 (e.g. "ci", "ui", "7"): exact token equality only —
+ *   prevents "ci" matching inside "specific" or "cinema".
+ * - len === 3 (e.g. "fix", "add", "api"): token-prefix match —
+ *   "fix" satisfies "fixing" and "fixups" but not "prefix";
+ *   "api" satisfies "api"/"apis" but not "rapid".
+ * - len >= 4 (e.g. "write", "trajectory"): substring within any
+ *   token — handles inflections ("writes", "writeup") and
+ *   separator-collapsed identifiers like "recordedTrajectoryPath"
+ *   (normalizeText strips `-`/`_`/`/`, joining segments into one
+ *   token) without opening up 3-char acronym false positives.
  */
-const MIN_LONG_KEYWORD_LENGTH = 3;
 function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
-  if (keyword.length < MIN_LONG_KEYWORD_LENGTH) {
+  if (keyword.length <= 2) {
     return tokens.has(keyword);
+  }
+  if (keyword.length === 3) {
+    for (const t of tokens) {
+      if (t.startsWith(keyword)) return true;
+    }
+    return false;
   }
   for (const t of tokens) {
     if (t.includes(keyword)) return true;
