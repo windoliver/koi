@@ -898,42 +898,39 @@ if (_sandboxAdapterResult.ok) {
   // LLM never controls which paths are blocked or whether network is allowed.
   const _sandboxProfile = restrictiveProfile();
 
-  // Command allowlist: only safe, read-only inspection commands are permitted.
-  // This prevents the recording model from exfiltrating host files via /bin/cat, find, etc.
-  // The golden query only needs ls, so this set is intentionally minimal.
-  const _SANDBOXED_ALLOWLIST = new Set(["/bin/ls", "/usr/bin/ls", "/bin/echo", "/bin/date"]);
+  // Path allowlist: only approved system directories may be listed.
+  // This prevents the recording model from enumerating arbitrary host paths via ls args.
+  const _SANDBOXED_PATH_ALLOWLIST = new Set(["/usr/bin", "/bin", "/usr/local/bin"]);
 
   const _runSandboxedResult = buildTool({
     name: "run_sandboxed",
     description:
-      "Execute an allowed read-only command inside the OS sandbox. Only /bin/ls, /bin/echo, and /bin/date are permitted. Network access is disabled. Provide the executable path and its arguments.",
+      "List files inside a sandboxed system directory. Network access is disabled. Only /usr/bin, /bin, and /usr/local/bin are allowed paths. Provide the directory path to list.",
     inputSchema: {
       type: "object",
       properties: {
-        command: {
+        path: {
           type: "string",
-          description: "Absolute path to the executable. Allowed: /bin/ls, /bin/echo, /bin/date",
-        },
-        args: {
-          type: "array",
-          items: { type: "string" },
-          description: "Command arguments",
+          description:
+            "Absolute path to a system directory to list. Allowed: /usr/bin, /bin, /usr/local/bin",
         },
       },
-      required: ["command"],
+      required: ["path"],
     },
     origin: "primordial",
     execute: async (args: JsonObject): Promise<unknown> => {
-      const cmd = String(args.command);
-      if (!_SANDBOXED_ALLOWLIST.has(cmd)) {
+      const dirPath = String(args.path);
+      if (!_SANDBOXED_PATH_ALLOWLIST.has(dirPath)) {
         return {
-          error: `Command not permitted: ${cmd}`,
-          allowed: [..._SANDBOXED_ALLOWLIST],
+          error: `Path not permitted: ${dirPath}`,
+          allowed: [..._SANDBOXED_PATH_ALLOWLIST],
         };
       }
       const instance = await _sandboxAdapter.create(_sandboxProfile);
       try {
-        const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
+        // Hardcode the command — model only controls which approved directory to list.
+        // ls binary location varies by platform; try /bin/ls then /usr/bin/ls.
+        const lsBin = (await Bun.file("/bin/ls").exists()) ? "/bin/ls" : "/usr/bin/ls";
         // Scrub inherited env so the recorder's OPENROUTER_API_KEY and other secrets are
         // not visible inside the sandbox. Only pass a minimal allowlist.
         const safeEnv: Record<string, string> = {
@@ -944,7 +941,7 @@ if (_sandboxAdapterResult.ok) {
           LANG: process.env.LANG ?? "en_US.UTF-8",
         };
         // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
-        const r = await instance.exec(cmd, cmdArgs, {
+        const r = await instance.exec(lsBin, ["-1", dirPath], {
           env: safeEnv,
           timeoutMs: 10_000,
         });
@@ -1795,7 +1792,7 @@ const queries: readonly QueryConfig[] = [
         {
           name: "sandbox-exec",
           prompt:
-            "Use the run_sandboxed tool to list the files in /usr/bin. Report what command you ran and how many executables were found.",
+            "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
           permissionMode: "bypass" as const,
           permissionRules: BYPASS_RULES,
           permissionDescription: "bypass (allow all)",
