@@ -169,3 +169,5 @@ All MCP tools have `origin: "operator"` — they are operator-configured, not bu
 7. **Per-server cache invalidation** — `onChange` from one server does not flush other servers' caches. Reduces `discover()` from O(N) to O(1) network calls for single-server changes.
 8. **Lazy connect on first discover** — Agent startup is not blocked by MCP server availability. Servers that are down at startup can connect later via `ensureConnected()`.
 9. **Async-ready auth** — `token()` returns `string | Promise<string> | undefined` so the interface never needs a breaking change when OAuth 2.1 support is added.
+
+> **Maintenance note (PR #1506):** Fixed Biome lint warnings in test files (`noTemplateCurlyInString` in env-var expansion tests, `noNonNullAssertion` in e2e test). No functional changes.

@@ -98,7 +98,8 @@ export function topologicalSort(items: ReadonlyMap<TaskItemId, Task>): readonly 
   const result: TaskItemId[] = [];
   // Index-based iteration avoids O(V) cost of array.shift()
   for (let i = 0; i < queue.length; i++) {
-    const current = queue[i]!;
+    const current = queue[i];
+    if (current === undefined) continue;
     result.push(current);
     // Decrease in-degree of dependents via reverse adjacency — O(edges from current)
     const deps = dependents.get(current);

@@ -554,7 +554,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
           );
           const toolOutcome = toolRetryOverride?.outcome ?? baseToolOutcome;
           const toolMetadata = toolRetryOverride?.metadata ?? baseToolMetadata;
-          const hasMetadata = Object.keys(toolMetadata).length > 0;
+          const _hasMetadata = Object.keys(toolMetadata).length > 0;
 
           // Extract provenance from response metadata (#1464)
           const responseMeta =

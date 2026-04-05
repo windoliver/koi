@@ -8,7 +8,8 @@
  * Updates only when the selected slice changes (once per turn, not per chunk).
  */
 
-import React, { memo } from "react";
+import { createMemo } from "solid-js";
+import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import type { AgentStatus, CumulativeMetrics, SessionInfo } from "../state/types.js";
 import { formatCost, formatTokens } from "./status-bar-helpers.js";
@@ -31,29 +32,30 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function ModelChip({ info }: { readonly info: SessionInfo | null }): React.ReactNode {
-  if (!info) return <text fg="#64748B">{"no session"}</text>;
+function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
+  if (!props.info) return <text fg="#64748B">{"no session"}</text>;
   return (
     <text fg="#94A3B8">
-      {info.modelName}
+      {props.info.modelName}
       <text fg="#64748B">{" · "}</text>
-      {info.provider}
+      {props.info.provider}
     </text>
   );
 }
 
-function MetricsChip({ metrics }: { readonly metrics: CumulativeMetrics }): React.ReactNode {
-  const { totalTokens, inputTokens, outputTokens, costUsd } = metrics;
-  if (totalTokens === 0) return <text fg="#64748B">{"—"}</text>;
+function MetricsChip(props: { readonly metrics: CumulativeMetrics }): JSX.Element {
+  const total = () => props.metrics.totalTokens;
   return (
     <text fg="#94A3B8">
-      {`↑${formatTokens(inputTokens)} ↓${formatTokens(outputTokens)} · ${formatCost(costUsd)}`}
+      {total() === 0
+        ? "—"
+        : `↑${formatTokens(props.metrics.inputTokens)} ↓${formatTokens(props.metrics.outputTokens)} · ${formatCost(props.metrics.costUsd)}`}
     </text>
   );
 }
 
-function AgentStatusChip({ status }: { readonly status: AgentStatus }): React.ReactNode {
-  return <text fg={STATUS_COLORS[status]}>{STATUS_LABELS[status]}</text>;
+function AgentStatusChip(props: { readonly status: AgentStatus }): JSX.Element {
+  return <text fg={STATUS_COLORS[props.status]}>{STATUS_LABELS[props.status]}</text>;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,11 +67,7 @@ export interface StatusBarProps {
   readonly width?: number | undefined;
 }
 
-export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(function StatusBar(
-  props: StatusBarProps,
-): React.ReactNode {
-  const { width = 80 } = props;
-
+export function StatusBar(props: StatusBarProps): JSX.Element {
   const sessionInfo = useTuiStore((s) => s.sessionInfo);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
@@ -77,12 +75,13 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(functi
   const engineTurns = useTuiStore((s) => s.cumulativeMetrics.engineTurns);
 
   // Compact mode: skip metrics chip when terminal is narrow
-  const showMetrics = width >= 60;
+  const showMetrics = createMemo(() => (props.width ?? 80) >= 60);
 
   // Show "T3" when model calls = user turns (normal), "T1·5" when a run had
   // internal tool-loop/retry amplification (engineTurns > turns).
-  const turnsLabel =
-    engineTurns > turns ? `T${turns}·${engineTurns}` : `T${turns}`;
+  const turnsLabel = createMemo(() =>
+    engineTurns() > turns() ? `T${turns()}·${engineTurns()}` : `T${turns()}`,
+  );
 
   return (
     <box
@@ -92,11 +91,11 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = memo(functi
       paddingRight={1}
       gap={2}
     >
-      <ModelChip info={sessionInfo} />
-      {showMetrics ? <MetricsChip metrics={cumulativeMetrics} /> : null}
+      <ModelChip info={sessionInfo()} />
+      {showMetrics() ? <MetricsChip metrics={cumulativeMetrics()} /> : null}
       <box flexGrow={1} />
-      <AgentStatusChip status={agentStatus} />
-      <text fg="#64748B">{turnsLabel}</text>
+      <AgentStatusChip status={agentStatus()} />
+      <text fg="#64748B">{turnsLabel()}</text>
     </box>
   );
-});
+}

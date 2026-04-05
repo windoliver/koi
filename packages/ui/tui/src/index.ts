@@ -6,6 +6,9 @@
  * so non-TUI consumers don't pull in the OpenTUI runtime.
  */
 
+// EventBatcher — 16ms rate-limiter for engine event → store dispatch pipeline
+export type { EventBatcher, EventBatcherOptions } from "./batcher/event-batcher.js";
+export { createEventBatcher } from "./batcher/event-batcher.js";
 // Bridge
 export type { PermissionBridge, PermissionBridgeOptions } from "./bridge/permission-bridge.js";
 export {
@@ -44,8 +47,16 @@ export type { GlobalKeyCallbacks } from "./keyboard.js";
 export { createKeyboardHandler, handleGlobalKey } from "./keyboard.js";
 // State management
 export * from "./state/index.js";
-// Store context (React hook — requires @opentui/react at runtime)
-export { StoreContext, useTuiStore } from "./store-context.js";
+// Store context — required providers + selector hook
+// Components that use useTuiStore must be rendered inside both
+// StoreContext.Provider and TuiStateContext.Provider (or inside TuiRoot,
+// which provides TuiStateContext automatically).
+export {
+  createStoreSignal,
+  StoreContext,
+  TuiStateContext,
+  useTuiStore,
+} from "./store-context.js";
 // Theme — color tokens + layout helpers (Phase 2j-5)
 export {
   abbreviateModel,
@@ -55,6 +66,14 @@ export {
   separator,
   truncate,
 } from "./theme.js";
-// TuiRoot component (Phase 2j-5, requires @opentui/react at runtime)
+// TuiRoot component (Phase 2j-5, requires @opentui/solid at runtime)
 export type { TuiRootProps } from "./tui-root.js";
 export { TuiRoot } from "./tui-root.js";
+
+// EngineChannel — main-thread bridge: worker postMessage → EventBatcher → store
+export type {
+  CreateEngineChannelConfig,
+  EngineChannelHandle,
+  WorkerLike,
+} from "./worker/engine-channel.js";
+export { createEngineChannel } from "./worker/engine-channel.js";

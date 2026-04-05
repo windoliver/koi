@@ -5,33 +5,33 @@ import { join } from "node:path";
 import { interpolateEnv, loadConfig, loadConfigFromString } from "./loader.js";
 
 describe("interpolateEnv", () => {
-  test("replaces ${VAR} with env value", () => {
-    const result = interpolateEnv("level: ${LOG_LEVEL}", { LOG_LEVEL: "debug" });
+  test(`replaces \${VAR} with env value`, () => {
+    const result = interpolateEnv(`level: \${LOG_LEVEL}`, { LOG_LEVEL: "debug" });
     expect(result).toBe("level: debug");
   });
 
-  test("replaces ${VAR:-default} with env value when set", () => {
-    const result = interpolateEnv("level: ${LOG_LEVEL:-info}", { LOG_LEVEL: "debug" });
+  test(`replaces \${VAR:-default} with env value when set`, () => {
+    const result = interpolateEnv(`level: \${LOG_LEVEL:-info}`, { LOG_LEVEL: "debug" });
     expect(result).toBe("level: debug");
   });
 
   test("uses default when env var is unset", () => {
-    const result = interpolateEnv("level: ${LOG_LEVEL:-info}", {});
+    const result = interpolateEnv(`level: \${LOG_LEVEL:-info}`, {});
     expect(result).toBe("level: info");
   });
 
   test("uses default when env var is empty string", () => {
-    const result = interpolateEnv("level: ${LOG_LEVEL:-info}", { LOG_LEVEL: "" });
+    const result = interpolateEnv(`level: \${LOG_LEVEL:-info}`, { LOG_LEVEL: "" });
     expect(result).toBe("level: info");
   });
 
   test("replaces with empty string when no default and var unset", () => {
-    const result = interpolateEnv("level: ${LOG_LEVEL}", {});
+    const result = interpolateEnv(`level: \${LOG_LEVEL}`, {});
     expect(result).toBe("level: ");
   });
 
   test("handles multiple variables", () => {
-    const result = interpolateEnv("${A} and ${B:-two}", { A: "one" });
+    const result = interpolateEnv(`\${A} and \${B:-two}`, { A: "one" });
     expect(result).toBe("one and two");
   });
 });
@@ -54,7 +54,7 @@ describe("loadConfigFromString", () => {
   });
 
   test("interpolates env vars before parsing", () => {
-    const result = loadConfigFromString("logLevel: ${LOG:-info}\n", "config.yaml", {
+    const result = loadConfigFromString(`logLevel: \${LOG:-info}\n`, "config.yaml", {
       env: { LOG: "debug" },
     });
     expect(result.ok).toBe(true);

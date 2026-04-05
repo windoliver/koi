@@ -7,8 +7,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useMemo } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { createMemo, Show } from "solid-js";
 import { matchCommands, type SlashCommand, type SlashMatch } from "../commands/slash-detection.js";
 
 // ---------------------------------------------------------------------------
@@ -60,76 +61,62 @@ export function handleSlashOverlayKey(
 // Component
 // ---------------------------------------------------------------------------
 
-export const SlashOverlay: React.NamedExoticComponent<SlashOverlayProps> = memo(function SlashOverlay(
-  props: SlashOverlayProps,
-): React.ReactNode {
-  const { query, commands, onSelect, onDismiss, focused } = props;
-
-  const matches: readonly SlashMatch[] = useMemo(
-    () => matchCommands(commands, query),
-    [commands, query],
+export function SlashOverlay(props: SlashOverlayProps): JSX.Element {
+  const matches = createMemo<readonly SlashMatch[]>(() =>
+    matchCommands(props.commands, props.query),
   );
 
-  const selectOptions = useMemo(
-    () =>
-      matches.map((m) => ({
-        name: `/${m.command.name}`,
-        description: m.command.description,
-        value: m.command.name,
-      })),
-    [matches],
+  const selectOptions = createMemo(() =>
+    matches().map((m) => ({
+      name: `/${m.command.name}`,
+      description: m.command.description,
+      value: m.command.name,
+    })),
   );
 
-  const handleSelect = useCallback(
-    (_index: number, option: { readonly value?: string } | null) => {
-      if (option === null || option.value === undefined) return;
-      const cmd = commands.find((c) => c.name === option.value);
-      if (cmd !== undefined) {
-        onSelect(cmd);
-      }
-    },
-    [commands, onSelect],
-  );
+  const handleSelect = (_index: number, option: { readonly value?: string } | null): void => {
+    if (option === null || option.value === undefined) return;
+    const cmd = props.commands.find((c) => c.name === option.value);
+    if (cmd !== undefined) {
+      props.onSelect(cmd);
+    }
+  };
 
   // Wire keyboard: Escape dismisses overlay. Enter/Tab handled by <select> onSelect.
-  useKeyboard(
-    useCallback(
-      (key: KeyEvent) => {
-        if (!focused) return;
-        if (key.name === "escape") {
-          key.preventDefault();
-          onDismiss();
-        }
-      },
-      [focused, onDismiss],
-    ),
-  );
-
-  if (matches.length === 0) {
-    return (
-      <box border={true} borderColor="#64748B" paddingLeft={1}>
-        <text fg="#64748B">{"No matching commands"}</text>
-      </box>
-    );
-  }
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    if (key.name === "escape") {
+      key.preventDefault();
+      props.onDismiss();
+    }
+  });
 
   return (
-    <box
-      flexDirection="column"
-      border={true}
-      borderColor="#60A5FA"
-      width={50}
+    <Show
+      when={matches().length > 0}
+      fallback={
+        <box border={true} borderColor="#64748B" paddingLeft={1}>
+          <text fg="#64748B">{"No matching commands"}</text>
+        </box>
+      }
     >
-      <box paddingLeft={1}>
-        <text fg="#60A5FA"><b>{"Commands"}</b></text>
+      <box
+        flexDirection="column"
+        border={true}
+        borderColor="#60A5FA"
+        width={50}
+      >
+        <box paddingLeft={1}>
+          <text fg="#60A5FA"><b>{"Commands"}</b></text>
+        </box>
+        <select
+          options={selectOptions()}
+          focused={props.focused}
+          showDescription={true}
+          wrapSelection={true}
+          onSelect={handleSelect}
+        />
       </box>
-      <select
-        options={selectOptions}
-        focused={focused}
-        showDescription={true}
-        wrapSelection={true}
-        onSelect={handleSelect}
-      />
-    </box>
+    </Show>
   );
-});
+}

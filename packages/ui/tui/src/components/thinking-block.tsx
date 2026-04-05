@@ -5,17 +5,17 @@
  * the assistant's direct response text.
  */
 
-import type { ReactNode } from "react";
+import type { JSX } from "solid-js";
 
 interface ThinkingBlockProps {
   readonly text: string;
 }
 
-export function ThinkingBlock({ text }: ThinkingBlockProps): ReactNode {
+export function ThinkingBlock(props: ThinkingBlockProps): JSX.Element {
   return (
     <box flexDirection="column" paddingLeft={1}>
       <text fg="gray">
-        <i>{text}</i>
+        <i>{props.text}</i>
       </text>
     </box>
   );

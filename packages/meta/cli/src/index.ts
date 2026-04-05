@@ -4,6 +4,7 @@ export type {
   DeployFlags,
   DoctorFlags,
   InitFlags,
+  KnownCommand,
   LogsFlags,
   ServeFlags,
   SessionsFlags,
@@ -17,6 +18,7 @@ export {
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
+  isKnownCommand,
   isLogsFlags,
   isServeFlags,
   isSessionsFlags,
@@ -24,5 +26,14 @@ export {
   isStatusFlags,
   isStopFlags,
   isTuiFlags,
+  ParseError,
   parseArgs,
 } from "./args.js";
+export { COMMAND_LOADERS } from "./registry.js";
+export type {
+  CheckStatus,
+  CommandModule,
+  DiagnosticCheck,
+  JsonOutput,
+} from "./types.js";
+export { ExitCode } from "./types.js";

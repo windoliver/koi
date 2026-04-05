@@ -119,7 +119,7 @@ describe("validateMcpJson", () => {
   test("accepts stdio with env vars", () => {
     const result = validateMcpJson({
       mcpServers: {
-        envd: { command: "npx", env: { API_KEY: "${MCP_KEY}" } },
+        envd: { command: "npx", env: { API_KEY: `\${MCP_KEY}` } },
       },
     });
     expect(result.ok).toBe(true);
@@ -218,7 +218,7 @@ describe("normalizeMcpServers", () => {
     process.env.TEST_MCP_CMD = "my-server";
     try {
       const { servers } = normalizeMcpServers({
-        s: { command: "${TEST_MCP_CMD}" },
+        s: { command: `\${TEST_MCP_CMD}` },
       });
       expect(servers[0]?.kind).toBe("stdio");
       if (servers[0]?.kind === "stdio") {
@@ -233,7 +233,7 @@ describe("normalizeMcpServers", () => {
     process.env.TEST_MCP_URL = "https://expanded.example.com";
     try {
       const { servers } = normalizeMcpServers({
-        s: { type: "http", url: "${TEST_MCP_URL}" },
+        s: { type: "http", url: `\${TEST_MCP_URL}` },
       });
       if (servers[0]?.kind === "http") {
         expect(servers[0].url).toBe("https://expanded.example.com");
@@ -250,7 +250,7 @@ describe("normalizeMcpServers", () => {
         s: {
           type: "http",
           url: "https://example.com",
-          headers: { Authorization: "Bearer ${TEST_MCP_TOKEN}" },
+          headers: { Authorization: `Bearer \${TEST_MCP_TOKEN}` },
         },
       });
       if (servers[0]?.kind === "http") {
@@ -264,7 +264,7 @@ describe("normalizeMcpServers", () => {
   test("expands env vars with default value syntax", () => {
     delete process.env.TEST_MCP_MISSING;
     const { servers } = normalizeMcpServers({
-      s: { type: "http", url: "https://${TEST_MCP_MISSING:-fallback.example.com}" },
+      s: { type: "http", url: `https://\${TEST_MCP_MISSING:-fallback.example.com}` },
     });
     if (servers[0]?.kind === "http") {
       expect(servers[0].url).toBe("https://fallback.example.com");
@@ -302,9 +302,8 @@ describe("normalizeMcpServers", () => {
 
   test("rejects config with missing env vars (no default)", () => {
     delete process.env.NONEXISTENT_MCP_VAR;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing env var expansion
     const { servers, rejected } = normalizeMcpServers({
-      broken: { type: "http", url: "${NONEXISTENT_MCP_VAR}" },
+      broken: { type: "http", url: `\${NONEXISTENT_MCP_VAR}` },
     });
     expect(servers).toHaveLength(0);
     expect(rejected).toHaveLength(1);
@@ -314,9 +313,8 @@ describe("normalizeMcpServers", () => {
 
   test("accepts config where missing env vars have defaults", () => {
     delete process.env.OPTIONAL_MCP_VAR;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing env var expansion
     const { servers, rejected } = normalizeMcpServers({
-      ok: { type: "http", url: "https://${OPTIONAL_MCP_VAR:-fallback.com}/mcp" },
+      ok: { type: "http", url: `https://\${OPTIONAL_MCP_VAR:-fallback.com}/mcp` },
     });
     expect(servers).toHaveLength(1);
     expect(rejected).toHaveLength(0);
