@@ -165,10 +165,45 @@ When no filter is specified, the hook fires on all events.
 
 1. **Registration** — `loadHooks()` validates config, `HookRegistry.register()`
    binds hooks to a session with trusted `agentId`
-2. **Execution** — `HookRegistry.execute()` dispatches matching hooks, enforcing
-   session/agent identity on every call
-3. **Cleanup** — `HookRegistry.cleanup(sessionId)` aborts in-flight hooks and
+2. **Execution** — `HookRegistry.execute(sessionId, event, abortSignal?)`
+   dispatches matching hooks, enforcing session/agent identity on every call.
+   The optional per-call `abortSignal` is combined with the session-level
+   controller via `AbortSignal.any()` so either can cancel hook execution.
+3. **Introspection** — `HookRegistry.has(sessionId)` reports registration;
+   `HookRegistry.hasMatching(sessionId, event)` reports whether any registered
+   hook's filter matches the event (for per-event fail-closed gating).
+4. **Cleanup** — `HookRegistry.cleanup(sessionId)` aborts in-flight hooks and
    removes registration. Idempotent — double-cleanup is a no-op.
+
+### Cancellation Semantics
+
+Per-call `abortSignal` propagation is important for once-hook retry accounting:
+
+- **Pre-claim short-circuit** — if the signal is aborted before claiming,
+  the registry returns `[]` without touching once-hook state or retry counters.
+- **Mid-flight rollback** — if the signal aborts during `executeHooks()`,
+  claimed once-hooks are refunded *only* when their result carries the
+  explicit `aborted: true` marker (see below). Genuine non-abort failures
+  still increment `onceRetries` so fail-closed hooks reach
+  `exhaustedBlockers` after `MAX_ONCE_RETRIES`.
+- **Queued waiters** — when a once-hook is already running, queued calls
+  wait behind it on `executeChain`. A queued caller whose signal aborts
+  exits promptly with `[]` without blocking the chain advance.
+
+### Abort Marker on `HookExecutionResult`
+
+Executors set `aborted?: true` on results whose failure was caused by
+caller cancellation (not hook deadline):
+
+- **`executeCommandHook` / `executeHttpHook`** — sets `aborted: true` on
+  `signal.aborted || e.name === "AbortError"`, but filters out cases where
+  `signal.reason.name === "TimeoutError"` (hook's own deadline expiry).
+- **`AgentHookExecutor.handleTransientFailure`** — accepts an `aborted`
+  flag; the catch block sets it based on the same caller-vs-timeout
+  distinction via `signal.reason` inspection.
+
+The registry's refund predicate keys on `result.aborted === true` rather
+than string-matching error messages.
 
 ## Security
 
