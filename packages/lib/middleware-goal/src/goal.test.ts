@@ -434,6 +434,7 @@ describe("createGoalMiddleware", () => {
       makeModelResponse("I have completed the integration tests successfully.");
 
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -454,6 +455,7 @@ describe("createGoalMiddleware", () => {
 
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
+    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -470,16 +472,19 @@ describe("createGoalMiddleware", () => {
     const ctx = makeTurnCtx(session);
     await mw.onBeforeTurn?.(ctx);
 
-    // First call: marks objective as completed
+    // First call: marks objective as completed (fires at turn boundary)
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
       makeModelResponse("I have completed the integration tests."),
     );
+    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
 
     // Second call: no completion signal — should NOT revert
+    await mw.onBeforeTurn?.(ctx);
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
       makeModelResponse("Now working on something else entirely."),
     );
+    await mw.onAfterTurn?.(ctx);
     // onComplete should not fire again, and status stays completed
     expect(completed).toEqual(["Write integration tests"]);
     const cap = mw.describeCapabilities(ctx);
@@ -628,6 +633,7 @@ describe("createGoalMiddleware", () => {
         // consume
       }
     }
+    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -657,6 +663,7 @@ describe("createGoalMiddleware", () => {
         // consume
       }
     }
+    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -1056,7 +1063,7 @@ describe("detectCompletions callback", () => {
     expect(completed).toEqual(["Write tests"]);
   });
 
-  it("partial opt-in (only isDrifting): detectCompletions stays per-call synchronous", async () => {
+  it("partial opt-in (only isDrifting): onComplete fires at turn boundary", async () => {
     const completed: string[] = [];
     let driftCalled = 0;
     const mw = createGoalMiddleware({
@@ -1074,16 +1081,14 @@ describe("detectCompletions callback", () => {
     const ctx = makeTurnCtx(session);
     await mw.onBeforeTurn?.(ctx);
 
-    let orderMarker = "";
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => {
       return makeModelResponse("completed write tests task");
     });
-    orderMarker = "after-call";
-    // With partial opt-in, onComplete should have fired mid-call (before this marker)
-    expect(completed).toEqual(["Write tests"]);
-    expect(orderMarker).toBe("after-call");
+    // onComplete has NOT fired yet — it fires at turn boundary (onAfterTurn)
+    expect(completed).toEqual([]);
 
     await mw.onAfterTurn?.(ctx);
+    expect(completed).toEqual(["Write tests"]);
     expect(driftCalled).toBe(1);
   });
 });
@@ -1277,10 +1282,11 @@ describe("pendingDrift counter coherence", () => {
     const ctx1 = makeTurnCtx(session, { turnIndex: 1 });
     await mw.onBeforeTurn?.(ctx1);
     await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () => makeModelResponse("x"));
-    await mw.onAfterTurn?.(ctx1);
-
+    // Release turn 0's gate before turn 1's onAfterTurn awaits pendingWork,
+    // otherwise turn 1 blocks waiting for turn 0's slow callback to finish.
     turn0Gate?.();
     await after0;
+    await mw.onAfterTurn?.(ctx1);
 
     // After slow callback resolves under state-spread interleaving, the
     // counter must return to 0 and normal cadence should resume.

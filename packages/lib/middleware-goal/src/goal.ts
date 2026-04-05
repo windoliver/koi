@@ -91,6 +91,12 @@ interface GoalSessionState {
    * a stale large interval.
    */
   pendingDrift: number;
+  /**
+   * When `true`, the next `onBeforeTurn` forces goal injection
+   * regardless of cadence. Set after a stop-gate blocked turn so the
+   * retry turn (whatever its index) still injects the goal block.
+   */
+  forceInjectNextTurn: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,10 +303,12 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
   const deferCompletions = config.detectCompletions !== undefined;
-  // Buffer response text whenever EITHER callback is configured — isDrifting
-  // callback needs recent assistant responses even when detectCompletions
-  // is not deferred.
-  const bufferResponses = deferCompletions || config.isDrifting !== undefined;
+  // Always buffer responses. Both modes consume the buffer at turn end
+  // (heuristic mode processes via the built-in detector; callback mode
+  // delegates to `detectCompletions`). Buffering unifies stop-gate
+  // rollback: a blocked turn drops its last buffered entry regardless
+  // of mode.
+  const bufferResponses = true;
 
   /**
    * Apply heuristic completion detection to a single response text.
@@ -319,6 +327,18 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     // Persist state BEFORE invoking callbacks
     sessions.set(sid, { ...current, items: merged });
     fireOnCompleteForTransitions(current.items, merged);
+  }
+
+  /** Apply heuristic completion detection to a per-turn buffer of
+   * response texts in sequence, merging monotonically. Called from
+   * onAfterTurn in heuristic (non-callback) mode so stop-gate rollback
+   * can exclude the vetoed final response. */
+  function processHeuristicCompletions(sid: SessionId, entries: readonly string[]): void {
+    const current = sessions.get(sid);
+    if (!current) return;
+    const next = applyHeuristicFallback(current.items, entries);
+    sessions.set(sid, { ...current, items: next });
+    fireOnCompleteForTransitions(current.items, next);
   }
 
   /** Merge monotonically (position-based — only for heuristic path where items preserve order). */
@@ -507,22 +527,31 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   ): Promise<void> {
     const blocked = ctx.stopBlocked === true;
 
-    // Roll back the synchronous lastReminderTurn advance if the turn was
-    // vetoed, so the retry turn still sees the original cadence and can
-    // re-inject the goal block.
+    // Stop-gate vetoed turn: roll back the synchronous lastReminderTurn
+    // advance AND set forceInjectNextTurn so the retry turn (at whatever
+    // turnIndex the engine assigns) still re-injects the goal block.
     if (blocked && turn.injectedThisTurn) {
       const latest = sessions.get(ctx.session.sessionId);
-      if (latest && latest.lastReminderTurn === ctx.turnIndex) {
+      if (latest) {
+        const rolledBack =
+          latest.lastReminderTurn === ctx.turnIndex
+            ? turn.previousLastReminderTurn
+            : latest.lastReminderTurn;
         sessions.set(ctx.session.sessionId, {
           ...latest,
-          lastReminderTurn: turn.previousLastReminderTurn,
+          lastReminderTurn: rolledBack,
+          forceInjectNextTurn: true,
         });
       }
     }
 
+    // Process buffered response texts. Blocked turns drop the last
+    // entry (the vetoed final response). Works for both modes.
+    const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
     if (deferCompletions) {
-      const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
       await processDeferredCompletions(state, entries, ctx);
+    } else if (entries.length > 0) {
+      processHeuristicCompletions(ctx.session.sessionId, entries);
     }
 
     if (blocked) return;
@@ -601,6 +630,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         turns: new Map(),
         pendingWork: Promise.resolve(),
         pendingDrift: 0,
+        forceInjectNextTurn: false,
       });
     },
 
@@ -629,9 +659,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       // confirmed whether to back off — treat the effective interval as
       // `baseInterval` so reminders don't go silent during a stall.
       const effectiveInterval = state.pendingDrift > 0 ? baseInterval : state.currentInterval;
+      const force = state.forceInjectNextTurn;
+      if (force) {
+        sessions.set(ctx.session.sessionId, { ...state, forceInjectNextTurn: false });
+      }
       const turn: PerTurnState = {
         turnIndex: ctx.turnIndex,
-        shouldInject: turnsSinceReminder >= effectiveInterval || ctx.turnIndex === 0,
+        shouldInject: force || turnsSinceReminder >= effectiveInterval || ctx.turnIndex === 0,
         injectedThisTurn: false,
         responseBuffer: [],
         userMessagesSnapshot: cloneMessages(state.userMessageBuffer),
@@ -679,11 +713,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      if (bufferResponses) {
-        const turn = state.turns.get(turnKey);
-        if (turn) turn.responseBuffer.push(response.content);
-      }
-      if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, response.content);
+      const currentTurn = state.turns.get(turnKey);
+      if (currentTurn) currentTurn.responseBuffer.push(response.content);
 
       return response;
     },
@@ -725,11 +756,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       } finally {
         // Only update state if stream completed successfully
         if (succeeded) {
-          if (bufferResponses) {
-            const turn = state.turns.get(turnKey);
-            if (turn) turn.responseBuffer.push(bufferedText);
-          }
-          if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+          const turn = state.turns.get(turnKey);
+          if (turn) turn.responseBuffer.push(bufferedText);
         }
       }
     },
