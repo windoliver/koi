@@ -6,7 +6,7 @@
  * - 8A: Returns Result<TuiAppHandle, TuiStartError> for no-TTY (expected failure).
  *       Throws Error with cause for renderer failure (unexpected — Zig FFI init).
  * - 10A: config.renderer optional — injected in tests, created internally in prod.
- * - 15A: 50ms debounce on resize dispatch to collapse rapid window-drag events.
+ * - 15A: 16ms debounce on resize dispatch — one render-frame, collapses drag bursts.
  * - 2A: createTuiApp installs the resize listener + dispatches set_layout.
  *
  * Solid render note: @opentui/solid's render() hooks renderer.destroy() to
@@ -162,13 +162,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         };
         dispatchLayout();
 
-        // Decision 15A: 50ms debounce — collapses 60+ resize events/sec to 1-2
+        // Decision 15A: 16ms debounce — collapses 60+ resize events/sec to 1-2 per frame
         const onResize = (): void => {
           if (debounceTimer !== null) clearTimeout(debounceTimer);
           debounceTimer = setTimeout((): void => {
             dispatchLayout();
             debounceTimer = null;
-          }, 50);
+          }, 16);
         };
         process.stdout.on("resize", onResize);
         cleanupResize = (): void => {

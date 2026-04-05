@@ -77,7 +77,6 @@ describe("bin.ts", () => {
       for (const cmd of [
         "init",
         "serve",
-        "tui",
         "sessions",
         "logs",
         "status",

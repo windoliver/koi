@@ -21,24 +21,46 @@ import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { CommandDef } from "./commands/command-definitions.js";
 import { CommandPalette } from "./components/CommandPalette.js";
-import {
-  ConversationView,
-  DoctorPlaceholder,
-  HelpPlaceholder,
-  SessionsPlaceholder,
-} from "./components/ConversationView.js";
+import { ConversationView } from "./components/ConversationView.js";
+import { DoctorView } from "./components/DoctorView.js";
+import { HelpView } from "./components/HelpView.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
+import { SessionsView } from "./components/SessionsView.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
-import type { SessionSummary, TuiModal } from "./state/types.js";
+import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
 import {
   StoreContext,
   TuiStateContext,
   createStoreSignal,
   useTuiStore,
 } from "./store-context.js";
+
+// ---------------------------------------------------------------------------
+// Nav command routing
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps navigation command IDs to their target TuiView.
+ * Navigation commands are handled inside TuiRoot — they never bubble up to the
+ * CLI's onCommand callback. Only engine-affecting commands (agent:*, session:*,
+ * system:*) are forwarded via onCommand.
+ */
+const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
+  "nav:sessions": "sessions",
+  "nav:doctor": "doctor",
+  "nav:help": "help",
+};
+
+/**
+ * Returns the TuiView for a navigation command ID, or null for engine commands.
+ * Exported for testing — do not rely on this in external packages.
+ */
+export function resolveNavCommand(commandId: string): TuiView | null {
+  return NAV_VIEW_MAP[commandId] ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,6 +165,12 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
 
   const handleCommandSelect = (cmd: CommandDef): void => {
     store.dispatch({ kind: "set_modal", modal: null });
+    // Navigation commands are handled here — no CLI callback needed.
+    const navView = resolveNavCommand(cmd.id);
+    if (navView !== null) {
+      store.dispatch({ kind: "set_view", view: navView });
+      return;
+    }
     props.onCommand(cmd.id);
   };
 
@@ -170,13 +198,13 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
           />
         </Match>
         <Match when={activeView() === "sessions"}>
-          <SessionsPlaceholder />
+          <SessionsView />
         </Match>
         <Match when={activeView() === "doctor"}>
-          <DoctorPlaceholder />
+          <DoctorView />
         </Match>
         <Match when={activeView() === "help"}>
-          <HelpPlaceholder />
+          <HelpView />
         </Match>
       </Switch>
 

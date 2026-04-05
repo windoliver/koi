@@ -301,6 +301,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/tui": "workspace:*",
       },
     },
     "packages/meta/runtime": {

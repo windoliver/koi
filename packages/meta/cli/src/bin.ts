@@ -48,7 +48,9 @@ if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
 }
 
 // Lazy-load args module now that fast-path is cleared.
-const { COMMAND_NAMES, isKnownCommand, parseArgs, ParseError } = await import("./args.js");
+const { COMMAND_NAMES, isKnownCommand, isTuiFlags, parseArgs, ParseError } = await import(
+  "./args.js"
+);
 
 let flags: CliFlags;
 try {
@@ -73,6 +75,13 @@ if (flags.version) {
 
 if (flags.command === undefined) {
   process.stdout.write(HELP);
+  process.exit(0);
+}
+
+// Dispatch to implemented command handlers
+if (isTuiFlags(flags)) {
+  const { runTuiCommand } = await import("./tui-command.js");
+  await runTuiCommand(flags);
   process.exit(0);
 }
 

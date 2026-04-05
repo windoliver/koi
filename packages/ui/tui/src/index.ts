@@ -16,7 +16,7 @@ export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
 } from "./bridge/permission-bridge.js";
 // Commands — palette definitions + fuzzy matching
-export type { CommandCategory, CommandDef } from "./commands/command-definitions.js";
+export type { CommandCategory, CommandDef, CommandId } from "./commands/command-definitions.js";
 export { COMMAND_DEFINITIONS, filterCommands } from "./commands/command-definitions.js";
 export { fuzzyFilter, fuzzyScore } from "./commands/fuzzy-match.js";
 // Commands — slash detection
@@ -66,9 +66,9 @@ export {
   separator,
   truncate,
 } from "./theme.js";
-// TuiRoot component (Phase 2j-5, requires @opentui/solid at runtime)
+// TuiRoot component (requires @opentui/solid at runtime)
 export type { TuiRootProps } from "./tui-root.js";
-export { TuiRoot } from "./tui-root.js";
+export { resolveNavCommand, TuiRoot } from "./tui-root.js";
 
 // EngineChannel — main-thread bridge: worker postMessage → EventBatcher → store
 export type {

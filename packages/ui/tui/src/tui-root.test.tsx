@@ -13,7 +13,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
-import { TuiRoot } from "./tui-root.js";
+import { TuiRoot, resolveNavCommand } from "./tui-root.js";
 
 const OPTS = { width: 100, height: 30 };
 
@@ -67,24 +67,24 @@ describe("TuiRoot — view routing", () => {
     renderer.destroy();
   });
 
-  test("sessions view renders placeholder", async () => {
+  test("sessions view renders Sessions heading", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "sessions" });
     const frame = captureCharFrame();
-    expect(frame).toContain("sessions");
+    expect(frame).toContain("Sessions");
     renderer.destroy();
   });
 
-  test("doctor view renders placeholder", async () => {
+  test("doctor view renders System Health heading", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "doctor" });
     const frame = captureCharFrame();
-    expect(frame).toContain("doctor");
+    expect(frame).toContain("System Health");
     renderer.destroy();
   });
 
-  test("help view renders placeholder", async () => {
+  test("help view renders Keyboard Shortcuts heading", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "help" });
     const frame = captureCharFrame();
-    expect(frame).toContain("help");
+    expect(frame).toContain("Keyboard Shortcuts");
     renderer.destroy();
   });
 });
@@ -147,3 +147,23 @@ describe("TuiRoot — modal overlay", () => {
 // onDismissModal / onBack) is unit-tested as a pure function in
 // keyboard.test.ts. TuiRoot renders the correct output for each state —
 // the view routing and modal overlay tests above cover this fully.
+
+// ---------------------------------------------------------------------------
+// resolveNavCommand — nav/engine command routing split
+// ---------------------------------------------------------------------------
+
+describe("resolveNavCommand", () => {
+  test("nav commands return the target TuiView", () => {
+    expect(resolveNavCommand("nav:sessions")).toBe("sessions");
+    expect(resolveNavCommand("nav:doctor")).toBe("doctor");
+    expect(resolveNavCommand("nav:help")).toBe("help");
+  });
+
+  test("engine-affecting commands return null (bubble up to onCommand)", () => {
+    expect(resolveNavCommand("agent:clear")).toBeNull();
+    expect(resolveNavCommand("agent:interrupt")).toBeNull();
+    expect(resolveNavCommand("agent:compact")).toBeNull();
+    expect(resolveNavCommand("session:new")).toBeNull();
+    expect(resolveNavCommand("system:quit")).toBeNull();
+  });
+});
