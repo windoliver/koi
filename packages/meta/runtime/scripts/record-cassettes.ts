@@ -27,11 +27,7 @@
  *   @koi/fs-local             — local filesystem backend
  */
 
-import {
-  createAgentDefinitionRegistry,
-  createDefinitionResolver,
-  getBuiltInAgents,
-} from "@koi/agent-runtime";
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -787,24 +783,24 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   });
 
   // Optional registry for once-hook lifecycle tracking (command hooks only).
-  // Agent hooks are dispatched exclusively via coreHookMw (above), so the
-  // registry never needs an agentExecutor here.
+  // Registration is deferred until after createKoi() so we can key on the
+  // live runtime session id — the middleware dispatches per
+  // ctx.session.sessionId. Agent hooks are dispatched exclusively via
+  // coreHookMw (above), so the registry never needs an agentExecutor here.
   // let justified: mutable — created conditionally
   let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
   if (config.useRegistry === true) {
     hookRegistry = createHookRegistry();
-    hookRegistry.register(`golden-${name}`, `golden-${name}`, dispatchHookConfigs);
   }
 
   // Runtime hook dispatch — command tool hooks + trajectory recording.
   // Agent hooks are filtered out here (they already fire via coreHookMw with
   // the full {input, output} payload that redaction needs to act on).
-  const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
     hooks: dispatchHookConfigs,
     store,
     docId,
-    ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
+    ...(hookRegistry !== undefined ? { registry: hookRegistry } : {}),
   });
 
   // @koi/permissions + @koi/middleware-permissions
@@ -988,13 +984,25 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     loopDetection: false,
   });
 
+  // Register hooks for the live runtime session, now that its id exists.
+  // The middleware dispatches via registry.execute(ctx.session.sessionId, ...),
+  // so the key here must match runtime.sessionId exactly. We also register
+  // with the runtime's real agent id (runtime.agent.pid.id — same value the
+  // engine puts on ctx.session.agentId), because the registry overwrites any
+  // mismatched event.agentId with the registered id for trust enforcement.
+  // Registering with the manifest alias would make hooks see a synthetic
+  // agentId during recording that never matches real runtime replay.
+  if (hookRegistry !== undefined) {
+    hookRegistry.register(runtime.sessionId, runtime.agent.pid.id, dispatchHookConfigs);
+  }
+
   for await (const _e of runtime.run({ kind: "text", text: prompt })) {
     /* drain */
   }
 
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
-  hookRegistry?.cleanup(`golden-${name}`);
+  hookRegistry?.cleanup(runtime.sessionId);
   await runtime.dispose();
 
   // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
@@ -1379,9 +1387,9 @@ function createChildBridge(): EngineAdapter {
   };
 }
 
-const spawnBuiltIns = getBuiltInAgents();
-const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
-const spawnResolver = createDefinitionResolver(spawnRegistry);
+// Built-ins only — cassette recording must be hermetic. Project-local .koi/agents/ overrides
+// would bake local untracked state into fixtures, making cassettes non-reproducible.
+const { resolver: spawnResolver } = createAgentResolver();
 const spawnToolProvider = createSpawnToolProvider({
   resolver: spawnResolver,
   spawnLedger: createInMemorySpawnLedger(5),

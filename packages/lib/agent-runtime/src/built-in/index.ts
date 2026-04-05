@@ -47,8 +47,9 @@ export function getBuiltInAgents(): readonly AgentDefinition[] {
     agents.push(deepFreezeDefinition(result.value));
   }
 
-  cached = Object.freeze(agents);
-  return cached;
+  const frozen: readonly AgentDefinition[] = Object.freeze(agents);
+  cached = frozen;
+  return frozen;
 }
 
 /** Number of built-in agents bundled in this package. */

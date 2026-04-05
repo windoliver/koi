@@ -22,11 +22,14 @@ export function createDefinitionResolver(registry: AgentDefinitionRegistry): Age
     resolve: (agentType: string): Result<AgentDefinition, KoiError> => {
       const def = registry.resolve(agentType);
       if (!def) {
+        const available = registry.list().map((d) => d.agentType);
+        const availableMsg =
+          available.length > 0 ? `. Available: ${available.join(", ")}` : " (no agents loaded)";
         return {
           ok: false,
           error: {
             code: "NOT_FOUND",
-            message: `No agent definition found for type "${agentType}"`,
+            message: `No agent definition found for type "${agentType}"${availableMsg}`,
             retryable: false,
           },
         };
@@ -34,9 +37,11 @@ export function createDefinitionResolver(registry: AgentDefinitionRegistry): Age
       return { ok: true, value: def };
     },
     list: (): readonly TaskableAgentSummary[] => {
+      // Use agentType as name — this is the value the LLM must pass to agent_spawn.
+      // manifest.name is a display label; agentType is the lookup key.
       return registry.list().map((def) => ({
         key: def.agentType,
-        name: def.manifest.name,
+        name: def.agentType,
         description: def.whenToUse,
       }));
     },

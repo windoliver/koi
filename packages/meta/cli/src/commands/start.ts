@@ -151,6 +151,9 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     },
   };
 
+  // Spawn is not registered here: koi start provides no tool inventory (no Glob/Grep/web/task
+  // tools), so built-in agents like researcher/coder/coordinator cannot perform their defined
+  // workflows. Spawn support requires a full tool surface — tracked in #1264 (manifest flag).
   const runtime = await createKoi({
     manifest: { name: "koi", version: "0.0.1", model: { name: model } },
     adapter: engineAdapter,

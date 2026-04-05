@@ -1,4 +1,9 @@
 import type {
+  AgentLoadWarning,
+  AgentResolverDirs,
+  RegistryConflictWarning,
+} from "@koi/agent-runtime";
+import type {
   AgentResolver,
   ApprovalHandler,
   ChannelAdapter,
@@ -77,8 +82,21 @@ export interface RuntimeConfig {
    * Agent resolver for definition lookup. When provided, `createRuntime` returns a
    * `spawnProvider` in `RuntimeHandle` that callers can pass to `createKoi({ providers })`
    * to register the `Spawn` tool and enable agent-to-agent delegation.
+   *
+   * Prefer `agentDirs` over `resolver` when you want the default bootstrap behaviour
+   * (built-ins + `.koi/agents/` scanning). Use `resolver` when you need full control.
    */
   readonly resolver?: AgentResolver | undefined;
+
+  /**
+   * Convenience shortcut: directories to scan for agent definitions.
+   * When provided (and `resolver` is not), `createRuntime` calls
+   * `createAgentResolver(agentDirs)` internally and uses the result.
+   * Load warnings (unparseable .md files) are emitted to `console.warn`.
+   *
+   * Example: `agentDirs: { projectDir: process.cwd() }`
+   */
+  readonly agentDirs?: AgentResolverDirs | undefined;
 
   /**
    * ReportStore for `on_demand` delivery. Required when spawned agents use
@@ -183,11 +201,26 @@ export interface RuntimeHandle {
   readonly trajectoryStore: TrajectoryDocumentStore | undefined;
 
   /**
-   * Spawn tool provider. Only populated when `config.resolver` is provided.
+   * Spawn tool provider. Only populated when `config.resolver` or `config.agentDirs` is provided.
    * Pass this to `createKoi({ providers: [handle.spawnProvider] })` to register
    * the `Spawn` tool and enable agent-to-agent delegation for that agent.
    */
   readonly spawnProvider: ComponentProvider | undefined;
+
+  /**
+   * Agent load warnings from `config.agentDirs` resolution (unparseable .md files).
+   * Only populated when `config.agentDirs` is used (not when `config.resolver` is explicit).
+   * A warning for a built-in agent type means that type is poisoned — callers should
+   * inspect this and decide whether to fail, log, or proceed with reduced spawn coverage.
+   */
+  readonly agentWarnings: readonly AgentLoadWarning[];
+
+  /**
+   * Same-tier agent conflicts from `config.agentDirs` resolution.
+   * The first definition wins; the rest are ignored. Non-empty means some `.koi/agents/`
+   * files were silently skipped — callers should log or surface these to operators.
+   */
+  readonly agentConflicts: readonly RegistryConflictWarning[];
 
   /**
    * Resolved filesystem backend. Only populated when filesystem is explicitly
