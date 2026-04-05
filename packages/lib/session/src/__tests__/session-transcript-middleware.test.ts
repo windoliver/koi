@@ -172,4 +172,50 @@ describe("SessionTranscriptMiddleware — completion semantics", () => {
       }
     }
   });
+
+  test("done with error stopReason does NOT append assistant entry", async () => {
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "partial..." },
+      { kind: "done", response: { content: "partial...", model: "m", stopReason: "error" } },
+    ];
+
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+    const stream = mw.wrapModelStream(makeTurnContext(), makeModelRequest(), () =>
+      makeChunks(chunks),
+    );
+    await drainStream(stream);
+
+    const result = await transcript.load(SID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // "error" stopReason → semantic-retry will retry; do not persist
+      const assistantEntry = result.value.entries.find((e) => e.role === "assistant");
+      expect(assistantEntry).toBeUndefined();
+    }
+  });
+
+  test("done with hook_blocked stopReason does NOT append assistant entry", async () => {
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+
+    const chunks: ModelChunk[] = [
+      { kind: "done", response: { content: "", model: "m", stopReason: "hook_blocked" } },
+    ];
+
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+    const stream = mw.wrapModelStream(makeTurnContext(), makeModelRequest(), () =>
+      makeChunks(chunks),
+    );
+    await drainStream(stream);
+
+    const result = await transcript.load(SID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const assistantEntry = result.value.entries.find((e) => e.role === "assistant");
+      expect(assistantEntry).toBeUndefined();
+    }
+  });
 });

@@ -16,6 +16,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStopReason,
   ModelStreamHandler,
   SessionId,
   SessionTranscript,
@@ -114,9 +115,17 @@ export function createSessionTranscriptMiddleware(
             yield chunk;
           }
         } finally {
-          // Only persist on successful completion — doneResponse undefined means
-          // the stream was aborted or errored, so partial output is not recorded.
-          if (doneResponse !== undefined) {
+          // Only persist on successful completion:
+          // - doneResponse undefined → stream aborted/errored before done
+          // - stopReason "error"/"hook_blocked" → engine will retry/reject this turn
+          // - stopReason absent → legacy adapter (treat as success)
+          const successReasons = new Set<ModelStopReason | undefined>([
+            undefined,
+            "stop",
+            "length",
+            "tool_use",
+          ]);
+          if (doneResponse !== undefined && successReasons.has(doneResponse.stopReason)) {
             const toAppend: TranscriptEntry[] = [];
 
             // Prefer accumulated text_delta parts; fall back to done.response.content
@@ -146,9 +155,13 @@ export function createSessionTranscriptMiddleware(
             }
 
             if (toAppend.length > 0) {
-              void Promise.resolve(transcript.append(sessionId, toAppend)).catch((e: unknown) => {
+              // Await the write so the turn is durable before the generator completes.
+              // The stream is already exhausted here — this is the commit boundary.
+              try {
+                await transcript.append(sessionId, toAppend);
+              } catch (e: unknown) {
                 console.error("[@koi/session:transcript] failed to append assistant entries:", e);
-              });
+              }
             }
           }
         }

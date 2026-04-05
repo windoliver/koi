@@ -146,33 +146,55 @@ describe("JsonlTranscript (crash artifact detection)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// JSONL-specific: path safety (validateSessionIdSyntax)
+// JSONL-specific: path safety (encodeURIComponent filename encoding)
+//
+// Session IDs are URL-encoded when used as filenames, so any session ID
+// format is accepted — path traversal is prevented by encoding, not rejection.
 // ---------------------------------------------------------------------------
 
 describe("JsonlTranscript (path safety)", () => {
-  test("session ID with path traversal is rejected", async () => {
+  test("session ID with path traversal is accepted — stored safely via encoding", async () => {
+    // "../evil" is encoded to "..%2Fevil.jsonl" — cannot escape baseDir
     const store = createJsonlTranscript({ baseDir: tmpDir });
     const result = await store.append(sessionId("../evil"), [makeTranscriptEntry()]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-    }
+    expect(result.ok).toBe(true);
+
+    // Verify the file is in tmpDir, not a parent
+    const { existsSync } = await import("node:fs");
+    const { join: pathJoin } = await import("node:path");
+    expect(existsSync(pathJoin(tmpDir, "..%2Fevil.jsonl"))).toBe(true);
+    // The original path-traversal target must NOT exist
+    expect(existsSync(pathJoin(tmpDir, "..", "evil.jsonl"))).toBe(false);
   });
 
-  test("session ID with slash is rejected", async () => {
+  test("session ID with slash is accepted — stored safely via encoding", async () => {
     const store = createJsonlTranscript({ baseDir: tmpDir });
     const result = await store.append(sessionId("a/b"), [makeTranscriptEntry()]);
+    expect(result.ok).toBe(true);
+  });
+
+  test("runtime-style session ID with colons is accepted", async () => {
+    // Runtime creates IDs like "agent:{agentId}:{uuid}"
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const runtimeId = sessionId("agent:my-agent:550e8400-e29b-41d4-a716-446655440000");
+    const result = await store.append(runtimeId, [makeTranscriptEntry({ content: "hello" })]);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(runtimeId);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.value.entries.length).toBe(1);
+      expect(loaded.value.entries[0]?.content).toBe("hello");
+    }
+  });
+
+  test("empty session ID is rejected", async () => {
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const result = await store.append(sessionId(""), [makeTranscriptEntry()]);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
     }
-  });
-
-  test("valid alphanumeric session ID with hyphens is accepted", async () => {
-    const store = createJsonlTranscript({ baseDir: tmpDir });
-    const validId = sessionId("session-abc-123_XYZ");
-    const result = await store.append(validId, [makeTranscriptEntry()]);
-    expect(result.ok).toBe(true);
   });
 });
 

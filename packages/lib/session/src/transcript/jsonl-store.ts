@@ -25,7 +25,7 @@ import type {
   TranscriptPage,
   TranscriptPageOptions,
 } from "@koi/core";
-import { transcriptEntryId, validateSessionIdSyntax } from "@koi/core";
+import { transcriptEntryId, validateNonEmpty } from "@koi/core";
 import { extractMessage } from "@koi/errors";
 
 // ---------------------------------------------------------------------------
@@ -147,15 +147,18 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
   const { baseDir } = config;
 
   function filePath(sid: string): string {
-    // Flat layout: {baseDir}/{sessionId}.jsonl — O(1), no directory traversal
-    return join(baseDir, `${sid}.jsonl`);
+    // URL-encode the session ID to produce a safe filename for any session ID
+    // format (including runtime IDs like "agent:xxx:uuid" that contain colons).
+    // encodeURIComponent replaces /, :, and other special chars — path traversal
+    // is structurally impossible because the encoded string contains no / separators.
+    return join(baseDir, `${encodeURIComponent(sid)}.jsonl`);
   }
 
   const append = async (
     sid: SessionId,
     entries: readonly TranscriptEntry[],
   ): Promise<Result<void, KoiError>> => {
-    const check = validateSessionIdSyntax(sid, "Session ID");
+    const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
     if (entries.length === 0) return { ok: true, value: undefined };
 
@@ -181,7 +184,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
   };
 
   const load = async (sid: SessionId): Promise<Result<TranscriptLoadResult, KoiError>> => {
-    const check = validateSessionIdSyntax(sid, "Session ID");
+    const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
     try {
@@ -208,7 +211,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     sid: SessionId,
     options: TranscriptPageOptions,
   ): Promise<Result<TranscriptPage, KoiError>> => {
-    const check = validateSessionIdSyntax(sid, "Session ID");
+    const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
     // Full-load-then-slice: O(n) memory, intentional for CLI use.
@@ -233,7 +236,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     summary: string,
     preserveLastN: number,
   ): Promise<Result<void, KoiError>> => {
-    const check = validateSessionIdSyntax(sid, "Session ID");
+    const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
     if (preserveLastN < 0) {
@@ -288,7 +291,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
   };
 
   const remove = async (sid: SessionId): Promise<Result<void, KoiError>> => {
-    const check = validateSessionIdSyntax(sid, "Session ID");
+    const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
     // Serialized to prevent delete racing with an in-flight append or compact

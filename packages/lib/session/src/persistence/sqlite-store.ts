@@ -19,14 +19,7 @@ import type {
   SessionRecord,
   SkippedRecoveryEntry,
 } from "@koi/core";
-import {
-  agentId,
-  internal,
-  notFound,
-  sessionId,
-  validateNonEmpty,
-  validateSessionIdSyntax,
-} from "@koi/core";
+import { agentId, internal, notFound, sessionId, validateNonEmpty } from "@koi/core";
 import { extractMessage } from "@koi/errors";
 import { openDb } from "./open-db.js";
 
@@ -247,7 +240,9 @@ export function createSqliteSessionPersistence(
   // -- Implementation -------------------------------------------------------
 
   const saveSession = (record: SessionRecord): Result<void, KoiError> => {
-    const idCheck = validateSessionIdSyntax(record.sessionId, "Session ID");
+    // SQLite stores IDs as TEXT — no filesystem path encoding needed.
+    // Use non-empty check only; path-safety is a JSONL-store concern.
+    const idCheck = validateNonEmpty(record.sessionId, "Session ID");
     if (!idCheck.ok) return idCheck;
     const agentCheck = validateNonEmpty(record.agentId, "Agent ID");
     if (!agentCheck.ok) return agentCheck;
