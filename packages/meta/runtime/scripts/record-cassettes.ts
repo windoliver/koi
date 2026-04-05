@@ -160,27 +160,6 @@ if (!addToolResult.ok) {
 }
 const addTool = addToolResult.value;
 
-// ---------------------------------------------------------------------------
-// Credentials tool (for hook-redaction golden query)
-// ---------------------------------------------------------------------------
-
-const credentialsToolResult = buildTool({
-  name: "get_credentials",
-  description: "Retrieve database credentials for the current environment",
-  inputSchema: { type: "object", properties: {} },
-  origin: "primordial",
-  execute: async (): Promise<unknown> => ({
-    apiKey: `sk-ant-api03-${"A".repeat(85)}`,
-    dbPassword: "super-secret-pw-123",
-    host: "db.example.com",
-  }),
-});
-if (!credentialsToolResult.ok) {
-  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
-  process.exit(1);
-}
-const credentialsTool = credentialsToolResult.value;
-
 // send_message — tool with a string field for exfiltration guard testing
 const sendMessageToolResult = buildTool({
   name: "send_message",
@@ -201,6 +180,32 @@ if (!sendMessageToolResult.ok) {
   process.exit(1);
 }
 const sendMessageTool = sendMessageToolResult.value;
+
+// get_credentials — returns fake secrets for hook-redaction golden (exercises
+// forwardRawPayload + default redaction: API key + password must be stripped
+// before the hook agent sees the payload, while the non-secret `host` survives).
+const credentialsToolResult = buildTool({
+  name: "get_credentials",
+  description: "Retrieve database credentials. WARNING: contains sensitive data.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  // All values here are obviously-fake fixtures, safe to commit. They match
+  // the @koi/security/redaction detectors (Anthropic API key prefix +
+  // generic password field name) so redaction has something to act on.
+  // Do not swap in realistic-looking credentials — the trajectory records
+  // raw tool outputs by design, and those artifacts are committed to Git.
+  execute: async (): Promise<unknown> => ({
+    host: "db.example.com",
+    user: "admin",
+    password: "super-secret-pw-123",
+    apiKey: `sk-ant-api03-${"A".repeat(85)}`,
+  }),
+});
+if (!credentialsToolResult.ok) {
+  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
+  process.exit(1);
+}
+const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -564,9 +569,12 @@ interface QueryConfig {
         readonly model?: string;
         readonly filter: { readonly events: readonly string[] };
         readonly forwardRawPayload?: boolean;
+        readonly toolAllowlist?: readonly string[];
+        readonly toolDenylist?: readonly string[];
+        readonly maxTurns?: number;
         readonly redaction?: {
           readonly enabled?: boolean;
-          readonly censor?: string;
+          readonly censor?: "redact" | "mask" | "remove";
           readonly sensitiveFields?: readonly string[];
         };
         readonly once?: boolean;
@@ -643,62 +651,157 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
 
-  // Provide a spawnFn for agent hooks — uses the same OpenRouter model adapter.
+  // createHookMiddleware's wrapToolCall dispatches tool.succeeded via its own
+  // internal registry AND includes the full {input, output} data payload in
+  // the event — that richer payload is what redactEventData needs to strip
+  // secrets from. createHookDispatchMiddleware (wired below) ALSO dispatches
+  // tool.succeeded for trajectory recording, but its event carries only
+  // toolName (no data). For idempotent command hooks, double-dispatch is
+  // wasteful but harmless (pre-existing). For agent hooks it would double
+  // real LLM calls and break once:true + any hook with side effects — so
+  // we keep agent hooks only on the coreHookMw path (with data) and leave
+  // hook-dispatch with command hooks only for its trajectory step recording.
+  const dispatchHookConfigs = loadedHooks.filter((h) => h.kind !== "agent");
+
+  // Captures the userInput each agent hook receives — i.e. the already-redacted
+  // payload the sub-agent actually sees. Written to a sidecar file so the
+  // golden test can assert redaction actually stripped secrets before they
+  // crossed into the hook-agent trust boundary (the tool's raw output still
+  // flows to the parent model unredacted — that is by design).
+  const capturedHookInputs: {
+    readonly hookName: string;
+    readonly userInput: string;
+    readonly systemPrompt: string | undefined;
+  }[] = [];
+
+  // SpawnFn for agent-type hooks. Emulates the structured-output slice of the
+  // hook-agent contract: injects request.additionalTools (HookVerdict) into a
+  // real LLM call, then extracts the parsed HookVerdict args as the spawn
+  // output — exercising the same `requiredOutputToolName` enforcement path
+  // the L2 agent executor uses (see packages/lib/hooks/src/agent-executor.ts:245-264).
+  //
+  // SCOPE: this emulator is intended for hooks whose verification only needs
+  // HookVerdict (content-based policies that inspect the payload and decide).
+  // It does NOT emulate production's parent-tool inheritance — createAgentExecutor
+  // forwards `toolDenylist`/`toolAllowlist` so the child sub-agent inherits
+  // parent tools minus safety denies. A hook that investigates via parent
+  // tools (grep, fetch, etc.) cannot be recorded with this emulator; use
+  // createHookSpawnFn + spawnChildAgent for those.
   const hasAgentHooks = config.hooks.some((h) => h.kind === "agent");
-  const spawnFn: SpawnFn | undefined = hasAgentHooks
+  const hookSpawnFn: SpawnFn | undefined = hasAgentHooks
     ? async (request) => {
+        const hookModelAdapter = config.modelAdapter ?? modelAdapter;
+        const hookModel = config.modelName ?? MODEL;
+        const tools = request.additionalTools ?? [];
+        const required = request.requiredOutputToolName;
+        // Snapshot the payload the hook agent actually receives. request.description
+        // is the already-redacted userInput built by @koi/hooks buildHookPrompts.
+        capturedHookInputs.push({
+          hookName: request.agentName,
+          userInput: request.description,
+          systemPrompt: request.systemPrompt,
+        });
+        const msgs: {
+          readonly senderId: string;
+          readonly timestamp: number;
+          readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+        }[] = [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [{ kind: "text", text: request.description }],
+          },
+        ];
         try {
-          const response = await modelAdapter.complete({
-            messages: [
-              {
-                senderId: "system",
-                timestamp: Date.now(),
-                content: [{ kind: "text", text: request.systemPrompt ?? "" }],
-              },
-              {
-                senderId: "user",
-                timestamp: Date.now(),
-                content: [{ kind: "text", text: request.description }],
-              },
-            ],
-            model: MODEL,
-          });
-          const textContent = response.content
-            .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
-            .map((c) => c.text)
-            .join("");
-          return { ok: true, output: textContent };
-        } catch (err: unknown) {
+          // Honor the hook's requested maxTurns (hook.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+          // resolved by createAgentExecutor and forwarded via SpawnRequest). Mirrors
+          // agent-executor.ts retry-on-missing-verdict: the model may produce text
+          // first, then be nudged to call HookVerdict on the next turn. Bounded at
+          // 2 when the request omits maxTurns, matching the minimal retry budget.
+          const maxTurns = request.maxTurns ?? 2;
+          for (let turn = 0; turn < maxTurns; turn++) {
+            const evts: EngineEvent[] = [];
+            for await (const e of consumeModelStream(
+              hookModelAdapter.stream({
+                messages: msgs,
+                model: hookModel,
+                tools,
+                systemPrompt: request.systemPrompt,
+                signal: request.signal,
+              }),
+              request.signal,
+            )) {
+              if (e.kind !== "done") evts.push(e);
+            }
+            const verdict = evts.find((e) => {
+              if (e.kind !== "tool_call_end") return false;
+              const r = e.result as { readonly toolName: string };
+              return r.toolName === required;
+            });
+            if (verdict?.kind === "tool_call_end") {
+              const r = verdict.result as {
+                readonly toolName: string;
+                readonly parsedArgs?: JsonObject;
+              };
+              return { ok: true, output: JSON.stringify(r.parsedArgs ?? {}) };
+            }
+            // Nudge toward HookVerdict on the second turn.
+            msgs.push({
+              senderId: "user",
+              timestamp: Date.now(),
+              content: [
+                {
+                  kind: "text",
+                  text: `You must call the ${required ?? "HookVerdict"} tool now with your verdict. Do not respond with text.`,
+                },
+              ],
+            });
+          }
           return {
             ok: false,
             error: {
-              code: "SPAWN_FAILED" as const,
-              message: err instanceof Error ? err.message : String(err),
+              code: "INTERNAL" as const,
+              message: `Hook agent did not call HookVerdict within ${maxTurns} turn(s)`,
+              retryable: true,
+            },
+          };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Hook spawn failed: ${message}`,
               retryable: false,
-              context: {},
             },
           };
         }
       }
     : undefined;
 
+  // coreHookMw owns all hooks (including agent hooks). spawnFn is required
+  // by createHookMiddleware whenever agent hooks are present.
   const coreHookMw = createHookMiddleware({
     hooks: loadedHooks,
-    ...(spawnFn !== undefined ? { spawnFn } : {}),
+    ...(hookSpawnFn !== undefined ? { spawnFn: hookSpawnFn } : {}),
   });
 
-  // Optional registry for once-hook lifecycle tracking
+  // Optional registry for once-hook lifecycle tracking (command hooks only).
+  // Agent hooks are dispatched exclusively via coreHookMw (above), so the
+  // registry never needs an agentExecutor here.
   // let justified: mutable — created conditionally
   let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
   if (config.useRegistry === true) {
     hookRegistry = createHookRegistry();
-    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, dispatchHookConfigs);
   }
 
-  // Runtime hook dispatch — tool hooks + trajectory recording
+  // Runtime hook dispatch — command tool hooks + trajectory recording.
+  // Agent hooks are filtered out here (they already fire via coreHookMw with
+  // the full {input, output} payload that redaction needs to act on).
   const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
-    hooks: loadedHooks,
+    hooks: dispatchHookConfigs,
     store,
     docId,
     ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
@@ -921,6 +1024,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   }
   const rawAtif = JSON.parse(await readFile(`${trajDir}/${atifFile}`, "utf-8"));
   await Bun.write(`${FIXTURES}/${name}.trajectory.json`, JSON.stringify(rawAtif, null, 2));
+
+  // Side-car: agent-hook inputs (what the hook sub-agents actually saw).
+  // Used by goldens that need to assert redaction applied *before* payloads
+  // crossed into the hook-agent trust boundary.
+  //
+  // Written unconditionally when the query declares agent hooks — an empty
+  // inputs array is a *signal* that this recording did not exercise the
+  // hook-agent path, which the replay test asserts on. Skipping the write
+  // would leave a stale sidecar from a previous (passing) recording, letting
+  // a regression go green against old evidence.
+  if (hasAgentHooks) {
+    await Bun.write(
+      `${FIXTURES}/${name}.hook-inputs.json`,
+      JSON.stringify({ name, capturedAt: Date.now(), inputs: capturedHookInputs }, null, 2),
+    );
+  }
 
   // Print summary
   const steps = rawAtif.steps ?? [];
@@ -1935,9 +2054,13 @@ const queries: readonly QueryConfig[] = [
     modelName: SONNET_MODEL,
   },
 
-  // 16. hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
-  //     Proves that raw secrets in tool output never reach observable ATIF steps or the
-  //     agent-hook verifier's prompt — redaction runs before prompt assembly in @koi/hooks.
+  // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
+  //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
+  //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
+  //   before forwarding the payload to the secret-scanner agent hook. The hook
+  //   spawns a sub-agent that MUST call HookVerdict (injected via additionalTools)
+  //   and should return ok=true — the redacted payload is safe. With a passing
+  //   verdict, the parent then reports the `host` field back to the user.
   {
     name: "hook-redaction",
     prompt:
@@ -1950,9 +2073,23 @@ const queries: readonly QueryConfig[] = [
         kind: "agent" as const,
         name: "secret-scanner",
         prompt:
-          "Verify the tool output does not contain any exposed secrets or credentials. If secrets are properly redacted, continue. If you see raw secrets, block.",
+          "Verify the tool output does not contain any exposed secrets or credentials. " +
+          "If the payload shows redaction markers (e.g. [REDACTED], ***, or masked fields) and no raw secrets, " +
+          "call HookVerdict with ok=true. If you see an unredacted API key or password, call HookVerdict with ok=false.",
         filter: { events: ["tool.succeeded"] },
         forwardRawPayload: true,
+        // Narrow this content-policy hook to HookVerdict only — matches what
+        // the recording SpawnFn passes to the LLM (additionalTools only). In
+        // production createAgentExecutor filters HookVerdict out of the
+        // allowlist (see buildToolConstraints) and injects it via
+        // additionalTools, so the child sub-agent still gets HookVerdict.
+        // Result: production and the recorder exercise the same tool surface.
+        toolAllowlist: ["HookVerdict"],
+        // Single turn: the LLM either emits HookVerdict on its first reply
+        // or the hook fails closed. Matches the "must call HookVerdict
+        // exactly once" contract and keeps the recorder's retry budget aligned
+        // with production.
+        maxTurns: 1,
       },
     ],
     providers: [
@@ -1963,6 +2100,12 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+    // Gemini 2.0 Flash's safety layer sometimes refuses prompts mentioning
+    // "credentials" even for benign (clearly fictitious) tool calls, making
+    // trajectory re-recording non-deterministic. Sonnet 4.6 follows the
+    // tool-use instructions reliably here.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
   },
 ];
 
@@ -2011,6 +2154,29 @@ await recordCassette("task-board", () =>
     ],
     tools: [taskCreateTool.descriptor, taskListTool.descriptor],
   }),
+);
+
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
 );
 
 await recordCassette("hook-once", () =>
@@ -2125,22 +2291,27 @@ await recordCassette("memory-recall", () =>
   }),
 );
 
-await recordCassette("hook-redaction", () =>
-  modelAdapter.stream({
-    messages: [
-      {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [
-          {
-            kind: "text",
-            text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
-          },
-        ],
-      },
-    ],
-    tools: [credentialsTool.descriptor],
-  }),
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
 );
 
 // Inject MCP provider for the mcp-tool-use query (needs async setup)
