@@ -14,6 +14,7 @@
  *   });
  */
 
+import { fileURLToPath } from "node:url";
 import type { KoiError, Result } from "@koi/core";
 import { mapNexusError } from "./errors.js";
 import type { BridgeNotification, JsonRpcResponse, NexusTransport } from "./types.js";
@@ -78,7 +79,9 @@ const DEFAULT_AUTH_TIMEOUT_MS = 300_000; // 5 minutes
  * In dev: import.meta.url is src/local-transport.ts → sibling bridge.py
  * In built: import.meta.url is dist/index.js → sibling bridge.py (copied by tsup onSuccess)
  */
-const BRIDGE_PATH = new URL("./bridge.py", import.meta.url).pathname;
+// fileURLToPath handles Windows drive letters (/C:/...) and URL-encoded spaces
+// that URL.pathname leaves encoded, making Bun.spawn unable to locate the file.
+const BRIDGE_PATH = fileURLToPath(new URL("./bridge.py", import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Line reader — persistent reader over a ReadableStream

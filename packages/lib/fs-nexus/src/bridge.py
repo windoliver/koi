@@ -346,13 +346,22 @@ async def handle_auth(fs, exc) -> bool:
     # Exchange the authorization code for a stored token.
     # code_verifier is None for providers that don't use PKCE (e.g. Google);
     # non-None for providers that do (e.g. X/Twitter).
-    await exchange_auth_code(
-        provider,
-        user_email,
-        code,
-        redirect_uri,
-        code_verifier=verifier,
-    )
+    # Bound the exchange to 30s — a hung provider token endpoint would otherwise
+    # block indefinitely because auth_required already cleared the per-call timer.
+    EXCHANGE_TIMEOUT_S = 30
+    try:
+        await asyncio.wait_for(
+            exchange_auth_code(
+                provider,
+                user_email,
+                code,
+                redirect_uri,
+                code_verifier=verifier,
+            ),
+            timeout=EXCHANGE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        return False  # bridge will return AUTH_TIMEOUT to caller
 
     _notify("auth_complete", {
         "provider": provider,
