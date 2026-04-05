@@ -76,10 +76,13 @@ describe("extractKeywords", () => {
     expect(kw.has("tests")).toBe(true);
   });
 
-  it("excludes short words when long words are present", () => {
-    const kw = extractKeywords(["Write unit tests now"]);
-    expect(kw.has("now")).toBe(false);
-    expect(kw.has("write")).toBe(true);
+  it("keeps short tokens alongside long words (acronym preservation)", () => {
+    // "iOS support" keeps {i, os, support} so that "support" alone cannot
+    // satisfy the objective on generic text.
+    const kw = extractKeywords(["iOS support"]);
+    expect(kw.has("i")).toBe(true);
+    expect(kw.has("os")).toBe(true);
+    expect(kw.has("support")).toBe(true);
   });
 
   it("lowercases and splits on separators", () => {
@@ -223,6 +226,15 @@ describe("detectCompletions", () => {
     expect(detectCompletions("completed fixCiPipeline today", items)[0]?.completed).toBe(true);
     const apiItems = [{ text: "Add API", completed: false }];
     expect(detectCompletions("done addApiClient handler", apiItems)[0]?.completed).toBe(true);
+  });
+
+  it("does not mark compound-acronym objectives complete on generic text", () => {
+    // "iOS support" regression guard: only "support" in text must not satisfy
+    // a multi-token objective.
+    const items = [{ text: "iOS support", completed: false }];
+    expect(detectCompletions("completed support docs overhaul", items)[0]?.completed).toBe(false);
+    // With iOS acronym echoed, threshold is met.
+    expect(detectCompletions("completed iOS support update", items)[0]?.completed).toBe(true);
   });
 
   it("preserves dotted version tokens as distinguishing keywords", () => {

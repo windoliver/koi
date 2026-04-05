@@ -50,8 +50,6 @@ interface GoalSessionState {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-const MIN_KEYWORD_LENGTH = 4;
-
 /**
  * Normalize text for keyword extraction and matching.
  *
@@ -77,28 +75,26 @@ export function normalizeText(text: string): string {
 }
 
 /**
- * Extract keywords (>= 4 chars) from objective text for matching.
+ * Extract keywords from objective text for matching.
  *
- * Fallback is per-objective: when an individual objective has no 4+ char
- * words, its short tokens (including numerals) are kept instead. This
- * keeps short/symbolic objectives such as "Add UI", "Fix CI", or "7 + 5"
- * participating in drift detection and completion tracking even when
- * mixed alongside longer-worded objectives.
+ * All non-empty tokens are kept, including short acronyms and numerals.
+ * Short tokens would previously be dropped when a long word was present
+ * in the same objective, but that erases distinguishing segments of
+ * compound objectives like "iOS support" or "CI/CD pipeline" — leaving
+ * only "support"/"pipeline" as generic keywords that false-trigger on
+ * unrelated completion text. Keeping every token raises the majority
+ * threshold and preserves acronyms as distinguishing signals.
+ *
+ * Match-time strictness is handled in matchesToken (exact for <=2,
+ * prefix+bounded-suffix for 3, substring for >=4) so short tokens
+ * cannot silently match inside longer words.
  */
 export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
   const result = new Set<string>();
   for (const obj of objectives) {
-    const longWords = new Set<string>();
-    const allWords = new Set<string>();
     for (const word of normalizeText(obj).split(/\s+/)) {
-      if (word.length === 0) continue;
-      allWords.add(word);
-      if (word.length >= MIN_KEYWORD_LENGTH) {
-        longWords.add(word);
-      }
+      if (word.length > 0) result.add(word);
     }
-    const chosen = longWords.size > 0 ? longWords : allWords;
-    for (const kw of chosen) result.add(kw);
   }
   return result;
 }
