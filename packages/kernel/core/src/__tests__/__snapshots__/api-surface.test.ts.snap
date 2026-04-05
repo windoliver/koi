@@ -3236,6 +3236,14 @@ type HookExecutionResult = {
      * Used by the registry to avoid consuming once-hooks on swallowed failures.
      */
     readonly executionFailed?: boolean | undefined;
+    /**
+     * When true, this \`executionFailed\` result was caused by caller
+     * cancellation (abort signal) rather than a transient execution
+     * failure (spawn crash, verdict parse error, etc.). Used by the
+     * registry to distinguish abort artifacts from genuine failures
+     * when refunding claimed once-hooks under cancellation.
+     */
+    readonly aborted?: boolean | undefined;
 } | {
     readonly ok: false;
     readonly hookName: string;
@@ -3243,6 +3251,13 @@ type HookExecutionResult = {
     readonly durationMs: number;
     /** Whether this hook's failure should suppress output. Default: true. */
     readonly failClosed?: boolean | undefined;
+    /**
+     * When true, this failure was caused by caller cancellation (abort
+     * signal), not a deterministic execution error. Used by the registry
+     * to refund claimed once-hooks without burning retry budget on
+     * cancellation races. Set by executor.ts on abort-shaped exceptions.
+     */
+    readonly aborted?: boolean | undefined;
 };
 /**
  * Default maximum stop-gate re-prompts per session.
