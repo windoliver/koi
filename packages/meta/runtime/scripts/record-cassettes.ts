@@ -922,7 +922,20 @@ if (_sandboxAdapterResult.ok) {
       const instance = await _sandboxAdapter.create(_sandboxProfile);
       try {
         const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
-        const r = await instance.exec(String(args.command), cmdArgs);
+        // Scrub inherited env so the recorder's OPENROUTER_API_KEY and other secrets are
+        // not visible inside the sandbox. Only pass a minimal allowlist.
+        const safeEnv: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: process.env.HOME ?? "/tmp",
+          TMPDIR: process.env.TMPDIR ?? "/tmp",
+          TERM: "dumb",
+          LANG: process.env.LANG ?? "en_US.UTF-8",
+        };
+        // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
+        const r = await instance.exec(String(args.command), cmdArgs, {
+          env: safeEnv,
+          timeoutMs: 10_000,
+        });
         const stdout = r.stdout.trim();
         // Only emit entry_count when output is complete — truncated output yields a partial
         // count that is misleading for audit purposes. Callers should rerun with a narrower
