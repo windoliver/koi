@@ -2,7 +2,7 @@
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
 "import { ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
-import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-Bi7UyaoP.js';
+import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-BN28JvQl.js';
 
 /**
  * Channel wiring for bridge auth notifications.
@@ -128,7 +128,7 @@ export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, t
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-Bi7UyaoP.js';
+import { N as NexusTransport } from './types-BN28JvQl.js';
 
 /**
  * Reusable FileSystemBackend contract test suite.

@@ -144,15 +144,24 @@ def _run_callback_server(
             pass
 
     # HTTPServer takes over the pre-bound socket; close our reference so the
-    # server holds the only handle.
-    httpd = HTTPServer(("127.0.0.1", 0), Handler)
-    httpd.socket.close()
-    httpd.socket = pre_bound_sock
-    pre_bound_sock.listen(1)
-    httpd.timeout = 1.0
-    while not done.is_set():
-        httpd.handle_request()
-    httpd.server_close()
+    # server holds the only handle.  Wrap in try/finally so the socket is
+    # always closed even if HTTPServer construction or request handling fails.
+    try:
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        httpd.socket.close()
+        httpd.socket = pre_bound_sock
+        pre_bound_sock.listen(1)
+        httpd.timeout = 1.0
+        while not done.is_set():
+            httpd.handle_request()
+        httpd.server_close()
+    except Exception:
+        try:
+            pre_bound_sock.close()
+        except Exception:
+            pass
+        done.set()  # unblock handle_auth if server failed
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -284,12 +293,23 @@ async def handle_auth(fs, exc) -> bool:
         deadline = asyncio.get_event_loop().time() + timeout_s
         while asyncio.get_event_loop().time() < deadline:
             remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
             try:
+                # Poll in 30s chunks to send progress heartbeats, but always
+                # continue the loop on timeout — only the outer deadline exits.
                 submission = await asyncio.wait_for(
                     _auth_submit_queue.get(), timeout=min(remaining, 30)
                 )
             except asyncio.TimeoutError:
-                break
+                # 30s chunk elapsed — send progress and keep waiting
+                elapsed_s = int(timeout_s - remaining + 30)
+                _notify("auth_progress", {
+                    "provider": provider,
+                    "elapsed_seconds": elapsed_s,
+                    "message": f"Still waiting for {provider} authorization (paste the redirect URL)...",
+                })
+                continue
 
             # Validate correlation ID — reject submissions for other flows.
             sub_id = submission.get("correlation_id") if isinstance(submission, dict) else None

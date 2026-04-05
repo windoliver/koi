@@ -239,8 +239,13 @@ export async function resolveFileSystemAsync(
       name: `nexus-local:${Array.isArray(options.mountUri) ? options.mountUri.join(",") : options.mountUri}`,
       dispose: async (): Promise<void> => {
         unsubscribe();
-        await nexusBackend.dispose?.();
-        transport.close();
+        try {
+          await nexusBackend.dispose?.();
+        } finally {
+          // Always close the subprocess even if backend disposal rejects,
+          // to prevent orphaned bridge processes on error paths.
+          transport.close();
+        }
       },
     };
     return { backend, operations, transport };

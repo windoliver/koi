@@ -361,11 +361,13 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
             }
           },
           reject: (e: Error) => {
+            // Always surface the actual error — the reader loop captures the
+            // real cause (protocol error, malformed JSON, EOF) before calling
+            // close(), so we must not replace it with the generic "Transport
+            // closed" message that the closed flag would produce.
             resolve({
               ok: false,
-              error: closed
-                ? { code: "INTERNAL", message: "Transport closed", retryable: false }
-                : mapNexusError(e, method),
+              error: mapNexusError(e, method),
             });
           },
           timer,
