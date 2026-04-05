@@ -91,6 +91,25 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
   const { hooks, store, docId, signal, registry } = config;
 
   /**
+   * Does ANY configured hook have a filter that could match tool.succeeded
+   * or tool.failed? Computed once at middleware creation. Used to gate the
+   * on-cancel output-redaction: if no post-hook could have run in the first
+   * place, a late caller abort during post-dispatch is not bypassing any
+   * fail-closed contract, and we should return the tool's raw output.
+   *
+   * Registry path: we cannot introspect registered hooks from outside, so
+   * we fail closed (assume post-hooks may be present and redact on cancel).
+   */
+  const hasPostHookCandidate =
+    registry !== undefined ||
+    hooks.some((h) => {
+      if (h.filter === undefined || h.filter.events === undefined) return true;
+      return h.filter.events.some(
+        (ev) => ev === "tool.succeeded" || ev === "tool.failed" || ev === "*",
+      );
+    });
+
+  /**
    * Summarize a JsonObject payload for trace metadata. Records field names
    * and value types/sizes but never raw values — prevents sensitive data
    * (e.g. from redaction hooks) from leaking into trajectory storage.
@@ -372,13 +391,16 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
 
         // Fail closed on cancellation: if the caller's signal aborted during
-        // post-hook dispatch, registry.execute() returned [] — which would
-        // silently skip fail-closed post-hooks (output redaction, audit).
-        // The tool already ran and side effects are committed, so the raw
-        // response could leak unredacted sensitive data. Redact defensively.
+        // post-hook dispatch AND the middleware is configured with at least
+        // one hook that could match post-tool events, registry.execute()
+        // may have returned [] under cancellation and silently skipped a
+        // fail-closed post-hook (output redaction, audit). The tool already
+        // ran and side effects are committed, so we redact defensively.
+        // When no post-hook candidate exists at all, a late abort is not
+        // bypassing any contract and the raw output is returned normally.
         // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
         const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
-        if (postAborted && response !== undefined) {
+        if (postAborted && hasPostHookCandidate && response !== undefined) {
           return {
             output: "[output redacted: post-hooks skipped due to cancellation]",
             ...(response.metadata !== undefined

@@ -509,6 +509,26 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect(nextWasCalled).toBe(false);
   });
 
+  test("late abort does NOT redact tool output when no post-hook candidates are configured", async () => {
+    // Regression: the cancellation-redaction guard must only fire when
+    // post-hooks could actually have been skipped. If the middleware has
+    // no hooks at all (or only pre-hooks), a late caller abort is not
+    // bypassing any fail-closed contract and must return the raw output.
+    const controller = new AbortController();
+    const mw = createHookDispatchMiddleware({ hooks: [] });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => {
+      // Abort AFTER the tool returns — simulates late cancellation.
+      controller.abort();
+      return { output: "PLAIN_RESULT" };
+    };
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "t", input: {} } as never, next);
+    expect(result?.output).toBe("PLAIN_RESULT");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
+  });
+
   test("late abort during post-hook dispatch redacts tool output (fail-closed)", async () => {
     // Regression: if the caller cancels AFTER the tool succeeded but BEFORE
     // post-hooks run, registry.execute() returns [] on the aborted signal.
