@@ -4001,7 +4001,7 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
     expect(doc.agent.tool_definitions?.some((t) => t.name === "run_sandboxed")).toBe(true);
   });
 
-  test("TOOL step succeeded with exitCode 0 and platform in result", async () => {
+  test("TOOL step has auditable entry_count from sandbox stdout", async () => {
     const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -4013,10 +4013,14 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
     );
     expect(toolSteps.length).toBeGreaterThan(0);
     const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
-    // Sandbox executed the command and returned structured result
+    // ATIF truncates large stdout by inserting literal newlines into the JSON string,
+    // making JSON.parse unreliable — use regex to extract the structured fields instead.
+    // Tool counted lines so this is auditable: the model never had to count the listing.
     expect(content).toContain('"exitCode":0');
-    // Platform field confirms which sandbox backend ran the command
     expect(content).toMatch(/"platform":"(seatbelt|bwrap)"/);
+    const entryCountMatch = content.match(/"entry_count":(\d+)/);
+    const entryCount = entryCountMatch?.[1] !== undefined ? Number(entryCountMatch[1]) : 0;
+    expect(entryCount).toBeGreaterThan(0);
   });
 
   test("model response references the command output", async () => {

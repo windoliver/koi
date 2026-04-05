@@ -926,11 +926,15 @@ if (_sandboxPlatformResult.ok) {
       try {
         const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
         const r = await instance.exec(String(args.command), cmdArgs);
+        const stdout = r.stdout.trim();
+        const entryCount =
+          stdout.length > 0 ? stdout.split("\n").filter((l) => l.trim()).length : 0;
         return {
-          stdout: r.stdout.trim(),
+          stdout,
           stderr: r.stderr.trim(),
           exitCode: r.exitCode,
           timedOut: r.timedOut,
+          entry_count: entryCount,
           platform: _sandboxAdapter.platform.platform,
         };
       } finally {
