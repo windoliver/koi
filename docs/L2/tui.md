@@ -219,8 +219,9 @@ selectors.
 dispatches:
 
 - 16ms `queueMicrotask` + `setTimeout` double-buffer (aligns with one frame budget).
-- Injectable timer DI for deterministic testing.
+- Injectable timer DI for deterministic testing (`options.scheduleTimeout` / `options.cancelTimeout`).
 - `flushSync()` for ordered end-of-stream delivery (drains queue synchronously).
+- `flushTimer` is typed as `ReturnType<typeof doSetTimeout> | null` (not `ReturnType<typeof setTimeout>`) so the injectable DI handle type is correctly inferred when a custom scheduler returns `number` instead of `NodeJS.Timeout`.
 
 ### EngineChannel (`src/worker/engine-channel.ts`, ~120 LOC)
 
