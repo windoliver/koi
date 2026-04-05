@@ -529,6 +529,35 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
   });
 
+  test("late abort does NOT redact when only fail-open post-hooks match", async () => {
+    // Regression: hooks configured `failClosed: false` explicitly opt out
+    // of output suppression on failure. Late-abort redaction must not
+    // override that intent — if the only matching post-hook is fail-open,
+    // the raw output passes through on cancel.
+    const controller = new AbortController();
+    const mw = createHookDispatchMiddleware({
+      hooks: [
+        {
+          kind: "command",
+          name: "observer",
+          cmd: ["echo"],
+          filter: { events: ["tool.succeeded"] },
+          failClosed: false, // fail-open: do NOT suppress output
+        },
+      ],
+    });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => {
+      controller.abort();
+      return { output: "PLAIN_FAIL_OPEN" };
+    };
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "t", input: {} } as never, next);
+    expect(result?.output).toBe("PLAIN_FAIL_OPEN");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
+  });
+
   test("late abort does NOT redact when post-hooks are filtered to OTHER tools", async () => {
     // Regression: hasPostHookFor must be per-call. If a post-hook is
     // filtered to a different tool, a late abort on this tool's call

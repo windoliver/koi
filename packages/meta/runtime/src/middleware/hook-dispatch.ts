@@ -135,6 +135,14 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       return true;
     }
     return hooks.some((h) => {
+      // Fail-open hooks (failClosed: false) are explicitly configured to
+      // preserve committed tool output on hook failure — redacting them
+      // under cancellation contradicts caller intent. Only fail-closed
+      // hooks justify cancel-redaction. Prompt hooks have no failClosed
+      // field (not applicable to their verdict model), so they default
+      // to fail-closed here — treat absent as true.
+      const failClosed = "failClosed" in h ? (h as { failClosed?: boolean }).failClosed : undefined;
+      if (failClosed === false) return false;
       const filter = h.filter;
       // No filter = match all events and tools.
       if (filter === undefined) return true;
@@ -299,7 +307,10 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * than no redaction). Returns the failure reason or undefined if all passed.
    */
   function checkPostHookFailures(results: readonly HookExecutionResult[]): string | undefined {
-    const failed = results.filter((r) => !r.ok);
+    // Only fail-closed hooks (failClosed: true or absent) drive redaction.
+    // failClosed: false is an explicit opt-out: the hook's failure should
+    // NOT suppress output (e.g. observational / telemetry hooks).
+    const failed = results.filter((r) => !r.ok && r.failClosed !== false);
     if (failed.length === 0) return undefined;
     return `Post-hook(s) failed: ${failed.map((r) => r.hookName).join(", ")}`;
   }
