@@ -194,12 +194,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     return undefined;
   })();
 
-  // Suppress spawn provider when agent load warnings exist. A warning means at least one
-  // agent type was poisoned (its built-in fallback blocked). Registering Spawn in that
-  // state converts a configuration error into a late NOT_FOUND at delegation time.
-  // Callers can inspect handle.agentWarnings and decide whether to fail or retry.
+  // Resolver already returns NOT_FOUND for poisoned agent types (parse failures block
+  // both the custom and built-in slots via failedTypes). Healthy agent types remain
+  // reachable regardless of warnings. Suppressing the entire provider on any warning
+  // would be over-broad: one bad custom-only file would disable all built-in delegation.
+  // Callers should inspect handle.agentWarnings and fail or log at their policy boundary.
   const spawnProvider =
-    effectiveResolver !== undefined && agentWarnings.length === 0
+    effectiveResolver !== undefined
       ? createSpawnToolProvider({
           resolver: effectiveResolver,
           spawnLedger: effectiveSpawnLedger,
