@@ -434,7 +434,6 @@ describe("createGoalMiddleware", () => {
       makeModelResponse("I have completed the integration tests successfully.");
 
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
-    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -455,7 +454,6 @@ describe("createGoalMiddleware", () => {
 
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
     await mw.wrapModelCall?.(ctx, makeModelRequest(), handler);
-    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -472,11 +470,10 @@ describe("createGoalMiddleware", () => {
     const ctx = makeTurnCtx(session);
     await mw.onBeforeTurn?.(ctx);
 
-    // First call: marks objective as completed (fires at turn boundary)
+    // First call: marks objective as completed inline from wrapModelCall
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
       makeModelResponse("I have completed the integration tests."),
     );
-    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
 
     // Second call: no completion signal — should NOT revert
@@ -484,7 +481,6 @@ describe("createGoalMiddleware", () => {
     await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
       makeModelResponse("Now working on something else entirely."),
     );
-    await mw.onAfterTurn?.(ctx);
     // onComplete should not fire again, and status stays completed
     expect(completed).toEqual(["Write integration tests"]);
     const cap = mw.describeCapabilities(ctx);
@@ -633,7 +629,6 @@ describe("createGoalMiddleware", () => {
         // consume
       }
     }
-    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 
@@ -663,7 +658,6 @@ describe("createGoalMiddleware", () => {
         // consume
       }
     }
-    await mw.onAfterTurn?.(ctx);
     expect(completed).toEqual(["Write integration tests"]);
   });
 

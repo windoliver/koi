@@ -303,12 +303,12 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
   const deferCompletions = config.detectCompletions !== undefined;
-  // Always buffer responses. Both modes consume the buffer at turn end
-  // (heuristic mode processes via the built-in detector; callback mode
-  // delegates to `detectCompletions`). Buffering unifies stop-gate
-  // rollback: a blocked turn drops its last buffered entry regardless
-  // of mode.
-  const bufferResponses = true;
+  // Buffer response text when either callback is configured. isDrifting
+  // needs recent responses in its DriftJudgeInput; detectCompletions
+  // consumes them at turn end. Default (no callbacks) does NOT buffer —
+  // heuristic completion runs inline per model call to preserve the
+  // synchronous onComplete contract.
+  const bufferResponses = deferCompletions || config.isDrifting !== undefined;
 
   /**
    * Apply heuristic completion detection to a single response text.
@@ -546,12 +546,16 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     }
 
     // Process buffered response texts. Blocked turns drop the last
-    // entry (the vetoed final response). Works for both modes.
-    const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
-    if (deferCompletions) {
-      await processDeferredCompletions(state, entries, ctx);
-    } else if (entries.length > 0) {
-      processHeuristicCompletions(ctx.session.sessionId, entries);
+    // entry (the vetoed final response).
+    if (bufferResponses) {
+      const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
+      if (deferCompletions) {
+        await processDeferredCompletions(state, entries, ctx);
+      } else if (entries.length > 0) {
+        // isDrifting-only mode: heuristic was NOT run inline; run now
+        // at turn boundary with stop-gate awareness.
+        processHeuristicCompletions(ctx.session.sessionId, entries);
+      }
     }
 
     if (blocked) return;
@@ -713,8 +717,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      const currentTurn = state.turns.get(turnKey);
-      if (currentTurn) currentTurn.responseBuffer.push(response.content);
+      if (bufferResponses) {
+        const currentTurn = state.turns.get(turnKey);
+        if (currentTurn) currentTurn.responseBuffer.push(response.content);
+      }
+      if (!deferCompletions && !bufferResponses) {
+        applyHeuristicCompletions(ctx.session.sessionId, response.content);
+      }
 
       return response;
     },
@@ -756,8 +765,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       } finally {
         // Only update state if stream completed successfully
         if (succeeded) {
-          const turn = state.turns.get(turnKey);
-          if (turn) turn.responseBuffer.push(bufferedText);
+          if (bufferResponses) {
+            const turn = state.turns.get(turnKey);
+            if (turn) turn.responseBuffer.push(bufferedText);
+          }
+          if (!deferCompletions && !bufferResponses) {
+            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+          }
         }
       }
     },
