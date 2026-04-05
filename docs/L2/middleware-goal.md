@@ -53,11 +53,16 @@ const mw = createGoalMiddleware({
 
 | Function | Purpose |
 |----------|---------|
-| `extractKeywords(objectives)` | Extract 4+ char keywords for matching |
+| `normalizeText(text)` | Lowercase + split identifier boundaries (camelCase, `_`/`-`/`/`) |
+| `extractKeywords(objectives)` | Union all non-empty tokens across objectives (preserves acronyms) |
 | `renderGoalBlock(items, header)` | Render markdown todo block |
-| `detectCompletions(text, items)` | Heuristic completion detection |
+| `detectCompletions(text, items)` | Heuristic completion detection with tiered keyword matching |
 | `isDrifting(messages, keywords)` | Check keyword presence in last 3 messages |
 | `computeNextInterval(current, drifting, base, max)` | Adaptive interval logic |
+
+**Tiered keyword matching** (see `matchesToken` in `goal.ts`): exact token match for keywords ≤2 chars, token-prefix with bounded inflection suffix (≤3 chars) for 3-char keywords, substring within any token for ≥4-char keywords. This balances inflection tolerance (`fix` → `fixing`) against false-positive risk for short acronyms (`ci` won't match inside `specific`).
+
+**Known heuristic limitations** (tracked in #1512): drift detection can be suppressed by single short-token matches, and version-like identifiers (`v123` inside `v1234`) can produce false completions. The redesign issue proposes externalizing `isDrifting`/`detectCompletions` as user callbacks or LLM-driven tools.
 
 ## Layer Compliance
 

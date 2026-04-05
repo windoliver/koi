@@ -44,7 +44,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/memory-fs` | File-based memory storage backend | standalone |
 | `@koi/memory-tools` | Memory read/write/list tools | `memory-store` |
 | `@koi/middleware-exfiltration-guard` | Credential exfiltration detection middleware | standalone |
-| `@koi/middleware-goal` | Goal drift detection and attention management | `tool-use` |
+| `@koi/middleware-goal` | Goal drift detection and attention management (keyword heuristic; redesign tracked in #1512) | `tool-use` |
 | `@koi/middleware-permissions` | Tool/model permission gating middleware | `permission-deny`, `denial-escalation` |
 | `@koi/middleware-report` | RunReport generation middleware | `tool-use` |
 | `@koi/middleware-semantic-retry` | Semantic retry on model failures | standalone |
