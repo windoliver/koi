@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_REDACTION_CONFIG, validateRedactionConfig } from "./config.js";
 import { createAllSecretPatterns } from "./patterns/index.js";
-import type { RedactionConfig } from "./types.js";
+import type { RedactionConfig, SecretPattern } from "./types.js";
 
 describe("validateRedactionConfig", () => {
   test("returns defaults for undefined config", () => {
@@ -164,5 +164,154 @@ describe("DEFAULT_REDACTION_CONFIG", () => {
 
   test("uses redact censor", () => {
     expect(DEFAULT_REDACTION_CONFIG.censor).toBe("redact");
+  });
+
+  test("config object is frozen — cannot swap fields to poison defaults", () => {
+    expect(Object.isFrozen(DEFAULT_REDACTION_CONFIG)).toBe(true);
+    expect(() => {
+      (DEFAULT_REDACTION_CONFIG as { censor: unknown }).censor = "mask";
+    }).toThrow();
+  });
+
+  test("patterns array is frozen — cannot replace entries to poison process-wide", () => {
+    // Regression for #1495: without this freeze a caller could mutate
+    // DEFAULT_REDACTION_CONFIG.patterns[0] to a slow/throwing detector and
+    // every future createRedactor() that relied on defaults would ship it.
+    expect(Object.isFrozen(DEFAULT_REDACTION_CONFIG.patterns)).toBe(true);
+    const evil: SecretPattern = { name: "evil", kind: "evil", detect: () => [] };
+    expect(() => {
+      (DEFAULT_REDACTION_CONFIG.patterns as SecretPattern[])[0] = evil;
+    }).toThrow();
+  });
+});
+
+describe("validateRedactionConfig — branding bypass regression (#1495)", () => {
+  test("fake pattern with forged trust symbols is still ReDoS-probed", () => {
+    // An attacker can enumerate symbols on a built-in (yields none with the
+    // WeakSet-based registry, but historically leaked the trust symbol) and
+    // re-attach them to a hostile object. The probe must still run.
+    const fake: SecretPattern = {
+      name: "forged",
+      kind: "forged",
+      detect: (_text: string) => {
+        const end = performance.now() + 10;
+        while (performance.now() < end) {
+          /* busy-wait to trip the ReDoS threshold */
+        }
+        return [];
+      },
+    };
+    // Stamp arbitrary-looking trust symbols — must not grant trust.
+    Object.defineProperty(fake, Symbol("koi.redaction.trusted"), { value: true });
+    Object.defineProperty(fake, Symbol.for("koi.redaction.trusted"), { value: true });
+
+    const result = validateRedactionConfig({ patterns: [fake] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("forged");
+      expect(result.error.message).toContain("ReDoS");
+    }
+  });
+
+  test("method-style detector relying on `this` still validates", () => {
+    // Regression: probing must preserve the `this` receiver for detectors
+    // written as object methods (e.g. `detect(text) { return this.kind ... }`).
+    const pattern = {
+      name: "method-style",
+      kind: "demo",
+      detect(_text: string) {
+        // Accessing `this` should not throw — snapshot object carries the
+        // captured name/kind as data properties.
+        const k: unknown = (this as { kind?: unknown }).kind;
+        if (typeof k !== "string") {
+          throw new Error("lost receiver");
+        }
+        return [];
+      },
+    };
+    const result = validateRedactionConfig({ patterns: [pattern] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("proxy-backed array with throwing Symbol.iterator is converted to validation error", () => {
+    // Array.isArray(new Proxy([], ...)) is true, so we must also guard the
+    // iteration itself. A proxy that throws on Symbol.iterator access must
+    // produce a structured VALIDATION error, not an uncaught exception.
+    const hostile = new Proxy([] as SecretPattern[], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator) {
+          throw new Error("iter-trap");
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const r = validateRedactionConfig({ patterns: hostile });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.message).toContain("iter-trap");
+    }
+  });
+
+  test("non-array patterns / customPatterns are rejected before iteration", () => {
+    // Regression: proxy/iterable with a throwing Symbol.iterator would
+    // otherwise escape the guarded snapshot path.
+    const throwingIterable = {
+      [Symbol.iterator]: () => {
+        throw new Error("iter-boom");
+      },
+    };
+    const r1 = validateRedactionConfig({
+      patterns: throwingIterable as unknown as readonly SecretPattern[],
+    });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error.message).toContain("patterns must be an array");
+
+    const r2 = validateRedactionConfig({
+      customPatterns: throwingIterable as unknown as readonly SecretPattern[],
+    });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error.message).toContain("customPatterns must be an array");
+  });
+
+  test("getter on detect/name/kind that throws is converted to a validation error", () => {
+    // Regression: snapshotIfUntrusted must not leak exceptions past
+    // validateRedactionConfig — a throwing getter must produce a structured
+    // VALIDATION Result, not an uncaught exception out of createRedactor().
+    const pattern = {
+      get name(): string {
+        throw new Error("boom-name");
+      },
+      kind: "x",
+      detect: () => [],
+    } as unknown as SecretPattern;
+    const result = validateRedactionConfig({ patterns: [pattern] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("property access threw");
+    }
+  });
+
+  test("detector that throws unconditionally during probe is rejected", () => {
+    // Reviewer-requested regression: throw-during-probe must fail validation,
+    // not be deferred to runtime (which would turn every redact call into
+    // [REDACTION_FAILED]).
+    const result = validateRedactionConfig({
+      patterns: [
+        {
+          name: "thrower",
+          kind: "boom",
+          detect: (_text: string) => {
+            throw new Error("detector crash");
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("thrower");
+      expect(result.error.message).toContain("exception");
+    }
   });
 });

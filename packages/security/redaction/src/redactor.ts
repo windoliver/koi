@@ -34,8 +34,15 @@ export function createRedactor(config?: Partial<RedactionConfig>): Redactor {
 
   const cfg = validated.value;
 
-  // Merge built-in + custom patterns
-  const allPatterns: readonly SecretPattern[] = [...cfg.patterns, ...cfg.customPatterns];
+  // Defense-in-depth: re-snapshot every pattern into a redactor-owned frozen
+  // wrapper. The validator already snapshots untrusted patterns and trusted
+  // built-ins are frozen by `markTrusted`, but this boundary guarantees the
+  // runtime never holds a reference to any caller-visible pattern object.
+  // The safety invariant doesn't depend on a distant guarantee from
+  // `markTrusted` or on every upstream code path preserving immutability.
+  const allPatterns: readonly SecretPattern[] = [...cfg.patterns, ...cfg.customPatterns].map((p) =>
+    Object.freeze({ name: p.name, kind: p.kind, detect: p.detect }),
+  );
 
   // Pre-compile field matcher
   const fieldMatcher = createFieldMatcher(cfg.fieldNames);
