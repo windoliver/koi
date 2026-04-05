@@ -84,11 +84,37 @@ describe("createGitHubDetector", () => {
     expect(matches.length).toBe(1);
   });
 
+  // Valid fine-grained PAT shape: 22 base62 + "_" + 59 base62 (82 suffix chars total).
+  const validPat = (): string => `github_pat_${"A".repeat(22)}_${"B".repeat(59)}`;
+
   test("detects fine-grained PAT (github_pat_)", () => {
-    const token = `github_pat_${"f".repeat(82)}`;
+    const token = validPat();
     const matches = detector.detect(token);
     expect(matches.length).toBe(1);
     expect(matches[0]?.kind).toBe("github_token");
+    expect(matches[0]?.text).toBe(token);
+  });
+
+  test("detects fine-grained PAT embedded with surrounding punctuation", () => {
+    const token = validPat();
+    const text = `token="${token}"; rest`;
+    const matches = detector.detect(text);
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.text).toBe(token);
+  });
+
+  test("detects two fine-grained PATs back-to-back", () => {
+    const a = `github_pat_${"A".repeat(22)}_${"B".repeat(59)}`;
+    const b = `github_pat_${"C".repeat(22)}_${"D".repeat(59)}`;
+    const matches = detector.detect(`${a} ${b}`);
+    expect(matches.length).toBe(2);
+  });
+
+  test("detects fine-grained PAT at start and end of string", () => {
+    const token = validPat();
+    expect(detector.detect(token).length).toBe(1);
+    expect(detector.detect(`prefix ${token}`).length).toBe(1);
+    expect(detector.detect(`${token} suffix`).length).toBe(1);
   });
 
   test("ignores short github_pat_ strings (avoids over-redaction)", () => {
@@ -97,8 +123,53 @@ describe("createGitHubDetector", () => {
     expect(matches.length).toBe(0);
   });
 
+  test("ignores long github_pat_ blob without documented inner structure", () => {
+    // 82 chars but all underscores/lowercase — not the 22+_+59 base62 shape.
+    const blob = `github_pat_${"a_".repeat(41)}`; // 82 chars, underscores scattered
+    expect(detector.detect(blob).length).toBe(0);
+  });
+
+  test("ignores github_pat_ with separator at wrong position", () => {
+    // 10 alnum + _ + 71 alnum — separator not at position 22.
+    const wrong = `github_pat_${"a".repeat(10)}_${"b".repeat(71)}`;
+    expect(detector.detect(wrong).length).toBe(0);
+  });
+
+  test("ignores valid-looking PAT followed by adjacent word chars (lookahead)", () => {
+    const token = `${validPat()}extra`;
+    expect(detector.detect(token).length).toBe(0);
+  });
+
+  test("ignores valid-looking PAT preceded by adjacent word chars (lookbehind)", () => {
+    const token = `xx${validPat()}`;
+    expect(detector.detect(token).length).toBe(0);
+  });
+
+  test("ignores near-miss segment lengths (21/23 and 58/60)", () => {
+    const tooShortFirst = `github_pat_${"A".repeat(21)}_${"B".repeat(59)}`;
+    const tooLongFirst = `github_pat_${"A".repeat(23)}_${"B".repeat(59)}`;
+    const tooShortSecond = `github_pat_${"A".repeat(22)}_${"B".repeat(58)}`;
+    const tooLongSecond = `github_pat_${"A".repeat(22)}_${"B".repeat(60)}`;
+    expect(detector.detect(tooShortFirst).length).toBe(0);
+    // Note: tooLongFirst has 23 alnums followed by `_` — lookahead blocks 22 alnum
+    // prefix from matching because next char is alnum (the 23rd), then the `_` lands
+    // the wrong position anyway.
+    expect(detector.detect(tooLongFirst).length).toBe(0);
+    expect(detector.detect(tooShortSecond).length).toBe(0);
+    // tooLongSecond: 22+_+60 alnum — the first 22+_+59 is a valid prefix, but the
+    // trailing alnum is blocked by the negative lookahead.
+    expect(detector.detect(tooLongSecond).length).toBe(0);
+  });
+
+  test("ignores payload containing hyphen or non-ASCII char", () => {
+    const hyphen = `github_pat_${"A".repeat(21)}-_${"B".repeat(59)}`;
+    const nonAscii = `github_pat_${"A".repeat(21)}é_${"B".repeat(59)}`;
+    expect(detector.detect(hyphen).length).toBe(0);
+    expect(detector.detect(nonAscii).length).toBe(0);
+  });
+
   test("detects multiple token families in same text", () => {
-    const text = `ghp_${"a".repeat(36)} and github_pat_${"b".repeat(82)}`;
+    const text = `ghp_${"a".repeat(36)} and ${validPat()}`;
     const matches = detector.detect(text);
     expect(matches.length).toBe(2);
   });

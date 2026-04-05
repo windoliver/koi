@@ -17,10 +17,17 @@ const GITHUB_CLASSIC_PATTERN = /gh[psuor]_[A-Za-z0-9_]{36,}/g;
 
 /**
  * Fine-grained PATs: github_pat_ + 22 base62 + _ + 59 base62 (82 suffix chars total).
- * Require at least 40 chars after prefix to avoid over-redacting short identifiers
- * while still catching tokens with minor format variations.
+ *
+ * Enforces the documented inner structure (separator at position 22, no underscores
+ * inside either segment) and anchors the match between non-word boundaries so an
+ * attacker-controlled `github_pat_…`-looking blob cannot redact arbitrary surrounding
+ * content from logs/audit output.
+ *
+ * Intentional tradeoff: stricter than gitleaks' `github_pat_\w{82}`. If GitHub ever
+ * changes the fine-grained PAT format, real tokens will stop redacting — revisit then.
  */
-const GITHUB_PAT_PATTERN = /github_pat_[A-Za-z0-9_]{40,}/g;
+const GITHUB_PAT_PATTERN =
+  /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}(?![A-Za-z0-9_])/g;
 
 export function createGitHubDetector(): SecretPattern {
   return {
