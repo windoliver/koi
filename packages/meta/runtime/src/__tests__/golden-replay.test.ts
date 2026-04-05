@@ -1859,7 +1859,7 @@ describe("Golden: @koi/hook-prompt", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: hook-redaction trajectory", () => {
-  test("ATIF trajectory: get_credentials tool call + hook execution captured", () => {
+  test("ATIF trajectory: success path — hook passes, safe field survives, secrets absent", () => {
     const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
     const trajectoryPath = `${FIXTURES}/hook-redaction.trajectory.json`;
     if (!existsSync(trajectoryPath)) {
@@ -1872,8 +1872,20 @@ describe("Golden: hook-redaction trajectory", () => {
     const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
       readonly steps?: readonly {
         readonly source?: string;
-        readonly extra?: { readonly type?: string; readonly hookName?: string };
+        readonly outcome?: string;
+        readonly message?: string;
+        readonly duration_ms?: number;
+        readonly extra?: {
+          readonly type?: string;
+          readonly hookName?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly phase?: string;
+        };
         readonly tool_calls?: readonly { readonly function_name?: string }[];
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
       }[];
     };
 
@@ -1893,19 +1905,86 @@ describe("Golden: hook-redaction trajectory", () => {
     const agentSteps = steps.filter((s) => s.source === "agent");
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
 
-    // Should have a hook execution step for the secret-scanner agent hook
-    const hookSteps = steps.filter((s) => s.extra?.type === "hook_execution");
-    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+    // SUCCESS-PATH: coreHookMw (createHookMiddleware) is the only dispatcher
+    // that runs agent hooks here, so the evidence of a real hook-agent call
+    // is the "hooks" middleware's wrapToolCall span — its duration must be
+    // non-trivial because it awaits a real LLM verdict. A short/missing
+    // span would mean the hook agent never actually ran.
+    const hooksToolSpans = steps.filter(
+      (s) =>
+        s.extra?.middlewareName === "hooks" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.outcome === "success",
+    );
+    expect(hooksToolSpans.length).toBeGreaterThanOrEqual(1);
+    const longestHooksSpan = Math.max(...hooksToolSpans.map((s) => s.duration_ms ?? 0));
+    // Real LLM verdict calls take >100ms. A span <100ms means the hook agent
+    // was never spawned (regression: spawnFn not wired, or hooks never fired).
+    expect(longestHooksSpan).toBeGreaterThan(100);
 
-    // CRITICAL: verify secrets are NOT present anywhere in the trajectory.
-    // The whole point of redaction is that raw credentials never appear in
-    // observable output. If these substrings appear, redaction failed.
-    // CRITICAL: raw secrets must never appear anywhere in the recorded trajectory.
-    // If redaction works, the API key prefix and password are stripped before
-    // any data reaches observable output (hook agent prompts, ATIF steps).
+    // SUCCESS-PATH: the redacted payload must reach the model AND survive as
+    // real tool output. The "[output redacted: Post-hook" marker is emitted
+    // by createHookMiddleware.wrapToolCall when the aggregated post-hook
+    // decision is block — its presence means the hook turned a safe request
+    // into an unconditional denial, which is the user-visible regression
+    // the original #1492 golden canonized.
     const fullJson = readFileSync(trajectoryPath, "utf-8");
-    expect(fullJson).not.toContain("sk-ant-api03-");
-    expect(fullJson).not.toContain("super-secret-pw-123");
+    expect(fullJson).not.toContain("Post-hook(s) failed: secret-scanner");
+    expect(fullJson).not.toContain("[output redacted: Post-hook");
+
+    // SUCCESS-PATH: the non-secret `host` field must be preserved through
+    // redaction so the final answer can actually report it. If redaction
+    // masks every field, the agent has nothing to report and the golden
+    // no longer proves redaction is scoped to secrets.
+    expect(fullJson).toContain("db.example.com");
+
+    // NO-LEAK: the model's FINAL response must never contain raw secrets.
+    // The trajectory legitimately contains raw tool output (by design —
+    // the tool's return value flows to the parent model), and the test
+    // fixtures use obviously-fake placeholder strings. The user-visible
+    // channel that MUST NOT leak is the model's final answer. If a future
+    // change lets the model echo secrets back to the user, this assertion
+    // fails regardless of whether the tool output was scrubbed.
+    const finalAgentStep = agentSteps[agentSteps.length - 1];
+    const finalContent = finalAgentStep?.observation?.results?.[0]?.content ?? "";
+    expect(finalContent).not.toContain("sk-ant-api03-");
+    expect(finalContent).not.toContain("super-secret-pw-123");
+
+    // CRITICAL: raw secrets must never cross into the hook-agent trust
+    // boundary. The hook agent's user input (produced by buildHookPrompts →
+    // redactEventData) is captured to `hook-redaction.hook-inputs.json`
+    // during recording — this is what the sub-agent actually saw.
+    //
+    // The tool's raw output still reaches the parent model (so it can report
+    // `host`), and the trajectory records that raw output — that is by
+    // design. Redaction is scoped to the hook-agent path, and that's what
+    // this fixture proves.
+    const hookInputsPath = `${FIXTURES}/hook-redaction.hook-inputs.json`;
+    if (!existsSync(hookInputsPath)) {
+      throw new Error(
+        "hook-redaction.hook-inputs.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+    const hookInputsRaw = readFileSync(hookInputsPath, "utf-8");
+    const hookInputs = JSON.parse(hookInputsRaw) as {
+      readonly inputs: readonly { readonly hookName: string; readonly userInput: string }[];
+    };
+    const scannerInputs = hookInputs.inputs.filter(
+      (i) => i.hookName === "hook-agent:secret-scanner",
+    );
+    expect(scannerInputs.length).toBeGreaterThanOrEqual(1);
+    // Raw credentials must be stripped from every hook-agent prompt
+    for (const input of scannerInputs) {
+      expect(input.userInput).toContain("redacted");
+      expect(input.userInput).not.toContain("sk-ant-api03-");
+      expect(input.userInput).not.toContain("super-secret-pw-123");
+    }
+    // At least one invocation must carry the actual post-tool payload with
+    // redaction markers on the secret fields (proves redaction actually
+    // traversed the object, not just that the envelope note was attached).
+    const payloadInput = scannerInputs.find((i) => i.userInput.includes("[REDACTED]"));
+    expect(payloadInput).toBeDefined();
   });
 });
 
