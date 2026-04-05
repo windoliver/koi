@@ -13,6 +13,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
+import { createEffect, on } from "solid-js";
 import { detectSlashPrefix } from "../commands/slash-detection.js";
 import { processInputKey } from "./input-keys.js";
 
@@ -35,6 +36,12 @@ export interface InputAreaProps {
   readonly disabled?: boolean;
   /** Whether this area has keyboard focus. */
   readonly focused: boolean;
+  /**
+   * Increment this counter to imperatively clear the textarea.
+   * Used by parent after slash-command selection to wipe the "/cmd" text.
+   * The initial value (on mount) does NOT trigger a clear — only changes do.
+   */
+  readonly clearTrigger?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,8 +51,31 @@ export interface InputAreaProps {
 export function InputArea(props: InputAreaProps): JSX.Element {
   let textareaRef: TextareaRenderable | null = null;
 
+  // `let` justified: mutable mirror of props.disabled for useKeyboard callback.
+  // useKeyboard registers its callback once via onMount (OpenTUI pattern).
+  // Reading props.disabled directly inside that callback may not trigger Solid's
+  // reactive getter in all execution contexts, so we track changes explicitly
+  // via createEffect and write to a plain mutable variable that is always safe
+  // to read from a non-reactive callback.
+  let disabledRef = props.disabled ?? false;
+  createEffect(() => {
+    disabledRef = props.disabled ?? false;
+  });
+
+  // Clear textarea when clearTrigger increments (defer skips the initial value)
+  createEffect(
+    on(
+      () => props.clearTrigger,
+      () => {
+        textareaRef?.setText("");
+        props.onSlashDetected(null);
+      },
+      { defer: true },
+    ),
+  );
+
   useKeyboard((key: KeyEvent) => {
-    if (!props.focused || (props.disabled ?? false)) return;
+    if (!props.focused || disabledRef) return;
 
     const currentText = textareaRef?.plainText ?? "";
     const result = processInputKey(key, currentText);
@@ -53,7 +83,10 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     switch (result.kind) {
       case "submit": {
         key.preventDefault();
-        if (result.text.trim() !== "") {
+        // Synchronous slash-prefix guard: block submit if the text is a slash command
+        // prefix (e.g. "/" or "/cmd"). This works even when "/" and Enter arrive in the
+        // same input batch — before the microtask-deferred store update can set disabledRef.
+        if (result.text.trim() !== "" && detectSlashPrefix(result.text) === null) {
           props.onSubmit(result.text);
         }
         textareaRef?.setText("");
@@ -100,7 +133,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         }}
         height={3}
         focused={props.focused && !(props.disabled ?? false)}
-        placeholder={(props.disabled ?? false) ? "" : "Type a message... (/ for commands)"}
+        placeholder={props.disabled ?? false ? "" : "Type a message... (/ for commands)"}
       />
     </box>
   );

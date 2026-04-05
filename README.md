@@ -25,23 +25,38 @@
 
 ---
 
-> **v2 scaffold** — This repo contains the kernel foundation for Koi v2. The CLI, runtime,
-> channels, and feature packages from v1 are archived under `archive/v1/` (see the
-> `v1-archive` git tag for the full v1 codebase). The v2 scaffold retains the L0 contracts,
-> L1 engine, and 11 L0u utility packages as the buildable, testable foundation for the rewrite.
+> **v2** — Built on the L0 contracts and L1 engine kernel. The TUI (`koi tui`) is fully wired
+> to the model API. v1 feature packages are archived under `archive/v1/`.
 
-## Quickstart
+## Install
+
+**From npm** (requires [Bun](https://bun.sh)):
+
+```bash
+bun install -g @koi/cli
+```
+
+**From source:**
 
 ```bash
 git clone https://github.com/windoliver/koi.git
 cd koi
-bun install
-bun run build
-bun run test
+bun install && bun run build
+cd packages/meta/cli && bun link   # registers koi globally
 ```
 
-The scaffold currently contains 15 packages across 3 subsystems (kernel, lib, mm).
-All 705 tests pass. The CLI and runtime will be rebuilt on this foundation in subsequent phases.
+## Quickstart
+
+```bash
+# Set your API key (OpenRouter or OpenAI-compatible):
+export OPENROUTER_API_KEY=sk-or-...
+# or
+export OPENAI_API_KEY=sk-...
+
+koi tui          # open interactive terminal console
+```
+
+Inside the TUI: type a message and press Enter, or type `/` for slash commands.
 
 ## Architecture
 

@@ -301,6 +301,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/model-openai-compat": "workspace:*",
+        "@koi/runtime": "workspace:*",
         "@koi/tui": "workspace:*",
       },
     },
@@ -404,8 +406,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
     },
     "packages/security/middleware-exfiltration-guard": {

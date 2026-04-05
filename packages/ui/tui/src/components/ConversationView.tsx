@@ -4,7 +4,7 @@
 
 import type { SyntaxStyle } from "@opentui/core";
 import type { JSX } from "solid-js";
-import { Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import type { SlashCommand } from "../commands/slash-detection.js";
 import { useTuiStore } from "../store-context.js";
@@ -27,6 +27,8 @@ export interface ConversationViewProps {
 
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
+  // Incremented on every slash-command selection to clear the textarea text
+  const [clearTrigger, setClearTrigger] = createSignal(0);
 
   const dismissOverlay = (): void => {
     props.onSlashDetected(null);
@@ -34,6 +36,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
 
   const handleSlashSelect = (command: SlashCommand): void => {
     props.onSlashDetected(null);
+    setClearTrigger((n) => n + 1);
     props.onSlashSelect?.(command);
   };
 
@@ -53,6 +56,12 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         onSubmit={props.onSubmit}
         onSlashDetected={props.onSlashDetected}
         focused={props.focused}
+        // `disabled` is intentionally omitted here: InputArea's submit handler
+        // already guards against slash-prefixed text synchronously via
+        // detectSlashPrefix(), so the overlay can remain open while the user
+        // continues typing to filter commands. Disabling the input would freeze
+        // the query at the first "/" and break slash-command filtering.
+        clearTrigger={clearTrigger()}
       />
     </box>
   );
