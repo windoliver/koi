@@ -42,6 +42,13 @@ export interface JsonlTranscriptConfig {
 // compact() rewrites the file via write-temp + rename. If append() races with
 // compact(), the rename overwrites the appended data — silent loss. The queue
 // serializes all ops per sessionId so append and compact never overlap.
+//
+// Single-process guarantee only: the queue prevents races within one Node/Bun
+// process. For O_APPEND atomicity across processes, kernel guarantees are
+// sufficient for appends alone, but compact() + remove() (rename/unlink) are
+// NOT multi-process safe. This store is designed for single-process CLI use.
+// If multi-process concurrent access is required, use a backend with
+// transactional semantics (e.g. SQLite WAL).
 // ---------------------------------------------------------------------------
 
 const queues = new Map<string, Promise<void>>();

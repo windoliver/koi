@@ -1,11 +1,17 @@
 /**
  * Session transcript middleware — appends model turns to a SessionTranscript.
  *
- * Phase: observe (pure side-effect, never blocks the request path)
- * Priority: 200 (after event-trace at 100, before business middleware)
+ * Phase: observe / Priority: 200
  *
- * Uses wrapModelStream to capture both user messages (from the request) and
- * assistant responses (accumulated from stream text_delta chunks).
+ * Uses wrapModelStream to capture incoming messages and assistant responses.
+ * Session routing always uses ctx.session.sessionId (live turn) to prevent
+ * data-isolation failures when a single middleware instance is shared or when
+ * session IDs change between calls.
+ *
+ * Durability note: the assistant/tool-call write is awaited in the generator's
+ * finally block — the generator does NOT complete until the transcript entry is
+ * durable. This is intentional for crash recovery but does add per-turn I/O
+ * latency. The pre-stream user-message write is fire-and-forget.
  *
  * This makes @koi/session observable in ATIF trajectories via
  * wrapMiddlewareWithTrace (shows as MW:@koi/session:transcript steps).
@@ -28,7 +34,11 @@ import { transcriptEntryId } from "@koi/core";
 export interface SessionTranscriptMiddlewareConfig {
   /** The transcript store to append entries to. */
   readonly transcript: SessionTranscript;
-  /** The session ID key used for all transcript operations. */
+  /**
+   * Session ID used for entry ID generation (uniqueness prefix).
+   * Routing always uses ctx.session.sessionId — this field does NOT control
+   * which session the entries are written to.
+   */
   readonly sessionId: SessionId;
 }
 
@@ -39,7 +49,7 @@ export interface SessionTranscriptMiddlewareConfig {
 export function createSessionTranscriptMiddleware(
   config: SessionTranscriptMiddlewareConfig,
 ): KoiMiddleware {
-  const { transcript, sessionId } = config;
+  const { transcript, sessionId: idPrefix } = config;
 
   return {
     name: "@koi/session:transcript",
@@ -52,6 +62,11 @@ export function createSessionTranscriptMiddleware(
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> => {
+      // Always derive the routing key from the live turn context — never from
+      // config.sessionId — to prevent data-isolation failures when a single
+      // middleware instance is reused across multiple sessions.
+      const sid: SessionId = ctx.session.sessionId;
+
       // Serialize all content blocks from the last incoming message:
       // text blocks as plain text, all other block kinds as JSON strings.
       // Map senderId to the correct transcript role so tool results and
@@ -71,12 +86,12 @@ export function createSessionTranscriptMiddleware(
                   ? "assistant"
                   : "user";
           const entry: TranscriptEntry = {
-            id: transcriptEntryId(`${String(sessionId)}-u-${ctx.turnIndex}-${Date.now()}`),
+            id: transcriptEntryId(`${String(idPrefix)}-u-${ctx.turnIndex}-${Date.now()}`),
             role,
             content,
             timestamp: lastMsg.timestamp,
           };
-          void Promise.resolve(transcript.append(sessionId, [entry])).catch((e: unknown) => {
+          void Promise.resolve(transcript.append(sid, [entry])).catch((e: unknown) => {
             console.error("[@koi/session:transcript] failed to append user entry:", e);
           });
         }
@@ -133,7 +148,7 @@ export function createSessionTranscriptMiddleware(
             const textContent = textParts.length > 0 ? textParts.join("") : doneResponse.content;
             if (textContent.length > 0) {
               toAppend.push({
-                id: transcriptEntryId(`${String(sessionId)}-a-${ctx.turnIndex}-${Date.now()}`),
+                id: transcriptEntryId(`${String(idPrefix)}-a-${ctx.turnIndex}-${Date.now()}`),
                 role: "assistant",
                 content: textContent,
                 timestamp: Date.now(),
@@ -147,7 +162,7 @@ export function createSessionTranscriptMiddleware(
                 args: call.args,
               }));
               toAppend.push({
-                id: transcriptEntryId(`${String(sessionId)}-tc-${ctx.turnIndex}-${Date.now()}`),
+                id: transcriptEntryId(`${String(idPrefix)}-tc-${ctx.turnIndex}-${Date.now()}`),
                 role: "tool_call",
                 content: JSON.stringify(calls),
                 timestamp: Date.now(),
@@ -158,7 +173,7 @@ export function createSessionTranscriptMiddleware(
               // Await the write so the turn is durable before the generator completes.
               // The stream is already exhausted here — this is the commit boundary.
               try {
-                await transcript.append(sessionId, toAppend);
+                await transcript.append(sid, toAppend);
               } catch (e: unknown) {
                 console.error("[@koi/session:transcript] failed to append assistant entries:", e);
               }

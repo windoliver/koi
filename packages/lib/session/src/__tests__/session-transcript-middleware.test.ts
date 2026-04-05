@@ -51,7 +51,6 @@ async function* makeChunks(chunks: ModelChunk[]): AsyncIterable<ModelChunk> {
 }
 
 async function drainStream(stream: AsyncIterable<ModelChunk>): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   for await (const _ of stream) {
     // drain
   }
@@ -217,5 +216,51 @@ describe("SessionTranscriptMiddleware — completion semantics", () => {
       const assistantEntry = result.value.entries.find((e) => e.role === "assistant");
       expect(assistantEntry).toBeUndefined();
     }
+  });
+
+  test("reused middleware instance routes to ctx.session.sessionId, not config.sessionId", async () => {
+    const transcript = createInMemoryTranscript();
+    const configSid = sessionId("config-session");
+    // Create middleware with configSid, but call it with a different live session
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: configSid });
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+
+    const liveSid1 = sessionId("live-session-1");
+    const liveSid2 = sessionId("live-session-2");
+
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "hello" },
+      { kind: "done", response: { content: "hello", model: "m" } },
+    ];
+
+    // Call with live-session-1
+    const ctx1 = {
+      session: { agentId: "a", sessionId: liveSid1, runId: runId("r"), metadata: {} },
+      turnIndex: 0,
+      turnId: turnId("t"),
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+    await drainStream(mw.wrapModelStream(ctx1, makeModelRequest("s1"), () => makeChunks(chunks)));
+
+    // Call with live-session-2
+    const ctx2 = {
+      session: { agentId: "a", sessionId: liveSid2, runId: runId("r"), metadata: {} },
+      turnIndex: 0,
+      turnId: turnId("t"),
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+    await drainStream(mw.wrapModelStream(ctx2, makeModelRequest("s2"), () => makeChunks(chunks)));
+
+    // live-session-1 has entries; config-session and live-session-2 do not cross-contaminate
+    const r1 = await transcript.load(liveSid1);
+    const r2 = await transcript.load(liveSid2);
+    const rConfig = await transcript.load(configSid);
+
+    expect(r1.ok && r1.value.entries.length).toBeGreaterThan(0);
+    expect(r2.ok && r2.value.entries.length).toBeGreaterThan(0);
+    // Config session should have no entries — routing uses live ctx, not config
+    expect(rConfig.ok && rConfig.value.entries.length).toBe(0);
   });
 });
