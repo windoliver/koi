@@ -121,10 +121,44 @@ describe("createMemoryStore", () => {
         content: "Auth module complete. Moving to payments.",
       });
 
-      expect(updated.name).toBe("Project Status");
-      expect(updated.description).toBe("Current sprint focus");
-      expect(updated.type).toBe("project");
-      expect(updated.content).toBe("Auth module complete. Moving to payments.");
+      expect(updated.record.name).toBe("Project Status");
+      expect(updated.record.description).toBe("Current sprint focus");
+      expect(updated.record.type).toBe("project");
+      expect(updated.record.content).toBe("Auth module complete. Moving to payments.");
+      expect(updated.indexError).toBeUndefined();
+    });
+
+    test("preserves createdAt across updates (via mtime utimes)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.write({
+        name: "Long-lived",
+        description: "Will be updated",
+        type: "project",
+        content: "Initial content for a record whose createdAt should never drift.",
+      });
+      const originalCreatedAt = first.record.createdAt;
+
+      // Sleep briefly so any drift would be visible at >= 1s granularity
+      // (utimes on most filesystems has second-level precision).
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+
+      const updated = await store.update(first.record.id, {
+        content: "Updated content body for the long-lived record.",
+      });
+      // utimes preserves createdAt at sub-millisecond precision loss —
+      // the value is stamped as seconds-float and filesystems round to
+      // their native precision. Allow a 2ms tolerance.
+      const drift = Math.abs(updated.record.createdAt - originalCreatedAt);
+      expect(drift).toBeLessThanOrEqual(2);
+      // A fresh scan from disk should also report a value close to the
+      // original createdAt — and emphatically NOT jump forward by ~1s.
+      const reloaded = await store.read(first.record.id);
+      const reloadedDrift = Math.abs((reloaded?.createdAt ?? 0) - originalCreatedAt);
+      expect(reloadedDrift).toBeLessThanOrEqual(2);
+      // updatedAt should have moved forward (update happened >1s later).
+      expect(reloaded?.updatedAt).toBeGreaterThan(originalCreatedAt + 500);
     });
 
     test("throws for nonexistent id", async () => {
@@ -151,7 +185,8 @@ describe("createMemoryStore", () => {
       });
 
       const deleted = await store.delete(record.id);
-      expect(deleted).toBe(true);
+      expect(deleted.deleted).toBe(true);
+      expect(deleted.indexError).toBeUndefined();
 
       const read = await store.read(record.id);
       expect(read).toBeUndefined();
@@ -166,7 +201,7 @@ describe("createMemoryStore", () => {
       const store = createMemoryStore({ dir });
 
       const result = await store.delete(memoryRecordId("nope"));
-      expect(result).toBe(false);
+      expect(result.deleted).toBe(false);
     });
   });
 

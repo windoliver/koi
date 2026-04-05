@@ -4038,8 +4038,8 @@ describe("Golden: @koi/memory-fs", () => {
       const updated = await store.update(result.record.id, {
         content: "Rule: prefer composition.\n**Why:** flexibility.",
       });
-      expect(updated.content).toContain("flexibility");
-      expect(updated.name).toBe("design patterns");
+      expect(updated.record.content).toContain("flexibility");
+      expect(updated.record.name).toBe("design patterns");
 
       // list returns records with type filter
       const all = await store.list();
@@ -4051,7 +4051,7 @@ describe("Golden: @koi/memory-fs", () => {
 
       // delete removes record
       const deleted = await store.delete(result.record.id);
-      expect(deleted).toBe(true);
+      expect(deleted.deleted).toBe(true);
       const gone = await store.read(result.record.id);
       expect(gone).toBeUndefined();
     } finally {
