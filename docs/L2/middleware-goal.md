@@ -86,9 +86,18 @@ const mw = createGoalMiddleware({
 **Drift input is redacted**: `input.userMessages` is a `DriftUserMessage[]`
 (NOT `InboundMessage[]`) — the middleware reduces each message to `{ senderId,
 timestamp, text }` and drops non-text content, `threadId`, `metadata`, and
-`pinned` fields before exposing it across the trust boundary. Only messages
-with `metadata.role === "user"` (or no role) from non-assistant/tool sender
-IDs reach the callback.
+`pinned` fields before exposing it across the trust boundary.
+
+**Strict user-message filter (default-deny)**: a message reaches `isDrifting`
+only when:
+- `metadata.role === "user"` (explicit), OR
+- `metadata.role` is absent AND `senderId` is exactly `"user"` or starts
+  with `"user:"`.
+
+Roleless messages with custom sender IDs (e.g. `"customer-42"`) are
+**rejected** by default to prevent adapter/version skew from letting
+assistant/tool transcript content leak to external callbacks. Applications
+using custom user sender IDs must set `metadata.role = "user"`.
 
 **Cooperative cancellation**: callbacks receive a composed `AbortSignal` on
 their `ctx` that fires when the timeout expires OR the turn is cancelled

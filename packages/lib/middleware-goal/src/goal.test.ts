@@ -1361,22 +1361,30 @@ describe("isDrifting message sanitization", () => {
     const ctx = makeTurnCtx(session, {
       messages: [
         {
-          senderId: "user-1",
+          // Explicit user role — accepted
+          senderId: "customer-42",
           timestamp: 0,
+          metadata: { role: "user" },
           content: [{ kind: "text", text: "actual user text" }],
         },
         {
           // metadata.role=assistant — must be rejected despite benign senderId
-          senderId: "user-2",
+          senderId: "customer-43",
           timestamp: 0,
           metadata: { role: "assistant" },
           content: [{ kind: "text", text: "hidden assistant reply" }],
         },
         {
-          senderId: "user-3",
+          senderId: "customer-44",
           timestamp: 0,
           metadata: { role: "tool" },
           content: [{ kind: "text", text: "hidden tool output" }],
+        },
+        {
+          // Roleless + non-"user" senderId — strict default-deny rejects
+          senderId: "customer-45",
+          timestamp: 0,
+          content: [{ kind: "text", text: "roleless custom sender" }],
         },
       ],
     });

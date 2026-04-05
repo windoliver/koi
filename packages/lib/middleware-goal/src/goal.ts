@@ -79,6 +79,14 @@ interface GoalSessionState {
    * detectCompletions callback. Serializes callback work per session.
    */
   pendingWork: Promise<void>;
+  /**
+   * Count of in-flight isDrifting callbacks for this session.
+   * While > 0, `onBeforeTurn` computes reminder cadence against
+   * `baseInterval` instead of `currentInterval` — a fail-safe so slow
+   * drift judges cannot suppress reminders for many turns by holding
+   * a stale large interval.
+   */
+  pendingDrift: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,20 +374,25 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     ctx: TurnContext,
   ): Promise<boolean | undefined> {
     if (config.isDrifting) {
-      const outcome = await invokeIsDriftingCallback(
-        config.isDrifting,
-        {
-          // Use the per-turn snapshot (captured at onBeforeTurn) so turn N
-          // cannot observe turn N+1's appended messages under overlap.
-          userMessages: cloneMessages(turn.userMessagesSnapshot),
-          responseTexts: turn.responseBuffer.slice(),
-          items: cloneItems(state.items),
-        },
-        { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
-      );
-      if (outcome.ok) return outcome.value;
-      if (outcome.reason === "aborted") return undefined; // skip interval update
-      return true; // fail-safe on timeout/error
+      state.pendingDrift += 1;
+      try {
+        const outcome = await invokeIsDriftingCallback(
+          config.isDrifting,
+          {
+            // Use the per-turn snapshot (captured at onBeforeTurn) so turn N
+            // cannot observe turn N+1's appended messages under overlap.
+            userMessages: cloneMessages(turn.userMessagesSnapshot),
+            responseTexts: turn.responseBuffer.slice(),
+            items: cloneItems(state.items),
+          },
+          { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
+        );
+        if (outcome.ok) return outcome.value;
+        if (outcome.reason === "aborted") return undefined; // skip interval update
+        return true; // fail-safe on timeout/error
+      } finally {
+        state.pendingDrift = Math.max(0, state.pendingDrift - 1);
+      }
     }
     // Heuristic default: unchanged from pre-callback behavior — uses
     // ctx.messages exactly as before. Callers needing richer context
@@ -557,6 +570,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         userMessageBuffer: [],
         turns: new Map(),
         pendingWork: Promise.resolve(),
+        pendingDrift: 0,
       });
     },
 
@@ -581,9 +595,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       if (excess > 0) state.userMessageBuffer.splice(0, excess);
 
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
+      // Fail-safe: if any drift callbacks are in flight, we haven't yet
+      // confirmed whether to back off — treat the effective interval as
+      // `baseInterval` so reminders don't go silent during a stall.
+      const effectiveInterval = state.pendingDrift > 0 ? baseInterval : state.currentInterval;
       const turn: PerTurnState = {
         turnIndex: ctx.turnIndex,
-        shouldInject: turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0,
+        shouldInject: turnsSinceReminder >= effectiveInterval || ctx.turnIndex === 0,
         injectedThisTurn: false,
         responseBuffer: [],
         userMessagesSnapshot: cloneMessages(state.userMessageBuffer),

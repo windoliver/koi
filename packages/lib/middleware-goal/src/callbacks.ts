@@ -270,8 +270,7 @@ export function sanitizeUserMessages(
 ): readonly DriftUserMessage[] {
   const result: DriftUserMessage[] = [];
   for (const m of messages) {
-    if (isNonUserSender(m.senderId)) continue;
-    if (hasNonUserRole(m)) continue;
+    if (!isUserAuthored(m)) continue;
     if (isSyntheticRetry(m)) continue;
     const texts: string[] = [];
     for (const block of m.content) {
@@ -287,34 +286,20 @@ export function sanitizeUserMessages(
   return result;
 }
 
-function isNonUserSender(senderId: string): boolean {
-  if (senderId === "system" || senderId === "assistant" || senderId === "tool") return true;
-  // Reject namespaced actor IDs symmetrically — any `system:` / `assistant:` /
-  // `tool:` prefix is treated as non-user content to prevent hidden
-  // prompts/tool output from leaking to external callbacks.
-  if (senderId.startsWith("system:")) return true;
-  if (senderId.startsWith("assistant:")) return true;
-  if (senderId.startsWith("tool:")) return true;
-  return false;
-}
-
 /**
- * Check if a message's `metadata.role` marks it as non-user content.
- *
- * Whitelist approach: any `metadata.role` that is not `"user"` is
- * rejected. This covers `assistant`, `tool`, `system`, and any future
- * or adapter-specific role values. Only messages with `role === "user"`
- * or no role metadata at all can reach external callbacks.
- *
- * Per Koi convention (see `packages/mm/model-openai-compat/src/request-mapper.ts`),
- * `metadata.role` is authoritative for actor identity.
+ * Strict default-deny check: a message is user-authored only when its
+ * `metadata.role` is explicitly `"user"` OR — if role metadata is absent —
+ * its `senderId` is `"user"` or the `user:` prefix. Every other case is
+ * rejected from the external-callback trust boundary, including
+ * arbitrary roleless sender IDs from unknown adapters.
  */
-function hasNonUserRole(message: InboundMessage): boolean {
+function isUserAuthored(message: InboundMessage): boolean {
   const meta = message.metadata as { readonly role?: unknown } | undefined;
   const role = meta?.role;
-  if (role === undefined) return false;
-  if (typeof role !== "string") return true; // unexpected type → reject
-  return role !== "user";
+  if (typeof role === "string") return role === "user";
+  if (role !== undefined) return false; // unexpected type → reject
+  // Roleless: only accept explicit user sender identity.
+  return message.senderId === "user" || message.senderId.startsWith("user:");
 }
 
 function isSyntheticRetry(m: InboundMessage): boolean {
