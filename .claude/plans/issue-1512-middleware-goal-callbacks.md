@@ -58,6 +58,9 @@ constructs `onAfterTurn` contexts with `messages: []`
 - Last-N user-facing messages from `onBeforeTurn`'s `ctx.messages`, filtered
   to exclude synthetic stop-gate retry system messages. These represent the
   originally-intended user intent for the turn and survive stop-gate retries.
+  A per-turn snapshot is captured into `PerTurnState.userMessagesSnapshot`
+  at onBeforeTurn so a later turn appending to the shared rolling buffer
+  cannot change what this turn's drift callback observes.
 - Per-model-call response text already buffered during
   `wrapModelCall`/`wrapModelStream` (reuse of the completion buffer).
 
@@ -366,13 +369,16 @@ New test cases in `goal.test.ts`:
     callback invocation.
 23. **Per-turn latency budget**: single timeout bounds the entire
     callback invocation in `onAfterTurn`, not per-entry N × timeout.
-24. **isDrifting receives real conversation**: messages sourced from
-    `wrapModelCall`'s `request.messages` snapshot, not
-    `onBeforeTurn`'s `ctx.messages` (which contains only synthetic
-    stop-gate retry system messages on retries).
-25. **Stop-gate retry message sanity**: when a turn retries after
-    stop-gate veto, the `isDrifting` callback still sees the real
-    user transcript on the retry, not `[Completion blocked] ...`.
+24. **isDrifting receives per-turn snapshot**: messages sourced from a
+    rolling last-K buffer populated in `onBeforeTurn` from
+    `ctx.messages` (synthetic stop-gate retry `[Completion blocked]`
+    messages filtered out). A snapshot is captured into `PerTurnState`
+    at turn start so overlap cannot let turn N observe turn N+1's
+    appended messages.
+25. **Stop-gate retry message sanity**: synthetic
+    `[Completion blocked] ...` system messages are filtered from the
+    rolling buffer, so the `isDrifting` callback sees only real user
+    transcript content.
 26. **`onComplete` timing contract — explicit**: under
     `detectCompletions` opt-in, `onComplete` fires at turn boundary
     (not mid-turn). Turn that never reaches `onAfterTurn` (crash,

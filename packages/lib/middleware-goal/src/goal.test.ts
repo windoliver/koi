@@ -1089,6 +1089,67 @@ describe("detectCompletions callback", () => {
 });
 
 describe("turn-scoped state (overlap safety)", () => {
+  it("isDrifting-only mode: turn N cannot observe turn N+1's user messages", async () => {
+    // In drift-only mode, onBeforeTurn does NOT await pendingWork. Turn
+    // N+1's onBeforeTurn can append new user messages to the session
+    // buffer before turn N's pending isDrifting callback clones them.
+    // Per-turn snapshot must prevent cross-turn leakage.
+    const observedByTurn0: string[][] = [];
+    let turn0Gate: (() => void) | undefined;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      baseInterval: 1,
+      maxInterval: 1,
+      isDrifting: async (input, ctx) => {
+        const texts = input.userMessages.flatMap((m) =>
+          m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
+        );
+        if (ctx.turnIndex === 0) {
+          observedByTurn0.push(texts);
+          await new Promise<void>((resolve) => {
+            turn0Gate = resolve;
+          });
+          // Re-read after gate release — must STILL show original snapshot
+          const t2 = input.userMessages.flatMap((m) =>
+            m.content.filter((b) => b.kind === "text").map((b) => (b as { text: string }).text),
+          );
+          observedByTurn0.push(t2);
+        }
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("turn-0-msg", "user")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("x"));
+    const after0 = mw.onAfterTurn?.(ctx0);
+
+    // While turn 0's drift callback is gated, advance turn 1's onBeforeTurn.
+    // This appends "turn-1-msg" to the shared buffer.
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("turn-1-msg", "user")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+
+    turn0Gate?.();
+    await after0;
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx1);
+
+    // Both observations from turn 0 must NOT contain "turn-1-msg"
+    for (const texts of observedByTurn0) {
+      expect(texts).not.toContain("turn-1-msg");
+    }
+    expect(observedByTurn0[0]).toContain("turn-0-msg");
+  });
+
   it("per-turn response buffers never mix across turns", async () => {
     // Serialization means callback evaluation is strictly sequential.
     // Each invocation must see only its own turn's buffered responses.

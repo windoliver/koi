@@ -56,6 +56,10 @@ interface PerTurnState {
   injectedThisTurn: boolean;
   /** Per-turn response texts (one per wrapModelCall / wrapModelStream). */
   responseBuffer: string[];
+  /** Immutable snapshot of the rolling user-messages buffer at turn start.
+   *  Used as drift-callback input so turn N cannot observe turn N+1's
+   *  appended messages under overlap. */
+  userMessagesSnapshot: readonly InboundMessage[];
 }
 
 interface GoalSessionState {
@@ -364,7 +368,9 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const outcome = await invokeIsDriftingCallback(
         config.isDrifting,
         {
-          userMessages: cloneMessages(state.userMessageBuffer),
+          // Use the per-turn snapshot (captured at onBeforeTurn) so turn N
+          // cannot observe turn N+1's appended messages under overlap.
+          userMessages: cloneMessages(turn.userMessagesSnapshot),
           responseTexts: turn.responseBuffer.slice(),
           items: cloneItems(state.items),
         },
@@ -555,20 +561,23 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       // cliff when the drift judge is slow or remote.
       if (deferCompletions) await state.pendingWork;
 
+      // Append sanitized user-authored text messages into rolling buffer
+      // FIRST, then snapshot it for this turn. The snapshot captures a
+      // stable view so later turns cannot mutate what this turn sees.
+      const sanitized = sanitizeUserMessages(ctx.messages);
+      for (const m of sanitized) state.userMessageBuffer.push(m);
+      const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
+      if (excess > 0) state.userMessageBuffer.splice(0, excess);
+
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       const turn: PerTurnState = {
         turnIndex: ctx.turnIndex,
         shouldInject: turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0,
         injectedThisTurn: false,
         responseBuffer: [],
+        userMessagesSnapshot: cloneMessages(state.userMessageBuffer),
       };
       state.turns.set(String(ctx.turnId), turn);
-
-      // Append sanitized user-authored text messages into rolling buffer.
-      const sanitized = sanitizeUserMessages(ctx.messages);
-      for (const m of sanitized) state.userMessageBuffer.push(m);
-      const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
-      if (excess > 0) state.userMessageBuffer.splice(0, excess);
     },
 
     async onAfterTurn(ctx) {
