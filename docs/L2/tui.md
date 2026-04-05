@@ -221,7 +221,7 @@ dispatches:
 - 16ms `queueMicrotask` + `setTimeout` double-buffer (aligns with one frame budget).
 - Injectable timer DI for deterministic testing (`options.scheduleTimeout` / `options.cancelTimeout`).
 - `flushSync()` for ordered end-of-stream delivery (drains queue synchronously).
-- `flushTimer` is typed as `ReturnType<typeof doSetTimeout> | null` (not `ReturnType<typeof setTimeout>`) so the injectable DI handle type is correctly inferred when a custom scheduler returns `number` instead of `NodeJS.Timeout`.
+- Exports `TimerHandle = number | ReturnType<typeof setTimeout>` — a cross-environment union covering the browser `number` handle, Node.js `NodeJS.Timeout`, and Bun `Timer`. Both `scheduleTimeout` and `cancelTimeout` options use this type so the DTS build compiles cleanly even when `@types/bun` and `@types/node` are both present (they declare `setTimeout` with overlapping overloads).
 
 ### EngineChannel (`src/worker/engine-channel.ts`, ~120 LOC)
 
