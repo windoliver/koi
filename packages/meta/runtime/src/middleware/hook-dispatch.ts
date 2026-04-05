@@ -371,6 +371,22 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         const postResults = await dispatchHooks(postEvent, effectiveSignal);
         await recordHookResults(postResults, `${postEventName}:${request.toolId}`);
 
+        // Fail closed on cancellation: if the caller's signal aborted during
+        // post-hook dispatch, registry.execute() returned [] — which would
+        // silently skip fail-closed post-hooks (output redaction, audit).
+        // The tool already ran and side effects are committed, so the raw
+        // response could leak unredacted sensitive data. Redact defensively.
+        // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
+        const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
+        if (postAborted && response !== undefined) {
+          return {
+            output: "[output redacted: post-hooks skipped due to cancellation]",
+            ...(response.metadata !== undefined
+              ? { metadata: { ...response.metadata, committedButRedacted: true } }
+              : { metadata: { committedButRedacted: true } }),
+          };
+        }
+
         // Post-hook failures redact output (security: partial redaction is
         // worse than no redaction). The tool already ran and side effects
         // are committed, but raw output is suppressed.

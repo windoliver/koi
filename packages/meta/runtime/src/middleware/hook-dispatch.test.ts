@@ -509,6 +509,40 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect(nextWasCalled).toBe(false);
   });
 
+  test("late abort during post-hook dispatch redacts tool output (fail-closed)", async () => {
+    // Regression: if the caller cancels AFTER the tool succeeded but BEFORE
+    // post-hooks run, registry.execute() returns [] on the aborted signal.
+    // Returning raw output in that case bypasses fail-closed post-hooks
+    // (output redaction, audit). Tool side effects are already committed,
+    // so the only safe behavior is to redact defensively.
+    const controller = new AbortController();
+    const registry: HookRegistryLike = {
+      register: () => {},
+      execute: async (_sid, event, _abortSignal) => {
+        if (event.event === "tool.before") {
+          // Pre-hook runs normally — tool should execute.
+          return [];
+        }
+        // Post-hook: caller cancels, registry short-circuits.
+        controller.abort();
+        return [];
+      },
+      cleanup: () => {},
+    };
+    const mw = createHookDispatchMiddleware({ hooks: [], registry });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => ({
+      output: "SENSITIVE_RAW_DATA",
+    });
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "t", input: {} } as never, next);
+    // Must be redacted, not the raw tool output.
+    expect(result?.output).toContain("redacted");
+    expect(result?.output).not.toContain("SENSITIVE_RAW_DATA");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBe(true);
+  });
+
   test("event sessionId matches the live ctx.session.sessionId for dispatches", async () => {
     // let justified: mutable — captures the event payloads dispatched
     const capturedEvents: HookEvent[] = [];
