@@ -413,7 +413,16 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   function close(): void {
     if (closed) return;
     closed = true;
-    lineReader.release();
+
+    // Release the stream reader. If a read is currently in flight, releaseLock()
+    // may throw on some Web Streams implementations — wrap it so cleanup always
+    // continues. The reader loop will observe the closed flag or process death
+    // and exit regardless.
+    try {
+      lineReader.release();
+    } catch {
+      // Ignore — we're shutting down regardless.
+    }
 
     // Reject all parked requests immediately — callers get a clean error
     // instead of hanging until their individual timers fire.

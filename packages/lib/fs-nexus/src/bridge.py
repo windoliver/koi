@@ -41,6 +41,7 @@ INVALID_PATH = -32002
 VALIDATION_ERROR = -32005
 CONFLICT = -32006
 AUTH_TIMEOUT = -32007   # user did not complete OAuth within NEXUS_AUTH_TIMEOUT_MS
+PERMISSION_ERROR = -32004  # authorized but access denied (e.g. insufficient OAuth scope)
 METHOD_NOT_FOUND = -32601
 INTERNAL_ERROR = -32603
 
@@ -580,13 +581,15 @@ async def handle_request(fs, request):
             if is_auth_error:
                 if attempts >= AUTH_MAX_ATTEMPTS:
                     # dispatch() has failed with AuthenticationError after every
-                    # allowed auth round-trip — the token exists but access is still
-                    # denied (e.g. wrong OAuth scope).
+                    # allowed auth round-trip — the token was granted but access
+                    # is still denied (e.g. wrong OAuth scope). This is a permanent
+                    # authorization failure, not a timeout — use PERMISSION_ERROR
+                    # so clients don't misapply timeout-specific retry behavior.
                     return {
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "error": {
-                            "code": AUTH_TIMEOUT,
+                            "code": PERMISSION_ERROR,
                             "message": (
                                 "Authorization succeeded but access was still denied. "
                                 "The OAuth grant may have insufficient scope. "

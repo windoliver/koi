@@ -122,13 +122,33 @@ interface LocalBridgeOptions {
   readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
-function isLocalBridgeOptions(v: unknown): v is LocalBridgeOptions {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    (v as Record<string, unknown>).transport === "local" &&
-    (v as Record<string, unknown>).mountUri !== undefined
-  );
+const localBridgeOptionsSchema = z
+  .object({
+    transport: z.literal("local"),
+    mountUri: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+    pythonPath: z.string().optional(),
+    startupTimeoutMs: z.number().positive().optional(),
+    callTimeoutMs: z.number().positive().optional(),
+    authTimeoutMs: z.number().positive().optional(),
+    mountPoint: z.string().min(1).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+function parseLocalBridgeOptions(
+  v: unknown,
+): { ok: true; value: LocalBridgeOptions } | { ok: false; error: string } {
+  if (typeof v !== "object" || v === null) return { ok: false, error: "options must be an object" };
+  if ((v as Record<string, unknown>).transport !== "local")
+    return { ok: false, error: "not a local bridge config" };
+  const result = localBridgeOptionsSchema.safeParse(v);
+  if (!result.success) {
+    const messages = result.error.issues
+      .map((i: z.core.$ZodIssue) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    return { ok: false, error: `Invalid local bridge options: ${messages}` };
+  }
+  return { ok: true, value: result.data as LocalBridgeOptions };
 }
 
 /**
@@ -192,7 +212,9 @@ export async function resolveFileSystemAsync(
   const options = config?.options;
 
   // Local bridge transport — async subprocess setup + auth wiring
-  if (isLocalBridgeOptions(options)) {
+  const localBridgeParsed = parseLocalBridgeOptions(options);
+  if (localBridgeParsed.ok) {
+    const options = localBridgeParsed.value; // validated — overrides outer `options`
     // Multi-mount is not supported in this path: the bridge reports multiple mounts
     // but createNexusFileSystem() accepts only one mountPoint prefix. Until per-mount
     // transport routing exists, mixing OAuth-gated mounts (gdrive://) with local mounts
