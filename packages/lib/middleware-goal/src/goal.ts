@@ -61,6 +61,10 @@ interface PerTurnState {
    *  Used as drift-callback input so turn N cannot observe turn N+1's
    *  appended messages under overlap. */
   userMessagesSnapshot: readonly DriftUserMessage[];
+  /** Previous `lastReminderTurn` value at turn start. Used to roll back
+   * the reminder advance if this turn is stop-gate vetoed, so the retry
+   * turn still sees the original cadence. */
+  previousLastReminderTurn: number;
 }
 
 interface GoalSessionState {
@@ -363,6 +367,19 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   }
 
   /**
+   * Atomically adjust `pendingDrift` on the current session-state entry.
+   * Always reads the latest value via `sessions.get` and writes via
+   * `sessions.set` so callers can't decrement against a stale snapshot
+   * that may have been replaced by a spread-clone elsewhere.
+   */
+  function adjustPendingDrift(sid: SessionId, delta: number): void {
+    const latest = sessions.get(sid);
+    if (!latest) return;
+    const next = Math.max(0, latest.pendingDrift + delta);
+    sessions.set(sid, { ...latest, pendingDrift: next });
+  }
+
+  /**
    * Evaluate drift for this turn, using the callback if configured.
    * On callback error/timeout, fail-safe to drifting=true so reminders
    * fire more aggressively (v1 semantics). On upstream abort, returns
@@ -374,7 +391,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     ctx: TurnContext,
   ): Promise<boolean | undefined> {
     if (config.isDrifting) {
-      state.pendingDrift += 1;
+      adjustPendingDrift(ctx.session.sessionId, 1);
       try {
         const outcome = await invokeIsDriftingCallback(
           config.isDrifting,
@@ -391,7 +408,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         if (outcome.reason === "aborted") return undefined; // skip interval update
         return true; // fail-safe on timeout/error
       } finally {
-        state.pendingDrift = Math.max(0, state.pendingDrift - 1);
+        adjustPendingDrift(ctx.session.sessionId, -1);
       }
     }
     // Heuristic default: unchanged from pre-callback behavior — uses
@@ -489,6 +506,19 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     ctx: TurnContext,
   ): Promise<void> {
     const blocked = ctx.stopBlocked === true;
+
+    // Roll back the synchronous lastReminderTurn advance if the turn was
+    // vetoed, so the retry turn still sees the original cadence and can
+    // re-inject the goal block.
+    if (blocked && turn.injectedThisTurn) {
+      const latest = sessions.get(ctx.session.sessionId);
+      if (latest && latest.lastReminderTurn === ctx.turnIndex) {
+        sessions.set(ctx.session.sessionId, {
+          ...latest,
+          lastReminderTurn: turn.previousLastReminderTurn,
+        });
+      }
+    }
 
     if (deferCompletions) {
       const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
@@ -605,6 +635,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         injectedThisTurn: false,
         responseBuffer: [],
         userMessagesSnapshot: cloneMessages(state.userMessageBuffer),
+        previousLastReminderTurn: state.lastReminderTurn,
       };
       state.turns.set(String(ctx.turnId), turn);
     },

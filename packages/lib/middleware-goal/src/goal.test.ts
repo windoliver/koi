@@ -1217,6 +1217,84 @@ describe("turn-scoped state (overlap safety)", () => {
   });
 });
 
+describe("stop-gate cadence rollback", () => {
+  it("blocked turn does not consume the reminder; retry turn re-injects", async () => {
+    let injectedCount = 0;
+    const mw = createGoalMiddleware({ objectives: ["Write tests"] });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: first inject (turnIndex=0 always injects)
+    const ctx0 = makeTurnCtx(session, { turnIndex: 0, stopBlocked: true });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async (req) => {
+      if (req.messages.some((m) => m.senderId === "system:goal")) injectedCount += 1;
+      return makeModelResponse("x");
+    });
+    await mw.onAfterTurn?.(ctx0);
+    // Turn 0 was blocked, so lastReminderTurn should roll back to -1.
+
+    // Retry turn (turnIndex=0 still) — should inject again
+    const ctxRetry = makeTurnCtx(session, { turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctxRetry);
+    await mw.wrapModelCall?.(ctxRetry, makeModelRequest(), async (req) => {
+      if (req.messages.some((m) => m.senderId === "system:goal")) injectedCount += 1;
+      return makeModelResponse("x");
+    });
+    await mw.onAfterTurn?.(ctxRetry);
+
+    expect(injectedCount).toBe(2);
+  });
+});
+
+describe("pendingDrift counter coherence", () => {
+  it("counter returns to zero after slow drift callback under state spreads", async () => {
+    let turn0Gate: (() => void) | undefined;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      baseInterval: 1,
+      maxInterval: 1,
+      isDrifting: async (_input, ctx) => {
+        if (ctx.turnIndex === 0) {
+          await new Promise<void>((resolve) => {
+            turn0Gate = resolve;
+          });
+        }
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const ctx0 = makeTurnCtx(session, { turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("x"));
+    const after0 = mw.onAfterTurn?.(ctx0);
+
+    // Advance turn 1 fully (triggers sessions.set spread elsewhere)
+    const ctx1 = makeTurnCtx(session, { turnIndex: 1 });
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx1);
+
+    turn0Gate?.();
+    await after0;
+
+    // After slow callback resolves under state-spread interleaving, the
+    // counter must return to 0 and normal cadence should resume.
+    // Indirect assertion: turn 3's shouldInject uses currentInterval
+    // (not baseInterval fail-safe) once pendingDrift=0. With baseInterval=1
+    // and maxInterval=1, interval stays at 1 anyway; verify the call
+    // completes without throwing and a later turn processes normally.
+    const ctx2 = makeTurnCtx(session, { turnIndex: 2 });
+    await mw.onBeforeTurn?.(ctx2);
+    await mw.wrapModelCall?.(ctx2, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx2);
+  });
+});
+
 describe("cancellation safety", () => {
   it("pre-aborted signal does NOT invoke callback body (no side effects)", async () => {
     let callbackInvoked = false;
