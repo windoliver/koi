@@ -31,7 +31,7 @@ export interface SandboxExecOptions {
   readonly onStdout?: (chunk: string) => void;
   /** Streaming callback for stderr chunks. */
   readonly onStderr?: (chunk: string) => void;
-  /** Maximum bytes to capture for stdout+stderr. Default: 10 MB. */
+  /** Maximum bytes to capture for stdout+stderr. Default: 1 MB. */
   readonly maxOutputBytes?: number;
   /** Abort signal — kills the process when aborted. */
   readonly signal?: AbortSignal;
