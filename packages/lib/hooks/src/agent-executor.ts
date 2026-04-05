@@ -307,7 +307,13 @@ export class AgentHookExecutor implements HookExecutor {
         const message = e instanceof Error ? e.message : String(e);
         // Abort/timeout — transient, refund reserved tokens
         this.refundTokens(event.sessionId, worstCaseTokens);
-        return this.handleTransientFailure(hook.name, message, durationMs, failClosed);
+        // Distinguish abort from other transient failures (spawn crash,
+        // verdict-parse errors) so the registry can refund once-hooks under
+        // cancellation races without burning retry budget.
+        const isAbort =
+          signal.aborted ||
+          (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError"));
+        return this.handleTransientFailure(hook.name, message, durationMs, failClosed, isAbort);
       }
     } finally {
       this.removeInFlight(event.sessionId);
@@ -323,6 +329,7 @@ export class AgentHookExecutor implements HookExecutor {
     error: string,
     durationMs: number,
     failClosed: boolean,
+    aborted = false,
   ): HookExecutionResult {
     if (failClosed) {
       return {
@@ -331,6 +338,7 @@ export class AgentHookExecutor implements HookExecutor {
         durationMs,
         decision: { kind: "block", reason: `Agent hook failed: ${error}` },
         executionFailed: true,
+        ...(aborted ? { aborted: true as const } : {}),
       };
     }
     return {
@@ -339,6 +347,7 @@ export class AgentHookExecutor implements HookExecutor {
       durationMs,
       decision: { kind: "continue" },
       executionFailed: true,
+      ...(aborted ? { aborted: true as const } : {}),
     };
   }
 

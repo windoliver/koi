@@ -254,28 +254,14 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
             !result.ok ||
             (result.ok && result.executionFailed === true)
           ) {
-            // When the caller cancelled, refund results whose error string
-            // is an explicit abort marker emitted by executor.ts — "aborted"
-            // (command hooks) or contains "AbortError" (HTTP/generic
-            // throw-on-aborted path).
-            //
-            // Known limitation: agent-hook aborts surface as `ok: true` with
-            // `executionFailed: true` and the error message buried inside
-            // `decision.reason` (agent-executor.ts:handleTransientFailure).
-            // That shape is indistinguishable from a non-abort transient
-            // failure (spawn crash, verdict parse error), so we intentionally
-            // do NOT refund it here — treating executionFailed as abort-shaped
-            // would let a broken agent once-hook be retried indefinitely under
-            // cancellation races. The trade-off: a fail-closed agent once-hook
-            // can exhaust its retry budget faster if the caller repeatedly
-            // aborts after transient failures. Fixing this properly requires
-            // an explicit abort marker on HookExecutionResult; tracked as a
-            // follow-up.
-            const looksAborted =
-              !!result &&
-              !result.ok &&
-              (result.error === "aborted" || result.error.includes("AbortError"));
-            if (callerCancelled && looksAborted) {
+            // When the caller cancelled, refund claimed once-hooks whose
+            // results carry the explicit `aborted: true` marker set by
+            // executor.ts (command/HTTP/prompt) and agent-executor.ts
+            // (agent hooks). Genuine non-abort transient failures still
+            // increment onceRetries under cancellation, so fail-closed
+            // hooks can reach exhausted-blocker state after MAX_ONCE_RETRIES.
+            const isAbortMarked = result !== undefined && result.aborted === true;
+            if (callerCancelled && isAbortMarked) {
               state.consumed.delete(origIdx);
               matchIdx++;
               continue;

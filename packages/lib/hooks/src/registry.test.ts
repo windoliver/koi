@@ -690,7 +690,7 @@ describe("createHookRegistry", () => {
       const controller = new AbortController();
       const spy = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
         controller.abort();
-        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0 }];
+        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0, aborted: true }];
       });
 
       registry.register("s1", "agent-1", [onceHook]);
@@ -707,7 +707,7 @@ describe("createHookRegistry", () => {
       // If mid-flight aborts incremented onceRetries, the hook would be
       // exhausted by now. Use fresh controllers to keep each call aborted.
       const spy2 = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
-        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0 }];
+        return [{ ok: false, hookName: "guard", error: "aborted", durationMs: 0, aborted: true }];
       });
       for (let i = 0; i < 4; i++) {
         const c = new AbortController();
@@ -839,6 +839,60 @@ describe("createHookRegistry", () => {
           expect(liveResult[0].decision.reason).toContain("exhausted retry budget");
         }
       }
+    });
+
+    it("cancelled agent once-hook with aborted=true marker is refunded without burning retries", async () => {
+      // Regression for adversarial-review finding: agent-hook aborts surface
+      // as `ok: true, executionFailed: true` shape. With the new explicit
+      // `aborted: true` marker on HookExecutionResult (populated by
+      // AgentHookExecutor on AbortError/signal.aborted), the registry must
+      // refund claimed once-hooks without burning retry budget — matching
+      // the behavior for command/HTTP hook aborts.
+      const onceHook: HookConfig = {
+        kind: "command",
+        name: "agent-guard",
+        cmd: ["echo"],
+        once: true,
+        failClosed: true,
+      };
+      // Simulate 5 cancellations that yield agent-hook abort shapes
+      // (executionFailed + aborted). If the marker is honored, none
+      // should count against onceRetries.
+      for (let i = 0; i < 5; i++) {
+        const c = new AbortController();
+        const spyN = spyOn(executorModule, "executeHooks").mockImplementation(async () => {
+          const result: readonly HookExecutionResult[] = [
+            {
+              ok: true,
+              hookName: "agent-guard",
+              durationMs: 1,
+              decision: { kind: "block", reason: "Agent hook failed: aborted" },
+              executionFailed: true,
+              aborted: true, // the new explicit abort marker
+            },
+          ];
+          c.abort();
+          return result;
+        });
+        if (i === 0) registry.register("s1", "agent-1", [onceHook]);
+        await registry.execute("s1", baseEvent, c.signal);
+        spyN.mockRestore();
+      }
+
+      // The once-hook must still fire on a live call — not exhausted.
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        {
+          ok: true,
+          hookName: "agent-guard",
+          durationMs: 1,
+          decision: { kind: "continue" },
+        },
+      ]);
+      const live = await registry.execute("s1", baseEvent);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.ok).toBe(true);
+      if (live[0]?.ok) expect(live[0].decision.kind).toBe("continue");
+      spy.mockRestore();
     });
 
     it("late abort after agent-hook executionFailed (non-abort) still increments onceRetries", async () => {

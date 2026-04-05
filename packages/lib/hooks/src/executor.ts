@@ -154,6 +154,7 @@ async function executeCommandHook(
         error: "aborted",
         durationMs,
         failClosed: hook.failClosed,
+        aborted: true,
       };
     }
 
@@ -181,6 +182,7 @@ async function executeCommandHook(
         error: "aborted",
         durationMs,
         failClosed: hook.failClosed,
+        aborted: true,
       };
     }
     const message = e instanceof Error ? e.message : String(e);
@@ -315,6 +317,7 @@ async function executeHttpHook(
         error: "aborted",
         durationMs,
         failClosed: hook.failClosed,
+        aborted: true,
       };
     }
     const message = e instanceof Error ? e.message : String(e);
