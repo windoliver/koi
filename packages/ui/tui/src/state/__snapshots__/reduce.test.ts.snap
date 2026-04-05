@@ -18,6 +18,7 @@ exports[`createInitialState initial state shape 1`] = `
   "modal": null,
   "sessionInfo": null,
   "sessions": [],
+  "slashQuery": null,
   "zoomLevel": 1,
 }
 `;

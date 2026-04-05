@@ -11,6 +11,7 @@ import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
 import { matchCommands, type SlashCommand, type SlashMatch } from "../commands/slash-detection.js";
+import { COLORS } from "../theme.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,19 +96,19 @@ export function SlashOverlay(props: SlashOverlayProps): JSX.Element {
     <Show
       when={matches().length > 0}
       fallback={
-        <box border={true} borderColor="#64748B" paddingLeft={1}>
-          <text fg="#64748B">{"No matching commands"}</text>
+        <box border={true} borderColor={COLORS.textMuted} paddingLeft={1}>
+          <text fg={COLORS.textMuted}>{"No matching commands"}</text>
         </box>
       }
     >
       <box
         flexDirection="column"
         border={true}
-        borderColor="#60A5FA"
+        borderColor={COLORS.blueAccent}
         width={50}
       >
         <box paddingLeft={1}>
-          <text fg="#60A5FA"><b>{"Commands"}</b></text>
+          <text fg={COLORS.blueAccent}><b>{"Commands"}</b></text>
         </box>
         <select
           options={selectOptions()}

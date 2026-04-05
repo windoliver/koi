@@ -10,6 +10,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { Show } from "solid-js";
+import { COLORS } from "../theme.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,13 +57,13 @@ export function AskUserDialog(props: AskUserDialogProps): JSX.Element {
     <box
       flexDirection="column"
       border={true}
-      borderColor="#60A5FA"
+      borderColor={COLORS.blueAccent}
       paddingLeft={1}
       paddingRight={1}
     >
-      <text fg="#E2E8F0"><b>{"Agent is asking:"}</b></text>
+      <text fg={COLORS.white}><b>{"Agent is asking:"}</b></text>
       <box marginTop={1}>
-        <text fg="#94A3B8">{props.question}</text>
+        <text fg={COLORS.textSecondary}>{props.question}</text>
       </box>
 
       <box marginTop={1}>
@@ -78,8 +79,8 @@ export function AskUserDialog(props: AskUserDialogProps): JSX.Element {
 
       <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
-          <text fg="#4ADE80">{"[Enter] Submit"}</text>
-          <text fg="#F87171">{"[Esc] Dismiss"}</text>
+          <text fg={COLORS.success}>{"[Enter] Submit"}</text>
+          <text fg={COLORS.danger}>{"[Esc] Dismiss"}</text>
         </box>
       </Show>
     </box>

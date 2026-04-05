@@ -12,6 +12,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { Show } from "solid-js";
+import { COLORS } from "../theme.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,22 +70,22 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
     <box
       flexDirection="column"
       border={true}
-      borderColor="#FBBF24"
+      borderColor={COLORS.amber}
       paddingLeft={1}
       paddingRight={1}
     >
-      <text fg="#E2E8F0"><b>{props.message}</b></text>
+      <text fg={COLORS.white}><b>{props.message}</b></text>
 
       <Show when={props.details !== undefined}>
         <box marginTop={1}>
-          <text fg="#94A3B8">{props.details}</text>
+          <text fg={COLORS.textSecondary}>{props.details}</text>
         </box>
       </Show>
 
       <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
-          <text fg="#4ADE80">{"[y/Enter] Confirm"}</text>
-          <text fg="#F87171">{"[n/Esc] Cancel"}</text>
+          <text fg={COLORS.success}>{"[y/Enter] Confirm"}</text>
+          <text fg={COLORS.danger}>{"[n/Esc] Cancel"}</text>
         </box>
       </Show>
     </box>

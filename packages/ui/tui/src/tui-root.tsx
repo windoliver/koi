@@ -19,7 +19,8 @@ import type { JSX } from "solid-js";
 import { Show, Switch, Match, createMemo, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
-import type { CommandDef } from "./commands/command-definitions.js";
+import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
+import type { SlashCommand } from "./commands/slash-detection.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
@@ -60,6 +61,12 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
  */
 export function resolveNavCommand(commandId: string): TuiView | null {
   return NAV_VIEW_MAP[commandId] ?? null;
+}
+
+function findCommandBySlashName(name: string): CommandDef | undefined {
+  return COMMAND_DEFINITIONS.find(
+    (c) => c.id.split(":")[1] === name || c.id === name,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +194,17 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
     props.onSessionSelect(session.id);
   };
 
-  // Slash detection is a no-op here; host can extend via custom ConversationView
-  const handleSlashDetected = (_query: string | null): void => {};
+  const handleSlashDetected = (query: string | null): void => {
+    store.dispatch({ kind: "set_slash_query", query });
+  };
+
+  const handleSlashSelect = (cmd: SlashCommand): void => {
+    store.dispatch({ kind: "set_slash_query", query: null });
+    const commandDef = findCommandBySlashName(cmd.name);
+    if (commandDef !== undefined) {
+      handleCommandSelect(commandDef);
+    }
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -202,6 +218,7 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
           <ConversationView
             onSubmit={props.onSubmit}
             onSlashDetected={handleSlashDetected}
+            onSlashSelect={handleSlashSelect}
             focused={!hasModal()}
           />
         </Match>

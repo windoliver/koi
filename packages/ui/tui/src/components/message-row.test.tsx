@@ -23,7 +23,7 @@ async function renderMessage(
   opts = RENDER_OPTS,
 ): Promise<string> {
   const { captureCharFrame, renderOnce, renderer } = await testRender(
-    () => <MessageRow message={message} />,
+    () => <MessageRow message={message} spinnerFrame={0} />,
     opts,
   );
   await renderOnce();
@@ -260,5 +260,40 @@ describe("MessageRow — multi-block", () => {
     expect(frame).toContain("Analyzing...");
     expect(frame).toContain("Here is my response.");
     expect(frame).toContain("grep");
+  });
+});
+
+describe("MessageRow — StatusIndicator characters", () => {
+  test("running tool shows a Braille spinner character", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-running",
+      blocks: [{ kind: "tool_call", callId: "call-1", toolName: "ls", status: "running" }],
+      streaming: true,
+    };
+    const frame = await renderMessage(msg);
+    expect(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u.test(frame)).toBe(true);
+  });
+
+  test("complete tool shows ✓ indicator", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-complete",
+      blocks: [{ kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete" }],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("✓");
+  });
+
+  test("error tool shows ✗ indicator", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-error",
+      blocks: [{ kind: "tool_call", callId: "call-1", toolName: "ls", status: "error" }],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("✗");
   });
 });

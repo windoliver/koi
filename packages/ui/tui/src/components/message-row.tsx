@@ -1,15 +1,11 @@
 /**
  * MessageRow — renders a single conversation turn.
- *
- * Routes to the correct renderer based on message kind (user/assistant/system).
- * In Solid, components never re-render unnecessarily — no memo needed.
- * The reducer preserves references for unchanged messages.
  */
 
-import type { JSX, Accessor } from "solid-js";
-import { For, Switch, Match } from "solid-js";
 import type { SyntaxStyle } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
+import type { JSX, Accessor } from "solid-js";
+import { For, Match, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
 import { TextBlock } from "./text-block.js";
@@ -24,22 +20,33 @@ type ErrorBlock_ = TuiAssistantBlock & { readonly kind: "error" };
 interface MessageRowProps {
   readonly message: TuiMessage;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly spinnerFrame: number;
 }
 
 function AssistantBlock(props: {
   readonly block: TuiAssistantBlock;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly streaming?: boolean | undefined;
+  readonly spinnerFrame: number;
 }): JSX.Element {
   return (
     <Switch>
       <Match when={props.block.kind === "text" ? (props.block as TextBlock_) : undefined}>
-        {(b: Accessor<TextBlock_>) => <TextBlock text={b().text} syntaxStyle={props.syntaxStyle} />}
+        {(b: Accessor<TextBlock_>) => (
+          <TextBlock
+            text={b().text}
+            syntaxStyle={props.syntaxStyle}
+            streaming={props.streaming}
+          />
+        )}
       </Match>
       <Match when={props.block.kind === "thinking" ? (props.block as ThinkingBlock_) : undefined}>
         {(b: Accessor<ThinkingBlock_>) => <ThinkingBlock text={b().text} />}
       </Match>
       <Match when={props.block.kind === "tool_call" ? (props.block as ToolCallBlock_) : undefined}>
-        {(b: Accessor<ToolCallBlock_>) => <ToolCallBlock block={b()} />}
+        {(b: Accessor<ToolCallBlock_>) => (
+          <ToolCallBlock block={b()} spinnerFrame={props.spinnerFrame} />
+        )}
       </Match>
       <Match when={props.block.kind === "error" ? (props.block as ErrorBlock_) : undefined}>
         {(b: Accessor<ErrorBlock_>) => <ErrorBlock block={b()} />}
@@ -98,6 +105,7 @@ function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
 function AssistantMessage(props: {
   readonly message: AssistantMessage_;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly spinnerFrame: number;
 }): JSX.Element {
   return (
     <box flexDirection="column">
@@ -106,6 +114,8 @@ function AssistantMessage(props: {
           <AssistantBlock
             block={block}
             syntaxStyle={props.syntaxStyle}
+            streaming={props.message.streaming}
+            spinnerFrame={props.spinnerFrame}
           />
         )}
       </For>
@@ -127,9 +137,19 @@ export function MessageRow(props: MessageRowProps): JSX.Element {
       <Match when={props.message.kind === "user" ? (props.message as UserMessage_) : undefined}>
         {(msg: Accessor<UserMessage_>) => <UserMessage message={msg()} />}
       </Match>
-      <Match when={props.message.kind === "assistant" ? (props.message as AssistantMessage_) : undefined}>
+      <Match
+        when={
+          props.message.kind === "assistant"
+            ? (props.message as AssistantMessage_)
+            : undefined
+        }
+      >
         {(msg: Accessor<AssistantMessage_>) => (
-          <AssistantMessage message={msg()} syntaxStyle={props.syntaxStyle} />
+          <AssistantMessage
+            message={msg()}
+            syntaxStyle={props.syntaxStyle}
+            spinnerFrame={props.spinnerFrame}
+          />
         )}
       </Match>
       <Match when={props.message.kind === "system" ? (props.message as SystemMessage_) : undefined}>

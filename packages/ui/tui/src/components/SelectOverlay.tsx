@@ -10,6 +10,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
+import { COLORS } from "../theme.js";
 import { handleSelectOverlayKey } from "./select-overlay-helpers.js";
 
 export { handleSelectOverlayKey };
@@ -70,7 +71,7 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
       when={props.items.length > 0}
       fallback={
         <box paddingLeft={1}>
-          <text fg="#64748B">{props.emptyText ?? "No items"}</text>
+          <text fg={COLORS.textMuted}>{props.emptyText ?? "No items"}</text>
         </box>
       }
     >
