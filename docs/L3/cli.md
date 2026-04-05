@@ -81,14 +81,18 @@ koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 
 ### `koi tui`
 
-Interactive terminal console for operators. Defaults to `http://localhost:3100/admin/api`, which matches `koi start --admin`.
+Interactive terminal console. Opens a full-screen OpenTUI terminal UI with conversation view,
+command palette (Ctrl+P), and view switching (sessions, doctor, help).
 
 ```bash
 koi tui
-koi tui --url http://localhost:9100/admin/api
 ```
 
-> **Status**: The command currently returns "not yet implemented". The engine worker infrastructure (`engine-worker.ts`) is in place and gated by `_IS_CONFIGURED`; full wiring is pending #1459 app shell integration.
+**Flags:** none yet — engine adapter wiring (`--agent <manifest>`) is pending full #1459 integration.
+
+**Current behaviour:** The TUI shell renders and accepts input. Submitting a message shows an
+`ENGINE_NOT_CONFIGURED` error until the engine adapter is wired in a follow-up PR. Requires a
+real TTY; exits 1 with an error message when stdout is not a terminal (e.g. CI pipes).
 
 ### `koi serve`
 
@@ -136,7 +140,9 @@ koi serve --nexus-url http://...    # Connect to remote Nexus
 ```
 packages/meta/cli/src/
 ├── args.ts                  ← CLI argument parsing (subcommand-aware)
-├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending #1459)
+├── bin.ts                   ← Entry point — dispatches tui before COMMAND_LOADERS registry
+├── tui-command.ts           ← `koi tui` handler: drainEngineStream + runTuiCommand
+├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending full #1459 wiring)
 ├── helpers.ts               ← Shared utilities (extractTextFromBlocks)
 ├── resolve-agent.ts         ← Manifest → runtime resolution via @koi/resolve
 ├── resolve-bootstrap.ts     ← Context source resolution
@@ -164,6 +170,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | Package | Layer | Used For |
 |---------|-------|----------|
 | `@koi/core` | L0 | Types: ContentBlock, EngineInput, WorkerToMainMessage/MainToWorkerMessage, WorkerEngineInput, sessionId (direct dependency as of #1484) |
+| `@koi/tui` | L2 | TUI shell: store, permissionBridge, batcher, createTuiApp (tui command only) |
 | `@koi/engine` | L1 | createKoi() runtime factory |
 | `@koi/engine-pi` | L2 | Default engine adapter (Pi protocol) |
 | `@koi/manifest` | L0u | Manifest loading and validation |

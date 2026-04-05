@@ -6,7 +6,7 @@
  * - 8A: Returns Result<TuiAppHandle, TuiStartError> for no-TTY (expected failure).
  *       Throws Error with cause for renderer failure (unexpected — Zig FFI init).
  * - 10A: config.renderer optional — injected in tests, created internally in prod.
- * - 15A: 50ms debounce on resize dispatch to collapse rapid window-drag events.
+ * - 15A: 16ms debounce on resize dispatch — one render-frame, collapses drag bursts.
  * - 2A: createTuiApp installs the resize listener + dispatches set_layout.
  *
  * Solid render note: @opentui/solid's render() hooks renderer.destroy() to
@@ -39,6 +39,14 @@ export interface TuiAppHandle {
   readonly start: () => Promise<void>;
   /** Unmount, destroy renderer, restore stdin. Idempotent — safe to call multiple times. */
   readonly stop: () => Promise<void>;
+  /**
+   * Returns a Promise that resolves when the *current* stop() completes.
+   * Each start() creates a fresh deferred — safe to call across restarts.
+   * Await this after start() to keep the process alive until the TUI exits.
+   * Never rejects — stop() catches all errors internally.
+   * Returns an already-resolved Promise when no run is active.
+   */
+  readonly done: () => Promise<void>;
 }
 
 /** Configuration for createTuiApp. */
@@ -97,6 +105,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // Set by stop() to cancel any in-flight start(). start() checks this after
   // each async boundary so a stopped handle can never re-animate.
   let closing = false;
+  // Per-run deferred: created by start(), resolved by stop().
+  // Null when no run is active (done() returns Promise.resolve() in that case).
+  let currentDoneResolve: (() => void) | null = null;
+  let currentDone: Promise<void> = Promise.resolve();
   // Monotonically incremented by every stop() call. Each start() captures the
   // generation at launch; if the generation changes by the time start() reaches
   // the mount step, it self-aborts — even if closing was reset after a timeout.
@@ -105,6 +117,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // one initialization runs, and stop() can await it before tearing down.
   let startPromise: Promise<void> | null = null;
   let activeRenderer: CliRenderer | undefined;
+  // Explicit event-loop keepalive held while the TUI is mounted. A pending
+  // Promise alone does not prevent Bun/Node from exiting on beforeExit — only
+  // a real runtime handle (timer, socket, etc.) does. Cleared by stop().
+  let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   let cleanupResize: (() => void) | undefined;
   // Declared as `let` — reassigned in the debounce closure; justified by design
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,6 +130,10 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   let solidRootDispose: (() => void) | undefined;
 
   const handle: TuiAppHandle = {
+    done(): Promise<void> {
+      return currentDone;
+    },
+
     async start(): Promise<void> {
       if (started) return; // already running
       if (closing) return; // stop() was called — handle is permanently closed
@@ -162,13 +182,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         };
         dispatchLayout();
 
-        // Decision 15A: 50ms debounce — collapses 60+ resize events/sec to 1-2
+        // Decision 15A: 16ms debounce — collapses 60+ resize events/sec to 1-2 per frame
         const onResize = (): void => {
           if (debounceTimer !== null) clearTimeout(debounceTimer);
           debounceTimer = setTimeout((): void => {
             dispatchLayout();
             debounceTimer = null;
-          }, 50);
+          }, 16);
         };
         process.stdout.on("resize", onResize);
         cleanupResize = (): void => {
@@ -243,6 +263,46 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           // Always restore once() — we only needed it during mount
           rendererForCapture.once = originalOnce;
         }
+
+        // Mount succeeded — create a fresh per-run deferred so each start/stop
+        // cycle gets its own completion signal (handles are restartable).
+        currentDone = new Promise<void>((resolve) => {
+          currentDoneResolve = resolve;
+        });
+
+        // Hold the event loop open. A pending Promise does not prevent
+        // Bun/Node from exiting on beforeExit — only a real handle does.
+        // The renderer "destroy" listener below clears this timer if the renderer
+        // dies externally, so the timer does not pin the process indefinitely.
+        keepAliveTimer = setInterval(() => {}, 2_147_483_647);
+
+        // If the renderer is destroyed externally (crash, OS teardown) without
+        // stop() being called, resolve done() and release the keepalive so the
+        // process is not pinned by a synthetic timer with no live renderer.
+        // Uses the restored `once` (not the capture shim) — mount is complete.
+        activeRenderer.once("destroy", (): void => {
+          if (keepAliveTimer !== null) {
+            clearInterval(keepAliveTimer);
+            keepAliveTimer = null;
+          }
+          currentDoneResolve?.();
+          currentDoneResolve = null;
+          currentDone = Promise.resolve();
+          started = false;
+        });
+
+        // Guard: if stop() already ran and timed out during the mount (stop
+        // timeout fired while render() was awaiting native FFI init), it
+        // returned without resolving currentDone because currentDoneResolve was
+        // null at the time. Resolve and release the keepalive now so the
+        // process can exit cleanly.
+        if (stopGeneration !== myGeneration) {
+          clearInterval(keepAliveTimer);
+          keepAliveTimer = null;
+          currentDoneResolve?.();
+          currentDoneResolve = null;
+          currentDone = Promise.resolve();
+        }
       })();
 
       startPromise = p;
@@ -311,6 +371,18 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         activeRenderer.destroy();
       }
       activeRenderer = undefined;
+
+      // Release the event-loop keepalive before resolving done() so the process
+      // can exit normally once all other handles (stdin, timers) are drained.
+      if (keepAliveTimer !== null) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
+
+      // Resolve the per-run deferred — unblocks callers awaiting handle.done().
+      currentDoneResolve?.();
+      currentDoneResolve = null;
+      currentDone = Promise.resolve();
     },
   };
 

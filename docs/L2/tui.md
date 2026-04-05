@@ -248,6 +248,10 @@ packages/ui/tui/src/
 │   ├── error-block.tsx    ~30 LOC   — styled error display
 │   ├── message-row.tsx    ~90 LOC   — turn router; <Switch><Match> for kind routing
 │   ├── message-list.tsx   ~30 LOC   — scrollable conversation
+│   ├── ConversationView.tsx ~50 LOC — MessageList + InputArea wrapper
+│   ├── SessionsView.tsx   ~40 LOC   — sessions screen (reactive list + empty-state)
+│   ├── DoctorView.tsx     ~45 LOC   — system health screen (inlined rows)
+│   ├── HelpView.tsx       ~40 LOC   — help screen (static, zero store reads)
 │   └── index.ts           ~7 LOC    — re-exports
 ├── batcher/
 │   └── event-batcher.ts   ~70 LOC   — createEventBatcher: 16ms rate-limiter + flushSync
@@ -255,14 +259,16 @@ packages/ui/tui/src/
 │   ├── engine-channel.ts  ~120 LOC  — createEngineChannel: Worker → batcher → store bridge
 │   └── _stub-worker.ts    —         test stub
 ├── store-context.tsx      ~35 LOC   — TuiStateContext, createStoreSignal, useTuiStore
-├── build.ts               —         Bun.build script (replaces tsup)
+├── tui-root.tsx           ~240 LOC  — TuiRoot + resolveNavCommand
+├── create-app.ts          ~110 LOC  — createTuiApp() factory (16ms resize debounce)
+├── build.ts               —         Bun.build script (also clears tsbuildinfo)
 ├── bunfig.toml            —         Solid preload + conditions=["browser"]
-└── index.ts               ~10 LOC   — top-level re-exports
+└── index.ts               ~80 LOC   — top-level re-exports (incl. CommandId, resolveNavCommand)
 ```
 
 ## Components
 
-Fifteen components built on OpenTUI + SolidJS primitives:
+Eighteen components built on OpenTUI + SolidJS primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
@@ -281,6 +287,9 @@ Fifteen components built on OpenTUI + SolidJS primitives:
 | `CommandPalette` | Ctrl+P fuzzy search | 15 commands, progressive disclosure, query via useKeyboard |
 | `SessionPicker` | Session browser | Sorted list from `TuiState.sessions`, max 50 items |
 | `SelectOverlay<T>` | Generic list selector | Shared primitive for palette and session picker |
+| `SessionsView` | Sessions screen | Reactive list with empty-state fallback; `Ctrl+P → Resume session` hint |
+| `DoctorView` | System health screen | Connection status, TTY detection, model, provider; inlined rows (no JSX-as-prop) |
+| `HelpView` | Help screen | Static keybinding table + full `COMMAND_DEFINITIONS` list; zero store reads |
 
 ### Phase 2j-4: Status bar data flow
 
@@ -328,8 +337,11 @@ Phase 2j-5 adds the final assembly layer on top of the state + components built 
 | `src/key-event.ts` | ~25 | Shared key predicates (`isCtrlP`, `isCtrlC`, `isEscape`, etc.) |
 | `src/theme.ts` | ~70 | Deep Water color tokens + layout helpers (no domain mappers) |
 | `src/keyboard.ts` | ~70 | Pure `handleGlobalKey()` + `createKeyboardHandler()` |
-| `src/components/ConversationView.tsx` | ~50 | Wrapper (MessageList + InputArea) + view stubs |
-| `src/tui-root.tsx` | ~130 | Root component: StatusBar + views + modals + keyboard |
+| `src/components/ConversationView.tsx` | ~50 | Wrapper: MessageList + InputArea |
+| `src/components/SessionsView.tsx` | ~40 | Sessions screen — reactive list with empty-state |
+| `src/components/DoctorView.tsx` | ~45 | System health screen — connection, TTY, model, provider |
+| `src/components/HelpView.tsx` | ~40 | Help screen — static keybindings + command list |
+| `src/tui-root.tsx` | ~240 | Root component: StatusBar + views + modals + keyboard + nav routing |
 | `src/create-app.ts` | ~110 | `createTuiApp()` factory |
 
 ### Key design decisions
@@ -339,8 +351,8 @@ Ctrl+C, Esc). Modals register their own `useKeyboard` and guard with `if (!focus
 Esc priority: root checks `modal !== null` before calling `onDismissModal` vs `onBack`.
 
 **State-driven layout tier (2A):** `TuiRoot` reads `layoutTier` from store. `createTuiApp`
-installs a terminal resize listener and dispatches `set_layout` with 50ms debounce (15A).
-`TuiRoot` itself has zero terminal I/O.
+installs a terminal resize listener and dispatches `set_layout` with 16ms debounce (aligns
+with the batcher frame cadence). `TuiRoot` itself has zero terminal I/O.
 
 **Single modal slot (3A):** `modal: TuiModal | null` — one modal at a time. Permission
 prompt replaces palette (known limitation, intentional for v2 scope).
@@ -348,6 +360,11 @@ prompt replaces palette (known limitation, intentional for v2 scope).
 **Auto-mount factory (4A):** `createTuiApp(config)` does TTY check first (returns
 `Result<TuiAppHandle, TuiStartError>`). Calling `handle.start()` mounts the renderer and
 Solid component tree. `handle.stop()` is idempotent.
+
+**Nav command interception:** `TuiRoot` intercepts `nav:sessions`, `nav:doctor`, `nav:help`
+from the command palette before they reach the CLI's `onCommand` callback. Only engine-affecting
+commands (`agent:*`, `session:*`, `system:*`) bubble up. The pure helper `resolveNavCommand(id)`
+maps command ID → `TuiView | null` and is exported for testing.
 
 ### `createTuiApp` flow
 
@@ -415,3 +432,5 @@ subscriptions.
 - No imports from `@koi/engine`, peer L2, or external state libraries
 
 > **Maintenance note (PR #1506):** Added `biome-ignore lint/style/noNonNullAssertion` annotation to `event-batcher.test.ts` timer access that is bounds-guaranteed by construction. No functional changes.
+
+> **PR #1508 — App shell wiring (#1459):** Added `SessionsView`, `DoctorView`, `HelpView`. `TuiRoot` now intercepts nav commands (palette → `set_view`) and renders real view components via `<Switch><Match>`. `resolveNavCommand()` and `CommandId` exported. Resize debounce changed 50ms → 16ms. `build.ts` now clears `tsconfig.tsbuildinfo` before tsc declaration emit to prevent incremental-cache skip of subpath `.d.ts` files. `StatusBar.ModelChip` fixed: nested `<text>` inside `<text>` is invalid in OpenTUI — replaced with `<box flexDirection="row">` + three sibling `<text>` elements.

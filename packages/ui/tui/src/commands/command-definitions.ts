@@ -164,3 +164,6 @@ export function filterCommands(
     (cmd) => cmd.minSessionCount === undefined || sessionCount >= cmd.minSessionCount,
   );
 }
+
+/** Union of all built-in command IDs — enables typed exhaustiveness checking in CLI handlers. */
+export type CommandId = (typeof COMMAND_DEFINITIONS)[number]["id"];

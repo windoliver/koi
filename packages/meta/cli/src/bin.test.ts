@@ -69,7 +69,7 @@ describe("bin.ts", () => {
     // Stub commands (Phase 2i-3) exit 2 (FAILURE) to fail closed — automation
     // must not treat a no-op stub as a successful operation.
     test("stub commands exit 2 (FAILURE)", async () => {
-      for (const cmd of ["init", "serve", "tui", "logs", "status", "stop", "deploy"]) {
+      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
         const r = await runBin([cmd]);
         expect(r.exitCode).toBe(2);
         expect(r.stderr).toContain("Phase 2i-3");
@@ -81,6 +81,12 @@ describe("bin.ts", () => {
       const r = await runBin(["start"], { OPENROUTER_API_KEY: "" });
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("no API key");
+    });
+
+    test("koi tui exits 1 with TTY error outside a terminal", async () => {
+      const r = await runBin(["tui"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("TTY");
     });
   });
 

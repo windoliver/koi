@@ -1,12 +1,7 @@
 /**
  * ConversationView — the "conversation" screen (activeView === "conversation").
  *
- * Composes MessageList (read-only scroll) + InputArea (text input). This is
- * the only substantive view in Phase 2j-5. Sessions/doctor/help are stubs —
- * they will be replaced in future phases.
- *
- * Decision 7A: create ConversationView wrapper now; honest 1-line stubs for
- * the three remaining views rather than leaving them undefined.
+ * Composes MessageList (read-only scroll) + InputArea (text input).
  */
 
 import type { SyntaxStyle } from "@opentui/core";
@@ -46,18 +41,3 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Placeholder views — Phase 2j-5 stubs, replaced in future phases
-// ---------------------------------------------------------------------------
-
-export function SessionsPlaceholder(): JSX.Element {
-  return <text fg="#64748B">{"[sessions view — coming in a future phase]"}</text>;
-}
-
-export function DoctorPlaceholder(): JSX.Element {
-  return <text fg="#64748B">{"[doctor view — coming in a future phase]"}</text>;
-}
-
-export function HelpPlaceholder(): JSX.Element {
-  return <text fg="#64748B">{"[help view — coming in a future phase]"}</text>;
-}

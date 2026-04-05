@@ -12,6 +12,7 @@
  *   permission-deny       — permissions default mode denies add_numbers
  *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
  *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
+ *   hook-redaction       — agent hook on tool.succeeded, forwardRawPayload + default redaction
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -75,6 +76,7 @@ import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -178,6 +180,32 @@ if (!sendMessageToolResult.ok) {
   process.exit(1);
 }
 const sendMessageTool = sendMessageToolResult.value;
+
+// get_credentials — returns fake secrets for hook-redaction golden (exercises
+// forwardRawPayload + default redaction: API key + password must be stripped
+// before the hook agent sees the payload, while the non-secret `host` survives).
+const credentialsToolResult = buildTool({
+  name: "get_credentials",
+  description: "Retrieve database credentials. WARNING: contains sensitive data.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  // All values here are obviously-fake fixtures, safe to commit. They match
+  // the @koi/security/redaction detectors (Anthropic API key prefix +
+  // generic password field name) so redaction has something to act on.
+  // Do not swap in realistic-looking credentials — the trajectory records
+  // raw tool outputs by design, and those artifacts are committed to Git.
+  execute: async (): Promise<unknown> => ({
+    host: "db.example.com",
+    user: "admin",
+    password: "super-secret-pw-123",
+    apiKey: `sk-ant-api03-${"A".repeat(85)}`,
+  }),
+});
+if (!credentialsToolResult.ok) {
+  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
+  process.exit(1);
+}
+const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -526,13 +554,32 @@ interface QueryConfig {
   readonly permissionMode: "bypass" | "default";
   readonly permissionRules: readonly SourcedRule[];
   readonly permissionDescription: string;
-  readonly hooks: readonly {
-    readonly kind: "command";
-    readonly name: string;
-    readonly cmd: readonly string[];
-    readonly filter: { readonly events: readonly string[] };
-    readonly once?: boolean;
-  }[];
+  readonly hooks: readonly (
+    | {
+        readonly kind: "command";
+        readonly name: string;
+        readonly cmd: readonly string[];
+        readonly filter: { readonly events: readonly string[] };
+        readonly once?: boolean;
+      }
+    | {
+        readonly kind: "agent";
+        readonly name: string;
+        readonly prompt: string;
+        readonly model?: string;
+        readonly filter: { readonly events: readonly string[] };
+        readonly forwardRawPayload?: boolean;
+        readonly toolAllowlist?: readonly string[];
+        readonly toolDenylist?: readonly string[];
+        readonly maxTurns?: number;
+        readonly redaction?: {
+          readonly enabled?: boolean;
+          readonly censor?: "redact" | "mask" | "remove";
+          readonly sensitiveFields?: readonly string[];
+        };
+        readonly once?: boolean;
+      }
+  )[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
@@ -597,22 +644,164 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   });
 
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
+  // Also fires tool.before/tool.succeeded with payload data via its internal registry;
+  // agent hooks on tool events dispatch here, not through @koi/runtime's hook-dispatch.
+  // TODO(hook-dispatch-unification): consolidate with hook-dispatch.ts per Claude Code's
+  // single-dispatcher + observer-tap pattern. Tracked as a follow-up to #1491.
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
-  const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
 
-  // Optional registry for once-hook lifecycle tracking
+  // createHookMiddleware's wrapToolCall dispatches tool.succeeded via its own
+  // internal registry AND includes the full {input, output} data payload in
+  // the event — that richer payload is what redactEventData needs to strip
+  // secrets from. createHookDispatchMiddleware (wired below) ALSO dispatches
+  // tool.succeeded for trajectory recording, but its event carries only
+  // toolName (no data). For idempotent command hooks, double-dispatch is
+  // wasteful but harmless (pre-existing). For agent hooks it would double
+  // real LLM calls and break once:true + any hook with side effects — so
+  // we keep agent hooks only on the coreHookMw path (with data) and leave
+  // hook-dispatch with command hooks only for its trajectory step recording.
+  const dispatchHookConfigs = loadedHooks.filter((h) => h.kind !== "agent");
+
+  // Captures the userInput each agent hook receives — i.e. the already-redacted
+  // payload the sub-agent actually sees. Written to a sidecar file so the
+  // golden test can assert redaction actually stripped secrets before they
+  // crossed into the hook-agent trust boundary (the tool's raw output still
+  // flows to the parent model unredacted — that is by design).
+  const capturedHookInputs: {
+    readonly hookName: string;
+    readonly userInput: string;
+    readonly systemPrompt: string | undefined;
+  }[] = [];
+
+  // SpawnFn for agent-type hooks. Emulates the structured-output slice of the
+  // hook-agent contract: injects request.additionalTools (HookVerdict) into a
+  // real LLM call, then extracts the parsed HookVerdict args as the spawn
+  // output — exercising the same `requiredOutputToolName` enforcement path
+  // the L2 agent executor uses (see packages/lib/hooks/src/agent-executor.ts:245-264).
+  //
+  // SCOPE: this emulator is intended for hooks whose verification only needs
+  // HookVerdict (content-based policies that inspect the payload and decide).
+  // It does NOT emulate production's parent-tool inheritance — createAgentExecutor
+  // forwards `toolDenylist`/`toolAllowlist` so the child sub-agent inherits
+  // parent tools minus safety denies. A hook that investigates via parent
+  // tools (grep, fetch, etc.) cannot be recorded with this emulator; use
+  // createHookSpawnFn + spawnChildAgent for those.
+  const hasAgentHooks = config.hooks.some((h) => h.kind === "agent");
+  const hookSpawnFn: SpawnFn | undefined = hasAgentHooks
+    ? async (request) => {
+        const hookModelAdapter = config.modelAdapter ?? modelAdapter;
+        const hookModel = config.modelName ?? MODEL;
+        const tools = request.additionalTools ?? [];
+        const required = request.requiredOutputToolName;
+        // Snapshot the payload the hook agent actually receives. request.description
+        // is the already-redacted userInput built by @koi/hooks buildHookPrompts.
+        capturedHookInputs.push({
+          hookName: request.agentName,
+          userInput: request.description,
+          systemPrompt: request.systemPrompt,
+        });
+        const msgs: {
+          readonly senderId: string;
+          readonly timestamp: number;
+          readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+        }[] = [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [{ kind: "text", text: request.description }],
+          },
+        ];
+        try {
+          // Honor the hook's requested maxTurns (hook.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+          // resolved by createAgentExecutor and forwarded via SpawnRequest). Mirrors
+          // agent-executor.ts retry-on-missing-verdict: the model may produce text
+          // first, then be nudged to call HookVerdict on the next turn. Bounded at
+          // 2 when the request omits maxTurns, matching the minimal retry budget.
+          const maxTurns = request.maxTurns ?? 2;
+          for (let turn = 0; turn < maxTurns; turn++) {
+            const evts: EngineEvent[] = [];
+            for await (const e of consumeModelStream(
+              hookModelAdapter.stream({
+                messages: msgs,
+                model: hookModel,
+                tools,
+                systemPrompt: request.systemPrompt,
+                signal: request.signal,
+              }),
+              request.signal,
+            )) {
+              if (e.kind !== "done") evts.push(e);
+            }
+            const verdict = evts.find((e) => {
+              if (e.kind !== "tool_call_end") return false;
+              const r = e.result as { readonly toolName: string };
+              return r.toolName === required;
+            });
+            if (verdict?.kind === "tool_call_end") {
+              const r = verdict.result as {
+                readonly toolName: string;
+                readonly parsedArgs?: JsonObject;
+              };
+              return { ok: true, output: JSON.stringify(r.parsedArgs ?? {}) };
+            }
+            // Nudge toward HookVerdict on the second turn.
+            msgs.push({
+              senderId: "user",
+              timestamp: Date.now(),
+              content: [
+                {
+                  kind: "text",
+                  text: `You must call the ${required ?? "HookVerdict"} tool now with your verdict. Do not respond with text.`,
+                },
+              ],
+            });
+          }
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Hook agent did not call HookVerdict within ${maxTurns} turn(s)`,
+              retryable: true,
+            },
+          };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Hook spawn failed: ${message}`,
+              retryable: false,
+            },
+          };
+        }
+      }
+    : undefined;
+
+  // coreHookMw owns all hooks (including agent hooks). spawnFn is required
+  // by createHookMiddleware whenever agent hooks are present.
+  const coreHookMw = createHookMiddleware({
+    hooks: loadedHooks,
+    ...(hookSpawnFn !== undefined ? { spawnFn: hookSpawnFn } : {}),
+  });
+
+  // Optional registry for once-hook lifecycle tracking (command hooks only).
+  // Agent hooks are dispatched exclusively via coreHookMw (above), so the
+  // registry never needs an agentExecutor here.
   // let justified: mutable — created conditionally
   let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
   if (config.useRegistry === true) {
     hookRegistry = createHookRegistry();
-    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, dispatchHookConfigs);
   }
 
-  // Runtime hook dispatch — tool hooks + trajectory recording
+  // Runtime hook dispatch — command tool hooks + trajectory recording.
+  // Agent hooks are filtered out here (they already fire via coreHookMw with
+  // the full {input, output} payload that redaction needs to act on).
   const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
-    hooks: loadedHooks,
+    hooks: dispatchHookConfigs,
     store,
     docId,
     ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
@@ -836,6 +1025,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const rawAtif = JSON.parse(await readFile(`${trajDir}/${atifFile}`, "utf-8"));
   await Bun.write(`${FIXTURES}/${name}.trajectory.json`, JSON.stringify(rawAtif, null, 2));
 
+  // Side-car: agent-hook inputs (what the hook sub-agents actually saw).
+  // Used by goldens that need to assert redaction applied *before* payloads
+  // crossed into the hook-agent trust boundary.
+  //
+  // Written unconditionally when the query declares agent hooks — an empty
+  // inputs array is a *signal* that this recording did not exercise the
+  // hook-agent path, which the replay test asserts on. Skipping the write
+  // would leave a stale sidecar from a previous (passing) recording, letting
+  // a regression go green against old evidence.
+  if (hasAgentHooks) {
+    await Bun.write(
+      `${FIXTURES}/${name}.hook-inputs.json`,
+      JSON.stringify({ name, capturedAt: Date.now(), inputs: capturedHookInputs }, null, 2),
+    );
+  }
+
   // Print summary
   const steps = rawAtif.steps ?? [];
   console.log(
@@ -876,6 +1081,109 @@ const webProvider = createWebProvider({
   executor: webExecutor,
   policy: { sandbox: false, capabilities: { network: { allow: true } } },
 });
+
+// ---------------------------------------------------------------------------
+// @koi/sandbox-os — run_sandboxed: executes arbitrary commands inside OS sandbox
+// Only enabled on supported platforms (macOS seatbelt, Linux bwrap).
+//
+// Design: the sandbox PROFILE is server-side config — LLM supplies only the
+// command path and its arguments. Restrictions (network disabled, credential
+// paths denied via restrictiveProfile) are enforced by the server, never by
+// the caller.
+// ---------------------------------------------------------------------------
+
+let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
+
+const _sandboxAdapterResult = createOsAdapter();
+if (_sandboxAdapterResult.ok) {
+  const _sandboxAdapter = _sandboxAdapterResult.value;
+
+  // Profile is config: network off + credential paths read-denied.
+  // LLM never controls which paths are blocked or whether network is allowed.
+  const _sandboxProfile = restrictiveProfile();
+
+  // Path allowlist: only approved system directories may be listed.
+  // This prevents the recording model from enumerating arbitrary host paths via ls args.
+  const _SANDBOXED_PATH_ALLOWLIST = new Set(["/usr/bin", "/bin", "/usr/local/bin"]);
+
+  const _runSandboxedResult = buildTool({
+    name: "run_sandboxed",
+    description:
+      "List files inside a sandboxed system directory. Network access is disabled. Only /usr/bin, /bin, and /usr/local/bin are allowed paths. Provide the directory path to list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Absolute path to a system directory to list. Allowed: /usr/bin, /bin, /usr/local/bin",
+        },
+      },
+      required: ["path"],
+    },
+    origin: "primordial",
+    execute: async (args: JsonObject): Promise<unknown> => {
+      const dirPath = String(args.path);
+      if (!_SANDBOXED_PATH_ALLOWLIST.has(dirPath)) {
+        // Throw so the framework marks this as tool.failed — not a silent success.
+        throw new Error(
+          `Path not permitted: ${dirPath}. Allowed: ${[..._SANDBOXED_PATH_ALLOWLIST].join(", ")}`,
+        );
+      }
+      const instance = await _sandboxAdapter.create(_sandboxProfile);
+      try {
+        // Hardcode the command — model only controls which approved directory to list.
+        // ls binary location varies by platform; try /bin/ls then /usr/bin/ls.
+        const lsBin = (await Bun.file("/bin/ls").exists()) ? "/bin/ls" : "/usr/bin/ls";
+        // Scrub inherited env so the recorder's OPENROUTER_API_KEY and other secrets are
+        // not visible inside the sandbox. Only pass a minimal allowlist.
+        const safeEnv: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: process.env.HOME ?? "/tmp",
+          TMPDIR: process.env.TMPDIR ?? "/tmp",
+          TERM: "dumb",
+          LANG: process.env.LANG ?? "en_US.UTF-8",
+        };
+        // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
+        const r = await instance.exec(lsBin, ["-1", dirPath], {
+          env: safeEnv,
+          timeoutMs: 10_000,
+        });
+        const stdout = r.stdout.trim();
+        // Only emit entry_count when output is complete — truncated output yields a partial
+        // count that is misleading for audit purposes. Callers should rerun with a narrower
+        // command or check `truncated` before trusting the count.
+        const entryCount =
+          !r.truncated && r.exitCode === 0 && stdout.length > 0
+            ? stdout.split("\n").filter((l) => l.trim()).length
+            : undefined;
+        return {
+          stdout,
+          stderr: r.stderr.trim(),
+          exitCode: r.exitCode,
+          timedOut: r.timedOut,
+          ...(r.truncated === true ? { truncated: true } : {}),
+          ...(r.signal !== undefined ? { signal: r.signal } : {}),
+          ...(entryCount !== undefined ? { entry_count: entryCount } : {}),
+          platform: _sandboxAdapter.platform.platform,
+        };
+      } finally {
+        await instance.destroy();
+      }
+    },
+  });
+
+  if (_runSandboxedResult.ok) {
+    const _runSandboxedTool = _runSandboxedResult.value;
+    sandboxProvider = createSingleToolProvider({
+      name: "run-sandboxed",
+      toolName: "run_sandboxed",
+      createTool: () => _runSandboxedTool,
+    });
+  } else {
+    console.warn(`buildTool(run_sandboxed) failed: ${_runSandboxedResult.error.message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
@@ -1679,6 +1987,33 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 5,
   },
 
+  // sandbox-exec: @koi/sandbox-os — run_sandboxed tool validates Seatbelt/bwrap triggers
+  //   agent calls run_sandboxed with command+args → sandbox executes the command → ATIF captures output
+  //   Profile is server-side config (restrictiveProfile). LLM supplies only command + args.
+  //   Only included when platform detection succeeds (macOS or Linux).
+  ...(sandboxProvider !== undefined
+    ? [
+        {
+          name: "sandbox-exec",
+          prompt:
+            "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+          permissionMode: "bypass" as const,
+          permissionRules: BYPASS_RULES,
+          permissionDescription: "bypass (allow all)",
+          hooks: [
+            {
+              kind: "command" as const,
+              name: "on-sandbox-tool",
+              cmd: ["echo", "sandbox-tool-done"],
+              filter: { events: ["tool.succeeded"] },
+            },
+          ],
+          providers: [sandboxProvider],
+          maxTurns: 2,
+        },
+      ]
+    : []),
+
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.
   //     Stub SpawnFn returns immediately (no real child agent launched).
@@ -1715,6 +2050,60 @@ const queries: readonly QueryConfig[] = [
     // Use Sonnet 4.6 for trajectory recording — Gemini 2.0 Flash drops the
     // function name token on the 3rd+ tool call in a sequence (completion_tokens: 1),
     // causing agent_spawn to resolve as "unknown" in the ATIF.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
+  // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
+  //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
+  //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
+  //   before forwarding the payload to the secret-scanner agent hook. The hook
+  //   spawns a sub-agent that MUST call HookVerdict (injected via additionalTools)
+  //   and should return ok=true — the redacted payload is safe. With a passing
+  //   verdict, the parent then reports the `host` field back to the user.
+  {
+    name: "hook-redaction",
+    prompt:
+      "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "agent" as const,
+        name: "secret-scanner",
+        prompt:
+          "Verify the tool output does not contain any exposed secrets or credentials. " +
+          "If the payload shows redaction markers (e.g. [REDACTED], ***, or masked fields) and no raw secrets, " +
+          "call HookVerdict with ok=true. If you see an unredacted API key or password, call HookVerdict with ok=false.",
+        filter: { events: ["tool.succeeded"] },
+        forwardRawPayload: true,
+        // Narrow this content-policy hook to HookVerdict only — matches what
+        // the recording SpawnFn passes to the LLM (additionalTools only). In
+        // production createAgentExecutor filters HookVerdict out of the
+        // allowlist (see buildToolConstraints) and injects it via
+        // additionalTools, so the child sub-agent still gets HookVerdict.
+        // Result: production and the recorder exercise the same tool surface.
+        toolAllowlist: ["HookVerdict"],
+        // Single turn: the LLM either emits HookVerdict on its first reply
+        // or the hook fails closed. Matches the "must call HookVerdict
+        // exactly once" contract and keeps the recorder's retry budget aligned
+        // with production.
+        maxTurns: 1,
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "credentials",
+        toolName: "get_credentials",
+        createTool: () => credentialsTool,
+      }),
+    ],
+    maxTurns: 2,
+    // Gemini 2.0 Flash's safety layer sometimes refuses prompts mentioning
+    // "credentials" even for benign (clearly fictitious) tool calls, making
+    // trajectory re-recording non-deterministic. Sonnet 4.6 follows the
+    // tool-use instructions reliably here.
     modelAdapter: sonnetAdapter,
     modelName: SONNET_MODEL,
   },
@@ -1765,6 +2154,29 @@ await recordCassette("task-board", () =>
     ],
     tools: [taskCreateTool.descriptor, taskListTool.descriptor],
   }),
+);
+
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
 );
 
 await recordCassette("hook-once", () =>
@@ -1879,6 +2291,29 @@ await recordCassette("memory-recall", () =>
   }),
 );
 
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
+);
+
 // Inject MCP provider for the mcp-tool-use query (needs async setup)
 const mcpSetup = await createMcpProvider();
 const mcpQuery = queries.find((q) => q.name === "mcp-tool-use");
@@ -1946,6 +2381,7 @@ console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
 console.log("  fixtures/spawn-tools.cassette.json");
+console.log("  fixtures/hook-redaction.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);

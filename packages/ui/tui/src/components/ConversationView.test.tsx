@@ -5,7 +5,6 @@
  * - Both MessageList and InputArea render inside ConversationView
  * - onSubmit callback propagates from InputArea through ConversationView
  * - focused={false} when a modal is active (InputArea becomes disabled)
- * - Placeholder stubs render without crashing
  */
 
 import { testRender } from "@opentui/solid";
@@ -16,12 +15,7 @@ import { createStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
 import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
 import type { TuiStore } from "../state/store.js";
-import {
-  ConversationView,
-  DoctorPlaceholder,
-  HelpPlaceholder,
-  SessionsPlaceholder,
-} from "./ConversationView.js";
+import { ConversationView } from "./ConversationView.js";
 
 const OPTS = { width: 80, height: 24 };
 
@@ -153,41 +147,3 @@ describe("ConversationView — onSubmit", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Placeholder stubs
-// ---------------------------------------------------------------------------
-
-describe("placeholder stubs", () => {
-  test("SessionsPlaceholder renders without crash", async () => {
-    const { renderOnce, captureCharFrame, renderer } = await testRender(
-      () => <SessionsPlaceholder />,
-      OPTS,
-    );
-    await renderOnce();
-    const frame = captureCharFrame();
-    expect(frame).toContain("sessions");
-    renderer.destroy();
-  });
-
-  test("DoctorPlaceholder renders without crash", async () => {
-    const { renderOnce, captureCharFrame, renderer } = await testRender(
-      () => <DoctorPlaceholder />,
-      OPTS,
-    );
-    await renderOnce();
-    const frame = captureCharFrame();
-    expect(frame).toContain("doctor");
-    renderer.destroy();
-  });
-
-  test("HelpPlaceholder renders without crash", async () => {
-    const { renderOnce, captureCharFrame, renderer } = await testRender(
-      () => <HelpPlaceholder />,
-      OPTS,
-    );
-    await renderOnce();
-    const frame = captureCharFrame();
-    expect(frame).toContain("help");
-    renderer.destroy();
-  });
-});

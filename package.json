@@ -7,6 +7,7 @@
   "type": "module",
   "workspaces": [
     "packages/*/*",
+    "packages/sandbox/sandbox-os",
     "apps/*"
   ],
   "scripts": {

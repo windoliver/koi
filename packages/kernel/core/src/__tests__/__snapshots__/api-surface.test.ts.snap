@@ -3567,7 +3567,7 @@ interface SandboxExecOptions {
     readonly onStdout?: (chunk: string) => void;
     /** Streaming callback for stderr chunks. */
     readonly onStderr?: (chunk: string) => void;
-    /** Maximum bytes to capture for stdout+stderr. Default: 10 MB. */
+    /** Maximum bytes to capture for stdout+stderr. Default: 1 MB. */
     readonly maxOutputBytes?: number;
     /** Abort signal — kills the process when aborted. */
     readonly signal?: AbortSignal;
@@ -3737,6 +3737,7 @@ exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
  */
 /** Filesystem isolation policy. */
 interface FilesystemPolicy {
+    readonly defaultReadAccess: "open" | "closed";
     readonly allowRead?: readonly string[];
     readonly denyRead?: readonly string[];
     readonly allowWrite?: readonly string[];
@@ -3745,7 +3746,6 @@ interface FilesystemPolicy {
 /** Network isolation policy. */
 interface NetworkPolicy {
     readonly allow: boolean;
-    readonly allowedHosts?: readonly string[];
 }
 /** OS-level resource limits for sandboxed processes. */
 interface ResourceLimits {
