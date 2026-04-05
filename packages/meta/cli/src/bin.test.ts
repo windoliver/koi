@@ -69,7 +69,7 @@ describe("bin.ts", () => {
     // Stub commands exit 2 (FAILURE) to fail closed — automation must not treat
     // a no-op stub as a successful operation.
     test("stub commands exit 2 (FAILURE)", async () => {
-      for (const cmd of ["init", "start", "serve", "tui", "logs", "status", "stop", "deploy"]) {
+      for (const cmd of ["init", "start", "serve", "logs", "status", "stop", "deploy"]) {
         const r = await runBin([cmd]);
         expect(r.exitCode).toBe(2);
         expect(r.stderr).toContain("Phase 2i-3");
@@ -80,6 +80,12 @@ describe("bin.ts", () => {
       const r = await runBin(["start", "--manifest", "my.yaml"]);
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("my.yaml");
+    });
+
+    test("koi tui exits 1 with TTY error outside a terminal", async () => {
+      const r = await runBin(["tui"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("TTY");
     });
   });
 

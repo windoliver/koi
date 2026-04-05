@@ -16,29 +16,51 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Switch, Match, useContext } from "solid-js";
+import { Show, Switch, Match, createMemo, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { CommandDef } from "./commands/command-definitions.js";
 import { CommandPalette } from "./components/CommandPalette.js";
-import {
-  ConversationView,
-  DoctorPlaceholder,
-  HelpPlaceholder,
-  SessionsPlaceholder,
-} from "./components/ConversationView.js";
+import { ConversationView } from "./components/ConversationView.js";
+import { DoctorView } from "./components/DoctorView.js";
+import { HelpView } from "./components/HelpView.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
+import { SessionsView } from "./components/SessionsView.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
-import type { SessionSummary, TuiModal } from "./state/types.js";
+import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
 import {
   StoreContext,
   TuiStateContext,
   createStoreSignal,
   useTuiStore,
 } from "./store-context.js";
+
+// ---------------------------------------------------------------------------
+// Nav command routing
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps navigation command IDs to their target TuiView.
+ * Navigation commands are handled inside TuiRoot — they never bubble up to the
+ * CLI's onCommand callback. Only engine-affecting commands (agent:*, session:*,
+ * system:*) are forwarded via onCommand.
+ */
+const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
+  "nav:sessions": "sessions",
+  "nav:doctor": "doctor",
+  "nav:help": "help",
+};
+
+/**
+ * Returns the TuiView for a navigation command ID, or null for engine commands.
+ * Exported for testing — do not rely on this in external packages.
+ */
+export function resolveNavCommand(commandId: string): TuiView | null {
+  return NAV_VIEW_MAP[commandId] ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +116,14 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
 
   const hasModal = () => modal() !== null;
 
+  // Narrows the modal to a permission-prompt for type-safe child access.
+  // Using createMemo avoids a type assertion and keeps the child render pure.
+  const permissionModal = createMemo(() => {
+    const m = modal();
+    if (m !== null && m.kind === "permission-prompt") return m;
+    return null;
+  });
+
   // ── Global keyboard handler ───────────────────────────────────────────────
   // Reads state at event-time via store.getState() — no stale-closure risk.
   useKeyboard((event: KeyEvent): void => {
@@ -143,6 +173,12 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
 
   const handleCommandSelect = (cmd: CommandDef): void => {
     store.dispatch({ kind: "set_modal", modal: null });
+    // Navigation commands are handled here — no CLI callback needed.
+    const navView = resolveNavCommand(cmd.id);
+    if (navView !== null) {
+      store.dispatch({ kind: "set_view", view: navView });
+      return;
+    }
     props.onCommand(cmd.id);
   };
 
@@ -170,42 +206,44 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
           />
         </Match>
         <Match when={activeView() === "sessions"}>
-          <SessionsPlaceholder />
+          <SessionsView />
         </Match>
         <Match when={activeView() === "doctor"}>
-          <DoctorPlaceholder />
+          <DoctorView />
         </Match>
         <Match when={activeView() === "help"}>
-          <HelpPlaceholder />
+          <HelpView />
         </Match>
       </Switch>
 
-      {/* Modal layer — overlays the active view (Decision 3A: single slot) */}
-      <Switch>
-        <Match when={modal()?.kind === "command-palette"}>
-          <CommandPalette
-            onSelect={handleCommandSelect}
-            onClose={dismissModal}
+      {/* Modal layer — overlays the active view (Decision 3A: single slot).
+          Uses Show instead of Switch because Switch returns "" when no Match
+          fires, and OpenTUI throws on orphan text nodes inserted into a box.
+          Show returns null when its condition is false, which insertExpression
+          handles safely via cleanChildren. */}
+      <Show when={modal()?.kind === "command-palette"}>
+        <CommandPalette
+          onSelect={handleCommandSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
+      <Show when={permissionModal()}>
+        {(m: Accessor<TuiModal & { readonly kind: "permission-prompt" }>) => (
+          <PermissionPrompt
+            prompt={m().prompt}
+            onRespond={props.onPermissionRespond}
             focused={true}
           />
-        </Match>
-        <Match when={modal()?.kind === "permission-prompt" ? (modal() as TuiModal & { kind: "permission-prompt" }) : undefined}>
-          {(permModal: Accessor<TuiModal & { kind: "permission-prompt" }>) => (
-            <PermissionPrompt
-              prompt={permModal().prompt}
-              onRespond={props.onPermissionRespond}
-              focused={true}
-            />
-          )}
-        </Match>
-        <Match when={modal()?.kind === "session-picker"}>
-          <SessionPicker
-            onSelect={handleSessionSelect}
-            onClose={dismissModal}
-            focused={true}
-          />
-        </Match>
-      </Switch>
+        )}
+      </Show>
+      <Show when={modal()?.kind === "session-picker"}>
+        <SessionPicker
+          onSelect={handleSessionSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
     </box>
   );
 }
