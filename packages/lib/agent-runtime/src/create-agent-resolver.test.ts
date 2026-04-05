@@ -10,6 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { TaskableAgentSummary } from "@koi/core";
 import { createAgentResolver } from "./create-agent-resolver.js";
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ describe("createAgentResolver — no dirs", () => {
 
     const summaries = await resolver.list();
     expect(summaries.length).toBeGreaterThan(0);
-    const keys = summaries.map((s) => s.key);
+    const keys = summaries.map((s: TaskableAgentSummary) => s.key);
     expect(keys).toContain("researcher");
     expect(keys).toContain("coder");
     expect(keys).toContain("reviewer");

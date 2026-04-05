@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { ToolConfig } from "@koi/core";
 import { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./index.js";
 
 describe("getBuiltInAgents", () => {
@@ -23,7 +24,7 @@ describe("getBuiltInAgents", () => {
       agentType: a.agentType,
       source: a.source,
       model: a.manifest.model.name,
-      tools: a.manifest.tools?.map((t) => t.name) ?? [],
+      tools: a.manifest.tools?.map((t: ToolConfig) => t.name) ?? [],
     }));
 
     expect(shapes).toMatchSnapshot();
