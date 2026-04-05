@@ -16,18 +16,23 @@ import { collectMatches, EMPTY_MATCHES } from "./collect.js";
 const GITHUB_CLASSIC_PATTERN = /gh[psuor]_[A-Za-z0-9_]{36,}/g;
 
 /**
- * Fine-grained PATs: github_pat_ + 22 base62 + _ + 59 base62 (82 suffix chars total).
+ * Fine-grained PATs: `github_pat_` + 82 word chars, matching the gitleaks
+ * authoritative rule `github_pat_\w{82}`. Only GitHub's `github_pat_` prefix is
+ * publicly documented; inner shape (e.g. a `_` at offset 22) is observed but not
+ * guaranteed, so we do NOT enforce it — enforcing an inferred layout would risk
+ * silent false negatives (unredacted real tokens = secret leak) if the format
+ * drifts.
  *
- * Enforces the documented inner structure (separator at position 22, no underscores
- * inside either segment) and anchors the match between non-word boundaries so an
- * attacker-controlled `github_pat_…`-looking blob cannot redact arbitrary surrounding
- * content from logs/audit output.
+ * Leading lookbehind prevents attacker-injected prefixes (`xxgithub_pat_…`) from
+ * anchoring a match. We deliberately do NOT require a trailing non-word boundary:
+ * a real token concatenated with adjacent word chars must still redact its 93
+ * known-secret chars rather than failing open. Trailing payload is left visible,
+ * which is the correct tradeoff for a redaction library.
  *
- * Intentional tradeoff: stricter than gitleaks' `github_pat_\w{82}`. If GitHub ever
- * changes the fine-grained PAT format, real tokens will stop redacting — revisit then.
+ * Fixes #1494 by capping the match span to 93 chars (prefix + 82) instead of the
+ * previous unbounded `{40,}` quantifier that redacted arbitrary-length payload.
  */
-const GITHUB_PAT_PATTERN =
-  /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}(?![A-Za-z0-9_])/g;
+const GITHUB_PAT_PATTERN = /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{82}/g;
 
 export function createGitHubDetector(): SecretPattern {
   return {

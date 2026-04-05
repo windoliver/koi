@@ -84,7 +84,9 @@ describe("createGitHubDetector", () => {
     expect(matches.length).toBe(1);
   });
 
-  // Valid fine-grained PAT shape: 22 base62 + "_" + 59 base62 (82 suffix chars total).
+  // Fine-grained PAT: `github_pat_` + 82 word chars. Uses the observed 22 alnum +
+  // `_` + 59 alnum shape for realism, but the detector does NOT require this
+  // inner structure — any 82 word-char suffix matches.
   const validPat = (): string => `github_pat_${"A".repeat(22)}_${"B".repeat(59)}`;
 
   test("detects fine-grained PAT (github_pat_)", () => {
@@ -97,8 +99,7 @@ describe("createGitHubDetector", () => {
 
   test("detects fine-grained PAT embedded with surrounding punctuation", () => {
     const token = validPat();
-    const text = `token="${token}"; rest`;
-    const matches = detector.detect(text);
+    const matches = detector.detect(`token="${token}"; rest`);
     expect(matches.length).toBe(1);
     expect(matches[0]?.text).toBe(token);
   });
@@ -117,53 +118,49 @@ describe("createGitHubDetector", () => {
     expect(detector.detect(`${token} suffix`).length).toBe(1);
   });
 
+  test("detects PAT even with unexpected inner layout (provider-format drift)", () => {
+    // If GitHub changes inner structure, we must still redact. The detector
+    // intentionally does not enforce 22/_/59.
+    const driftedA = `github_pat_${"a".repeat(82)}`; // no separator
+    const driftedB = `github_pat_${"a".repeat(40)}_${"b".repeat(41)}`; // separator at 40
+    const driftedC = `github_pat_${"a".repeat(10)}_${"b".repeat(71)}`; // separator at 10
+    expect(detector.detect(driftedA).length).toBe(1);
+    expect(detector.detect(driftedB).length).toBe(1);
+    expect(detector.detect(driftedC).length).toBe(1);
+  });
+
   test("ignores short github_pat_ strings (avoids over-redaction)", () => {
-    const short = "github_pat_short_id";
-    const matches = detector.detect(short);
-    expect(matches.length).toBe(0);
+    expect(detector.detect("github_pat_short_id").length).toBe(0);
+    // 81 chars — one short of the 82-char suffix requirement.
+    expect(detector.detect(`github_pat_${"a".repeat(81)}`).length).toBe(0);
   });
 
-  test("ignores long github_pat_ blob without documented inner structure", () => {
-    // 82 chars but all underscores/lowercase — not the 22+_+59 base62 shape.
-    const blob = `github_pat_${"a_".repeat(41)}`; // 82 chars, underscores scattered
-    expect(detector.detect(blob).length).toBe(0);
+  test("bounds match length to 93 chars (no more unbounded redaction)", () => {
+    // Suffix of 200 word chars — pre-fix regex (`{40,}`) would have matched all
+    // 200, redacting arbitrary surrounding payload. Fixed length caps the match
+    // at 93 chars ("github_pat_" + 82), leaving 118 trailing chars visible.
+    const matches = detector.detect(`github_pat_${"a".repeat(200)}`);
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.text.length).toBe(93);
   });
 
-  test("ignores github_pat_ with separator at wrong position", () => {
-    // 10 alnum + _ + 71 alnum — separator not at position 22.
-    const wrong = `github_pat_${"a".repeat(10)}_${"b".repeat(71)}`;
-    expect(detector.detect(wrong).length).toBe(0);
+  test("still redacts PAT concatenated with trailing word chars (leak prevention)", () => {
+    // If a real token is accidentally concatenated with adjacent data, we MUST
+    // still redact its 93-char body rather than failing open (secret leak).
+    const matches = detector.detect(`${validPat()}extra`);
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.text).toBe(validPat());
   });
 
-  test("ignores valid-looking PAT followed by adjacent word chars (lookahead)", () => {
-    const token = `${validPat()}extra`;
-    expect(detector.detect(token).length).toBe(0);
+  test("ignores valid-looking PAT preceded by adjacent word char (lookbehind)", () => {
+    expect(detector.detect(`xx${validPat()}`).length).toBe(0);
   });
 
-  test("ignores valid-looking PAT preceded by adjacent word chars (lookbehind)", () => {
-    const token = `xx${validPat()}`;
-    expect(detector.detect(token).length).toBe(0);
-  });
-
-  test("ignores near-miss segment lengths (21/23 and 58/60)", () => {
-    const tooShortFirst = `github_pat_${"A".repeat(21)}_${"B".repeat(59)}`;
-    const tooLongFirst = `github_pat_${"A".repeat(23)}_${"B".repeat(59)}`;
-    const tooShortSecond = `github_pat_${"A".repeat(22)}_${"B".repeat(58)}`;
-    const tooLongSecond = `github_pat_${"A".repeat(22)}_${"B".repeat(60)}`;
-    expect(detector.detect(tooShortFirst).length).toBe(0);
-    // Note: tooLongFirst has 23 alnums followed by `_` — lookahead blocks 22 alnum
-    // prefix from matching because next char is alnum (the 23rd), then the `_` lands
-    // the wrong position anyway.
-    expect(detector.detect(tooLongFirst).length).toBe(0);
-    expect(detector.detect(tooShortSecond).length).toBe(0);
-    // tooLongSecond: 22+_+60 alnum — the first 22+_+59 is a valid prefix, but the
-    // trailing alnum is blocked by the negative lookahead.
-    expect(detector.detect(tooLongSecond).length).toBe(0);
-  });
-
-  test("ignores payload containing hyphen or non-ASCII char", () => {
-    const hyphen = `github_pat_${"A".repeat(21)}-_${"B".repeat(59)}`;
-    const nonAscii = `github_pat_${"A".repeat(21)}é_${"B".repeat(59)}`;
+  test("ignores payload containing hyphen or non-ASCII char within 82-char suffix", () => {
+    // Non-word char inside the suffix breaks the [A-Za-z0-9_]{82} match, so these
+    // payloads are not recognized as tokens.
+    const hyphen = `github_pat_${"a".repeat(40)}-${"b".repeat(41)}`;
+    const nonAscii = `github_pat_${"a".repeat(40)}é${"b".repeat(41)}`;
     expect(detector.detect(hyphen).length).toBe(0);
     expect(detector.detect(nonAscii).length).toBe(0);
   });
