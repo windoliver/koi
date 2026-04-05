@@ -175,9 +175,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const effectiveResolver = (() => {
     if (config.resolver !== undefined) return config.resolver;
     if (config.agentDirs !== undefined) {
-      const { resolver, warnings } = createAgentResolver(config.agentDirs);
+      const { resolver, warnings, conflicts } = createAgentResolver(config.agentDirs);
       for (const w of warnings) {
         console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
+      }
+      for (const c of conflicts) {
+        console.warn(
+          `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
+        );
       }
       return resolver;
     }
