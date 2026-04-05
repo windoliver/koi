@@ -12,8 +12,10 @@
  */
 
 import type {
+  AgentEnv,
   AgentId,
   ChannelAdapter,
+  ChannelInheritMode,
   ChildCompletionResult,
   ChildHandle,
   ChildLifecycleEvent,
@@ -22,6 +24,7 @@ import type {
   DelegationId,
   EngineEvent,
   EngineInput,
+  SpawnChannelPolicy,
   Tool,
 } from "@koi/core";
 import {
@@ -68,10 +71,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 1. Acquire ledger slot (tree-wide process count)
   //    Long-lived — released on child termination, not on tool call completion.
   //    Fan-out (short-lived) is handled by the spawn guard middleware.
-  const acquired = options.spawnLedger.acquire();
-  // acquire() returns boolean | Promise<boolean> per L0 interface
-  const didAcquire = await acquired;
+  //    When acquireOrWait is available and a signal is provided, wait for a slot
+  //    instead of failing immediately at capacity (backpressure).
+  let didAcquire: boolean;
+  if (options.spawnLedger.acquireOrWait !== undefined && options.signal !== undefined) {
+    didAcquire = await options.spawnLedger.acquireOrWait(options.signal);
+  } else {
+    const acquired = options.spawnLedger.acquire();
+    // acquire() returns boolean | Promise<boolean> per L0 interface
+    didAcquire = await acquired;
+  }
   if (!didAcquire) {
+    // Distinguish abort (user/system cancellation) from true capacity exhaustion.
+    // acquireOrWait resolves false when the AbortSignal fires — not a RATE_LIMIT event.
+    // RATE_LIMIT is retryable: true; a cancelled spawn must NOT trigger retry logic.
+    if (options.spawnLedger.acquireOrWait !== undefined && options.signal?.aborted) {
+      throw KoiRuntimeError.from(
+        "INTERNAL",
+        "Spawn cancelled: abort signal fired while waiting for a process slot",
+        { retryable: false },
+      );
+    }
     const active = options.spawnLedger.activeCount();
     const cap = options.spawnLedger.capacity();
     throw KoiRuntimeError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
@@ -86,17 +106,41 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   // 3. Build inherited component provider (scope-filtered + denylist-filtered)
   //    When nonInteractive, also strip interactive/approval-capable tools.
-  const baseDenylist =
-    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined;
-  const toolDenylist =
+  // Always exclude Spawn (and nonInteractive tools when applicable) from inheritance.
+  // Spawn carries a parent-bound closure; inheriting it would mis-attribute nested
+  // spawns to the ancestor. Each child that needs Spawn must get a fresh provider.
+  const baseDenylist = expandDenylistWithAlwaysExcluded(
+    options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
+  );
+  // let justified: modified below when applying manifest ceiling
+  let toolDenylist: ReadonlySet<string> =
     options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
   const baseAllowlist =
     options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
-  // When nonInteractive, strip interactive tools from allowlist too (not just denylist)
-  const toolAllowlist =
+  // let justified: modified below when applying manifest ceiling
+  let toolAllowlist: ReadonlySet<string> | undefined =
     options.nonInteractive === true && baseAllowlist !== undefined
       ? stripFromAllowlist(baseAllowlist, NON_INTERACTIVE_DENIED_TOOLS)
       : baseAllowlist;
+
+  // Apply manifest-level spawn ceiling declared by the parent manifest.
+  // The ceiling is the authoritative maximum — runtime options can only further restrict.
+  // Allowlist mode: child inherits only tools in manifest.list (intersect with runtime allowlist).
+  // Denylist mode: manifest.list tools are always excluded (union with runtime denylist).
+  const manifestSpawn = options.parentAgent.manifest.spawn;
+  if (manifestSpawn?.tools !== undefined) {
+    const manifestPolicy = manifestSpawn.tools.policy ?? "denylist";
+    const manifestList = new Set(manifestSpawn.tools.list ?? []);
+    if (manifestPolicy === "allowlist") {
+      toolAllowlist =
+        toolAllowlist !== undefined
+          ? intersectSets(toolAllowlist, manifestList) // runtime allowlist ∩ manifest ceiling
+          : manifestList; // no runtime allowlist: manifest becomes the effective ceiling
+    } else {
+      toolDenylist = unionSets(toolDenylist, manifestList); // always exclude manifest-denied tools
+    }
+  }
+
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),
@@ -124,34 +168,66 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 4a. Env inheritance
+  // 4a. Env inheritance — apply manifest ceiling (spawn.env.exclude) before runtime overrides.
+  // Manifest exclusions remove keys from the child env unconditionally; runtime overrides
+  // further modify the result. Keys in spawn.env.exclude that don't exist in the parent env
+  // are silently ignored (they're already absent — no violation to report).
   const parentHasEnv = options.parentAgent.has(ENV);
   if (parentHasEnv) {
-    const envOverrides = inheritance.env?.overrides;
+    const parentEnvValues = options.parentAgent.component<AgentEnv>(ENV)?.values ?? {};
+    const parentEnvKeys = new Set(Object.keys(parentEnvValues));
+
+    // Translate manifest env exclusions to undefined overrides (only for keys that exist)
+    const manifestExcludeOverrides: Record<string, undefined> = {};
+    for (const key of manifestSpawn?.env?.exclude ?? []) {
+      if (parentEnvKeys.has(key)) {
+        manifestExcludeOverrides[key] = undefined;
+      }
+    }
+
+    // Merge: runtime overrides applied first, then manifest exclusions (manifest always wins).
+    // This ensures a manifest ceiling cannot be circumvented by a per-spawn override that
+    // re-adds an excluded credential — the final removal always takes effect.
+    const mergedOverrides: Readonly<Record<string, string | undefined>> = {
+      ...(inheritance.env?.overrides ?? {}),
+      ...manifestExcludeOverrides,
+    };
+    const hasOverrides = Object.keys(mergedOverrides).length > 0;
+
     inheritanceProviders.push(
       createAgentEnvProvider({
         parent: options.parentAgent,
-        ...(envOverrides !== undefined ? { overrides: envOverrides } : {}),
+        ...(hasOverrides ? { overrides: mergedOverrides } : {}),
       }),
     );
   }
 
-  // 4b. Channel inheritance
-  const channelPolicy = inheritance.channels ?? DEFAULT_SPAWN_CHANNEL_POLICY;
+  // 4b. Channel inheritance — apply manifest ceiling (spawn.channels) before runtime policy.
+  // The manifest declares the most permissive channel mode allowed; runtime policy may
+  // further restrict it. If manifest says "none", child gets no channels regardless of runtime.
+  const runtimeChannelPolicy = inheritance.channels ?? DEFAULT_SPAWN_CHANNEL_POLICY;
+  const channelPolicy =
+    manifestSpawn?.channels !== undefined
+      ? applyChannelCeiling(manifestSpawn.channels, runtimeChannelPolicy)
+      : runtimeChannelPolicy;
   if (channelPolicy.mode !== "none") {
     const parentChannels = options.parentAgent.query("channel:");
     for (const [tokenKey, channel] of parentChannels) {
       const tokenStr = tokenKey as string;
       const channelName = tokenStr.slice("channel:".length);
-      const proxy = createInheritedChannel(
-        channel as ChannelAdapter,
-        options.parentAgent.pid,
-        channelPolicy,
-      );
-      // Wrap as a simple component provider
+      const capturedChannel = channel as ChannelAdapter;
+      // Create the proxy inside attach() so the child's own PID is used for attribution.
+      // The child PID is only known after createKoi() assembles the agent; attach() is
+      // called during that assembly, making agent.pid the correct child identity.
       const channelProvider: ComponentProvider = {
         name: `inherited-channel:${channelName}`,
-        attach: async () => new Map([[channelToken(channelName) as string, proxy]]),
+        attach: async (agent) =>
+          new Map([
+            [
+              channelToken(channelName) as string,
+              createInheritedChannel(capturedChannel, agent.pid, channelPolicy),
+            ],
+          ]),
       };
       inheritanceProviders.push(channelProvider);
     }
@@ -310,14 +386,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
         });
 
-        // Revoke auto-delegation grant on child termination (best-effort)
+        // Revoke auto-delegation grant on child termination.
+        // Failure is logged as a structured warning with enough context to manually
+        // revoke the leaked key. Future: retry queue (#1425 follow-up).
         if (childGrantId !== undefined && parentHasDelegation) {
           const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
           if (parentDel !== undefined) {
             void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
-              console.error(
-                `[spawn-child] delegation revoke failed for child "${childPid.id}"`,
-                err,
+              console.warn(
+                `[spawn-child] delegation revoke failed — key may remain active until manually revoked. ` +
+                  `delegationId="${childGrantId}", childId="${childPid.id}", error: ${err instanceof Error ? err.message : String(err)}`,
               );
             });
           }
@@ -368,6 +446,26 @@ const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "ask_user",
 ]);
 
+/**
+ * Tool names always excluded from child tool inheritance.
+ * The Spawn tool carries a closure bound to the parent agent entity; if a child
+ * inherited it, nested spawn calls would be attributed to the ancestor rather than
+ * the actual spawning agent (wrong lineage, wrong inbox/report routing, wrong depth).
+ * Each child that needs Spawn must have a fresh provider attached during assembly.
+ */
+const ALWAYS_EXCLUDED_FROM_INHERITANCE: ReadonlySet<string> = new Set(["Spawn"]);
+
+/** Always exclude certain tools from child inheritance. */
+function expandDenylistWithAlwaysExcluded(
+  base: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const merged = new Set(base ?? []);
+  for (const tool of ALWAYS_EXCLUDED_FROM_INHERITANCE) {
+    merged.add(tool);
+  }
+  return merged;
+}
+
 /** Remove denied tool names from an allowlist. Returns a new Set. */
 function stripFromAllowlist(
   allowlist: ReadonlySet<string>,
@@ -389,4 +487,63 @@ function expandDenylistForNonInteractive(
     merged.add(tool);
   }
   return merged;
+}
+
+/**
+ * Apply the manifest's channel ceiling to the runtime channel policy.
+ * All three fields are clamped — the runtime can only be equally or more restrictive.
+ *
+ * Restrictiveness orders:
+ *   mode:             none > output-only > all
+ *   attribution:      none > prefix > metadata  (less attribution = more restrictive)
+ *   propagateStatus:  false > true              (no propagation = more restrictive)
+ */
+function applyChannelCeiling(
+  ceiling: SpawnChannelPolicy,
+  runtime: SpawnChannelPolicy,
+): SpawnChannelPolicy {
+  const MODE_R: Record<ChannelInheritMode, number> = { none: 2, "output-only": 1, all: 0 };
+  const ATTR_R: Record<"metadata" | "prefix" | "none", number> = {
+    none: 2,
+    prefix: 1,
+    metadata: 0,
+  };
+
+  const effectiveMode = MODE_R[ceiling.mode] >= MODE_R[runtime.mode] ? ceiling.mode : runtime.mode;
+
+  // Attribution: clamp to ceiling if ceiling is more restrictive
+  let effectiveAttribution = runtime.attribution;
+  if (ceiling.attribution !== undefined) {
+    const ceilingR = ATTR_R[ceiling.attribution];
+    const runtimeR = runtime.attribution !== undefined ? ATTR_R[runtime.attribution] : -1;
+    effectiveAttribution = ceilingR >= runtimeR ? ceiling.attribution : runtime.attribution;
+  }
+
+  // propagateStatus: false is more restrictive — ceiling false cannot be overridden
+  const effectivePropagateStatus =
+    ceiling.propagateStatus === false ? false : runtime.propagateStatus;
+
+  return {
+    mode: effectiveMode,
+    ...(effectiveAttribution !== undefined ? { attribution: effectiveAttribution } : {}),
+    ...(effectivePropagateStatus !== undefined
+      ? { propagateStatus: effectivePropagateStatus }
+      : {}),
+  };
+}
+
+/** Returns a new Set containing only elements present in both sets. */
+function intersectSets<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): ReadonlySet<T> {
+  const result = new Set<T>();
+  for (const item of a) {
+    if (b.has(item)) result.add(item);
+  }
+  return result;
+}
+
+/** Returns a new Set containing all elements from both sets. */
+function unionSets<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): ReadonlySet<T> {
+  const result = new Set<T>(a);
+  for (const item of b) result.add(item);
+  return result;
 }

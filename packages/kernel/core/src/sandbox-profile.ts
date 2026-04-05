@@ -11,6 +11,7 @@
 
 /** Filesystem isolation policy. */
 export interface FilesystemPolicy {
+  readonly defaultReadAccess: "open" | "closed";
   readonly allowRead?: readonly string[];
   readonly denyRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -20,7 +21,6 @@ export interface FilesystemPolicy {
 /** Network isolation policy. */
 export interface NetworkPolicy {
   readonly allow: boolean;
-  readonly allowedHosts?: readonly string[];
 }
 
 /** OS-level resource limits for sandboxed processes. */

@@ -423,7 +423,11 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const results = await registry.execute(sessionId, event);
       const aggregated = aggregateDecisions(results);
       if (aggregated.decision.kind === "block") {
-        return { kind: "block", reason: aggregated.decision.reason };
+        return {
+          kind: "block",
+          reason: aggregated.decision.reason,
+          blockedBy: aggregated.hookName ?? "unknown",
+        };
       }
       return { kind: "continue" };
     },

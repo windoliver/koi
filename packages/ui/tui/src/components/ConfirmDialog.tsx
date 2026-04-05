@@ -9,8 +9,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { Show } from "solid-js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,27 +52,18 @@ export function processConfirmKey(keyName: string): "confirm" | "cancel" | null 
 // Component
 // ---------------------------------------------------------------------------
 
-export const ConfirmDialog: React.NamedExoticComponent<ConfirmDialogProps> = memo(function ConfirmDialog(
-  props: ConfirmDialogProps,
-): React.ReactNode {
-  const { message, details, onConfirm, onCancel, focused } = props;
-
-  const handleKey = useCallback(
-    (key: KeyEvent) => {
-      if (!focused) return;
-      const result = processConfirmKey(key.name);
-      if (result === "confirm") {
-        key.preventDefault();
-        onConfirm();
-      } else if (result === "cancel") {
-        key.preventDefault();
-        onCancel();
-      }
-    },
-    [onConfirm, onCancel, focused],
-  );
-
-  useKeyboard(handleKey);
+export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    const result = processConfirmKey(key.name);
+    if (result === "confirm") {
+      key.preventDefault();
+      props.onConfirm();
+    } else if (result === "cancel") {
+      key.preventDefault();
+      props.onCancel();
+    }
+  });
 
   return (
     <box
@@ -81,20 +73,20 @@ export const ConfirmDialog: React.NamedExoticComponent<ConfirmDialogProps> = mem
       paddingLeft={1}
       paddingRight={1}
     >
-      <text fg="#E2E8F0"><b>{message}</b></text>
+      <text fg="#E2E8F0"><b>{props.message}</b></text>
 
-      {details !== undefined ? (
+      <Show when={props.details !== undefined}>
         <box marginTop={1}>
-          <text fg="#94A3B8">{details}</text>
+          <text fg="#94A3B8">{props.details}</text>
         </box>
-      ) : null}
+      </Show>
 
-      {focused ? (
+      <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
           <text fg="#4ADE80">{"[y/Enter] Confirm"}</text>
           <text fg="#F87171">{"[n/Esc] Cancel"}</text>
         </box>
-      ) : null}
+      </Show>
     </box>
   );
-});
+}

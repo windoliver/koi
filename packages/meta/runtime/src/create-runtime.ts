@@ -20,6 +20,17 @@ import type {
   TurnId,
 } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
+import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
+
+// Process-wide shared spawn ledger — all runtimes on this process account against
+// the same cap when no explicit shared ledger is provided via RuntimeConfig.spawnLedger.
+// A per-runtime private ledger would let multiple runtimes exceed the intended global limit.
+// Capacity is derived from DEFAULT_SPAWN_POLICY so the ledger and policy limits stay in sync.
+const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(
+  DEFAULT_SPAWN_POLICY.maxTotalProcesses,
+);
+
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
   createDebugInstrumentation,
@@ -155,12 +166,44 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? collectDebugInfo(middleware, adapter, channel, stubInstances)
       : undefined;
 
+  // Create spawn provider when a resolver is provided. Callers pass the provider
+  // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
+  // Resolve effective policy first so the fallback ledger uses the same capacity as
+  // the policy — a custom spawnPolicy.maxTotalProcesses without an explicit ledger
+  // would otherwise be silently ignored by the process-wide default ledger.
+  const effectiveSpawnPolicy = config.spawnPolicy ?? DEFAULT_SPAWN_POLICY;
+  const effectiveSpawnLedger =
+    config.spawnLedger ??
+    // Only reuse the shared default when the policy cap matches; otherwise allocate
+    // a fresh ledger with the correct capacity so the configured limit is honoured.
+    (effectiveSpawnPolicy.maxTotalProcesses === DEFAULT_SPAWN_POLICY.maxTotalProcesses
+      ? DEFAULT_PROCESS_SPAWN_LEDGER
+      : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
+
+  const spawnProvider =
+    config.resolver !== undefined
+      ? createSpawnToolProvider({
+          resolver: config.resolver,
+          spawnLedger: effectiveSpawnLedger,
+          adapter,
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: "sonnet" },
+          },
+          spawnPolicy: effectiveSpawnPolicy,
+          ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        })
+      : undefined;
+
   return {
     adapter,
     channel,
     middleware,
     debugInfo,
     trajectoryStore,
+    spawnProvider,
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {

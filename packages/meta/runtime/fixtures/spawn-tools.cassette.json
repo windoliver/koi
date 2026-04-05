@@ -1,0 +1,181 @@
+{
+  "name": "spawn-tools",
+  "model": "anthropic/claude-sonnet-4-6",
+  "recordedAt": 1775300754471,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "I'll execute"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " these three"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " steps in order."
+    },
+    {
+      "kind": "text_delta",
+      "delta": " Let's"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " start with"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " step"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " 1 "
+    },
+    {
+      "kind": "text_delta",
+      "delta": "—"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " creating the task!"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n\n**"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "Step 1: Creating"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " the task.."
+    },
+    {
+      "kind": "text_delta",
+      "delta": ".**"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "task_create",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "{\"sub"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "ject\": \"Re"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "search cac"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "hing "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "strategies\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": ", \"de"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "scription"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "\": \"In"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "vestig"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "ate Re"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "dis v"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "s Memcach"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+      "delta": "ed\"}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 1420,
+      "outputTokens": 114
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "I'll execute these three steps in order. Let's start with step 1 — creating the task!\n\n**Step 1: Creating the task...**",
+        "model": "anthropic/claude-sonnet-4-6",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775300752-Tm7SPBjFQBoi4GinrM8O",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "I'll execute these three steps in order. Let's start with step 1 — creating the task!\n\n**Step 1: Creating the task...**"
+          },
+          {
+            "kind": "tool_call",
+            "id": "toolu_vrtx_0118GVLTApxH3DvDtRh2E7R7",
+            "name": "task_create",
+            "arguments": {
+              "subject": "Research caching strategies",
+              "description": "Investigate Redis vs Memcached"
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 1420,
+          "outputTokens": 114
+        }
+      }
+    }
+  ]
+}

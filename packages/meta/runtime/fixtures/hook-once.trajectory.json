@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:15.934Z",
+      "timestamp": "2026-04-04T10:53:31.488Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:15.934Z",
+      "timestamp": "2026-04-04T10:53:31.488Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-03T17:53:15.935Z",
+      "timestamp": "2026-04-04T10:53:31.488Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
       "observation": {
@@ -55,10 +55,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 108,
+        "prompt_tokens": 156,
         "completion_tokens": 14
       },
-      "duration_ms": 730,
+      "duration_ms": 772,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -76,10 +76,27 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.668Z",
+      "timestamp": "2026-04-04T10:53:32.262Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 773.4580410000017,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.262Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 732.7030829999985,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 773.5039579999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -91,12 +108,12 @@
       }
     },
     {
-      "step_id": 4,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.668Z",
+      "timestamp": "2026-04-04T10:53:32.262Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 732.8987910000014,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 773.5648329999985,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -108,37 +125,60 @@
       }
     },
     {
-      "step_id": 5,
-      "source": "system",
-      "timestamp": "2026-04-03T17:53:16.672Z",
-      "model_name": "hook:first-tool-guard",
-      "message": "tool.before:add_numbers → first-tool-guard",
-      "duration_ms": 2.2913750000006985,
-      "outcome": "success",
-      "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.before:add_numbers",
-        "hookName": "first-tool-guard"
-      }
-    },
-    {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.682Z",
-      "model_name": "hook:always-hook",
-      "message": "tool.succeeded:add_numbers → always-hook",
-      "duration_ms": 3.7358750000003056,
+      "timestamp": "2026-04-04T10:53:32.262Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 773.5755830000016,
       "outcome": "success",
       "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded:add_numbers",
-        "hookName": "always-hook"
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
       }
     },
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.683Z",
+      "timestamp": "2026-04-04T10:53:32.268Z",
+      "model_name": "hook:first-tool-guard",
+      "message": "tool.before:add_numbers → first-tool-guard",
+      "duration_ms": 3.958958999999595,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.before:add_numbers",
+        "hookName": "first-tool-guard",
+        "decision": {
+          "kind": "continue"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.287Z",
+      "model_name": "hook:always-hook",
+      "message": "tool.succeeded:add_numbers → always-hook",
+      "duration_ms": 2.137249999999767,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "always-hook",
+        "decision": {
+          "kind": "continue"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.290Z",
       "model_name": "middleware:hook-dispatch",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -148,7 +188,7 @@
           }
         ]
       },
-      "duration_ms": 12.936083000000508,
+      "duration_ms": 26.127042000000074,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -160,12 +200,12 @@
       }
     },
     {
-      "step_id": 8,
+      "step_id": 10,
       "source": "tool",
-      "timestamp": "2026-04-03T17:53:16.670Z",
+      "timestamp": "2026-04-04T10:53:32.264Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_add_numbers_8",
+          "tool_call_id": "call_add_numbers_10",
           "function_name": "add_numbers",
           "arguments": {
             "b": 4,
@@ -176,18 +216,42 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_add_numbers_8",
+            "source_call_id": "call_add_numbers_10",
             "content": "{\"result\":7}"
           }
         ]
       },
-      "duration_ms": 13,
+      "duration_ms": 26,
       "outcome": "success"
     },
     {
-      "step_id": 9,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.685Z",
+      "timestamp": "2026-04-04T10:53:32.290Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 26.2054590000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.294Z",
       "model_name": "middleware:hooks",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -197,7 +261,7 @@
           }
         ]
       },
-      "duration_ms": 19.612374999998792,
+      "duration_ms": 33.09879199999705,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -209,9 +273,9 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.685Z",
+      "timestamp": "2026-04-04T10:53:32.294Z",
       "model_name": "middleware:permissions",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -221,7 +285,7 @@
           }
         ]
       },
-      "duration_ms": 19.781792000001587,
+      "duration_ms": 33.229042000002664,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -233,25 +297,52 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.689Z",
+      "timestamp": "2026-04-04T10:53:32.294Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"b\":4,\"a\":3})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 33.26937500000349,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.299Z",
       "model_name": "hook:always-hook",
       "message": "tool.succeeded:add_numbers → always-hook",
-      "duration_ms": 3.5933329999988928,
+      "duration_ms": 5.443750000002183,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded:add_numbers",
-        "hookName": "always-hook"
+        "hookName": "always-hook",
+        "decision": {
+          "kind": "continue"
+        }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.692Z",
+      "timestamp": "2026-04-04T10:53:32.319Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -259,7 +350,7 @@
           }
         ]
       },
-      "duration_ms": 6.598250000000917,
+      "duration_ms": 24.9429999999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -271,36 +362,36 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 17,
       "source": "tool",
-      "timestamp": "2026-04-03T17:53:16.685Z",
+      "timestamp": "2026-04-04T10:53:32.294Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_add_numbers_13",
+          "tool_call_id": "call_add_numbers_17",
           "function_name": "add_numbers",
           "arguments": {
-            "b": 20,
-            "a": 10
+            "a": 10,
+            "b": 20
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_add_numbers_13",
+            "source_call_id": "call_add_numbers_17",
             "content": "{\"result\":30}"
           }
         ]
       },
-      "duration_ms": 7,
+      "duration_ms": 25,
       "outcome": "success"
     },
     {
-      "step_id": 14,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.694Z",
-      "model_name": "middleware:hooks",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "timestamp": "2026-04-04T10:53:32.319Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -308,7 +399,31 @@
           }
         ]
       },
-      "duration_ms": 8.46624999999949,
+      "duration_ms": 25.06408300000112,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.322Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 28.425875000000815,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -320,11 +435,11 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:16.694Z",
+      "timestamp": "2026-04-04T10:53:32.322Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -332,7 +447,7 @@
           }
         ]
       },
-      "duration_ms": 8.55304200000137,
+      "duration_ms": 28.49895800000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -344,23 +459,47 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:32.322Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 28.51525000000038,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 22,
       "source": "agent",
-      "timestamp": "2026-04-03T17:53:16.694Z",
+      "timestamp": "2026-04-04T10:53:32.323Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":30}",
       "observation": {
         "results": [
           {
-            "content": "The result of 3 + 4 is 7, and the result of 10 + 20 is 30."
+            "content": "The result of 3 + 4 is 7, and the result of 10 + 20 is 30.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 154,
-        "completion_tokens": 28
+        "prompt_tokens": 200,
+        "completion_tokens": 29
       },
-      "duration_ms": 630,
+      "duration_ms": 1041,
       "outcome": "success",
       "extra": {
         "totalMessages": 6,
@@ -376,12 +515,29 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:17.325Z",
+      "timestamp": "2026-04-04T10:53:33.364Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 1041.5317909999976,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:33.364Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.\n\n{\"result\":7}\n\n{\"result\":30}",
-      "duration_ms": 630.7153330000001,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 1041.5672919999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -393,12 +549,12 @@
       }
     },
     {
-      "step_id": 18,
+      "step_id": 25,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:17.325Z",
+      "timestamp": "2026-04-04T10:53:33.364Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.\n\n{\"result\":7}\n\n{\"result\":30}",
-      "duration_ms": 630.9014999999999,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 1041.7144579999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -406,6 +562,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:33.364Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: first-tool-guard, always-hook\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 2 hook(s) configured for event-driven execution\nUse the add_numbers tool to compute 3 + 4, then use it again t…",
+      "duration_ms": 1041.8009999999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

@@ -47,6 +47,17 @@ HTTP status codes mapped to `KoiError` via `BackendErrorMapper`:
 
 `Retry-After` header parsed into `KoiError.retryAfterMs`.
 
+## Streaming tool call name handling
+
+`stream-parser.ts` uses a **deferred emission** strategy: `tool_call_start` is not emitted
+until the function name arrives. Some providers send the name in the first `tool_calls`
+delta; others send it in a later delta. If a tool call closes (`finish_reason: tool_calls`)
+before any name arrives, the parser emits a deferred `tool_call_start` with `toolName: ""`
+followed by a `VALIDATION` error, ensuring `consumeModelStream` always has an accumulator
+entry for that call ID (prevents the `"unknown"` fallback in downstream consumers).
+
 ## Dependencies
 
 Zero external dependencies. Uses `fetch()` (Bun global) and inline SSE parsing.
+
+> **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.

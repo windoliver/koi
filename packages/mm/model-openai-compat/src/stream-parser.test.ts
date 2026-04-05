@@ -455,8 +455,10 @@ describe("adversarial: truncated tool arguments", () => {
 // ---------------------------------------------------------------------------
 
 describe("adversarial: tool call with empty function name", () => {
-  test("emits VALIDATION error when tool call finishes without a name", () => {
-    // Provider sends tool call ID and args but never sends function.name
+  test("emits deferred tool_call_start + VALIDATION error when name never arrives", () => {
+    // Provider sends tool call ID and args but never sends function.name.
+    // The fix: emit a deferred tool_call_start (toolName: "") so consume-stream's
+    // accumulator map has an entry — preventing the "unknown" fallback downstream.
     const chunks: ChatCompletionChunk[] = [
       {
         id: "gn",
@@ -487,7 +489,15 @@ describe("adversarial: tool call with empty function name", () => {
     const finishOutput = parser.finish();
     output.push(...finishOutput);
 
-    // Should have a VALIDATION error about missing name
+    // Deferred tool_call_start emitted with empty toolName before the error,
+    // so consume-stream can create an accumulator for this callId.
+    const starts = output.filter((c) => c.kind === "tool_call_start");
+    expect(starts).toHaveLength(1);
+    if (starts[0]?.kind === "tool_call_start") {
+      expect(starts[0].toolName).toBe(""); // empty — name never arrived
+    }
+
+    // VALIDATION error about missing name (fail closed)
     const errors = output.filter((c) => c.kind === "error");
     expect(errors).toHaveLength(1);
     if (errors[0]?.kind === "error") {
@@ -495,7 +505,7 @@ describe("adversarial: tool call with empty function name", () => {
       expect(errors[0].message).toContain("no function name");
     }
 
-    // Should NOT have a tool_call in richContent
+    // No tool_call in richContent — call was not dispatched
     const finalAcc = parser.getAccumulator();
     const toolCalls = finalAcc.richContent.filter((b) => b.kind === "tool_call");
     expect(toolCalls).toHaveLength(0);

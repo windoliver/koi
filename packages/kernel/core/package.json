@@ -109,6 +109,10 @@
       "types": "./dist/rich-trajectory.d.ts",
       "import": "./dist/rich-trajectory.js"
     },
+    "./retry-signal": {
+      "types": "./dist/retry-signal.d.ts",
+      "import": "./dist/retry-signal.js"
+    },
     "./brick-snapshot": {
       "types": "./dist/brick-snapshot.d.ts",
       "import": "./dist/brick-snapshot.js"
@@ -188,6 +192,10 @@
     "./memory": {
       "types": "./dist/memory.d.ts",
       "import": "./dist/memory.js"
+    },
+    "./worker-protocol": {
+      "types": "./dist/worker-protocol.d.ts",
+      "import": "./dist/worker-protocol.js"
     }
   },
   "scripts": {

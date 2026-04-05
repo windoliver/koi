@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:18.647Z",
+      "timestamp": "2026-04-04T10:53:34.684Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -34,7 +34,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:18.647Z",
+      "timestamp": "2026-04-04T10:53:34.684Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -48,7 +48,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-03T17:53:18.649Z",
+      "timestamp": "2026-04-04T10:53:34.685Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
       "observation": {
@@ -59,10 +59,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 127,
+        "prompt_tokens": 175,
         "completion_tokens": 12
       },
-      "duration_ms": 641,
+      "duration_ms": 666,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -84,10 +84,27 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.291Z",
+      "timestamp": "2026-04-04T10:53:35.352Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 667.3601669999989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.352Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 642.3969169999982,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 667.3912500000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -99,12 +116,12 @@
       }
     },
     {
-      "step_id": 4,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.292Z",
+      "timestamp": "2026-04-04T10:53:35.352Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 643.4956250000014,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 667.461000000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -116,23 +133,43 @@
       }
     },
     {
-      "step_id": 5,
+      "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.309Z",
+      "timestamp": "2026-04-04T10:53:35.352Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 667.4731250000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.354Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:task_create → on-tool-exec",
-      "duration_ms": 16.881000000001222,
+      "duration_ms": 2.4596249999995052,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded:task_create",
-        "hookName": "on-tool-exec"
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        }
       }
     },
     {
-      "step_id": 6,
+      "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.337Z",
+      "timestamp": "2026-04-04T10:53:35.380Z",
       "model_name": "middleware:hook-dispatch",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -142,7 +179,7 @@
           }
         ]
       },
-      "duration_ms": 46.52033300000039,
+      "duration_ms": 28.307458999999653,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -154,12 +191,12 @@
       }
     },
     {
-      "step_id": 7,
+      "step_id": 9,
       "source": "tool",
-      "timestamp": "2026-04-03T17:53:19.291Z",
+      "timestamp": "2026-04-04T10:53:35.351Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_task_create_7",
+          "tool_call_id": "call_task_create_9",
           "function_name": "task_create",
           "arguments": {
             "description": "Review the README for typos"
@@ -169,18 +206,42 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_task_create_7",
+            "source_call_id": "call_task_create_9",
             "content": "{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}"
           }
         ]
       },
-      "duration_ms": 46,
+      "duration_ms": 29,
       "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.367Z",
+      "timestamp": "2026-04-04T10:53:35.380Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "task_create({\"description\":\"Review the README for typos\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}"
+          }
+        ]
+      },
+      "duration_ms": 28.376624999997148,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.383Z",
       "model_name": "middleware:hooks",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -190,7 +251,7 @@
           }
         ]
       },
-      "duration_ms": 76.12195799999972,
+      "duration_ms": 31.513624999999593,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -202,9 +263,9 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.367Z",
+      "timestamp": "2026-04-04T10:53:35.383Z",
       "model_name": "middleware:permissions",
       "message": "task_create({\"description\":\"Review the README for typos\"})",
       "observation": {
@@ -214,7 +275,7 @@
           }
         ]
       },
-      "duration_ms": 76.29745800000092,
+      "duration_ms": 31.586624999999913,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -226,23 +287,50 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.397Z",
+      "timestamp": "2026-04-04T10:53:35.383Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "task_create({\"description\":\"Review the README for typos\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}"
+          }
+        ]
+      },
+      "duration_ms": 31.61341700000048,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.387Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded:task_list → on-tool-exec",
-      "duration_ms": 28.134374999997817,
+      "duration_ms": 3.7389580000017304,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded:task_list",
-        "hookName": "on-tool-exec"
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.401Z",
+      "timestamp": "2026-04-04T10:53:35.399Z",
       "model_name": "middleware:hook-dispatch",
       "message": "task_list({})",
       "observation": {
@@ -252,7 +340,7 @@
           }
         ]
       },
-      "duration_ms": 33.38366699999824,
+      "duration_ms": 16.61145899999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -264,12 +352,12 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 16,
       "source": "tool",
-      "timestamp": "2026-04-03T17:53:19.367Z",
+      "timestamp": "2026-04-04T10:53:35.383Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_task_list_12",
+          "tool_call_id": "call_task_list_16",
           "function_name": "task_list",
           "arguments": {}
         }
@@ -277,18 +365,42 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_task_list_12",
+            "source_call_id": "call_task_list_16",
             "content": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}"
           }
         ]
       },
-      "duration_ms": 34,
+      "duration_ms": 16,
       "outcome": "success"
     },
     {
-      "step_id": 13,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.591Z",
+      "timestamp": "2026-04-04T10:53:35.400Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}"
+          }
+        ]
+      },
+      "duration_ms": 16.65874999999869,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.404Z",
       "model_name": "middleware:hooks",
       "message": "task_list({})",
       "observation": {
@@ -298,7 +410,7 @@
           }
         ]
       },
-      "duration_ms": 223.729292,
+      "duration_ms": 21.10674999999901,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -310,9 +422,9 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:19.591Z",
+      "timestamp": "2026-04-04T10:53:35.404Z",
       "model_name": "middleware:permissions",
       "message": "task_list({})",
       "observation": {
@@ -322,7 +434,7 @@
           }
         ]
       },
-      "duration_ms": 223.91070800000307,
+      "duration_ms": 21.16241699999955,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -334,23 +446,47 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:35.404Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}"
+          }
+        ]
+      },
+      "duration_ms": 21.17345899999782,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 21,
       "source": "agent",
-      "timestamp": "2026-04-03T17:53:19.591Z",
+      "timestamp": "2026-04-04T10:53:35.404Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}",
       "observation": {
         "results": [
           {
-            "content": "OK. I have created a task with description \"Review the README for typos\" and the id \"task_1\". Then I listed all tasks and the task \"Review the README for typos\" is on the list.\n"
+            "content": "OK. I have created a task with description \"Review the README for typos\". Then I listed all tasks and the task is there.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 192,
-        "completion_tokens": 45
+        "prompt_tokens": 240,
+        "completion_tokens": 28
       },
-      "duration_ms": 737,
+      "duration_ms": 692,
       "outcome": "success",
       "extra": {
         "totalMessages": 6,
@@ -370,12 +506,29 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:20.330Z",
+      "timestamp": "2026-04-04T10:53:36.097Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 692.4164579999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:36.097Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.\n\n{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}\n\n{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Revie…",
-      "duration_ms": 738.5042080000021,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 692.4403749999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -387,12 +540,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-03T17:53:20.330Z",
+      "timestamp": "2026-04-04T10:53:36.097Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.\n\n{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}\n\n{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Revie…",
-      "duration_ms": 738.7443339999991,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 692.5480419999985,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -400,6 +553,23 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
+        "nextCalled": true
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-04T10:53:36.097Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the task_create tool to create a task with description \"Review the README f…",
+      "duration_ms": 692.5779580000017,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
         "nextCalled": true
       }
     }

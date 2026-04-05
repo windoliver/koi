@@ -1372,3 +1372,437 @@ describe("flush retry on transient failure", () => {
     expect(totalLost).toBe(2); // One more stale step dropped
   });
 });
+
+// ---------------------------------------------------------------------------
+// emitExternalStep
+// ---------------------------------------------------------------------------
+
+describe("emitExternalStep", () => {
+  test("assigns stepIndex and writes to store", async () => {
+    const store = makeMockStore();
+    const handle = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test-agent",
+    });
+
+    // Initialize session state via onSessionStart
+    await handle.middleware.onSessionStart?.(makeSessionCtx());
+
+    // First do a normal model call so we know stepIndex starts at 0
+    await handle.middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    // stepIndex 0 taken by model call — external step should get 1
+    const externalStep: RichTrajectoryStep = {
+      stepIndex: -1,
+      timestamp: 1000,
+      source: "user",
+      kind: "tool_call",
+      identifier: "deploy",
+      outcome: "success",
+      durationMs: 500,
+      metadata: { approvalDecision: "allow" },
+    };
+
+    handle.emitExternalStep("test-session", externalStep);
+
+    // Wait for async writes to flush
+    await new Promise((r) => setTimeout(r, 50));
+
+    const allSteps = store.steps.flat();
+    const userStep = allSteps.find((s) => s.source === "user");
+    expect(userStep).toBeDefined();
+    expect(userStep?.stepIndex).toBe(1);
+    expect(userStep?.identifier).toBe("deploy");
+    expect(userStep?.source).toBe("user");
+  });
+
+  test("silently skips if session not initialized", () => {
+    const store = makeMockStore();
+    const handle = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test-agent",
+    });
+
+    // No onSessionStart — session state does not exist
+    handle.emitExternalStep("unknown-session", {
+      stepIndex: -1,
+      timestamp: 1000,
+      source: "user",
+      kind: "tool_call",
+      identifier: "deploy",
+      outcome: "success",
+      durationMs: 0,
+    });
+
+    // No crash, no writes
+    expect(store.steps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provenance tracking (#1464)
+// ---------------------------------------------------------------------------
+
+describe("provenance tracking", () => {
+  test("tool step includes provenance metadata from ToolResponse.metadata", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const toolResponse: ToolResponse = {
+      output: { data: "customer-info" },
+      metadata: {
+        provenance: { system: "mcp", server: "crm" },
+      },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => toolResponse,
+    );
+
+    const step = store.steps[0]?.[0];
+    expect(step?.identifier).toBe("crm__get_customer");
+    const meta = step?.metadata as Record<string, unknown> | undefined;
+    const provenance = meta?.provenance as Record<string, unknown> | undefined;
+    expect(provenance?.system).toBe("mcp");
+    expect(provenance?.server).toBe("crm");
+  });
+
+  test("onAfterTurn emits provenance summary step for multi-tool turns", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Two MCP tools from different servers
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => ({
+        output: "customer",
+        metadata: { provenance: { system: "mcp", server: "crm" } },
+      }),
+    );
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("billing__get_invoice"),
+      async () => ({
+        output: "invoice",
+        metadata: { provenance: { system: "mcp", server: "billing" } },
+      }),
+    );
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const allSteps = store.steps.flat();
+    const summaryStep = allSteps.find((s) => s.identifier === "provenance:turn_summary");
+    expect(summaryStep).toBeDefined();
+    expect(summaryStep?.source).toBe("system");
+    const meta = summaryStep?.metadata as Record<string, unknown>;
+    expect(meta?.type).toBe("provenance_summary");
+    expect(meta?.turnIndex).toBe(0);
+    const systems = meta?.systemsConsulted as readonly Record<string, unknown>[];
+    expect(systems?.length).toBe(2);
+    const serverNames = systems.map((s) => s.server);
+    expect(serverNames).toContain("crm");
+    expect(serverNames).toContain("billing");
+  });
+
+  test("onAfterTurn emits no summary when turn has no tool calls", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const allSteps = store.steps.flat();
+    const summaryStep = allSteps.find((s) => s.identifier === "provenance:turn_summary");
+    expect(summaryStep).toBeUndefined();
+  });
+
+  test("provenance aggregation counts multiple calls to same server", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Two calls to the same MCP server
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => ({
+        output: "c1",
+        metadata: { provenance: { system: "mcp", server: "crm" } },
+      }),
+    );
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest("crm__get_deal"), async () => ({
+      output: "d1",
+      metadata: { provenance: { system: "mcp", server: "crm" } },
+    }));
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const allSteps = store.steps.flat();
+    const summaryStep = allSteps.find((s) => s.identifier === "provenance:turn_summary");
+    expect(summaryStep).toBeDefined();
+    const meta = summaryStep?.metadata as Record<string, unknown>;
+    const systems = meta?.systemsConsulted as readonly Record<string, unknown>[];
+    expect(systems?.length).toBe(1); // One server, two calls
+    const crm = systems[0];
+    expect(crm?.server).toBe("crm");
+    expect(crm?.count).toBe(2);
+    expect((crm?.tools as readonly string[])?.length).toBe(2);
+  });
+
+  test("provenance resets between turns", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+
+    // Turn 0: one tool call
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => ({
+        output: "c1",
+        metadata: { provenance: { system: "mcp", server: "crm" } },
+      }),
+    );
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    // Turn 1: no tool calls
+    await middleware.onBeforeTurn?.(makeTurnCtx(1));
+    await middleware.onAfterTurn?.(makeTurnCtx(1));
+
+    const allSteps = store.steps.flat();
+    const summaries = allSteps.filter((s) => s.identifier === "provenance:turn_summary");
+    // Only one summary from turn 0, none from turn 1
+    expect(summaries.length).toBe(1);
+    expect((summaries[0]?.metadata as Record<string, unknown>)?.turnIndex).toBe(0);
+  });
+
+  test("tool step preserves full response metadata alongside provenance", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const toolResponse: ToolResponse = {
+      output: "result",
+      metadata: {
+        provenance: { system: "mcp", server: "crm" },
+        traceId: "abc-123",
+        cacheHit: true,
+      },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("crm__get_customer"),
+      async () => toolResponse,
+    );
+
+    const step = store.steps[0]?.[0];
+    const meta = step?.metadata as Record<string, unknown>;
+    // Provenance is preserved
+    expect((meta?.provenance as Record<string, unknown>)?.server).toBe("crm");
+    // Other metadata fields are also preserved
+    expect(meta?.traceId).toBe("abc-123");
+    expect(meta?.cacheHit).toBe(true);
+  });
+
+  test("aggregation uses composite key to avoid collisions between different systems", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    // Two different systems that happen to share the same server name
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest("mcp_tool"), async () => ({
+      output: "r1",
+      metadata: { provenance: { system: "mcp", server: "shared" } },
+    }));
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest("builtin_tool"), async () => ({
+      output: "r2",
+      metadata: { provenance: { system: "builtin", server: "shared" } },
+    }));
+
+    await middleware.onAfterTurn?.(makeTurnCtx(0));
+
+    const allSteps = store.steps.flat();
+    const summaryStep = allSteps.find((s) => s.identifier === "provenance:turn_summary");
+    const meta = summaryStep?.metadata as Record<string, unknown>;
+    const systems = meta?.systemsConsulted as readonly Record<string, unknown>[];
+    // Should be 2 entries, not merged into 1
+    expect(systems?.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry signal coordination
+// ---------------------------------------------------------------------------
+
+describe("retry signal coordination", () => {
+  test("model step gets outcome 'retry' when signal is active", async () => {
+    const mockStore = makeMockStore();
+    const signal = {
+      retrying: true as const,
+      originTurnIndex: 0,
+      reason: "tool_misuse: invalid arguments",
+      failureClass: "tool_misuse",
+      attemptNumber: 1,
+    };
+    const signalReader = {
+      getRetrySignal: (sessionId: string) => (sessionId === "test-session" ? signal : undefined),
+      consumeRetrySignal: (sessionId: string) =>
+        sessionId === "test-session" ? signal : undefined,
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("retry");
+    expect(steps[0]?.metadata?.retryOfTurn).toBe(0);
+    expect(steps[0]?.metadata?.retryAttempt).toBe(1);
+    expect(steps[0]?.metadata?.retryReason).toBe("tool_misuse: invalid arguments");
+    expect(steps[0]?.metadata?.retryFailureClass).toBe("tool_misuse");
+  });
+
+  test("tool step gets outcome 'retry' when signal is active", async () => {
+    const mockStore = makeMockStore();
+    const toolSignal = {
+      retrying: true as const,
+      originTurnIndex: 2,
+      reason: "api_error: timeout",
+      failureClass: "api_error",
+      attemptNumber: 3,
+    };
+    const signalReader = {
+      getRetrySignal: () => toolSignal,
+      consumeRetrySignal: () => toolSignal,
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapToolCall?.(makeTurnCtx(0), makeToolRequest(), async () =>
+      makeToolResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("retry");
+    expect(steps[0]?.metadata?.retryOfTurn).toBe(2);
+    expect(steps[0]?.metadata?.retryAttempt).toBe(3);
+  });
+
+  test("steps have normal outcome when no signal is active", async () => {
+    const mockStore = makeMockStore();
+    const signalReader = {
+      getRetrySignal: () => undefined,
+      consumeRetrySignal: () => undefined,
+    };
+
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      signalReader,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("success");
+    expect(steps[0]?.metadata?.retryOfTurn).toBeUndefined();
+  });
+
+  test("works without signalReader configured", async () => {
+    const mockStore = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store: mockStore,
+      docId: "doc-retry",
+      agentName: "test",
+      // No signalReader
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.wrapModelCall?.(makeTurnCtx(0), makeModelRequest(), async () =>
+      makeModelResponse(),
+    );
+
+    const steps = mockStore.steps.flat();
+    expect(steps.length).toBe(1);
+    expect(steps[0]?.outcome).toBe("success");
+  });
+});

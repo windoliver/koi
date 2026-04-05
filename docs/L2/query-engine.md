@@ -51,6 +51,15 @@ Pure state machine driving the model→tool→model loop (#1233).
 - `TurnState` — `{ phase, turnIndex, modelCalls, stopReason }`
 - `TurnRunnerConfig` — `{ callHandlers, messages, signal?, maxTurns? }`
 
+## Nameless tool call handling
+
+When a streaming tool call closes without a function name (e.g., the provider dropped the
+name token), `consumeModelStream` uses `""` (empty string) as the `toolName` fallback
+rather than `"unknown"`. The turn runner filters out calls with `toolName === ""` or
+`toolName === "unknown"` via the same fail-closed validation path. This produces a more
+precise ATIF step (`function_name: ""`) than the legacy `"unknown"` string, which can be
+confused with a tool literally named "unknown".
+
 ## Not in scope
 
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.

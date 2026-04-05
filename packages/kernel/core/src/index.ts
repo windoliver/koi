@@ -45,6 +45,7 @@ export type {
   ForgedSkillSource,
   ManifestSandboxConfig,
   ManifestSandboxPersistence,
+  ManifestSpawnConfig,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
@@ -828,8 +829,17 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// retry signal — cross-middleware retry coordination protocol
+export type {
+  RetrySignal,
+  RetrySignalBroker,
+  RetrySignalReader,
+  RetrySignalWriter,
+} from "./retry-signal.js";
 // rich trajectory — full execution traces for LLM reflection
 export type {
+  DecisionSignal,
+  DecisionSignalKind,
   RichContent,
   RichStepMetrics,
   RichTrajectoryStep,
@@ -983,7 +993,13 @@ export type {
 } from "./snapshot-time-travel.js";
 export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
 // spawn — unified spawn types for all agent-spawning patterns
-export type { SpawnFn, SpawnRequest, SpawnResult } from "./spawn.js";
+export type {
+  SpawnFn,
+  SpawnInheritanceConfig,
+  SpawnRequest,
+  SpawnResult,
+} from "./spawn.js";
+export { validateSpawnRequest } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
   ChildSpec,
@@ -999,6 +1015,7 @@ export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // `ScheduledTaskStatus`. This is an intentional v2 domain correction.
 // task-board — backward compat aliases (deprecated)
 export type {
+  ManagedTaskBoard,
   Task,
   TaskBoard,
   TaskBoardConfig,

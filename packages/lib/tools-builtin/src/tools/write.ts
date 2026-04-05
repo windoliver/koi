@@ -11,11 +11,13 @@ import type {
   ToolPolicy,
 } from "@koi/core";
 import { parseOptionalBoolean, parseString } from "../parse-args.js";
+import type { FsToolOptions } from "./read.js";
 
 export function createFsWriteTool(
   backend: FileSystemBackend,
   prefix: string,
   policy: ToolPolicy,
+  fsToolOptions?: FsToolOptions,
 ): Tool {
   return {
     descriptor: {
@@ -48,6 +50,14 @@ export function createFsWriteTool(
 
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
+
+      if (fsToolOptions?.pathGuard !== undefined) {
+        const guardResult = fsToolOptions.pathGuard(pathResult.value);
+        if (!guardResult.ok) {
+          return { error: guardResult.reason, code: "CREDENTIAL_PATH_DENIED" };
+        }
+      }
+
       const contentResult = parseString(args, "content", { allowEmpty: true });
       if (!contentResult.ok) return contentResult.err;
       const createDirsResult = parseOptionalBoolean(args, "createDirectories");

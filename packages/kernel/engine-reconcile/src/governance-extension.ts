@@ -28,7 +28,7 @@ import { EXTENSION_PRIORITY, GOVERNANCE, GOVERNANCE_VARIABLES } from "@koi/core"
 import { KoiRuntimeError } from "@koi/errors";
 import type { GovernanceControllerBuilder } from "./governance-controller.js";
 
-const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent"]);
+const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent", "Spawn"]);
 
 // ---------------------------------------------------------------------------
 // Governance guard middleware

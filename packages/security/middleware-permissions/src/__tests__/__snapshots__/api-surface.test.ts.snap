@@ -6,6 +6,7 @@ export { PermissionBackend, PermissionDecision, PermissionQuery } from '@koi/cor
 import { ApprovalRequest, ApprovalDecision, KoiMiddleware } from '@koi/core/middleware';
 import { AuditSink } from '@koi/core';
 import { Result } from '@koi/core/errors';
+import { RichTrajectoryStep } from '@koi/core/rich-trajectory';
 import { CircuitBreakerConfig } from '@koi/errors';
 
 /**
@@ -86,6 +87,8 @@ interface PermissionsMiddlewareConfig {
     readonly circuitBreaker?: CircuitBreakerConfig;
     /** Auto-deny after repeated denials per tool per session. Default: disabled. */
     readonly denialEscalation?: boolean | DenialEscalationConfig;
+    /** Callback emitted after each approval decision, producing a source:"user" trajectory step. */
+    readonly onApprovalStep?: (sessionId: string, step: RichTrajectoryStep) => void;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 

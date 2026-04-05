@@ -81,12 +81,18 @@ koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 
 ### `koi tui`
 
-Interactive terminal console for operators. Defaults to `http://localhost:3100/admin/api`, which matches `koi start --admin`.
+Interactive terminal console. Opens a full-screen OpenTUI terminal UI with conversation view,
+command palette (Ctrl+P), and view switching (sessions, doctor, help).
 
 ```bash
 koi tui
-koi tui --url http://localhost:9100/admin/api
 ```
+
+**Flags:** none yet — engine adapter wiring (`--agent <manifest>`) is pending full #1459 integration.
+
+**Current behaviour:** The TUI shell renders and accepts input. Submitting a message shows an
+`ENGINE_NOT_CONFIGURED` error until the engine adapter is wired in a follow-up PR. Requires a
+real TTY; exits 1 with an error message when stdout is not a terminal (e.g. CI pipes).
 
 ### `koi serve`
 
@@ -134,6 +140,9 @@ koi serve --nexus-url http://...    # Connect to remote Nexus
 ```
 packages/meta/cli/src/
 ├── args.ts                  ← CLI argument parsing (subcommand-aware)
+├── bin.ts                   ← Entry point — dispatches tui before COMMAND_LOADERS registry
+├── tui-command.ts           ← `koi tui` handler: drainEngineStream + runTuiCommand
+├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending full #1459 wiring)
 ├── helpers.ts               ← Shared utilities (extractTextFromBlocks)
 ├── resolve-agent.ts         ← Manifest → runtime resolution via @koi/resolve
 ├── resolve-bootstrap.ts     ← Context source resolution
@@ -146,11 +155,22 @@ packages/meta/cli/src/
     └── test-helpers.ts      ← Shared test utilities
 ```
 
+### Engine Worker (`engine-worker.ts`)
+
+A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):
+
+- **Messages in** (`MainToWorkerMessage`): `stream_start`, `stream_interrupt`, `approval_response`, `shutdown`
+- **Messages out** (`WorkerToMainMessage`): `ready`, `engine_event`, `approval_request`, `engine_error`, `stream_done`
+- **Approval bridge**: Posts `approval_request` to the main thread when middleware needs HITL; resolves the local Promise when `approval_response` arrives
+- **`_IS_CONFIGURED` guard**: Until `createRuntime()` wiring lands in #1459, `stream_start` returns `engine_error` immediately rather than silently misbehaving
+- **Input type**: `WorkerEngineInput` — a clone-safe subset of `EngineInput` that excludes non-transferable fields (`callHandlers`, `AbortSignal`)
+
 ### Key Dependencies
 
 | Package | Layer | Used For |
 |---------|-------|----------|
-| `@koi/core` | L0 | Types: ContentBlock, EngineInput, InboundMessage, KoiMiddleware, sessionId |
+| `@koi/core` | L0 | Types: ContentBlock, EngineInput, WorkerToMainMessage/MainToWorkerMessage, WorkerEngineInput, sessionId (direct dependency as of #1484) |
+| `@koi/tui` | L2 | TUI shell: store, permissionBridge, batcher, createTuiApp (tui command only) |
 | `@koi/engine` | L1 | createKoi() runtime factory |
 | `@koi/engine-pi` | L2 | Default engine adapter (Pi protocol) |
 | `@koi/manifest` | L0u | Manifest loading and validation |

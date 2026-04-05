@@ -10,6 +10,10 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/tui": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

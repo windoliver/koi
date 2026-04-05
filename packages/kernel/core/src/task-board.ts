@@ -105,6 +105,11 @@ export interface TaskInput {
   readonly description: string;
   readonly dependencies?: readonly TaskItemId[] | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Present-continuous description shown in spinner while in_progress
+   * (e.g. "Reviewing auth module"). Cleared by the board on terminal transitions.
+   */
+  readonly activeForm?: string | undefined;
 }
 
 /** A task on the board with full state. */
@@ -115,6 +120,11 @@ export interface Task {
   readonly dependencies: readonly TaskItemId[];
   readonly status: TaskStatus;
   readonly assignedTo?: AgentId | undefined;
+  /**
+   * Present-continuous description shown in spinner while in_progress
+   * (e.g. "Reviewing auth module"). Cleared by the board on terminal transitions.
+   */
+  readonly activeForm?: string | undefined;
   /** Board-managed retry count. Incremented by the board on retryable failure. */
   readonly retries: number;
   /** Board-managed version. Incremented on every mutation for optimistic concurrency. */
@@ -158,6 +168,11 @@ export interface TaskPatch {
   readonly subject?: string | undefined;
   readonly description?: string | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Update the present-continuous spinner text.
+   * Pass `undefined` explicitly to clear the current value.
+   */
+  readonly activeForm?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +317,100 @@ export interface TaskBoardStore extends AsyncDisposable {
   readonly watch: (listener: (event: TaskBoardStoreEvent) => void) => () => void;
   /** Clear all tasks. High water mark is preserved (IDs are never reused). */
   readonly reset: () => void | Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// ManagedTaskBoard — interface for the persistence-backed task board
+// ---------------------------------------------------------------------------
+
+/**
+ * A task board backed by persistent storage.
+ *
+ * Wraps an immutable TaskBoard with a TaskBoardStore, providing the same
+ * mutation surface with automatic persistence and async serialization.
+ *
+ * Defined in L0 so that L2 consumers (e.g. @koi/task-tools) can depend on
+ * the interface without importing the L2 implementation (@koi/tasks).
+ *
+ * Exception: all methods return Promises (I/O-bound operations).
+ */
+export interface ManagedTaskBoard extends AsyncDisposable {
+  /** Current immutable board snapshot. */
+  readonly snapshot: () => TaskBoard;
+  /** Generate the next unique task item ID. Monotonic, never reuses after deletion. */
+  readonly nextId: () => Promise<TaskItemId>;
+  /** Add a task — validates via board, persists to store. */
+  readonly add: (input: TaskInput) => Promise<Result<TaskBoard, KoiError>>;
+  /** Add multiple tasks atomically — validates via board, persists to store. */
+  readonly addAll: (inputs: readonly TaskInput[]) => Promise<Result<TaskBoard, KoiError>>;
+  /** Assign a task to an agent — validates via board, persists to store. */
+  readonly assign: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically check that no task is already `in_progress` and assign `taskId`
+   * to `agentId` — all within the single-writer lock.
+   *
+   * Use this instead of `assign()` when enforcing the one-active-task invariant,
+   * because a snapshot read + separate `assign()` call is a TOCTOU race.
+   */
+  readonly startTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Returns `true` when completed `TaskResult` payloads are persisted to disk and
+   * will survive a process restart. Returns `false` when results are in-memory only.
+   *
+   * Tools that expose task output (e.g. `task_output`) should check this before
+   * allowing task completion, to prevent the silent data-loss path where a task
+   * shows as `completed` but its output is permanently gone after a restart.
+   */
+  readonly hasResultPersistence: () => boolean;
+  /** Complete a task — validates via board, persists to store. */
+  readonly complete: (
+    taskId: TaskItemId,
+    result: TaskResult,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and complete it.
+   * Use instead of `complete()` to prevent cross-agent completion races.
+   */
+  readonly completeOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    result: TaskResult,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /** Fail a task — validates via board, persists to store. */
+  readonly fail: (taskId: TaskItemId, error: KoiError) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and fail it.
+   * Use instead of `fail()` to prevent cross-agent failure races.
+   */
+  readonly failOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    error: KoiError,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /** Kill a task — validates via board, persists to store. */
+  readonly kill: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is assigned to `agentId` and kill it.
+   * Use instead of `kill()` to prevent cross-agent cancellation races.
+   */
+  readonly killOwnedTask: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /** Update task metadata — validates via board, persists to store. */
+  readonly update: (taskId: TaskItemId, patch: TaskPatch) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Atomically verify `taskId` is either unassigned or assigned to `agentId`,
+   * then apply a metadata patch. Rejects cross-agent metadata writes on in_progress tasks.
+   */
+  readonly updateOwned: (
+    taskId: TaskItemId,
+    agentId: AgentId,
+    patch: TaskPatch,
+  ) => Promise<Result<TaskBoard, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------

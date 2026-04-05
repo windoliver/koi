@@ -5,6 +5,7 @@
 import type { AuditSink } from "@koi/core";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { PermissionBackend } from "@koi/core/permission-backend";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import type { CircuitBreakerConfig } from "@koi/errors";
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,8 @@ export interface PermissionsMiddlewareConfig {
   readonly circuitBreaker?: CircuitBreakerConfig;
   /** Auto-deny after repeated denials per tool per session. Default: disabled. */
   readonly denialEscalation?: boolean | DenialEscalationConfig;
+  /** Callback emitted after each approval decision, producing a source:"user" trajectory step. */
+  readonly onApprovalStep?: (sessionId: string, step: RichTrajectoryStep) => void;
 }
 
 // ---------------------------------------------------------------------------

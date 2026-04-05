@@ -210,3 +210,5 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
 - `archive/v1/packages/observability/middleware-event-trace/src/event-trace.ts` — v1 middleware (229 LOC)
 - `packages/kernel/core/src/rich-trajectory.ts` — v2 L0 types
 - `packages/kernel/core/src/snapshot-time-travel.ts` — v2 per-event trace types
+
+> **Maintenance note (PR #1506):** Renamed unused `hasMetadata` variable to `_hasMetadata` in `event-trace.ts` to satisfy Biome `noUnusedVariables`. No functional changes.

@@ -7,8 +7,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useRef } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
+import { Show } from "solid-js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,29 +36,21 @@ export interface AskUserDialogProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export const AskUserDialog: React.NamedExoticComponent<AskUserDialogProps> = memo(function AskUserDialog(
-  props: AskUserDialogProps,
-): React.ReactNode {
-  const { question, onRespond, onDismiss, focused } = props;
-  const textareaRef = useRef<TextareaRenderable | null>(null);
+export function AskUserDialog(props: AskUserDialogProps): JSX.Element {
+  let textareaRef: TextareaRenderable | null = null;
 
-  const handleKey = useCallback(
-    (key: KeyEvent) => {
-      if (!focused) return;
-      if (key.name === "return" && !key.shift) {
-        key.preventDefault();
-        const text = textareaRef.current?.plainText ?? "";
-        onRespond(text.trim());
-      }
-      if (key.name === "escape") {
-        key.preventDefault();
-        onDismiss();
-      }
-    },
-    [focused, onRespond, onDismiss],
-  );
-
-  useKeyboard(handleKey);
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    if (key.name === "return" && !key.shift) {
+      key.preventDefault();
+      const text = textareaRef?.plainText ?? "";
+      props.onRespond(text.trim());
+    }
+    if (key.name === "escape") {
+      key.preventDefault();
+      props.onDismiss();
+    }
+  });
 
   return (
     <box
@@ -69,26 +62,26 @@ export const AskUserDialog: React.NamedExoticComponent<AskUserDialogProps> = mem
     >
       <text fg="#E2E8F0"><b>{"Agent is asking:"}</b></text>
       <box marginTop={1}>
-        <text fg="#94A3B8">{question}</text>
+        <text fg="#94A3B8">{props.question}</text>
       </box>
 
       <box marginTop={1}>
         <textarea
           ref={(el: TextareaRenderable | null) => {
-            textareaRef.current = el;
+            textareaRef = el;
           }}
           height={3}
-          focused={focused}
+          focused={props.focused}
           placeholder="Type your response..."
         />
       </box>
 
-      {focused ? (
+      <Show when={props.focused}>
         <box flexDirection="row" marginTop={1} gap={2}>
           <text fg="#4ADE80">{"[Enter] Submit"}</text>
           <text fg="#F87171">{"[Esc] Dismiss"}</text>
         </box>
-      ) : null}
+      </Show>
     </box>
   );
-});
+}

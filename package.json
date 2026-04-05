@@ -7,6 +7,7 @@
   "type": "module",
   "workspaces": [
     "packages/*/*",
+    "packages/sandbox/sandbox-os",
     "apps/*"
   ],
   "scripts": {
@@ -24,6 +25,7 @@
     "layers:graph": "bun scripts/layers-graph.ts",
     "layers:summary": "bun scripts/layers-graph.ts --summary",
     "check:doc-gate": "bun scripts/check-doc-gate.ts",
+    "check:doc-wiring": "bun scripts/check-doc-wiring.ts",
     "check:test-integrity": "bun scripts/check-test-integrity.ts",
     "check:complexity": "bun scripts/check-complexity.ts",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",

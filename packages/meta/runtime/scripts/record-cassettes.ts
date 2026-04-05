@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Records VCR cassettes + full-stack ATIF trajectories.
  *
@@ -11,6 +12,7 @@
  *   permission-deny       — permissions default mode denies add_numbers
  *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
  *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
+ *   hook-redaction       — agent hook on tool.succeeded, forwardRawPayload + default redaction
  *
  * ALL L2 packages wired across queries:
  *   @koi/model-openai-compat  — model adapter
@@ -25,22 +27,30 @@
  *   @koi/fs-local             — local filesystem backend
  */
 
+import {
+  createAgentDefinitionRegistry,
+  createDefinitionResolver,
+  getBuiltInAgents,
+} from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileListResult,
+  FileReadResult,
+  FileSystemBackend,
   JsonObject,
+  KoiError,
+  MemoryRecord,
+  MemoryRecordInput,
   ModelChunk,
   PermissionBackend,
+  Result,
+  SpawnFn,
 } from "@koi/core";
-import {
-  createSingleToolProvider,
-  serializeMemoryFrontmatter,
-  validateMemoryFilePath,
-  validateMemoryRecordInput,
-} from "@koi/core";
-import { createKoi } from "@koi/engine";
+import { createSingleToolProvider, memoryRecordId } from "@koi/core";
+import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
@@ -52,13 +62,24 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import { recallMemories } from "@koi/memory";
+import type { MemoryToolBackend } from "@koi/memory-tools";
+import { createMemoryToolProvider } from "@koi/memory-tools";
+import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import {
+  createRetrySignalBroker,
+  createSemanticRetryMiddleware,
+} from "@koi/middleware-semantic-retry";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { consumeModelStream } from "@koi/query-engine";
-import { createMemoryTaskBoardStore } from "@koi/tasks";
+import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
+import { createSpawnTools } from "@koi/spawn-tools";
+import { createTaskTools } from "@koi/task-tools";
+import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -82,10 +103,27 @@ if (!API_KEY) {
 const MODEL = "google/gemini-2.0-flash-001";
 const FIXTURES = `${import.meta.dirname}/../fixtures`;
 
+// Set FORCE_RECORD=true to re-record cassettes that already exist.
+// By default, existing cassettes are skipped — this prevents recordedAt +
+// callId churn in every PR that happens to run the script, which causes
+// spurious merge conflicts on fixture files.
+const FORCE_RECORD = process.env.FORCE_RECORD === "true";
+
 const modelAdapter = createOpenAICompatAdapter({
   apiKey: API_KEY,
   baseUrl: "https://openrouter.ai/api/v1",
   model: MODEL,
+  retry: { maxRetries: 1 },
+});
+
+// Sonnet 4.6 adapter — used for cassettes that need reliable multi-step
+// tool call streaming (Gemini 2.0 Flash drops function name tokens on the
+// 3rd+ tool call in a sequence, producing "unknown" in ATIF trajectories).
+const SONNET_MODEL = "anthropic/claude-sonnet-4-6";
+const sonnetAdapter = createOpenAICompatAdapter({
+  apiKey: API_KEY,
+  baseUrl: "https://openrouter.ai/api/v1",
+  model: SONNET_MODEL,
   retry: { maxRetries: 1 },
 });
 
@@ -94,7 +132,10 @@ const modelAdapter = createOpenAICompatAdapter({
 // ---------------------------------------------------------------------------
 
 const MEMORY_STORE_PROMPT =
-  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_list tool to show all stored memories.';
+  'Use the memory_store tool to store a feedback memory with name "testing approach", description "always write failing tests first", type "feedback", and content "Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.". Then use the memory_recall tool with query "testing" to retrieve it. Finally use the memory_search tool with type "feedback" to search for feedback memories.';
+
+const MEMORY_RECALL_PROMPT =
+  "Use the memory_recall tool to recall all persisted memories for session start. Report what memories were found, how many were selected, and whether the recall was truncated or degraded.";
 
 // ---------------------------------------------------------------------------
 // Tools (built via @koi/tools-core)
@@ -118,6 +159,53 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// send_message — tool with a string field for exfiltration guard testing
+const sendMessageToolResult = buildTool({
+  name: "send_message",
+  description: "Send a message to the user",
+  inputSchema: {
+    type: "object",
+    properties: { message: { type: "string", description: "The message text to send" } },
+    required: ["message"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => ({
+    sent: true,
+    message: args.message,
+  }),
+});
+if (!sendMessageToolResult.ok) {
+  console.error(`buildTool failed: ${sendMessageToolResult.error.message}`);
+  process.exit(1);
+}
+const sendMessageTool = sendMessageToolResult.value;
+
+// get_credentials — returns fake secrets for hook-redaction golden (exercises
+// forwardRawPayload + default redaction: API key + password must be stripped
+// before the hook agent sees the payload, while the non-secret `host` survives).
+const credentialsToolResult = buildTool({
+  name: "get_credentials",
+  description: "Retrieve database credentials. WARNING: contains sensitive data.",
+  inputSchema: { type: "object", properties: {} },
+  origin: "primordial",
+  // All values here are obviously-fake fixtures, safe to commit. They match
+  // the @koi/security/redaction detectors (Anthropic API key prefix +
+  // generic password field name) so redaction has something to act on.
+  // Do not swap in realistic-looking credentials — the trajectory records
+  // raw tool outputs by design, and those artifacts are committed to Git.
+  execute: async (): Promise<unknown> => ({
+    host: "db.example.com",
+    user: "admin",
+    password: "super-secret-pw-123",
+    apiKey: `sk-ant-api03-${"A".repeat(85)}`,
+  }),
+});
+if (!credentialsToolResult.ok) {
+  console.error(`buildTool(get_credentials) failed: ${credentialsToolResult.error.message}`);
+  process.exit(1);
+}
+const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools (backed by @koi/tasks in-memory store)
@@ -176,84 +264,254 @@ if (!taskListResult.ok) {
 const taskListTool = taskListResult.value;
 
 // ---------------------------------------------------------------------------
-// Memory tools (backed by @koi/core L0 pure functions)
+// @koi/task-tools — full tool surface (7 tools via createTaskTools)
 // ---------------------------------------------------------------------------
 
-const memoryStore = new Map<string, string>();
-
-const memoryStoreResult = buildTool({
-  name: "memory_store",
-  description:
-    "Store a memory record. Provide name, description, type (user|feedback|project|reference), and content. Returns the serialized Markdown with frontmatter.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "Human-readable name" },
-      description: { type: "string", description: "One-line summary" },
-      type: {
-        type: "string",
-        enum: ["user", "feedback", "project", "reference"],
-        description: "Memory type",
-      },
-      content: { type: "string", description: "Memory body content" },
-    },
-    required: ["name", "description", "type", "content"],
-  },
-  origin: "primordial",
-  execute: async (args: JsonObject): Promise<unknown> => {
-    const input = {
-      name: String(args.name),
-      description: String(args.description),
-      type: String(args.type),
-      content: String(args.content),
-      filePath: `${String(args.name).toLowerCase().replace(/\s+/g, "_")}.md`,
-    };
-    const pathError = validateMemoryFilePath(input.filePath);
-    if (pathError !== undefined) {
-      return { ok: false, errors: [{ field: "filePath", message: pathError }] };
-    }
-    const errors = validateMemoryRecordInput(input);
-    if (errors.length > 0) {
-      return { ok: false, errors: errors.map((e) => ({ field: e.field, message: e.message })) };
-    }
-    const frontmatter = {
-      name: input.name,
-      description: input.description,
-      type: input.type as "user" | "feedback" | "project" | "reference",
-    };
-    const serialized = serializeMemoryFrontmatter(frontmatter, input.content);
-    if (serialized === undefined) {
-      return { ok: false, errors: [{ field: "type", message: "invalid memory type" }] };
-    }
-    memoryStore.set(input.filePath, serialized);
-    return { ok: true, filePath: input.filePath, serialized };
-  },
+const taskToolsBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
 });
-if (!memoryStoreResult.ok) {
-  console.error(`buildTool(memory_store) failed: ${memoryStoreResult.error.message}`);
+const taskToolsAll = createTaskTools({
+  board: taskToolsBoard,
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+});
+// createTaskTools returns [create, get, update, list, stop, output, delegate]
+const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput, ttDelegate] = taskToolsAll as [
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+  import("@koi/core").Tool,
+];
+
+// ---------------------------------------------------------------------------
+// @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+// Stub returns immediately without launching a real child agent.
+// The cassette captures the LLM's tool-call interaction pattern.
+// ---------------------------------------------------------------------------
+
+const stubSpawnFn: SpawnFn = async (request) => ({
+  ok: true,
+  output: `Task delegated to ${request.agentName}: ${request.description} — result: done`,
+});
+
+const spawnToolsAbortController = new AbortController();
+const spawnToolsAll = createSpawnTools({
+  spawnFn: stubSpawnFn,
+  board: taskToolsBoard, // shares the task board for full coordinator flow
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+  signal: spawnToolsAbortController.signal,
+});
+// createSpawnTools returns [agent_spawn]
+const [stAgentSpawn] = spawnToolsAll as [import("@koi/core").Tool];
+
+// ---------------------------------------------------------------------------
+// Memory tools (backed by @koi/memory-tools with in-memory backend)
+// ---------------------------------------------------------------------------
+
+function createInMemoryMemoryBackend(): MemoryToolBackend {
+  const records = new Map<string, MemoryRecord>();
+  let counter = 0;
+
+  return {
+    store: (input: MemoryRecordInput) => {
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: record };
+    },
+    recall: (_query, _options) => {
+      return { ok: true as const, value: [...records.values()] };
+    },
+    search: (filter) => {
+      const all = [...records.values()];
+      const filtered = filter.type !== undefined ? all.filter((r) => r.type === filter.type) : all;
+      return { ok: true as const, value: filtered };
+    },
+    delete: (id) => {
+      records.delete(id);
+      return { ok: true as const, value: undefined };
+    },
+    findByName: (name, type) => {
+      const match = [...records.values()].find(
+        (r) => r.name === name && (type === undefined || r.type === type),
+      );
+      return { ok: true as const, value: match };
+    },
+    get: (id) => {
+      return { ok: true as const, value: records.get(id) };
+    },
+    update: (id, patch) => {
+      const existing = records.get(id);
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
+        };
+      const updated = { ...existing, ...patch, updatedAt: Date.now() } as MemoryRecord;
+      records.set(id, updated);
+      return { ok: true as const, value: updated };
+    },
+  };
+}
+
+const memoryBackend = createInMemoryMemoryBackend();
+const memoryProviderResult = createMemoryToolProvider({ backend: memoryBackend });
+if (!memoryProviderResult.ok) {
+  console.error(`createMemoryToolProvider failed: ${memoryProviderResult.error.message}`);
   process.exit(1);
 }
-const memoryStoreTool = memoryStoreResult.value;
+const memoryProvider = memoryProviderResult.value;
 
-const memoryListResult = buildTool({
-  name: "memory_list",
-  description: "List all stored memory records with their file paths and types.",
+// Extract tool descriptors for cassette recording (need to attach to a mock agent)
+const memoryAttachResult = await memoryProvider.attach(
+  {} as Parameters<typeof memoryProvider.attach>[0],
+);
+const memoryComponents =
+  "components" in memoryAttachResult ? memoryAttachResult.components : memoryAttachResult;
+const memoryToolDescriptors = [...memoryComponents.values()]
+  .filter(
+    (
+      v,
+    ): v is {
+      readonly descriptor: {
+        readonly name: string;
+        readonly description: string;
+        readonly inputSchema: JsonObject;
+      };
+    } => typeof v === "object" && v !== null && "descriptor" in v,
+  )
+  .map((t) => t.descriptor);
+
+// ---------------------------------------------------------------------------
+// Memory recall tool (backed by @koi/memory recallMemories + in-memory FS)
+// ---------------------------------------------------------------------------
+
+const recallMemoryFiles = new Map<string, { content: string; modifiedAt: number }>([
+  [
+    "/memories/user_role.md",
+    {
+      content: [
+        "---",
+        "name: User role",
+        "description: Senior engineer with Go expertise",
+        "type: user",
+        "---",
+        "",
+        "Deep Go expertise, new to React and this project's frontend.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 2 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/testing_feedback.md",
+    {
+      content: [
+        "---",
+        "name: Testing feedback",
+        "description: always write failing tests first",
+        "type: feedback",
+        "---",
+        "",
+        "Rule: write failing tests before implementation.",
+        "**Why:** catches regressions early.",
+        "**How to apply:** TDD workflow for all new features.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 5 * 86_400_000,
+    },
+  ],
+  [
+    "/memories/project_goal.md",
+    {
+      content: [
+        "---",
+        "name: Project goal",
+        "description: ship v2 by Q2 2026",
+        "type: project",
+        "---",
+        "",
+        "v2 rewrite targeting Q2 2026. Merge freeze begins 2026-03-05.",
+      ].join("\n"),
+      modifiedAt: Date.now() - 10 * 86_400_000,
+    },
+  ],
+]);
+
+const recallMockFs: FileSystemBackend = {
+  name: "recall-mock-fs",
+  read(path): Result<FileReadResult, KoiError> {
+    const file = recallMemoryFiles.get(path);
+    if (!file) {
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: `not found: ${path}`, retryable: false },
+      };
+    }
+    return { ok: true, value: { content: file.content, path, size: file.content.length } };
+  },
+  list(path): Result<FileListResult, KoiError> {
+    const entries = [...recallMemoryFiles.entries()]
+      .filter(([p]) => p.startsWith(path) && p.endsWith(".md"))
+      .map(([p, f]) => ({
+        path: p,
+        kind: "file" as const,
+        size: f.content.length,
+        modifiedAt: f.modifiedAt,
+      }));
+    return { ok: true, value: { entries, truncated: false } };
+  },
+  write() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  edit() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "read-only", retryable: false },
+    };
+  },
+  search() {
+    return {
+      ok: false,
+      error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+    };
+  },
+};
+
+const memoryRecallResult = buildTool({
+  name: "memory_recall",
+  description:
+    "Recall persisted memories for session start. Scans the memory directory, scores by salience, selects within token budget, and returns formatted memories.",
   inputSchema: { type: "object", properties: {} },
   origin: "primordial",
   execute: async (): Promise<unknown> => {
-    const records = [...memoryStore.entries()].map(([filePath, raw]) => {
-      const typeMatch = raw.match(/^type:\s*(.+)$/m);
-      const nameMatch = raw.match(/^name:\s*(.+)$/m);
-      return { filePath, name: nameMatch?.[1] ?? "unknown", type: typeMatch?.[1] ?? "unknown" };
+    const result = await recallMemories(recallMockFs, {
+      memoryDir: "/memories",
+      tokenBudget: 8000,
+      now: Date.now(),
     });
-    return { memories: records };
+    return {
+      selected: result.selected.length,
+      totalScanned: result.totalScanned,
+      truncated: result.truncated,
+      degraded: result.degraded,
+      skippedFiles: result.skippedFiles,
+      totalTokens: result.totalTokens,
+      formatted: result.formatted,
+    };
   },
 });
-if (!memoryListResult.ok) {
-  console.error(`buildTool(memory_list) failed: ${memoryListResult.error.message}`);
+if (!memoryRecallResult.ok) {
+  console.error(`buildTool(memory_recall) failed: ${memoryRecallResult.error.message}`);
   process.exit(1);
 }
-const memoryListTool = memoryListResult.value;
+const memoryRecallTool = memoryRecallResult.value;
 
 // =========================================================================
 // Recording helpers
@@ -262,14 +520,23 @@ const memoryListTool = memoryListResult.value;
 async function recordCassette(
   name: string,
   factory: () => AsyncIterable<ModelChunk>,
+  options: { readonly model?: string } = {},
 ): Promise<void> {
-  console.log(`Recording ${name}.cassette.json...`);
+  const path = `${FIXTURES}/${name}.cassette.json`;
+  if (!FORCE_RECORD && (await Bun.file(path).exists())) {
+    console.log(
+      `Skipping ${name}.cassette.json (already exists — set FORCE_RECORD=true to re-record)`,
+    );
+    return;
+  }
+  const cassModel = options.model ?? MODEL;
+  console.log(`Recording ${name}.cassette.json (model: ${cassModel})...`);
   const chunks: ModelChunk[] = [];
   for await (const c of factory()) chunks.push(c);
   await Bun.write(
-    `${FIXTURES}/${name}.cassette.json`,
+    path,
     JSON.stringify(
-      { name, model: MODEL, recordedAt: Date.now(), chunks } satisfies Cassette,
+      { name, model: cassModel, recordedAt: Date.now(), chunks } satisfies Cassette,
       null,
       2,
     ),
@@ -287,13 +554,32 @@ interface QueryConfig {
   readonly permissionMode: "bypass" | "default";
   readonly permissionRules: readonly SourcedRule[];
   readonly permissionDescription: string;
-  readonly hooks: readonly {
-    readonly kind: "command";
-    readonly name: string;
-    readonly cmd: readonly string[];
-    readonly filter: { readonly events: readonly string[] };
-    readonly once?: boolean;
-  }[];
+  readonly hooks: readonly (
+    | {
+        readonly kind: "command";
+        readonly name: string;
+        readonly cmd: readonly string[];
+        readonly filter: { readonly events: readonly string[] };
+        readonly once?: boolean;
+      }
+    | {
+        readonly kind: "agent";
+        readonly name: string;
+        readonly prompt: string;
+        readonly model?: string;
+        readonly filter: { readonly events: readonly string[] };
+        readonly forwardRawPayload?: boolean;
+        readonly toolAllowlist?: readonly string[];
+        readonly toolDenylist?: readonly string[];
+        readonly maxTurns?: number;
+        readonly redaction?: {
+          readonly enabled?: boolean;
+          readonly censor?: "redact" | "mask" | "remove";
+          readonly sensitiveFields?: readonly string[];
+        };
+        readonly once?: boolean;
+      }
+  )[];
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
@@ -303,6 +589,25 @@ interface QueryConfig {
   readonly permissionBackend?: PermissionBackend;
   /** Denial escalation config for permissions middleware. */
   readonly denialEscalation?: boolean | DenialEscalationConfig;
+  /** Override model adapter for this query's trajectory recording. Defaults to global modelAdapter. */
+  readonly modelAdapter?: ReturnType<typeof createOpenAICompatAdapter>;
+  /** Model name to use when modelAdapter is overridden. Defaults to MODEL constant. */
+  readonly modelName?: string;
+  /**
+   * Optional factory called after the ATIF store is created.
+   * Replaces `providers` for queries that need to inject store-aware middleware
+   * into child agents (e.g., spawn inheritance with shared trajectory store).
+   * When provided, `providers` is ignored.
+   */
+  readonly providerFactory?: (
+    store: ReturnType<typeof createAtifDocumentStore>,
+    docId: string,
+  ) => readonly ComponentProvider[];
+  /**
+   * Optional parent manifest overrides merged into the default `{ name, version, model }`.
+   * Use to set manifest.spawn ceiling on the parent agent for manifest-ceiling queries.
+   */
+  readonly parentManifestOverrides?: import("@koi/core").AgentManifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +616,13 @@ interface QueryConfig {
 
 async function recordTrajectory(config: QueryConfig): Promise<void> {
   const { name, prompt } = config;
+  const path = `${FIXTURES}/${name}.trajectory.json`;
+  if (!FORCE_RECORD && (await Bun.file(path).exists())) {
+    console.log(
+      `Skipping ${name}.trajectory.json (already exists — set FORCE_RECORD=true to re-record)`,
+    );
+    return;
+  }
   console.log(`\nRecording ${name}.trajectory.json (full-stack, all L2)...`);
 
   const trajDir = `/tmp/koi-record-${name}-${Date.now()}`;
@@ -320,30 +632,176 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     createFsAtifDelegate(trajDir),
   );
 
+  // @koi/middleware-semantic-retry — broker created early so event-trace can read signals
+  const retryBroker = createRetrySignalBroker();
+
   // @koi/event-trace
   const { middleware: eventTrace } = createEventTraceMiddleware({
     store,
     docId,
     agentName: `golden-${name}`,
+    signalReader: retryBroker,
   });
 
   // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
+  // Also fires tool.before/tool.succeeded with payload data via its internal registry;
+  // agent hooks on tool events dispatch here, not through @koi/runtime's hook-dispatch.
+  // TODO(hook-dispatch-unification): consolidate with hook-dispatch.ts per Claude Code's
+  // single-dispatcher + observer-tap pattern. Tracked as a follow-up to #1491.
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
-  const coreHookMw = createHookMiddleware({ hooks: loadedHooks });
 
-  // Optional registry for once-hook lifecycle tracking
+  // createHookMiddleware's wrapToolCall dispatches tool.succeeded via its own
+  // internal registry AND includes the full {input, output} data payload in
+  // the event — that richer payload is what redactEventData needs to strip
+  // secrets from. createHookDispatchMiddleware (wired below) ALSO dispatches
+  // tool.succeeded for trajectory recording, but its event carries only
+  // toolName (no data). For idempotent command hooks, double-dispatch is
+  // wasteful but harmless (pre-existing). For agent hooks it would double
+  // real LLM calls and break once:true + any hook with side effects — so
+  // we keep agent hooks only on the coreHookMw path (with data) and leave
+  // hook-dispatch with command hooks only for its trajectory step recording.
+  const dispatchHookConfigs = loadedHooks.filter((h) => h.kind !== "agent");
+
+  // Captures the userInput each agent hook receives — i.e. the already-redacted
+  // payload the sub-agent actually sees. Written to a sidecar file so the
+  // golden test can assert redaction actually stripped secrets before they
+  // crossed into the hook-agent trust boundary (the tool's raw output still
+  // flows to the parent model unredacted — that is by design).
+  const capturedHookInputs: {
+    readonly hookName: string;
+    readonly userInput: string;
+    readonly systemPrompt: string | undefined;
+  }[] = [];
+
+  // SpawnFn for agent-type hooks. Emulates the structured-output slice of the
+  // hook-agent contract: injects request.additionalTools (HookVerdict) into a
+  // real LLM call, then extracts the parsed HookVerdict args as the spawn
+  // output — exercising the same `requiredOutputToolName` enforcement path
+  // the L2 agent executor uses (see packages/lib/hooks/src/agent-executor.ts:245-264).
+  //
+  // SCOPE: this emulator is intended for hooks whose verification only needs
+  // HookVerdict (content-based policies that inspect the payload and decide).
+  // It does NOT emulate production's parent-tool inheritance — createAgentExecutor
+  // forwards `toolDenylist`/`toolAllowlist` so the child sub-agent inherits
+  // parent tools minus safety denies. A hook that investigates via parent
+  // tools (grep, fetch, etc.) cannot be recorded with this emulator; use
+  // createHookSpawnFn + spawnChildAgent for those.
+  const hasAgentHooks = config.hooks.some((h) => h.kind === "agent");
+  const hookSpawnFn: SpawnFn | undefined = hasAgentHooks
+    ? async (request) => {
+        const hookModelAdapter = config.modelAdapter ?? modelAdapter;
+        const hookModel = config.modelName ?? MODEL;
+        const tools = request.additionalTools ?? [];
+        const required = request.requiredOutputToolName;
+        // Snapshot the payload the hook agent actually receives. request.description
+        // is the already-redacted userInput built by @koi/hooks buildHookPrompts.
+        capturedHookInputs.push({
+          hookName: request.agentName,
+          userInput: request.description,
+          systemPrompt: request.systemPrompt,
+        });
+        const msgs: {
+          readonly senderId: string;
+          readonly timestamp: number;
+          readonly content: readonly { readonly kind: "text"; readonly text: string }[];
+        }[] = [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [{ kind: "text", text: request.description }],
+          },
+        ];
+        try {
+          // Honor the hook's requested maxTurns (hook.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+          // resolved by createAgentExecutor and forwarded via SpawnRequest). Mirrors
+          // agent-executor.ts retry-on-missing-verdict: the model may produce text
+          // first, then be nudged to call HookVerdict on the next turn. Bounded at
+          // 2 when the request omits maxTurns, matching the minimal retry budget.
+          const maxTurns = request.maxTurns ?? 2;
+          for (let turn = 0; turn < maxTurns; turn++) {
+            const evts: EngineEvent[] = [];
+            for await (const e of consumeModelStream(
+              hookModelAdapter.stream({
+                messages: msgs,
+                model: hookModel,
+                tools,
+                systemPrompt: request.systemPrompt,
+                signal: request.signal,
+              }),
+              request.signal,
+            )) {
+              if (e.kind !== "done") evts.push(e);
+            }
+            const verdict = evts.find((e) => {
+              if (e.kind !== "tool_call_end") return false;
+              const r = e.result as { readonly toolName: string };
+              return r.toolName === required;
+            });
+            if (verdict?.kind === "tool_call_end") {
+              const r = verdict.result as {
+                readonly toolName: string;
+                readonly parsedArgs?: JsonObject;
+              };
+              return { ok: true, output: JSON.stringify(r.parsedArgs ?? {}) };
+            }
+            // Nudge toward HookVerdict on the second turn.
+            msgs.push({
+              senderId: "user",
+              timestamp: Date.now(),
+              content: [
+                {
+                  kind: "text",
+                  text: `You must call the ${required ?? "HookVerdict"} tool now with your verdict. Do not respond with text.`,
+                },
+              ],
+            });
+          }
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Hook agent did not call HookVerdict within ${maxTurns} turn(s)`,
+              retryable: true,
+            },
+          };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Hook spawn failed: ${message}`,
+              retryable: false,
+            },
+          };
+        }
+      }
+    : undefined;
+
+  // coreHookMw owns all hooks (including agent hooks). spawnFn is required
+  // by createHookMiddleware whenever agent hooks are present.
+  const coreHookMw = createHookMiddleware({
+    hooks: loadedHooks,
+    ...(hookSpawnFn !== undefined ? { spawnFn: hookSpawnFn } : {}),
+  });
+
+  // Optional registry for once-hook lifecycle tracking (command hooks only).
+  // Agent hooks are dispatched exclusively via coreHookMw (above), so the
+  // registry never needs an agentExecutor here.
   // let justified: mutable — created conditionally
   let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
   if (config.useRegistry === true) {
     hookRegistry = createHookRegistry();
-    hookRegistry.register(`golden-${name}`, `golden-${name}`, loadedHooks);
+    hookRegistry.register(`golden-${name}`, `golden-${name}`, dispatchHookConfigs);
   }
 
-  // Runtime hook dispatch — tool hooks + trajectory recording
+  // Runtime hook dispatch — command tool hooks + trajectory recording.
+  // Agent hooks are filtered out here (they already fire via coreHookMw with
+  // the full {input, output} payload that redaction needs to act on).
   const registrySessionId = `golden-${name}`;
   const hookMw = createHookDispatchMiddleware({
-    hooks: loadedHooks,
+    hooks: dispatchHookConfigs,
     store,
     docId,
     ...(hookRegistry !== undefined ? { registry: hookRegistry, registrySessionId } : {}),
@@ -373,11 +831,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   mcpSm.transition({ kind: "connecting", attempt: 1 });
   mcpSm.transition({ kind: "connected" });
 
-  // Bridge adapter
+  // Bridge adapter — use per-query override if provided (e.g. Sonnet for multi-step tool calls)
+  const queryModelAdapter = config.modelAdapter ?? modelAdapter;
+  const queryModel = config.modelName ?? MODEL;
   const bridge: EngineAdapter = {
     engineId: `golden-${name}`,
     capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    terminals: { modelCall: queryModelAdapter.complete, modelStream: queryModelAdapter.stream },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const h = input.callHandlers;
       if (!h)
@@ -409,10 +869,13 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
           let done: EngineEvent | undefined;
           for await (const e of consumeModelStream(
             h.modelStream
-              ? h.modelStream({ messages: msgs, model: MODEL })
+              ? h.modelStream({ messages: msgs, model: queryModel })
               : (async function* (): AsyncIterable<ModelChunk> {
-                  const r = await h.modelCall({ messages: msgs, model: MODEL });
-                  yield { kind: "done" as const, response: { content: r.content, model: MODEL } };
+                  const r = await h.modelCall({ messages: msgs, model: queryModel });
+                  yield {
+                    kind: "done" as const,
+                    response: { content: r.content, model: queryModel },
+                  };
                 })(),
             input.signal,
           )) {
@@ -434,12 +897,19 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             if (!r.parsedArgs) continue;
             // Use the real callId from the model, not the tool name
             const realCallId = tc.callId as string;
-            // Append assistant message (the tool-use intent)
+            // Append assistant message (the tool-use intent).
+            // Include both callName (request-mapper session-repair) and toolName
+            // (legacy key) so both Gemini and Sonnet can reconstruct tool_calls.
             msgs.push({
               senderId: "assistant",
               timestamp: Date.now(),
               content: [{ kind: "text", text: "" }],
-              metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+              metadata: {
+                callId: realCallId,
+                callName: r.toolName,
+                callArgs: JSON.stringify(r.parsedArgs ?? {}),
+                toolName: r.toolName,
+              } as JsonObject,
             });
             try {
               const resp = await h.toolCall({ toolId: r.toolName, input: r.parsedArgs });
@@ -450,7 +920,12 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
                 senderId: "tool",
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: out }],
-                metadata: { callId: realCallId, toolName: r.toolName } as JsonObject,
+                // callId + toolCallId: both keys so any provider path finds the linkage.
+                metadata: {
+                  callId: realCallId,
+                  toolCallId: realCallId,
+                  toolName: r.toolName,
+                } as JsonObject,
               });
             } catch (toolErr: unknown) {
               const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -477,15 +952,39 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     },
   };
 
-  const tracedMiddleware = [eventTrace, coreHookMw, hookMw, permMiddleware].map((mw) =>
-    wrapMiddlewareWithTrace(mw, { store, docId }),
-  );
+  // @koi/middleware-exfiltration-guard — secret exfiltration scanning (priority 50, before permissions)
+  const exfiltrationGuard = createExfiltrationGuardMiddleware({ action: "block" });
+
+  // @koi/middleware-semantic-retry — writer side (broker created above with event-trace)
+  const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
+    signalWriter: retryBroker,
+  });
+
+  const tracedMiddleware = [
+    eventTrace,
+    coreHookMw,
+    hookMw,
+    exfiltrationGuard,
+    permMiddleware,
+    semanticRetryMw,
+  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
+
+  // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
+  // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
+  // so the child's model calls appear in the same ATIF document with their own identity).
+  const resolvedProviders =
+    config.providerFactory !== undefined ? config.providerFactory(store, docId) : config.providers;
 
   const runtime = await createKoi({
-    manifest: { name: `golden-${name}`, version: "0.1.0", model: { name: MODEL } },
+    manifest: {
+      name: `golden-${name}`,
+      version: "0.1.0",
+      model: { name: queryModel },
+      ...config.parentManifestOverrides,
+    },
     adapter: bridge,
     middleware: tracedMiddleware,
-    providers: [...config.providers],
+    providers: [...resolvedProviders],
     loopDetection: false,
   });
 
@@ -525,6 +1024,22 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   }
   const rawAtif = JSON.parse(await readFile(`${trajDir}/${atifFile}`, "utf-8"));
   await Bun.write(`${FIXTURES}/${name}.trajectory.json`, JSON.stringify(rawAtif, null, 2));
+
+  // Side-car: agent-hook inputs (what the hook sub-agents actually saw).
+  // Used by goldens that need to assert redaction applied *before* payloads
+  // crossed into the hook-agent trust boundary.
+  //
+  // Written unconditionally when the query declares agent hooks — an empty
+  // inputs array is a *signal* that this recording did not exercise the
+  // hook-agent path, which the replay test asserts on. Skipping the write
+  // would leave a stale sidecar from a previous (passing) recording, letting
+  // a regression go green against old evidence.
+  if (hasAgentHooks) {
+    await Bun.write(
+      `${FIXTURES}/${name}.hook-inputs.json`,
+      JSON.stringify({ name, capturedAt: Date.now(), inputs: capturedHookInputs }, null, 2),
+    );
+  }
 
   // Print summary
   const steps = rawAtif.steps ?? [];
@@ -568,45 +1083,156 @@ const webProvider = createWebProvider({
 });
 
 // ---------------------------------------------------------------------------
+// @koi/sandbox-os — run_sandboxed: executes arbitrary commands inside OS sandbox
+// Only enabled on supported platforms (macOS seatbelt, Linux bwrap).
+//
+// Design: the sandbox PROFILE is server-side config — LLM supplies only the
+// command path and its arguments. Restrictions (network disabled, credential
+// paths denied via restrictiveProfile) are enforced by the server, never by
+// the caller.
+// ---------------------------------------------------------------------------
+
+let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
+
+const _sandboxAdapterResult = createOsAdapter();
+if (_sandboxAdapterResult.ok) {
+  const _sandboxAdapter = _sandboxAdapterResult.value;
+
+  // Profile is config: network off + credential paths read-denied.
+  // LLM never controls which paths are blocked or whether network is allowed.
+  const _sandboxProfile = restrictiveProfile();
+
+  // Path allowlist: only approved system directories may be listed.
+  // This prevents the recording model from enumerating arbitrary host paths via ls args.
+  const _SANDBOXED_PATH_ALLOWLIST = new Set(["/usr/bin", "/bin", "/usr/local/bin"]);
+
+  const _runSandboxedResult = buildTool({
+    name: "run_sandboxed",
+    description:
+      "List files inside a sandboxed system directory. Network access is disabled. Only /usr/bin, /bin, and /usr/local/bin are allowed paths. Provide the directory path to list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Absolute path to a system directory to list. Allowed: /usr/bin, /bin, /usr/local/bin",
+        },
+      },
+      required: ["path"],
+    },
+    origin: "primordial",
+    execute: async (args: JsonObject): Promise<unknown> => {
+      const dirPath = String(args.path);
+      if (!_SANDBOXED_PATH_ALLOWLIST.has(dirPath)) {
+        // Throw so the framework marks this as tool.failed — not a silent success.
+        throw new Error(
+          `Path not permitted: ${dirPath}. Allowed: ${[..._SANDBOXED_PATH_ALLOWLIST].join(", ")}`,
+        );
+      }
+      const instance = await _sandboxAdapter.create(_sandboxProfile);
+      try {
+        // Hardcode the command — model only controls which approved directory to list.
+        // ls binary location varies by platform; try /bin/ls then /usr/bin/ls.
+        const lsBin = (await Bun.file("/bin/ls").exists()) ? "/bin/ls" : "/usr/bin/ls";
+        // Scrub inherited env so the recorder's OPENROUTER_API_KEY and other secrets are
+        // not visible inside the sandbox. Only pass a minimal allowlist.
+        const safeEnv: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: process.env.HOME ?? "/tmp",
+          TMPDIR: process.env.TMPDIR ?? "/tmp",
+          TERM: "dumb",
+          LANG: process.env.LANG ?? "en_US.UTF-8",
+        };
+        // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
+        const r = await instance.exec(lsBin, ["-1", dirPath], {
+          env: safeEnv,
+          timeoutMs: 10_000,
+        });
+        const stdout = r.stdout.trim();
+        // Only emit entry_count when output is complete — truncated output yields a partial
+        // count that is misleading for audit purposes. Callers should rerun with a narrower
+        // command or check `truncated` before trusting the count.
+        const entryCount =
+          !r.truncated && r.exitCode === 0 && stdout.length > 0
+            ? stdout.split("\n").filter((l) => l.trim()).length
+            : undefined;
+        return {
+          stdout,
+          stderr: r.stderr.trim(),
+          exitCode: r.exitCode,
+          timedOut: r.timedOut,
+          ...(r.truncated === true ? { truncated: true } : {}),
+          ...(r.signal !== undefined ? { signal: r.signal } : {}),
+          ...(entryCount !== undefined ? { entry_count: entryCount } : {}),
+          platform: _sandboxAdapter.platform.platform,
+        };
+      } finally {
+        await instance.destroy();
+      }
+    },
+  });
+
+  if (_runSandboxedResult.ok) {
+    const _runSandboxedTool = _runSandboxedResult.value;
+    sandboxProvider = createSingleToolProvider({
+      name: "run-sandboxed",
+      toolName: "run_sandboxed",
+      createTool: () => _runSandboxedTool,
+    });
+  } else {
+    console.warn(`buildTool(run_sandboxed) failed: ${_runSandboxedResult.error.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
 // ---------------------------------------------------------------------------
 
 let nexusTransport: { readonly close: () => void } | undefined;
 let nexusFsProvider: ComponentProvider | undefined;
 
-// Only set up nexus-fs if nexus-fs Python package is available
+// Only set up nexus-fs if nexus-fs Python package is available AND transport starts cleanly
 const nexusFsCheck = Bun.spawnSync(["python3", "-c", "import nexus.fs"]);
 if (nexusFsCheck.exitCode === 0) {
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
+  try {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
 
-  const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
-  const transport = await createLocalTransport({
-    mountUri: `local://${nexusTmpDir}`,
-    startupTimeoutMs: 15_000,
-  });
-  nexusTransport = transport;
+    const nexusTmpDir = mkdtempSync(join(tmpdir(), "koi-golden-nexus-"));
+    const transport = await createLocalTransport({
+      mountUri: `local://${nexusTmpDir}`,
+      startupTimeoutMs: 15_000,
+    });
+    nexusTransport = transport;
 
-  const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
-  const backend = createNexusFileSystem({
-    url: "local://unused",
-    mountPoint: nexusMountPoint,
-    transport,
-  });
+    const nexusMountPoint = transport.mounts?.[0]?.slice(1) ?? "fs";
+    const backend = createNexusFileSystem({
+      url: "local://unused",
+      mountPoint: nexusMountPoint,
+      transport,
+    });
 
-  // Pre-seed a file for the LLM to read
-  await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
+    // Pre-seed a file for the LLM to read
+    await backend.write("/golden-test.txt", "The answer to the golden query is 42.");
 
-  const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
+    const readTool = createFsReadTool(backend, "nexus", { sandbox: false });
 
-  nexusFsProvider = createSingleToolProvider({
-    name: "nexus-fs",
-    toolName: "nexus_read",
-    createTool: () => readTool,
-  });
+    nexusFsProvider = createSingleToolProvider({
+      name: "nexus-fs",
+      toolName: "nexus_read",
+      createTool: () => readTool,
+    });
 
-  console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+    console.log(`Nexus-fs golden query: mount=${nexusMountPoint}, seeded golden-test.txt`);
+  } catch (err: unknown) {
+    console.log(
+      `nexus-fs transport failed (${err instanceof Error ? err.message : String(err)}) — skipping`,
+    );
+    nexusTransport = undefined;
+    nexusFsProvider = undefined;
+  }
 } else {
   console.log("nexus-fs not available — skipping nexus-fs golden query");
 }
@@ -712,6 +1338,61 @@ async function createMcpProvider(): Promise<{
 const BYPASS_RULES: readonly SourcedRule[] = [
   { pattern: "*", action: "*", effect: "allow", source: "policy" },
 ];
+
+// ---------------------------------------------------------------------------
+// Spawn tool provider — @koi/agent-runtime + @koi/engine (#1424)
+// Child agents use a proper EngineAdapter built with runTurn() so the
+// model→tool→model loop works correctly inside spawnChildAgent/createKoi.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps modelAdapter into a full EngineAdapter for spawned child agents.
+ * Uses runTurn() from @koi/query-engine to drive the model loop.
+ * The parent bridge adapter is for recording; children need their own loop.
+ */
+function createChildBridge(): EngineAdapter {
+  return {
+    engineId: "spawn-child",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      const h = input.callHandlers;
+      if (!h) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers on child agent input" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const messages = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
+      ];
+      return runTurn({ callHandlers: h, messages, signal: input.signal });
+    },
+  };
+}
+
+const spawnBuiltIns = getBuiltInAgents();
+const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
+const spawnResolver = createDefinitionResolver(spawnRegistry);
+const spawnToolProvider = createSpawnToolProvider({
+  resolver: spawnResolver,
+  spawnLedger: createInMemorySpawnLedger(5),
+  adapter: createChildBridge(), // child agents use a proper engine adapter with runTurn
+  manifestTemplate: {
+    name: "spawned-agent",
+    version: "0.0.0",
+    description: "Spawned sub-agent",
+    model: { name: MODEL },
+  },
+});
 
 const queries: readonly QueryConfig[] = [
   // 1. simple-text: text response, no tools
@@ -1024,7 +1705,7 @@ const queries: readonly QueryConfig[] = [
     providers: [localFsProvider],
   },
 
-  // 12. memory-store: @koi/memory exercised — store + list memory records via L0 pure functions
+  // 12. memory-store: @koi/memory-tools exercised — store, recall, search via L2 package
   {
     name: "memory-store",
     prompt: MEMORY_STORE_PROMPT,
@@ -1039,19 +1720,392 @@ const queries: readonly QueryConfig[] = [
         filter: { events: ["tool.succeeded"] },
       },
     ],
+    providers: [memoryProvider],
+    maxTurns: 5,
+  },
+
+  // 13. memory-recall: @koi/memory recallMemories exercised — scan, score, budget, format
+  {
+    name: "memory-recall",
+    prompt: MEMORY_RECALL_PROMPT,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
     providers: [
       createSingleToolProvider({
-        name: "memory-store",
-        toolName: "memory_store",
-        createTool: () => memoryStoreTool,
-      }),
-      createSingleToolProvider({
-        name: "memory-list",
-        toolName: "memory_list",
-        createTool: () => memoryListTool,
+        name: "memory-recall",
+        toolName: "memory_recall",
+        createTool: () => memoryRecallTool,
       }),
     ],
-    maxTurns: 3,
+    maxTurns: 2,
+  },
+
+  // 14. exfiltration-guard-block: @koi/middleware-exfiltration-guard blocks tool arg with encoded secret
+  {
+    name: "exfiltration-guard-block",
+    prompt: `Use the send_message tool with message set to exactly this string: ${btoa("AKIAIOSFODNN7EXAMPLE")}. Do not modify or decode it, just pass it as-is.`,
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "send-message",
+        toolName: "send_message",
+        createTool: () => sendMessageTool,
+      }),
+    ],
+  },
+
+  // 15. spawn-agent: Spawn tool exercises @koi/agent-runtime built-in resolver (#1424)
+  //     Parent delegates to built-in "researcher" agent via the Spawn tool.
+  //     Trajectory: parent model call → Spawn tool → child researcher agent (real LLM) → result back.
+  {
+    name: "spawn-agent",
+    prompt:
+      "Use the Spawn tool with agentName='researcher' to delegate this task: " +
+      "'What is the Fibonacci sequence? Provide a one-sentence definition.' " +
+      "Then report the researcher's answer verbatim.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [spawnToolProvider],
+    maxTurns: 2, // turn 0: parent calls Spawn; turn 1: parent reports result
+  },
+
+  // 14. spawn-allowlist: toolAllowlist via Spawn tool (#1425)
+  //     Parent has Glob + Grep + ToolSearch + Spawn.
+  //     Parent spawns researcher with toolAllowlist=['Grep'] — child gets ONLY Grep + Spawn.
+  //     Glob and ToolSearch absent from child's ModelRequest.tools proves allowlist enforcement.
+  {
+    name: "spawn-allowlist",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolAllowlist=['Grep'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 15. spawn-manifest-ceiling: manifest.spawn.tools.policy=allowlist (#1425)
+  //     Parent manifest declares spawn.tools.policy=allowlist, list=['Grep'].
+  //     LLM calls Spawn with NO toolAllowlist — manifest ceiling enforced by engine alone.
+  //     Child model step should show only [Grep] (Glob and ToolSearch absent).
+  //     Proves ceiling is enforced at the engine level, not by caller discipline.
+  {
+    name: "spawn-manifest-ceiling",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    // Parent manifest declares the ceiling — only Grep allowed for children
+    parentManifestOverrides: {
+      name: "golden-spawn-manifest-ceiling",
+      version: "0.1.0",
+      model: { name: MODEL },
+      spawn: { tools: { policy: "allowlist", list: ["Grep"] } },
+    },
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // 17. spawn-inheritance: tool narrowing via toolDenylist (#1425)
+  //     Parent has Glob + Grep + ToolSearch (builtin search) + Spawn.
+  //     Parent spawns researcher with toolDenylist=['Glob'] — child inherits Grep + ToolSearch
+  //     but NOT Glob, and gets a fresh Spawn. Child's model call appears in the shared ATIF
+  //     document with agentName="researcher", proving Glob is absent at the model-request level.
+  {
+    name: "spawn-inheritance",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and toolDenylist=['Glob'] to delegate: " +
+      "'List your available tools by name, then answer: what is 2+2?' " +
+      "Then report the researcher's answer.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // unused — providerFactory takes precedence
+    maxTurns: 2,
+    providerFactory: (store, docId) => {
+      // Child event trace: same store + docId as parent, child's own identity.
+      // Child steps appear in the trajectory tagged "researcher", making
+      // ModelRequest.tools visible — Glob absent proves denylist enforcement.
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        // Parent has Glob + Grep + ToolSearch so the denylist has something to deny
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
+  //     Exercises create → list → update(in_progress) → update(completed) flow.
+  {
+    name: "task-tools",
+    // Prompt intentionally limited to task_create + task_list only.
+    // Gemini 2.0 Flash generates malformed args for task_update in multi-step
+    // scenarios (parsedArgs → undefined → silently dropped by bridge adapter).
+    // The task_update/stop/output flows are tested in the 48 unit tests.
+    // This golden query validates that the tool pipeline is wired correctly.
+    prompt:
+      "Use the task_create tool to create two tasks: " +
+      "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+      "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+      "Then use task_list to show all tasks. Report how many tasks were created.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-task-tool",
+        cmd: ["echo", "task-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({ name: "task-get", toolName: "task_get", createTool: () => ttGet }),
+      createSingleToolProvider({
+        name: "task-update",
+        toolName: "task_update",
+        createTool: () => ttUpdate,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => ttList,
+      }),
+      createSingleToolProvider({
+        name: "task-stop",
+        toolName: "task_stop",
+        createTool: () => ttStop,
+      }),
+      createSingleToolProvider({
+        name: "task-output",
+        toolName: "task_output",
+        createTool: () => ttOutput,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+    ],
+    maxTurns: 5,
+  },
+
+  // sandbox-exec: @koi/sandbox-os — run_sandboxed tool validates Seatbelt/bwrap triggers
+  //   agent calls run_sandboxed with command+args → sandbox executes the command → ATIF captures output
+  //   Profile is server-side config (restrictiveProfile). LLM supplies only command + args.
+  //   Only included when platform detection succeeds (macOS or Linux).
+  ...(sandboxProvider !== undefined
+    ? [
+        {
+          name: "sandbox-exec",
+          prompt:
+            "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+          permissionMode: "bypass" as const,
+          permissionRules: BYPASS_RULES,
+          permissionDescription: "bypass (allow all)",
+          hooks: [
+            {
+              kind: "command" as const,
+              name: "on-sandbox-tool",
+              cmd: ["echo", "sandbox-tool-done"],
+              filter: { events: ["tool.succeeded"] },
+            },
+          ],
+          providers: [sandboxProvider],
+          maxTurns: 2,
+        },
+      ]
+    : []),
+
+  // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
+  //     Coordinator creates a task, delegates it, then spawns a child agent.
+  //     Stub SpawnFn returns immediately (no real child agent launched).
+  {
+    name: "spawn-tools",
+    prompt:
+      "You are a coordinator. Do the following steps in order: " +
+      "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+      "2) Use task_delegate to assign that task to agent 'researcher'. " +
+      "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+      "Report the researcher's output.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+      createSingleToolProvider({
+        name: "agent-spawn",
+        toolName: "agent_spawn",
+        createTool: () => stAgentSpawn,
+      }),
+    ],
+    maxTurns: 4,
+    // Use Sonnet 4.6 for trajectory recording — Gemini 2.0 Flash drops the
+    // function name token on the 3rd+ tool call in a sequence (completion_tokens: 1),
+    // causing agent_spawn to resolve as "unknown" in the ATIF.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
+  // hook-redaction: agent hook on tool.succeeded with forwardRawPayload + default redaction.
+  //   Parent calls get_credentials which returns a mix of secrets (apiKey, password)
+  //   and a safe field (host). The @koi/hooks redaction pipeline masks secrets
+  //   before forwarding the payload to the secret-scanner agent hook. The hook
+  //   spawns a sub-agent that MUST call HookVerdict (injected via additionalTools)
+  //   and should return ok=true — the redacted payload is safe. With a passing
+  //   verdict, the parent then reports the `host` field back to the user.
+  {
+    name: "hook-redaction",
+    prompt:
+      "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "agent" as const,
+        name: "secret-scanner",
+        prompt:
+          "Verify the tool output does not contain any exposed secrets or credentials. " +
+          "If the payload shows redaction markers (e.g. [REDACTED], ***, or masked fields) and no raw secrets, " +
+          "call HookVerdict with ok=true. If you see an unredacted API key or password, call HookVerdict with ok=false.",
+        filter: { events: ["tool.succeeded"] },
+        forwardRawPayload: true,
+        // Narrow this content-policy hook to HookVerdict only — matches what
+        // the recording SpawnFn passes to the LLM (additionalTools only). In
+        // production createAgentExecutor filters HookVerdict out of the
+        // allowlist (see buildToolConstraints) and injects it via
+        // additionalTools, so the child sub-agent still gets HookVerdict.
+        // Result: production and the recorder exercise the same tool surface.
+        toolAllowlist: ["HookVerdict"],
+        // Single turn: the LLM either emits HookVerdict on its first reply
+        // or the hook fails closed. Matches the "must call HookVerdict
+        // exactly once" contract and keeps the recorder's retry budget aligned
+        // with production.
+        maxTurns: 1,
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "credentials",
+        toolName: "get_credentials",
+        createTool: () => credentialsTool,
+      }),
+    ],
+    maxTurns: 2,
+    // Gemini 2.0 Flash's safety layer sometimes refuses prompts mentioning
+    // "credentials" even for benign (clearly fictitious) tool calls, making
+    // trajectory re-recording non-deterministic. Sonnet 4.6 follows the
+    // tool-use instructions reliably here.
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
   },
 ];
 
@@ -1102,6 +2156,29 @@ await recordCassette("task-board", () =>
   }),
 );
 
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
+);
+
 await recordCassette("hook-once", () =>
   modelAdapter.stream({
     messages: [
@@ -1120,6 +2197,64 @@ await recordCassette("hook-once", () =>
   }),
 );
 
+await recordCassette("task-tools", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "Use the task_create tool to create two tasks: " +
+              "one with subject 'Implement login flow' and description 'Build OAuth2', " +
+              "and another with subject 'Write API tests' and description 'Add integration tests'. " +
+              "Then use task_list to show all tasks. Report how many tasks were created.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      ttCreate.descriptor,
+      ttGet.descriptor,
+      ttUpdate.descriptor,
+      ttList.descriptor,
+      ttStop.descriptor,
+      ttOutput.descriptor,
+      ttDelegate.descriptor,
+    ],
+  }),
+);
+
+// spawn-tools uses Sonnet 4.6 — Gemini 2.0 Flash drops function name tokens
+// on the 3rd+ tool call in a sequence, causing agent_spawn to emit as "unknown".
+await recordCassette(
+  "spawn-tools",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                "You are a coordinator. Do the following steps in order: " +
+                "1) Use task_create to create a task with subject 'Research caching strategies' and description 'Investigate Redis vs Memcached'. " +
+                "2) Use task_delegate to assign that task to agent 'researcher'. " +
+                "3) Use agent_spawn with agent_name='researcher', description='Research Redis vs Memcached caching strategies', and the task_id from step 1. " +
+                "Report the researcher's output.",
+            },
+          ],
+        },
+      ],
+      tools: [ttCreate.descriptor, ttDelegate.descriptor, stAgentSpawn.descriptor],
+    }),
+  { model: SONNET_MODEL },
+);
+
 await recordCassette("memory-store", () =>
   modelAdapter.stream({
     messages: [
@@ -1134,8 +2269,49 @@ await recordCassette("memory-store", () =>
         ],
       },
     ],
-    tools: [memoryStoreTool.descriptor, memoryListTool.descriptor],
+    tools: memoryToolDescriptors,
   }),
+);
+
+await recordCassette("memory-recall", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: MEMORY_RECALL_PROMPT,
+          },
+        ],
+      },
+    ],
+    tools: [memoryRecallTool.descriptor],
+  }),
+);
+
+// hook-redaction uses Sonnet 4.6 — Gemini 2.0 Flash's safety layer is flaky
+// on prompts mentioning "credentials" and sometimes refuses the tool call.
+await recordCassette(
+  "hook-redaction",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text: "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
+            },
+          ],
+        },
+      ],
+      tools: [credentialsTool.descriptor],
+    }),
+  { model: SONNET_MODEL },
 );
 
 // Inject MCP provider for the mcp-tool-use query (needs async setup)
@@ -1200,9 +2376,12 @@ for (const q of queries) {
 await mcpSetup.cleanup();
 nexusTransport?.close();
 
-console.log(`\nDone. ${3 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
+console.log("  fixtures/task-tools.cassette.json");
+console.log("  fixtures/spawn-tools.cassette.json");
+console.log("  fixtures/hook-redaction.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);

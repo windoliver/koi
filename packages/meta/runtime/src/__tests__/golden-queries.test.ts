@@ -277,3 +277,76 @@ describeE2E("Golden Query Set 2: tool use flow", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/agent-runtime (#1424)
+// ---------------------------------------------------------------------------
+
+import {
+  createAgentDefinitionRegistry,
+  createDefinitionResolver,
+  getBuiltInAgents,
+  loadCustomAgents,
+} from "@koi/agent-runtime";
+
+describe("Golden: @koi/agent-runtime", () => {
+  test("built-in agents load and resolve through full pipeline", async () => {
+    const builtIn = getBuiltInAgents();
+    const registry = createAgentDefinitionRegistry(builtIn, []);
+    const resolver = createDefinitionResolver(registry);
+
+    // All 4 built-ins discoverable (await for T | Promise<T> L0 interface)
+    const list = await resolver.list();
+    expect(list.length).toBe(4);
+
+    // Each resolves successfully with correct shape
+    for (const summary of list) {
+      const result = await resolver.resolve(summary.key);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.name).toBeTruthy();
+        expect(result.value.description).toBeTruthy();
+        expect(result.value.manifest.model).toBeDefined();
+      }
+    }
+
+    // Specific agents exist
+    const researcher = await resolver.resolve("researcher");
+    expect(researcher.ok).toBe(true);
+    const coder = await resolver.resolve("coder");
+    expect(coder.ok).toBe(true);
+    const reviewer = await resolver.resolve("reviewer");
+    expect(reviewer.ok).toBe(true);
+  });
+
+  test("custom agent loading from missing directory produces empty results", () => {
+    const result = loadCustomAgents({ projectDir: "/nonexistent/path" });
+    expect(result.agents.length).toBe(0);
+    expect(result.warnings.length).toBe(0);
+    expect(result.failedTypes.length).toBe(0);
+  });
+
+  test("registry priority override: project beats built-in", () => {
+    const builtIn = getBuiltInAgents();
+    // Simulate a custom agent that overrides "researcher"
+    const customDef = {
+      agentType: "researcher",
+      whenToUse: "Custom override",
+      source: "project" as const,
+      manifest: {
+        name: "researcher",
+        version: "0.0.0",
+        description: "Custom",
+        model: { name: "opus" },
+      },
+      name: "researcher",
+      description: "Custom",
+    };
+    const registry = createAgentDefinitionRegistry(builtIn, [customDef]);
+    const resolved = registry.resolve("researcher");
+
+    expect(resolved).toBeDefined();
+    expect(resolved?.source).toBe("project");
+    expect(resolved?.manifest.model.name).toBe("opus");
+  });
+});

@@ -81,7 +81,9 @@ describe("parseRetryAfterMs", () => {
     const result = parseRetryAfterMs(futureDate);
     expect(result).toBeDefined();
     // Should be roughly 60s (allow 5s tolerance)
+    // biome-ignore lint/style/noNonNullAssertion: expect().toBeDefined() above guarantees defined
     expect(result!).toBeGreaterThan(55_000);
+    // biome-ignore lint/style/noNonNullAssertion: expect().toBeDefined() above guarantees defined
     expect(result!).toBeLessThanOrEqual(61_000);
   });
 

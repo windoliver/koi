@@ -31,6 +31,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/shutdown",
   "@koi/task-board",
   "@koi/token-estimator",
+  "@koi/tools-core",
   "@koi/validation",
 ]);
 
@@ -39,6 +40,8 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/engine-compose",
   "@koi/engine-reconcile",
 ]);
+
+export const L2_PACKAGES: ReadonlySet<string> = new Set(["@koi/sandbox-os"]);
 
 /**
  * Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration.

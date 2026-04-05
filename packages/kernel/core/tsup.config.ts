@@ -28,6 +28,7 @@ export default defineConfig({
     "src/model-provider.ts",
     "src/resolver.ts",
     "src/rich-trajectory.ts",
+    "src/retry-signal.ts",
     "src/brick-snapshot.ts",
     "src/brick-store.ts",
     "src/filesystem-backend.ts",
@@ -53,6 +54,7 @@ export default defineConfig({
     "src/user-model.ts",
     "src/replacement.ts",
     "src/memory.ts",
+    "src/worker-protocol.ts",
   ],
   format: ["esm"],
   dts: {

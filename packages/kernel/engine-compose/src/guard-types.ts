@@ -157,7 +157,7 @@ export const DEFAULT_LOOP_DETECTION: LoopDetectionConfig = Object.freeze({
 });
 
 /** Default tool IDs that trigger spawn governance. */
-export const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent"]);
+export const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent", "Spawn"]);
 
 export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
   maxDepth: 3,
