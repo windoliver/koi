@@ -1855,6 +1855,61 @@ describe("Golden: @koi/hook-prompt", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ATIF trajectory: hook-redaction (agent hook on tool.succeeded)
+// ---------------------------------------------------------------------------
+
+describe("Golden: hook-redaction trajectory", () => {
+  test("ATIF trajectory: get_credentials tool call + hook execution captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/hook-redaction.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "hook-redaction.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(trajectory.steps).toBeDefined();
+    const steps = trajectory.steps ?? [];
+
+    // Should have a tool step with get_credentials
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const hasCredentialsTool = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "get_credentials"),
+    );
+    expect(hasCredentialsTool).toBe(true);
+
+    // Should have agent steps (model calls)
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+
+    // Should have a hook execution step for the secret-scanner agent hook
+    const hookSteps = steps.filter((s) => s.extra?.type === "hook_execution");
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // CRITICAL: verify secrets are NOT present anywhere in the trajectory.
+    // The whole point of redaction is that raw credentials never appear in
+    // observable output. If these substrings appear, redaction failed.
+    // CRITICAL: raw secrets must never appear anywhere in the recorded trajectory.
+    // If redaction works, the API key prefix and password are stripped before
+    // any data reaches observable output (hook agent prompts, ATIF steps).
+    const fullJson = readFileSync(trajectoryPath, "utf-8");
+    expect(fullJson).not.toContain("sk-ant-api03-");
+    expect(fullJson).not.toContain("super-secret-pw-123");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Standalone golden queries: @koi/hooks payload redaction
 // ---------------------------------------------------------------------------
 
