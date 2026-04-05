@@ -38,7 +38,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/fs-local` | Local filesystem backend (read/write/edit/list) | `local-fs-read` |
 | `@koi/fs-nexus` | Nexus-backed filesystem backend | `nexus-fs-read` (optional) |
 | `@koi/hook-prompt` | Prompt injection hook for pre/post model call | standalone |
-| `@koi/hooks` | Hook dispatch middleware (command/HTTP/prompt/agent) | `tool-use`, `hook-blocked`, `hook-once` |
+| `@koi/hooks` | Hook dispatch middleware (command/HTTP/prompt/agent) — per-call abort propagation via extended `HookRegistry.execute(sessionId, event, abortSignal?)` + `hasMatching` introspection (#1490) | `tool-use`, `hook-blocked`, `hook-once` |
 | `@koi/mcp` | MCP transport + tool/resource resolver | `mcp-tool-use` |
 | `@koi/memory` | Memory recall, scoring, and formatting | `memory-store` |
 | `@koi/memory-fs` | File-based memory storage backend | standalone |
