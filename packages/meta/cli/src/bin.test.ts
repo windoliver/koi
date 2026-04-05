@@ -65,30 +65,21 @@ describe("bin.ts", () => {
     });
   });
 
-  describe("known commands (not yet implemented)", () => {
-    test("known command prints not-yet-implemented and exits 1", async () => {
-      const r = await runBin(["start"]);
-      expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("start");
-      expect(r.stderr).toContain("not yet implemented");
+  describe("known commands — dispatch", () => {
+    // Stub commands exit 2 (FAILURE) to fail closed — automation must not treat
+    // a no-op stub as a successful operation.
+    test("stub commands exit 2 (FAILURE)", async () => {
+      for (const cmd of ["init", "start", "serve", "tui", "logs", "status", "stop", "deploy"]) {
+        const r = await runBin([cmd]);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr).toContain("Phase 2i-3");
+      }
     });
 
-    test("all known commands exit 1 with not-yet-implemented", async () => {
-      for (const cmd of [
-        "init",
-        "serve",
-        "tui",
-        "sessions",
-        "logs",
-        "status",
-        "doctor",
-        "stop",
-        "deploy",
-      ]) {
-        const r = await runBin([cmd]);
-        expect(r.exitCode).toBe(1);
-        expect(r.stderr).toContain("not yet implemented");
-      }
+    test("koi start --manifest echoes manifest path to stderr", async () => {
+      const r = await runBin(["start", "--manifest", "my.yaml"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("my.yaml");
     });
   });
 

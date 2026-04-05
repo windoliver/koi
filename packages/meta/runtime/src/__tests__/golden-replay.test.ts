@@ -1305,11 +1305,13 @@ describe("Golden: @koi/hooks agent hooks", () => {
     // Verdict parsing: valid ok=true
     const okVerdict = parseVerdictOutput('{"ok":true,"reason":"all good"}');
     expect(okVerdict).toEqual({ ok: true, reason: "all good" });
+    // biome-ignore lint/style/noNonNullAssertion: expect() above guarantees defined
     expect(verdictToDecision(okVerdict!)).toEqual({ kind: "continue" });
 
     // Verdict parsing: valid ok=false
     const failVerdict = parseVerdictOutput('{"ok":false,"reason":"unsafe"}');
     expect(failVerdict).toEqual({ ok: false, reason: "unsafe" });
+    // biome-ignore lint/style/noNonNullAssertion: expect() above guarantees defined
     expect(verdictToDecision(failVerdict!)).toEqual({ kind: "block", reason: "unsafe" });
 
     // Verdict parsing: invalid → undefined
@@ -3971,6 +3973,7 @@ describe("Golden: @koi/memory-fs", () => {
       const records = await store.list();
       const recordA = records.find((r) => r.name === "Record A");
       expect(recordA).toBeDefined();
+      // biome-ignore lint/style/noNonNullAssertion: expect() above guarantees defined
       await store.delete(recordA!.id);
 
       const idx2 = await readIndex(dir);

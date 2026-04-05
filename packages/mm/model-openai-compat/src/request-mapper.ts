@@ -178,11 +178,9 @@ function mapOneMessage(
       toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
 
       // Session-repair fallback: reconstruct tool_calls from callId
-      if (
-        (toolCalls === undefined || toolCalls.length === 0) &&
-        readStringMeta(msg.metadata, "callId") !== undefined
-      ) {
-        const callId = readStringMeta(msg.metadata, "callId")!;
+      const potentialCallId = readStringMeta(msg.metadata, "callId");
+      if ((toolCalls === undefined || toolCalls.length === 0) && potentialCallId !== undefined) {
+        const callId = potentialCallId;
         const callName = readStringMeta(msg.metadata, "callName") ?? "unknown";
         const callArgs = readStringMeta(msg.metadata, "callArgs") ?? "{}";
         toolCalls = [
@@ -265,7 +263,8 @@ function fixTranscriptOrdering(
   const result: ChatCompletionMessage[] = [];
 
   for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]!;
+    const msg = messages[i];
+    if (msg === undefined) continue;
     const prevRole = result.length > 0 ? result[result.length - 1]?.role : undefined;
 
     if (msg.role === "assistant" && msg.tool_calls !== undefined) {
@@ -316,7 +315,8 @@ function maybeAddPromptCacheControl(
 
   // Walk backwards to find the last user/assistant message with text content
   for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]!;
+    const msg = messages[i];
+    if (msg === undefined) continue;
     if (msg.role !== "user" && msg.role !== "assistant") continue;
     if (typeof msg.content !== "string" || msg.content.length === 0) continue;
 

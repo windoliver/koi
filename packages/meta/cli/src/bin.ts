@@ -10,6 +10,7 @@
  */
 
 import type { CliFlags } from "./args.js";
+import type { CommandModule } from "./types.js";
 
 const VERSION = "0.0.0";
 
@@ -77,8 +78,20 @@ if (flags.command === undefined) {
 }
 
 if (isKnownCommand(flags.command)) {
-  process.stderr.write(`koi ${flags.command}: not yet implemented\n`);
-  process.exit(1);
+  const { COMMAND_LOADERS } = await import("./registry.js");
+  const loader = COMMAND_LOADERS[flags.command];
+
+  let mod: CommandModule;
+  try {
+    mod = await loader();
+  } catch (e: unknown) {
+    process.stderr.write(`koi ${flags.command}: failed to load command module\n`);
+    if (e instanceof Error) process.stderr.write(`  ${e.message}\n`);
+    process.exit(2);
+  }
+
+  const exitCode = await mod.run(flags);
+  process.exit(exitCode);
 }
 
 process.stderr.write(`Unknown command: ${flags.command}\n`);

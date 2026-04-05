@@ -59,3 +59,5 @@ entry for that call ID (prevents the `"unknown"` fallback in downstream consumer
 ## Dependencies
 
 Zero external dependencies. Uses `fetch()` (Bun global) and inline SSE parsing.
+
+> **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.

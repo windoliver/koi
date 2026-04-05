@@ -413,3 +413,5 @@ subscriptions.
 - State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
 - Component layer imports from `@koi/core` + `@opentui/core` + `@opentui/solid` + `solid-js`
 - No imports from `@koi/engine`, peer L2, or external state libraries
+
+> **Maintenance note (PR #1506):** Added `biome-ignore lint/style/noNonNullAssertion` annotation to `event-batcher.test.ts` timer access that is bounds-guaranteed by construction. No functional changes.

@@ -93,3 +93,5 @@ Follow the Doc → Tests → Code workflow:
 | `check:golden-queries` | Every L2 dep has golden query assertions |
 | `check:doc-gate` | Every L2 package has a `docs/L2/<name>.md` |
 | `check:doc-wiring` | Modified L2 packages and changed L3 wiring have updated docs |
+
+> **Maintenance note (PR #1506):** Lint-only fixes applied to integrated packages (@koi/event-trace, @koi/model-openai-compat, @koi/mcp, @koi/middleware-permissions). No wiring changes; L2 package set is unchanged.

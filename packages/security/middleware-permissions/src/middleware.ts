@@ -733,7 +733,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const now = clock();
       const cutoff = escalationWindowMs > 0 ? now - escalationWindowMs : 0;
       for (let i = 0; i < queries.length; i++) {
-        const query = queries[i]!;
+        const query = queries[i];
+        if (query === undefined) continue;
         const cacheKey = decisionCacheKey(query);
         if (cacheKey === undefined) continue;
         const recentPolicyDenials = tracker
@@ -757,7 +758,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     if (decisionCache !== undefined) {
       for (let i = 0; i < queries.length; i++) {
         if (results[i] !== undefined) continue; // already escalated
-        const query = queries[i]!;
+        const query = queries[i];
+        if (query === undefined) continue;
         const key = decisionCacheKey(query);
         const cached = key !== undefined ? decisionCache.get(key) : undefined;
         if (cached !== undefined) {
@@ -787,6 +789,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     }
 
     // Resolve uncached queries
+    // biome-ignore lint/style/noNonNullAssertion: uncachedIndices only contains valid queries indices
     const uncachedQueries = uncachedIndices.map((i) => queries[i]!);
     try {
       let rawDecisions: readonly unknown[];
@@ -827,10 +830,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       } else {
         if (cb !== undefined) cb.recordSuccess();
         for (let j = 0; j < uncachedIndices.length; j++) {
+          // biome-ignore lint/style/noNonNullAssertion: j < uncachedIndices.length && validated.length === uncachedIndices.length
           const idx = uncachedIndices[j]!;
+          // biome-ignore lint/style/noNonNullAssertion: j < validated.length (validated built from same loop)
           const decision = validated[j]!;
           results[idx] = decision;
           if (decisionCache !== undefined) {
+            // biome-ignore lint/style/noNonNullAssertion: idx is a valid index from uncachedIndices
             const key = decisionCacheKey(queries[idx]!);
             if (key !== undefined) decisionCache.set(key, decision);
           }
@@ -861,6 +867,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
     const filtered = tools.filter((tool, i) => {
+      // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
       if (auditSink !== undefined) {
         auditFilterDecision(ctx, tool.name, decision, auditSink);
@@ -873,6 +880,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           source: denialSource(decision),
+          // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
           queryKey: decisionCacheKey(queries[i]!),
         });
         return false;
