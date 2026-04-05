@@ -98,18 +98,39 @@ dedup, or filtering in the callback's return cannot corrupt completion state.
 Callback evaluation moves **off the `wrapModelCall`/`wrapModelStream`
 critical path** entirely:
 
-- `wrapModelCall`/`wrapModelStream` buffer the response text into session
-  state (sync, fast). Response is returned to the user immediately after the
-  model finishes.
-- `onAfterTurn` (already async, runs between turns) invokes both callbacks:
-  first `detectCompletions` against the buffered text + current items, then
-  `isDrifting` + interval update.
+- `wrapModelCall`/`wrapModelStream` push the response text onto a
+  **per-turn list of per-call entries** in session state (sync, fast). The
+  list preserves model-call boundaries so completion evaluation runs on each
+  response individually, not on concatenated turn text. This prevents false
+  completions where keywords from two different model responses in the same
+  `model → tool → model` turn add up to a majority match.
+- `onBeforeTurn` clears the per-turn response-text list at turn start.
+- `onAfterTurn` (already async, runs between turns) iterates the list and
+  invokes `detectCompletions` **once per entry** (merging results
+  monotonically by ID), then invokes `isDrifting` + interval update.
 
-This removes user-visible latency from slow LLM judges. Completion state still
-settles before the next turn, so `onComplete` semantics are preserved. Minor
-behavior change: `onComplete` fires in `onAfterTurn` instead of during
-`wrapModelCall` (still once per completion, no functional difference for
-downstream consumers).
+### Stop-gate veto handling
+
+`TurnContext` carries `stopBlocked?: true` when the turn was rejected by
+stop-gate. `onAfterTurn` runs for blocked turns before the retry turn
+starts. The plan handles this explicitly:
+
+- When `ctx.stopBlocked === true`, `onAfterTurn` **early-returns** — no
+  callback invocation, no completion state mutation, no drift interval
+  update, no `onComplete` firing.
+- The per-turn response-text list is cleared at `onBeforeTurn` regardless,
+  so the retry turn starts with a fresh buffer.
+
+This prevents vetoed response text from corrupting goal state or firing
+callbacks on a model answer the engine explicitly rejected.
+
+### Result
+
+Removes user-visible latency from slow LLM judges. Completion state still
+settles before the next turn (non-blocked), so `onComplete` semantics are
+preserved. Minor behavior change: `onComplete` fires in `onAfterTurn`
+instead of during `wrapModelCall` (still once per completion, no
+functional difference for downstream consumers).
 
 ### Cooperative cancellation
 
@@ -173,13 +194,16 @@ Called once per failure. Errors inside `onCallbackError` itself are swallowed
 - `goal.ts:264` (`updateCompletions` inner call to `detectCompletions`) and
   `goal.ts:344` (`isDrifting` call) both **relocate** to `onAfterTurn`. Both
   wrapped in the callback-if-provided + timeout + composed-signal harness.
+  `onAfterTurn` early-returns when `ctx.stopBlocked === true`.
 - `goal.ts:375` + `goal.ts:416` — callers inside `wrapModelCall` and
   `wrapModelStream` finally: no longer call `updateCompletions` with detect
-  logic; instead they simply **append the buffered response text** to
-  session state (a fast synchronous state write). The heavy work happens
-  in `onAfterTurn`.
+  logic; instead they **push the response text as a new entry** onto the
+  session's per-turn response-text list (a fast synchronous state write).
+  The heavy work happens in `onAfterTurn`, per entry.
+- `onBeforeTurn` — adds per-turn response-text list reset at turn start.
 - `onSessionStart` (`goal.ts:317`) — assigns `id: goal-${index}` at
   initialization so every session item has a stable ID from turn 0.
+  Initializes the per-turn response-text list to `[]`.
 
 ## Test plan
 
@@ -213,6 +237,15 @@ New test cases in `goal.test.ts`:
 15. GoalItem IDs stable across turns within a session.
 16. Example: mocked LLM-based drift judge demonstrating the usage pattern
     and cooperative cancellation.
+17. **Per-call scoping (model→tool→model turn)**: two responses in one turn
+    each containing only part of an objective's keywords — item MUST NOT be
+    marked complete (callback is called twice with different per-call text,
+    neither call alone satisfies the objective).
+18. **Stop-gate veto**: when `ctx.stopBlocked === true`, `onAfterTurn` does
+    not call `detectCompletions`, does not call `isDrifting`, does not
+    mutate completion state, does not fire `onComplete`.
+19. **Buffer reset on retry**: response-text list cleared at `onBeforeTurn`
+    so retry turn after stop-gate veto starts with fresh buffer.
 
 ## Estimated footprint
 
