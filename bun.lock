@@ -307,9 +307,11 @@
       "name": "@koi/cli",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-runtime": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
+        "@koi/engine-compose": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/query-engine": "workspace:*",

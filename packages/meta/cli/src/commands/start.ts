@@ -11,9 +11,11 @@
  * (--manifest, not yet implemented, tracking: #1264).
  */
 
+import { createAgentResolver } from "@koi/agent-runtime";
 import { createCliChannel } from "@koi/channel-cli";
 import type { EngineAdapter, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
-import { createKoi } from "@koi/engine";
+import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import { createCliHarness } from "@koi/harness";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
@@ -151,9 +153,30 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     },
   };
 
+  // Wire agent-runtime: load built-ins + project custom agents from .koi/agents/
+  const { resolver: agentResolver, warnings: agentWarnings } = createAgentResolver({
+    projectDir: process.cwd(),
+  });
+  for (const w of agentWarnings) {
+    process.stderr.write(`[koi] agent load warning: ${w.error.message} (${w.filePath})\n`);
+  }
+  const spawnProvider = createSpawnToolProvider({
+    resolver: agentResolver,
+    spawnLedger: createInMemorySpawnLedger(DEFAULT_SPAWN_POLICY.maxTotalProcesses),
+    adapter: engineAdapter,
+    manifestTemplate: {
+      name: "spawned-agent",
+      version: "0.0.0",
+      description: "Spawned sub-agent",
+      model: { name: model },
+    },
+    spawnPolicy: DEFAULT_SPAWN_POLICY,
+  });
+
   const runtime = await createKoi({
     manifest: { name: "koi", version: "0.0.1", model: { name: model } },
     adapter: engineAdapter,
+    providers: [spawnProvider],
   });
 
   const channel = createCliChannel({ theme: "default" });

@@ -1,3 +1,4 @@
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ApprovalHandler,
   ChannelAdapter,
@@ -170,10 +171,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       ? DEFAULT_PROCESS_SPAWN_LEDGER
       : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
 
+  // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
+  const effectiveResolver = (() => {
+    if (config.resolver !== undefined) return config.resolver;
+    if (config.agentDirs !== undefined) {
+      const { resolver, warnings } = createAgentResolver(config.agentDirs);
+      for (const w of warnings) {
+        console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
+      }
+      return resolver;
+    }
+    return undefined;
+  })();
+
   const spawnProvider =
-    config.resolver !== undefined
+    effectiveResolver !== undefined
       ? createSpawnToolProvider({
-          resolver: config.resolver,
+          resolver: effectiveResolver,
           spawnLedger: effectiveSpawnLedger,
           adapter,
           manifestTemplate: {

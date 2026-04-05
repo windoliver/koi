@@ -1,3 +1,4 @@
+import type { AgentResolverDirs } from "@koi/agent-runtime";
 import type {
   AgentResolver,
   ApprovalHandler,
@@ -77,8 +78,21 @@ export interface RuntimeConfig {
    * Agent resolver for definition lookup. When provided, `createRuntime` returns a
    * `spawnProvider` in `RuntimeHandle` that callers can pass to `createKoi({ providers })`
    * to register the `Spawn` tool and enable agent-to-agent delegation.
+   *
+   * Prefer `agentDirs` over `resolver` when you want the default bootstrap behaviour
+   * (built-ins + `.koi/agents/` scanning). Use `resolver` when you need full control.
    */
   readonly resolver?: AgentResolver | undefined;
+
+  /**
+   * Convenience shortcut: directories to scan for agent definitions.
+   * When provided (and `resolver` is not), `createRuntime` calls
+   * `createAgentResolver(agentDirs)` internally and uses the result.
+   * Load warnings (unparseable .md files) are emitted to `console.warn`.
+   *
+   * Example: `agentDirs: { projectDir: process.cwd() }`
+   */
+  readonly agentDirs?: AgentResolverDirs | undefined;
 
   /**
    * ReportStore for `on_demand` delivery. Required when spawned agents use

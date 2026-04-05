@@ -50,4 +50,29 @@ describe("getBuiltInAgents", () => {
     expect(coordinator?.manifest.model.name).toBe("opus");
     expect(coordinator?.source).toBe("built-in");
   });
+
+  test("exact agent type set: researcher, coder, reviewer, coordinator", () => {
+    const agents = getBuiltInAgents();
+    expect(agents.map((a) => a.agentType).sort()).toEqual([
+      "coder",
+      "coordinator",
+      "researcher",
+      "reviewer",
+    ]);
+  });
+
+  test("all built-in agents have substantial whenToUse (> 50 chars)", () => {
+    const agents = getBuiltInAgents();
+    for (const agent of agents) {
+      expect(agent.whenToUse.length).toBeGreaterThan(50);
+    }
+  });
+
+  test("all built-in agents have a non-trivial systemPrompt (> 100 chars)", () => {
+    const agents = getBuiltInAgents();
+    for (const agent of agents) {
+      expect(agent.systemPrompt).toBeDefined();
+      expect((agent.systemPrompt ?? "").length).toBeGreaterThan(100);
+    }
+  });
 });

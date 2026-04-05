@@ -27,11 +27,7 @@
  *   @koi/fs-local             — local filesystem backend
  */
 
-import {
-  createAgentDefinitionRegistry,
-  createDefinitionResolver,
-  getBuiltInAgents,
-} from "@koi/agent-runtime";
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -1379,9 +1375,7 @@ function createChildBridge(): EngineAdapter {
   };
 }
 
-const spawnBuiltIns = getBuiltInAgents();
-const spawnRegistry = createAgentDefinitionRegistry(spawnBuiltIns, []);
-const spawnResolver = createDefinitionResolver(spawnRegistry);
+const { resolver: spawnResolver } = createAgentResolver({ projectDir: process.cwd() });
 const spawnToolProvider = createSpawnToolProvider({
   resolver: spawnResolver,
   spawnLedger: createInMemorySpawnLedger(5),
