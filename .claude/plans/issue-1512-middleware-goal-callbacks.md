@@ -93,44 +93,57 @@ dedup, or filtering in the callback's return cannot corrupt completion state.
 
 ## Cancellation, latency & error handling
 
-### Off-path execution (no response-tail latency)
+### Two execution modes (based on config)
 
-Callback evaluation moves **off the `wrapModelCall`/`wrapModelStream`
-critical path** entirely:
+**Heuristic mode** (no callbacks provided — default, unchanged behavior):
+- Keep today's per-call immediate evaluation inside
+  `wrapModelCall`/`wrapModelStream`. Heuristic `detectCompletions` runs
+  immediately after each successful model response; completion state is
+  merged and `onComplete` fires synchronously per model call.
+- `isDrifting` heuristic still runs in `onAfterTurn`.
+- **No new latency or volatility risk.** Users who don't opt into
+  callbacks see zero behavior change.
 
-- `wrapModelCall`/`wrapModelStream` push the response text onto a
-  **per-turn list of per-call entries** in session state (sync, fast). The
-  list preserves model-call boundaries so completion evaluation runs on each
-  response individually, not on concatenated turn text. This prevents false
-  completions where keywords from two different model responses in the same
-  `model → tool → model` turn add up to a majority match.
-- `onBeforeTurn` clears the per-turn response-text list at turn start.
-- `onAfterTurn` (already async, runs between turns) iterates the list and
-  invokes `detectCompletions` **once per entry** (merging results
-  monotonically by ID), then invokes `isDrifting` + interval update.
+**Callback mode** (either `isDrifting` or `detectCompletions` provided):
+- Providing a callback is an **explicit opt-in to deferred semantic
+  judging**. Completion evaluation moves off the response path to
+  `onAfterTurn`, bounded by `callbackTimeoutMs`. `onComplete` fires at
+  turn boundary instead of mid-turn.
+- `wrapModelCall`/`wrapModelStream` push response text onto a per-turn
+  list of per-call entries (preserves model-call boundaries so keywords
+  from two model calls in a `model → tool → model` turn cannot add up
+  to a false majority match).
+- `onBeforeTurn` clears the per-turn list at turn start.
+- `onAfterTurn` iterates the per-call list and invokes the callback
+  (or heuristic fallback on error) once per entry, merging results
+  monotonically by ID.
 
-### Stop-gate veto handling
+### Stop-gate veto handling (callback mode)
 
-`TurnContext` carries `stopBlocked?: true` when the turn was rejected by
-stop-gate. `onAfterTurn` runs for blocked turns before the retry turn
-starts. The plan handles this explicitly:
+Stop-gate veto marks the **final** assistant response in a turn — earlier
+successful model calls in a `model → tool → model` turn are already
+accepted by the engine. Dropping the entire turn buffer would lose
+legitimate completions from accepted intermediate responses.
 
-- When `ctx.stopBlocked === true`, `onAfterTurn` **early-returns** — no
-  callback invocation, no completion state mutation, no drift interval
-  update, no `onComplete` firing.
-- The per-turn response-text list is cleared at `onBeforeTurn` regardless,
-  so the retry turn starts with a fresh buffer.
+Policy: when `ctx.stopBlocked === true`, `onAfterTurn` processes all
+buffered entries **except the last** (the blocked final response).
+`isDrifting` + interval update also skip for the blocked turn (drift
+signal on a vetoed answer is not meaningful).
 
-This prevents vetoed response text from corrupting goal state or firing
-callbacks on a model answer the engine explicitly rejected.
+The per-turn buffer is cleared at `onBeforeTurn` regardless, so the
+retry turn starts fresh.
 
-### Result
+### Volatility tradeoff (callback mode)
 
-Removes user-visible latency from slow LLM judges. Completion state still
-settles before the next turn (non-blocked), so `onComplete` semantics are
-preserved. Minor behavior change: `onComplete` fires in `onAfterTurn`
-instead of during `wrapModelCall` (still once per completion, no
-functional difference for downstream consumers).
+Callback mode defers completion merge to `onAfterTurn`. If the process
+crashes or is cancelled between model response and turn end, completion
+state from that turn is lost — including `onComplete` side effects.
+
+Session state is in-memory today, so any crash loses all state anyway;
+the new window is only "response already returned to user but onComplete
+not yet fired." This is documented as an explicit tradeoff of opting
+into callback mode, not a bug. Users who need synchronous
+`onComplete` durability keep heuristic mode.
 
 ### Cooperative cancellation
 
@@ -191,19 +204,26 @@ Called once per failure. Errors inside `onCallbackError` itself are swallowed
 
 ## Call sites affected
 
-- `goal.ts:264` (`updateCompletions` inner call to `detectCompletions`) and
-  `goal.ts:344` (`isDrifting` call) both **relocate** to `onAfterTurn`. Both
-  wrapped in the callback-if-provided + timeout + composed-signal harness.
-  `onAfterTurn` early-returns when `ctx.stopBlocked === true`.
-- `goal.ts:375` + `goal.ts:416` — callers inside `wrapModelCall` and
-  `wrapModelStream` finally: no longer call `updateCompletions` with detect
-  logic; instead they **push the response text as a new entry** onto the
-  session's per-turn response-text list (a fast synchronous state write).
-  The heavy work happens in `onAfterTurn`, per entry.
-- `onBeforeTurn` — adds per-turn response-text list reset at turn start.
-- `onSessionStart` (`goal.ts:317`) — assigns `id: goal-${index}` at
-  initialization so every session item has a stable ID from turn 0.
-  Initializes the per-turn response-text list to `[]`.
+- `goal.ts:317` (`onSessionStart`) — assigns `id: goal-${index}` at
+  initialization so every session item has a stable ID. Initializes an
+  empty per-turn response buffer (used only in callback mode).
+- Determine mode at middleware construction: `hasCallbacks = isDrifting
+  !== undefined || detectCompletions !== undefined`.
+- `goal.ts:375` + `goal.ts:416` — `wrapModelCall` + `wrapModelStream`
+  finally:
+  - **Heuristic mode**: unchanged (call `updateCompletions` with
+    heuristic `detectCompletions` per current implementation).
+  - **Callback mode**: push the response text as a new entry onto the
+    session's per-turn buffer (fast sync write). Do not evaluate here.
+- `onBeforeTurn` — callback mode: clear per-turn response buffer.
+- `goal.ts:344` (`isDrifting` call in `onAfterTurn`) — wrap with
+  callback-if-provided + timeout + composed-signal harness. Apply
+  fail-safe policy on error/timeout. Skip entirely when
+  `ctx.stopBlocked === true`.
+- `onAfterTurn` — callback mode: iterate per-turn buffer excluding the
+  last entry when `ctx.stopBlocked === true`, invoke `detectCompletions`
+  callback (or heuristic fallback) once per entry, merge results
+  monotonically by ID. Fire `onComplete` for newly-completed items.
 
 ## Test plan
 
@@ -241,11 +261,15 @@ New test cases in `goal.test.ts`:
     each containing only part of an objective's keywords — item MUST NOT be
     marked complete (callback is called twice with different per-call text,
     neither call alone satisfies the objective).
-18. **Stop-gate veto**: when `ctx.stopBlocked === true`, `onAfterTurn` does
-    not call `detectCompletions`, does not call `isDrifting`, does not
-    mutate completion state, does not fire `onComplete`.
-19. **Buffer reset on retry**: response-text list cleared at `onBeforeTurn`
-    so retry turn after stop-gate veto starts with fresh buffer.
+18. **Stop-gate veto preserves earlier completions**: in a 2-call turn where
+    the first response legitimately completes an objective and the second
+    is stop-gate vetoed — the earlier completion IS merged, the blocked
+    entry IS skipped, `isDrifting` is skipped.
+19. **Buffer reset on retry**: per-turn response-text list cleared at
+    `onBeforeTurn` so the retry turn after stop-gate veto starts fresh.
+20. **Heuristic mode unchanged** (no callbacks): `detectCompletions` fires
+    per model call synchronously, `onComplete` fires mid-turn, no buffer,
+    no deferred state.
 
 ## Estimated footprint
 
