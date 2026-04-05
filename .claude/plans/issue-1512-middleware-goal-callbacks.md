@@ -32,9 +32,14 @@ tracked as a follow-up in the redesign issue.
 **New type exports** (config.ts):
 
 ```ts
+export interface DriftJudgeInput {
+  readonly userMessages: readonly InboundMessage[]; // last-N from onBeforeTurn, retry-filtered
+  readonly responseTexts: readonly string[]; // recent assistant responses
+  readonly items: readonly GoalItemWithId[];
+}
+
 export type IsDriftingFn = (
-  messages: readonly InboundMessage[],
-  items: readonly GoalItemWithId[],
+  input: DriftJudgeInput,
   ctx: TurnContext,
 ) => boolean | Promise<boolean>;
 
@@ -47,14 +52,24 @@ export type DetectCompletionsFn = (
 
 **Why messages passed explicitly (not via `ctx.messages`)**: the Koi engine
 constructs `onAfterTurn` contexts with `messages: []`
-(`packages/kernel/engine/src/koi.ts:756`). The middleware captures the
-`request.messages` snapshot inside `wrapModelCall`/`wrapModelStream` (the
-full conversation the model actually saw) and passes it to `isDrifting`.
-**Not** `onBeforeTurn`'s `ctx.messages`, because on stop-gate retries that
-contains only a synthetic `[Completion blocked] ...` system message
-(`packages/kernel/engine/src/koi.ts:706-718`, `801-808`), which would
-make the drift judge operate on retry metadata instead of the actual
-conversation.
+(`packages/kernel/engine/src/koi.ts:756`). The middleware captures a
+**rolling window** of inputs from two sources:
+
+- Last-N user-facing messages from `onBeforeTurn`'s `ctx.messages`, filtered
+  to exclude synthetic stop-gate retry system messages. These represent the
+  originally-intended user intent for the turn and survive stop-gate retries.
+- Per-model-call response text already buffered during
+  `wrapModelCall`/`wrapModelStream` (reuse of the completion buffer).
+
+Callback receives `{ userMessages, responseTexts }` slices of recent activity.
+Not the mutated `request.messages` (priority 340 wrapModelCall fires BEFORE
+inner middleware mutations like priority-400 hooks, so `request.messages` at
+our layer is pre-transform and doesn't reflect the prompt the model actually
+saw).
+
+This approximation is documented as "recent user intent + recent assistant
+responses." Callers needing the fully-mutated outbound prompt must build
+their own innermost-priority wrapper.
 
 **Why responseTexts is an array**: preserves per-model-call boundaries to
 prevent cross-call keyword aggregation (`model → tool → model` turn).
@@ -181,18 +196,29 @@ Policy when `ctx.stopBlocked === true`:
 The per-turn buffer is cleared at `onBeforeTurn` regardless, so the
 retry turn starts fresh.
 
-### Volatility tradeoff (detectCompletions opt-in only)
+### Volatility tradeoff (detectCompletions opt-in only) — ACCEPTED
 
 Opting into `detectCompletions` defers completion merge to
-`onAfterTurn`. If the process crashes between model response and turn
-end, completion state from that turn is lost — including `onComplete`
-side effects.
+`onAfterTurn`. Documented tradeoffs:
 
-Session state is in-memory today, so any crash loses all state anyway;
-the new window is only "response already returned to user but
-`onComplete` not yet fired." This is documented as an explicit tradeoff
-of opting into `detectCompletions` callback. Users who need synchronous
-`onComplete` durability keep the heuristic (don't provide the callback).
+1. **Crash/cancel loss window**: if the process crashes or the run is
+   cancelled between model response and turn end, completion state
+   from that turn is lost. Session state is in-memory today so any
+   crash loses all state anyway, but the new window is larger:
+   "response already returned to user but `onComplete` not yet fired."
+2. **Turn-end / stop-gate retry latency**: `onAfterTurn` is awaited by
+   the engine before emitting `turn_end` and before starting stop-gate
+   retry turns. Callback execution therefore delays turn teardown and
+   retry start by up to `callbackTimeoutMs`. For a default 5000ms this
+   is user-visible in retry flows.
+3. **No replay/idempotency**: this middleware does not provide durable
+   pending-completion state. Callers whose `onComplete` side effects
+   require durable at-least-once delivery must implement that in their
+   callback (e.g., write to their own storage before returning).
+
+These are explicit tradeoffs of opting into callback-based completion.
+Callers who need synchronous per-call `onComplete` durability do NOT
+provide `detectCompletions` and keep the heuristic path.
 
 ### Cooperative cancellation
 
@@ -256,15 +282,15 @@ Called once per failure. Errors inside `onCallbackError` itself are swallowed
 - `goal.ts:317` (`onSessionStart`) — assigns `id: goal-${index}`;
   initializes an empty per-turn response-text buffer and a
   turn-messages buffer.
-- `onBeforeTurn` — clears per-turn response-text buffer if
-  `detectCompletions` callback is configured. Does NOT capture
-  `ctx.messages` (see below).
-- `wrapModelCall` / `wrapModelStream` — captures the latest
-  `request.messages` snapshot into session state (a rolling
-  buffer, bounded to the last K messages — e.g. 10). This is the
-  source of truth for the `isDrifting` callback's message input
-  and survives stop-gate retry turns since it reflects the actual
-  model request, not the synthetic retry `onBeforeTurn` input.
+- `onBeforeTurn` — clears per-turn response-text buffer (if
+  `detectCompletions` opted in). Appends `ctx.messages` into a
+  rolling user-messages buffer (bounded last-K, default 10),
+  filtering synthetic stop-gate retry system messages
+  (`[Completion blocked] ...`).
+- `wrapModelCall` / `wrapModelStream` — response-text buffer
+  already populated for completion path; also serves as
+  assistant-response input for the `isDrifting` callback's
+  `DriftJudgeInput.responseTexts`.
 - `goal.ts:375` + `goal.ts:416` — `wrapModelCall` / `wrapModelStream`
   finally:
   - If `detectCompletions` callback is **not** configured: unchanged
