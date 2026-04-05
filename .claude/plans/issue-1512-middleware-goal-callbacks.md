@@ -32,13 +32,30 @@ tracked as a follow-up in the redesign issue.
 **New type exports** (config.ts):
 
 ```ts
-export type IsDriftingFn = (ctx: TurnContext) => boolean | Promise<boolean>;
+export type IsDriftingFn = (
+  messages: readonly InboundMessage[],
+  items: readonly GoalItemWithId[],
+  ctx: TurnContext,
+) => boolean | Promise<boolean>;
+
 export type DetectCompletionsFn = (
-  responseText: string,
+  responseTexts: readonly string[], // per-model-call responses in this turn
   items: readonly GoalItemWithId[],
   ctx: TurnContext,
 ) => readonly string[] | Promise<readonly string[]>; // newly-completed item IDs
 ```
+
+**Why messages passed explicitly (not via `ctx.messages`)**: the Koi engine
+constructs `onAfterTurn` contexts with `messages: []`
+(`packages/kernel/engine/src/koi.ts:756`), so `ctx.messages` is empty when
+these callbacks run. The middleware buffers the turn's messages (from
+`onBeforeTurn`'s `ctx.messages`) and passes them to `isDrifting` explicitly.
+
+**Why responseTexts is an array**: preserves per-model-call boundaries to
+prevent cross-call keyword aggregation (`model → tool → model` turn).
+Single callback invocation means **one timeout bounds the whole turn**
+(not N × timeout). The callback contract documents: "evaluate each text
+independently; return union of newly-completed IDs."
 
 **GoalMiddlewareConfig additions**:
 
@@ -93,57 +110,65 @@ dedup, or filtering in the callback's return cannot corrupt completion state.
 
 ## Cancellation, latency & error handling
 
-### Two execution modes (based on config)
+### Per-callback opt-in (decoupled)
 
-**Heuristic mode** (no callbacks provided — default, unchanged behavior):
-- Keep today's per-call immediate evaluation inside
-  `wrapModelCall`/`wrapModelStream`. Heuristic `detectCompletions` runs
-  immediately after each successful model response; completion state is
-  merged and `onComplete` fires synchronously per model call.
-- `isDrifting` heuristic still runs in `onAfterTurn`.
-- **No new latency or volatility risk.** Users who don't opt into
-  callbacks see zero behavior change.
+Each callback is an **independent opt-in** that only affects its own path.
+No coupling between `isDrifting` and `detectCompletions` mode changes.
 
-**Callback mode** (either `isDrifting` or `detectCompletions` provided):
-- Providing a callback is an **explicit opt-in to deferred semantic
-  judging**. Completion evaluation moves off the response path to
-  `onAfterTurn`, bounded by `callbackTimeoutMs`. `onComplete` fires at
-  turn boundary instead of mid-turn.
-- `wrapModelCall`/`wrapModelStream` push response text onto a per-turn
-  list of per-call entries (preserves model-call boundaries so keywords
-  from two model calls in a `model → tool → model` turn cannot add up
-  to a false majority match).
-- `onBeforeTurn` clears the per-turn list at turn start.
-- `onAfterTurn` iterates the per-call list and invokes the callback
-  (or heuristic fallback on error) once per entry, merging results
-  monotonically by ID.
+**`isDrifting` opt-in** (only drift path changes):
+- Heuristic `isDrifting` call in `onAfterTurn` is replaced by the
+  user callback (wrapped with timeout + composed-signal).
+- Middleware buffers the turn's inbound messages during `onBeforeTurn`
+  and passes them to the callback in `onAfterTurn`.
+- Completion detection path is **unchanged** — still per-call
+  synchronous inside `wrapModelCall`/`wrapModelStream`.
+- No buffering of response texts needed.
 
-### Stop-gate veto handling (callback mode)
+**`detectCompletions` opt-in** (only completion path changes):
+- Per-model-call immediate heuristic detection in
+  `wrapModelCall`/`wrapModelStream` is **replaced** by deferred
+  buffered evaluation.
+- `wrapModelCall`/`wrapModelStream` push response text onto a
+  per-turn list (sync, fast).
+- `onBeforeTurn` clears the list.
+- `onAfterTurn` invokes the callback **once** with the full list
+  of per-call response texts (array). Single timeout bounds the
+  whole turn's evaluation.
+- `onComplete` fires at turn boundary instead of mid-turn.
+- `isDrifting` heuristic is unchanged unless also opted in.
 
-Stop-gate veto marks the **final** assistant response in a turn — earlier
-successful model calls in a `model → tool → model` turn are already
-accepted by the engine. Dropping the entire turn buffer would lose
-legitimate completions from accepted intermediate responses.
+**Neither callback provided** (default): behavior identical to today —
+no new latency, no buffering, no deferred state, no volatility window.
 
-Policy: when `ctx.stopBlocked === true`, `onAfterTurn` processes all
-buffered entries **except the last** (the blocked final response).
-`isDrifting` + interval update also skip for the blocked turn (drift
-signal on a vetoed answer is not meaningful).
+### Stop-gate veto handling (detectCompletions opt-in only)
+
+Stop-gate veto marks the **final** assistant response in a turn —
+earlier successful model calls in a `model → tool → model` turn are
+already accepted by the engine. Dropping the entire turn buffer would
+lose legitimate completions from accepted intermediate responses.
+
+Policy when `ctx.stopBlocked === true`:
+- `detectCompletions` callback receives the per-call response list
+  **with the last entry excluded** (the blocked final response).
+- `isDrifting` evaluation is skipped entirely for blocked turns
+  (drift signal on a vetoed answer is not meaningful). Interval
+  update is also skipped.
 
 The per-turn buffer is cleared at `onBeforeTurn` regardless, so the
 retry turn starts fresh.
 
-### Volatility tradeoff (callback mode)
+### Volatility tradeoff (detectCompletions opt-in only)
 
-Callback mode defers completion merge to `onAfterTurn`. If the process
-crashes or is cancelled between model response and turn end, completion
-state from that turn is lost — including `onComplete` side effects.
+Opting into `detectCompletions` defers completion merge to
+`onAfterTurn`. If the process crashes between model response and turn
+end, completion state from that turn is lost — including `onComplete`
+side effects.
 
 Session state is in-memory today, so any crash loses all state anyway;
-the new window is only "response already returned to user but onComplete
-not yet fired." This is documented as an explicit tradeoff of opting
-into callback mode, not a bug. Users who need synchronous
-`onComplete` durability keep heuristic mode.
+the new window is only "response already returned to user but
+`onComplete` not yet fired." This is documented as an explicit tradeoff
+of opting into `detectCompletions` callback. Users who need synchronous
+`onComplete` durability keep the heuristic (don't provide the callback).
 
 ### Cooperative cancellation
 
@@ -204,26 +229,34 @@ Called once per failure. Errors inside `onCallbackError` itself are swallowed
 
 ## Call sites affected
 
-- `goal.ts:317` (`onSessionStart`) — assigns `id: goal-${index}` at
-  initialization so every session item has a stable ID. Initializes an
-  empty per-turn response buffer (used only in callback mode).
-- Determine mode at middleware construction: `hasCallbacks = isDrifting
-  !== undefined || detectCompletions !== undefined`.
-- `goal.ts:375` + `goal.ts:416` — `wrapModelCall` + `wrapModelStream`
+- `goal.ts:317` (`onSessionStart`) — assigns `id: goal-${index}`;
+  initializes an empty per-turn response-text buffer and a
+  turn-messages buffer.
+- `onBeforeTurn` — captures `ctx.messages` into turn-messages buffer
+  (used by `isDrifting` callback since `ctx.messages` is `[]` in
+  `onAfterTurn`). Clears per-turn response-text buffer if
+  `detectCompletions` callback is configured.
+- `goal.ts:375` + `goal.ts:416` — `wrapModelCall` / `wrapModelStream`
   finally:
-  - **Heuristic mode**: unchanged (call `updateCompletions` with
-    heuristic `detectCompletions` per current implementation).
-  - **Callback mode**: push the response text as a new entry onto the
-    session's per-turn buffer (fast sync write). Do not evaluate here.
-- `onBeforeTurn` — callback mode: clear per-turn response buffer.
-- `goal.ts:344` (`isDrifting` call in `onAfterTurn`) — wrap with
-  callback-if-provided + timeout + composed-signal harness. Apply
-  fail-safe policy on error/timeout. Skip entirely when
-  `ctx.stopBlocked === true`.
-- `onAfterTurn` — callback mode: iterate per-turn buffer excluding the
-  last entry when `ctx.stopBlocked === true`, invoke `detectCompletions`
-  callback (or heuristic fallback) once per entry, merge results
-  monotonically by ID. Fire `onComplete` for newly-completed items.
+  - If `detectCompletions` callback is **not** configured: unchanged
+    (call `updateCompletions` with heuristic per-response immediately,
+    fires `onComplete` synchronously).
+  - If `detectCompletions` callback **is** configured: push the
+    response text onto the per-turn buffer (fast sync write). No
+    evaluation here.
+- `goal.ts:344` (`isDrifting` call in `onAfterTurn`):
+  - If `isDrifting` callback configured: invoke callback with
+    turn-messages buffer + items + ctx, wrapped in timeout +
+    composed-signal harness. Apply fail-safe policy
+    (error/timeout → treat as drifting).
+  - Otherwise: unchanged heuristic.
+  - Skip entirely when `ctx.stopBlocked === true`.
+- `onAfterTurn` — when `detectCompletions` callback configured:
+  gather per-turn response-text buffer (excluding last entry if
+  `ctx.stopBlocked`), invoke callback **once** with the full list,
+  wrapped in timeout + composed-signal. Merge newly-completed IDs
+  monotonically. Fire `onComplete` for transitions. On error/timeout,
+  fall back to heuristic per-entry.
 
 ## Test plan
 
@@ -267,9 +300,19 @@ New test cases in `goal.test.ts`:
     entry IS skipped, `isDrifting` is skipped.
 19. **Buffer reset on retry**: per-turn response-text list cleared at
     `onBeforeTurn` so the retry turn after stop-gate veto starts fresh.
-20. **Heuristic mode unchanged** (no callbacks): `detectCompletions` fires
+20. **Heuristic unchanged** (no callbacks): `detectCompletions` fires
     per model call synchronously, `onComplete` fires mid-turn, no buffer,
     no deferred state.
+21. **Partial opt-in (only isDrifting)**: `detectCompletions` path stays
+    per-call synchronous, `onComplete` fires mid-turn, no response-text
+    buffering. Only drift path uses callback.
+22. **Partial opt-in (only detectCompletions)**: `isDrifting` uses
+    heuristic, `detectCompletions` is buffered + deferred + single
+    callback invocation.
+23. **Per-turn latency budget**: single timeout bounds the entire
+    callback invocation in `onAfterTurn`, not per-entry N × timeout.
+24. **isDrifting receives non-empty messages**: buffered from
+    `onBeforeTurn`, passed explicitly (not via `ctx.messages`).
 
 ## Estimated footprint
 
