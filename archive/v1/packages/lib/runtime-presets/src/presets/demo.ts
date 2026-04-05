@@ -33,18 +33,11 @@ export const DEMO_PRESET: RuntimePreset = {
     ace: true,
     aceStoreBackend: "nexus",
     codeExecutor: true,
-    governance: true,
     filesystem: true,
     rlmStack: true,
-    dataSourceStack: true,
-    sandboxStack: true,
-    workspaceStack: true,
-    skillStack: true,
-    ipcStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
     forge: { enabled: true },
-    codeSandbox: { provider: "docker" },
   },
 } as const;

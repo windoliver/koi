@@ -17,10 +17,7 @@ export function createFsReadTool(
       inputSchema: {
         type: "object",
         properties: {
-          path: {
-            type: "string",
-            description: "Path to the file (relative to workspace root, e.g. 'src/index.ts')",
-          },
+          path: { type: "string", description: "Path to the file (relative to workspace root, e.g. 'src/index.ts')" },
           offset: { type: "number", description: "Line offset to start reading from" },
           limit: { type: "number", description: "Maximum number of lines to read" },
           encoding: { type: "string", description: "File encoding (default: utf-8)" },

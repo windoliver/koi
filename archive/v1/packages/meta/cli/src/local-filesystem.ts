@@ -55,7 +55,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     // Strip the root prefix to get the relative path, then resolve normally.
     const stripped = path.startsWith(rootPrefix)
       ? path.slice(rootPrefix.length)
-      : path.startsWith(`${root}/`)
+      : path.startsWith(root + "/")
         ? path.slice(root.length + 1)
         : path.startsWith("/")
           ? path.slice(1)

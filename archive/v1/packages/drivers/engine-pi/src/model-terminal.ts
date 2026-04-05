@@ -81,56 +81,36 @@ export interface PiNativeParams {
 export const piParamsStore: Map<string, PiNativeParams> = new Map<string, PiNativeParams>();
 
 /**
- * Per-stream fallback scope for pi-native params.
- *
+ * Session-scoped fallback for pi-native params.
  * When middleware sub-calls (e.g., RLM REPL loop) invoke the model terminal
- * without a nonce, they fall back to the last known params from the current
- * stream() call. Scoped to a single stream() invocation to prevent one
- * session's API key / abort signal from leaking into a later session.
+ * without a nonce, fall back to the last known params from this session.
+ * This allows captured ModelHandlers to work through the pi terminal.
  */
-export interface PiParamsFallback {
-  /** Current fallback params. Set on first nonce-based lookup within a stream(). */
-  current: PiNativeParams | undefined;
-}
+// let: mutable singleton — updated on each nonce-based lookup
+let lastKnownParams: PiNativeParams | undefined;
 
-/**
- * Active fallback scope. Set by the adapter's stream() method before each run
- * and cleared on completion. Module-level ref because the terminal is a
- * singleton shared across stream() calls, but only one stream() runs at a time
- * (guarded by the kernel's `running` flag).
- */
-// let: mutable ref swapped per stream() call
-let activeFallback: PiParamsFallback | undefined;
-
-/** Set the active fallback scope (call at stream() start). */
-export function setParamsFallback(fb: PiParamsFallback): void {
-  activeFallback = fb;
-}
-
-/** Clear the active fallback scope (call at stream() end). */
-export function clearParamsFallback(): void {
-  activeFallback = undefined;
+/** Clear the session fallback (call on session end). */
+export function clearLastKnownParams(): void {
+  lastKnownParams = undefined;
 }
 
 /**
  * Look up pi-native params by nonce from ModelRequest.metadata.
  * Auto-deletes the entry after retrieval (one-shot cleanup prevents memory leaks).
- * Falls back to the active stream()'s params if no nonce is present (middleware sub-calls).
+ * Falls back to the last known params if no nonce is present (middleware sub-calls).
  */
 export function getPiParams(request: ModelRequest): PiNativeParams | undefined {
   const raw = request.metadata?.[PI_PARAMS_NONCE_KEY];
   if (typeof raw !== "string") {
     // No nonce — this is a middleware sub-call (e.g., RLM REPL loop).
-    // Fall back to the current stream()'s last known params.
-    return activeFallback?.current;
+    // Fall back to the last known params from the session.
+    return lastKnownParams;
   }
   const params = piParamsStore.get(raw);
   if (params !== undefined) {
     piParamsStore.delete(raw);
-    // Cache in the active stream()'s fallback scope for subsequent sub-calls
-    if (activeFallback !== undefined) {
-      activeFallback.current = params;
-    }
+    // Cache as session fallback for subsequent sub-calls
+    lastKnownParams = params;
   }
   return params;
 }
