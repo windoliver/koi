@@ -4421,3 +4421,144 @@ describe("Golden: @koi/sandbox-os", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/session (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — session-recovery", () => {
+  test("recover() returns all sessions + pending frames after simulated restart", async () => {
+    const { createSqliteSessionPersistence } = await import("@koi/session");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const store = createSqliteSessionPersistence({ dbPath: ":memory:" });
+    const manifest = { name: "recovery-agent", version: "1.0.0", model: { name: "gpt" } };
+    const now = Date.now();
+
+    store.saveSession({
+      sessionId: sessionId("s1"),
+      agentId: agentId("agent-alpha"),
+      manifestSnapshot: manifest,
+      seq: 5,
+      remoteSeq: 3,
+      connectedAt: now - 10000,
+      lastPersistedAt: now - 1000,
+      metadata: { channel: "cli" },
+    });
+    store.saveSession({
+      sessionId: sessionId("s2"),
+      agentId: agentId("agent-alpha"),
+      manifestSnapshot: manifest,
+      seq: 2,
+      remoteSeq: 1,
+      connectedAt: now - 5000,
+      lastPersistedAt: now - 500,
+      metadata: {},
+    });
+    store.savePendingFrame({
+      frameId: "frame-a",
+      sessionId: sessionId("s1"),
+      agentId: agentId("agent-alpha"),
+      frameType: "agent:message",
+      payload: { text: "unsent" },
+      orderIndex: 0,
+      createdAt: now - 800,
+      retryCount: 1,
+    });
+
+    const result = store.recover();
+    expect("then" in result).toBe(false);
+    if ("then" in result) return;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.sessions.length).toBe(2);
+    expect(result.value.skipped).toEqual([]);
+
+    const s1 = result.value.sessions.find((s) => s.sessionId === sessionId("s1"));
+    expect(s1?.seq).toBe(5);
+    expect(s1?.metadata).toEqual({ channel: "cli" });
+
+    const frames = result.value.pendingFrames.get(sessionId("s1"));
+    expect(frames?.length).toBe(1);
+    expect(frames?.[0]?.frameId).toBe("frame-a");
+    expect(frames?.[0]?.payload).toEqual({ text: "unsent" });
+
+    store.close();
+  });
+});
+
+describe("Golden: @koi/session — session-persist trajectory", () => {
+  test("trajectory contains MW:@koi/session:transcript wrapModelStream span", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/session-persist.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly outcome?: string;
+        };
+      }[];
+    };
+    const sessionSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "@koi/session:transcript",
+    );
+    // Must have at least one MW:@koi/session:transcript span
+    expect(sessionSpans.length).toBeGreaterThanOrEqual(1);
+    // Span must have fired wrapModelStream
+    expect(sessionSpans[0]?.extra?.hook).toBe("wrapModelStream");
+  });
+
+  test("trajectory has model step (agent completed the turn)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/session-persist.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("Golden: @koi/session — session-transcript-compaction", () => {
+  test("compact(preserveLastN=3) produces correct summary + tail with no corruption", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlTranscript } = await import("@koi/session");
+    const { sessionId } = await import("@koi/core");
+
+    const tmpDir = await mkdtemp(join(tmpdir(), "koi-golden-session-"));
+    try {
+      const store = createJsonlTranscript({ baseDir: tmpDir });
+      const sid = sessionId("golden-compact");
+
+      const entries = Array.from({ length: 10 }, (_, i) => ({
+        id: `entry-${i}` as ReturnType<typeof import("@koi/core").transcriptEntryId>,
+        role: "user" as const,
+        content: `turn-${i}`,
+        timestamp: 1000 * (i + 1),
+      }));
+      await store.append(sid, entries);
+
+      const compactResult = await store.compact(sid, "Summary of turns 0-6", 3);
+      expect(compactResult.ok).toBe(true);
+
+      const result = await store.load(sid);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.entries.length).toBe(4);
+        expect(result.value.skipped.length).toBe(0);
+        const [summary, ...tail] = result.value.entries;
+        expect(summary?.role).toBe("compaction");
+        expect(summary?.content).toBe("Summary of turns 0-6");
+        expect(tail[0]?.content).toBe("turn-7");
+        expect(tail[2]?.content).toBe("turn-9");
+      }
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

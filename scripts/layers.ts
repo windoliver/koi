@@ -42,7 +42,11 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/engine-reconcile",
 ]);
 
-export const L2_PACKAGES: ReadonlySet<string> = new Set(["@koi/sandbox-os", "@koi/tools-bash"]);
+export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/sandbox-os",
+  "@koi/session",
+  "@koi/tools-bash",
+]);
 
 /**
  * Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration.

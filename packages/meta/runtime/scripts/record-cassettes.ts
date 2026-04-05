@@ -38,6 +38,7 @@ import type {
   FileSystemBackend,
   JsonObject,
   KoiError,
+  KoiMiddleware,
   MemoryRecord,
   MemoryRecordInput,
   ModelChunk,
@@ -45,7 +46,7 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId } from "@koi/core";
+import { createSingleToolProvider, memoryRecordId, sessionId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -73,6 +74,7 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
+import { createInMemoryTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -605,6 +607,12 @@ interface QueryConfig {
    * Use to set manifest.spawn ceiling on the parent agent for manifest-ceiling queries.
    */
   readonly parentManifestOverrides?: import("@koi/core").AgentManifest;
+  /**
+   * Optional extra middleware to append to the traced middleware chain.
+   * Use when a query needs to exercise a specific L2 middleware (e.g. @koi/session:transcript).
+   * These are wrapped with wrapMiddlewareWithTrace automatically.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[];
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +992,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     exfiltrationGuard,
     permMiddleware,
     semanticRetryMw,
+    ...(config.extraMiddleware ?? []),
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
   // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
@@ -2185,6 +2194,24 @@ const queries: readonly QueryConfig[] = [
     // tool-use instructions reliably here.
     modelAdapter: sonnetAdapter,
     modelName: SONNET_MODEL,
+  },
+
+  // @koi/session — session-persist: transcript middleware exercises session transcript append
+  // during model call. wrapMiddlewareWithTrace captures it as MW:@koi/session:transcript step.
+  {
+    name: "session-persist",
+    prompt: "What is 2+2? Reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    extraMiddleware: [
+      createSessionTranscriptMiddleware({
+        transcript: createInMemoryTranscript(),
+        sessionId: sessionId("golden-session-persist"),
+      }),
+    ],
   },
 ];
 
