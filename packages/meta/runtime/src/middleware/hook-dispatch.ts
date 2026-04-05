@@ -91,23 +91,31 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
   const { hooks, store, docId, signal, registry } = config;
 
   /**
-   * Does ANY configured hook have a filter that could match tool.succeeded
-   * or tool.failed? Computed once at middleware creation. Used to gate the
-   * on-cancel output-redaction: if no post-hook could have run in the first
-   * place, a late caller abort during post-dispatch is not bypassing any
-   * fail-closed contract, and we should return the tool's raw output.
+   * Does ANY configured hook have a filter that could match post-tool
+   * events (tool.succeeded / tool.failed) for the given toolId? Used to
+   * gate cancel-redaction per-call: if no post-hook could have matched
+   * this specific tool, a late caller abort is not bypassing any
+   * fail-closed contract and we return the raw output.
    *
-   * Registry path: we cannot introspect registered hooks from outside, so
-   * we fail closed (assume post-hooks may be present and redact on cancel).
+   * Registry path: we cannot introspect registered hooks from outside,
+   * so we fail closed (return true and redact on cancel).
    */
-  const hasPostHookCandidate =
-    registry !== undefined ||
-    hooks.some((h) => {
-      if (h.filter === undefined || h.filter.events === undefined) return true;
-      return h.filter.events.some(
-        (ev) => ev === "tool.succeeded" || ev === "tool.failed" || ev === "*",
-      );
+  function hasPostHookFor(toolId: string): boolean {
+    if (registry !== undefined) return true;
+    return hooks.some((h) => {
+      const filter = h.filter;
+      // No filter = match all events and tools.
+      if (filter === undefined) return true;
+      // Event-side check.
+      const eventMatches =
+        filter.events === undefined ||
+        filter.events.some((ev) => ev === "tool.succeeded" || ev === "tool.failed" || ev === "*");
+      if (!eventMatches) return false;
+      // Tool-side check: if filter.tools is present, this tool must be in it.
+      const toolMatches = filter.tools === undefined || filter.tools.includes(toolId);
+      return toolMatches;
     });
+  }
 
   /**
    * Summarize a JsonObject payload for trace metadata. Records field names
@@ -400,7 +408,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         // bypassing any contract and the raw output is returned normally.
         // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
         const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
-        if (postAborted && hasPostHookCandidate && response !== undefined) {
+        if (postAborted && hasPostHookFor(request.toolId) && response !== undefined) {
           return {
             output: "[output redacted: post-hooks skipped due to cancellation]",
             ...(response.metadata !== undefined

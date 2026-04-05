@@ -529,6 +529,33 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
   });
 
+  test("late abort does NOT redact when post-hooks are filtered to OTHER tools", async () => {
+    // Regression: hasPostHookFor must be per-call. If a post-hook is
+    // filtered to a different tool, a late abort on this tool's call
+    // bypasses no contract and must return the raw output.
+    const controller = new AbortController();
+    const mw = createHookDispatchMiddleware({
+      hooks: [
+        {
+          kind: "command",
+          name: "audit-other",
+          cmd: ["echo"],
+          filter: { events: ["tool.succeeded"], tools: ["other-tool"] },
+        },
+      ],
+    });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => {
+      controller.abort();
+      return { output: "PLAIN_FOR_THIS_TOOL" };
+    };
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "this-tool", input: {} } as never, next);
+    expect(result?.output).toBe("PLAIN_FOR_THIS_TOOL");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
+  });
+
   test("late abort during post-hook dispatch redacts tool output (fail-closed)", async () => {
     // Regression: if the caller cancels AFTER the tool succeeded but BEFORE
     // post-hooks run, registry.execute() returns [] on the aborted signal.
