@@ -3,9 +3,27 @@
  *
  * Each memory record is a Markdown file with bespoke frontmatter.
  * A MEMORY.md index is rebuilt on every mutation (write/update/delete).
+ *
+ * Concurrency: the record-level state change for each mutation runs
+ * inside a per-directory critical section (in-process async mutex +
+ * `.memory.lock` file lock — see ./lock.ts). The post-mutation
+ * `MEMORY.md` rebuild and the `onIndexError` callback run OUTSIDE the
+ * lock so a slow rebuild or hanging callback cannot stall other writers.
  */
 
-import { lstat, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import type {
   MemoryRecord,
@@ -21,11 +39,30 @@ import {
 } from "@koi/core/memory";
 import { findDuplicate } from "./dedup.js";
 import { rebuildIndex } from "./index-file.js";
+import { withDirLock } from "./lock.js";
 import { deriveFilename, slugifyMemoryName } from "./slug.js";
-import type { DedupResult, MemoryListFilter, MemoryStore, MemoryStoreConfig } from "./types.js";
+import type {
+  DedupResult,
+  DeleteResult,
+  IndexErrorCallback,
+  MemoryListFilter,
+  MemoryStore,
+  MemoryStoreConfig,
+  MemoryStoreOperation,
+  UpdateResult,
+} from "./types.js";
 import { DEFAULT_DEDUP_THRESHOLD } from "./types.js";
 
 const INDEX_FILENAME = "MEMORY.md";
+
+interface StoreContext {
+  /** Caller-provided directory (used for creation before realpath exists). */
+  readonly dir: string;
+  /** Canonical path — stable key for the per-dir mutex. */
+  readonly canonicalDir: string;
+  readonly threshold: number;
+  readonly onIndexError: IndexErrorCallback | undefined;
+}
 
 /**
  * Create a file-based memory store.
@@ -41,17 +78,72 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
     throw new Error(`dedupThreshold must be between 0 and 1, got ${String(threshold)}`);
   }
 
+  // Resolve the canonical path lazily on first mutation — the directory
+  // may not exist yet at construction time. Cache the result for stable
+  // mutex keying across calls.
+  // let — cached after first successful resolve.
+  let canonical: string | undefined;
+  const getContext = async (): Promise<StoreContext> => {
+    if (canonical === undefined) {
+      await mkdir(dir, { recursive: true });
+      canonical = await realpath(dir);
+    }
+    return {
+      dir,
+      canonicalDir: canonical,
+      threshold,
+      onIndexError: config.onIndexError,
+    };
+  };
+
+  const chainedRebuild = (ctx: StoreContext, operation: MemoryStoreOperation): Promise<unknown> =>
+    enqueueRebuild(ctx, operation);
+
   return {
     read: (id) => readRecord(dir, id),
-    write: (input) => writeRecord(dir, input, threshold),
-    update: (id, patch) => updateRecord(dir, id, patch),
-    delete: (id) => deleteRecord(dir, id),
     list: (filter) => listRecords(dir, filter),
+    write: async (input) => {
+      // Validate BEFORE any filesystem side effect (mkdir/realpath in
+      // getContext). Invalid input must never create directories on disk.
+      const errors = validateMemoryRecordInput({ ...input });
+      if (errors.length > 0) {
+        const messages = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
+        throw new Error(`Invalid memory record input: ${messages}`);
+      }
+      const ctx = await getContext();
+      const res = await withDirLock(ctx.canonicalDir, () => writeRecord(ctx, input));
+      if (res.action !== "created") return res;
+      const indexError = await chainedRebuild(ctx, "write");
+      return indexError === undefined ? res : { ...res, indexError };
+    },
+    update: async (id, patch) => {
+      const ctx = await getContext();
+      const res = await withDirLock(ctx.canonicalDir, () => updateRecord(ctx, id, patch));
+      const indexError = await chainedRebuild(ctx, "update");
+      return indexError === undefined ? res : { ...res, indexError };
+    },
+    delete: async (id) => {
+      const ctx = await getContext();
+      const res = await withDirLock(ctx.canonicalDir, () => deleteRecord(ctx, id));
+      if (!res.deleted) return res;
+      const indexError = await chainedRebuild(ctx, "delete");
+      return indexError === undefined ? res : { ...res, indexError };
+    },
+    rebuildIndex: async () => {
+      const ctx = await getContext();
+      // Explicit repair takes both locks: mutation lock for a consistent
+      // snapshot, rebuild chain to preserve ordering vs background rebuilds.
+      await withDirLock(ctx.canonicalDir, async () => {
+        const records = await scanRecords(ctx.dir);
+        await rebuildIndex(ctx.dir, records);
+      });
+    },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Internal operations
+// Internal operations — the record-level file work runs inside the lock,
+// callers (the factory methods above) run the index rebuild outside.
 // ---------------------------------------------------------------------------
 
 async function readRecord(dir: string, id: MemoryRecordId): Promise<MemoryRecord | undefined> {
@@ -59,20 +151,15 @@ async function readRecord(dir: string, id: MemoryRecordId): Promise<MemoryRecord
   return records.find((r) => r.id === id);
 }
 
-async function writeRecord(
-  dir: string,
-  input: MemoryRecordInput,
-  threshold: number,
-): Promise<DedupResult> {
-  const errors = validateMemoryRecordInput({ ...input });
-  if (errors.length > 0) {
-    const messages = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
-    throw new Error(`Invalid memory record input: ${messages}`);
-  }
-
-  await mkdir(dir, { recursive: true });
+async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise<DedupResult> {
+  // Note: validation already ran in the public `write()` method before
+  // getContext()/mkdir. This function is called inside the dir lock and
+  // must not re-validate (the lock was acquired after validation passed).
+  const { dir, threshold } = ctx;
   const existing = await scanRecords(dir);
 
+  // Dedup scan + file creation are now both inside the dir lock, so two
+  // writers cannot both observe "no duplicate" and both succeed.
   const dup = findDuplicate(input.content, existing, threshold);
   if (dup !== undefined) {
     return {
@@ -91,7 +178,8 @@ async function writeRecord(
     throw new Error("Failed to serialize memory record — invalid frontmatter or empty content");
   }
 
-  // Atomically create file — retry with new name on EEXIST (concurrent write race)
+  // Exclusive create — retains `wx` for inode-level safety against a stray
+  // file with the same slug that pre-existed the lock acquisition.
   const filename = await writeExclusive(dir, input.name, serialized);
   const fileStat = await stat(join(dir, filename));
 
@@ -104,20 +192,20 @@ async function writeRecord(
     type: persisted?.frontmatter.type ?? input.type,
     content: persisted?.content ?? input.content,
     filePath: filename,
-    createdAt: fileStat.birthtimeMs,
-    updatedAt: fileStat.mtimeMs,
+    // Fresh file: all three (birthtime, mtime, ctime) are now.
+    createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
+    updatedAt: fileStat.ctimeMs,
   };
 
-  // Fresh scan for index rebuild — avoids stale snapshot from concurrent mutations
-  await tryRebuildIndexFromDisk(dir);
   return { action: "created", record };
 }
 
 async function updateRecord(
-  dir: string,
+  ctx: StoreContext,
   id: MemoryRecordId,
   patch: MemoryRecordPatch,
-): Promise<MemoryRecord> {
+): Promise<UpdateResult> {
+  const { dir } = ctx;
   const records = await scanRecords(dir);
   const existing = records.find((r) => r.id === id);
   if (existing === undefined) {
@@ -139,10 +227,43 @@ async function updateRecord(
     throw new Error("Failed to serialize updated memory record");
   }
 
-  // In-place write — preserves inode and birthtime (createdAt).
-  // Concurrency is an accepted risk for this single-agent local store.
+  // Atomic update: write to a unique temp file, then `rename` over the
+  // final path. Without this, a concurrent rebuild scan (which runs
+  // outside the mutation lock) could read a truncated or partial file
+  // and silently omit the record from MEMORY.md.
+  //
+  // `rename` replaces the inode, so the new file's `birthtimeMs` is
+  // reset to "now". To keep `createdAt` stable across updates, we then
+  // `utimes` the file's mtime back to the original creation time. The
+  // scan path uses `min(birthtimeMs, mtimeMs)` as createdAt and
+  // `max(birthtimeMs, mtimeMs)` as updatedAt, so:
+  //   - fresh record: birthtime == mtime == now → both equal now.
+  //   - updated record: birthtime = now (new inode), mtime = original
+  //     createdAt → createdAt preserved, updatedAt is the new inode age.
   const filePath = join(dir, existing.filePath);
-  await writeFile(filePath, serialized, "utf-8");
+  const tmpPath = `${filePath}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmpPath, serialized, { encoding: "utf-8", flag: "wx" });
+    await rename(tmpPath, filePath);
+  } catch (e: unknown) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      // temp was never created or already cleaned up
+    }
+    throw e;
+  }
+  // Preserve createdAt by stamping the original creation time into mtime.
+  // utimes takes seconds; existing.createdAt is ms. Best-effort — if the
+  // filesystem cannot set times, the record keeps its rename-fresh
+  // birthtime and we accept the documented drift.
+  const originalCreatedSec = existing.createdAt / 1000;
+  const nowSec = Date.now() / 1000;
+  try {
+    await utimes(filePath, nowSec, originalCreatedSec);
+  } catch {
+    // best-effort — proceed without createdAt preservation
+  }
   const updatedStat = await stat(filePath);
 
   // Re-parse to return sanitized values matching what's on disk
@@ -155,17 +276,19 @@ async function updateRecord(
     content: persisted?.content ?? updated.content,
     filePath: existing.filePath,
     createdAt: existing.createdAt,
-    updatedAt: updatedStat.mtimeMs,
+    // ctimeMs is always bumped by utimes, so it tracks the true update
+    // time even after mtime was stamped back to the original createdAt.
+    updatedAt: updatedStat.ctimeMs,
   };
 
-  await tryRebuildIndexFromDisk(dir);
-  return record;
+  return { record };
 }
 
-async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
+async function deleteRecord(ctx: StoreContext, id: MemoryRecordId): Promise<DeleteResult> {
+  const { dir } = ctx;
   const records = await scanRecords(dir);
   const existing = records.find((r) => r.id === id);
-  if (existing === undefined) return false;
+  if (existing === undefined) return { deleted: false };
 
   try {
     await unlink(join(dir, existing.filePath));
@@ -174,8 +297,7 @@ async function deleteRecord(dir: string, id: MemoryRecordId): Promise<boolean> {
     if (!isEnoent(e)) throw e;
   }
 
-  await tryRebuildIndexFromDisk(dir);
-  return true;
+  return { deleted: true };
 }
 
 async function listRecords(
@@ -187,6 +309,74 @@ async function listRecords(
     return records.filter((r) => r.type === filter.type);
   }
   return records;
+}
+
+// ---------------------------------------------------------------------------
+// Index maintenance
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-canonical-directory rebuild serializer — module-scoped so two
+ * stores targeting the same real dir share one chain.
+ *
+ * Rebuilds run OUTSIDE the mutation lock, but must not overtake each
+ * other or they can publish a stale index (e.g. rebuild-A scans while
+ * rebuild-B has already committed a newer record; if A publishes last,
+ * it overwrites B with stale state). Chaining guarantees each rebuild
+ * scans disk AFTER all prior rebuilds have settled, so the last
+ * published index always reflects state at least as new as any earlier
+ * rebuild.
+ *
+ * A slow `onIndexError` callback therefore only blocks *subsequent
+ * rebuilds* for the same directory — never mutations.
+ */
+const rebuildChains = new Map<string, Promise<unknown>>();
+
+function enqueueRebuild(ctx: StoreContext, operation: MemoryStoreOperation): Promise<unknown> {
+  const key = ctx.canonicalDir;
+  const prior = rebuildChains.get(key) ?? Promise.resolve();
+  const next = prior.then(
+    () => attemptIndexRebuild(ctx, operation),
+    () => attemptIndexRebuild(ctx, operation),
+  );
+  const tail = next.catch((): undefined => undefined);
+  rebuildChains.set(key, tail);
+  // Clean up the map entry once this is the tail — keeps memory footprint
+  // bounded across many unique directories.
+  void tail.then(() => {
+    if (rebuildChains.get(key) === tail) rebuildChains.delete(key);
+  });
+  return next;
+}
+
+/**
+ * Best-effort rebuild of MEMORY.md from a fresh disk scan.
+ *
+ * Returns the caught error (if any) so the caller can surface it via the
+ * mutation's return value. Also invokes `onIndexError` for observability.
+ * Never throws — the on-disk record mutation has already committed, so
+ * failing the overall operation would mislead the caller.
+ */
+async function attemptIndexRebuild(
+  ctx: StoreContext,
+  operation: MemoryStoreOperation,
+): Promise<unknown> {
+  try {
+    const freshRecords = await scanRecords(ctx.dir);
+    await rebuildIndex(ctx.dir, freshRecords);
+    return undefined;
+  } catch (e: unknown) {
+    // Fire-and-forget the observer callback. It is informational — a slow
+    // callback must not delay the mutation's return, and its completion
+    // is irrelevant to the indexError surfaced on the return value. Its
+    // own rejections are swallowed.
+    if (ctx.onIndexError !== undefined) {
+      void Promise.resolve()
+        .then(() => ctx.onIndexError?.(e, { operation }))
+        .catch((): undefined => undefined);
+    }
+    return e;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +412,16 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
     const parsed = parseMemoryFrontmatter(content);
     if (parsed === undefined) return undefined;
 
+    // createdAt = min(birthtime, mtime), updatedAt = ctime.
+    //
+    // On a fresh write: birthtime == mtime == ctime == now.
+    // On an updated record: `updateRecord` renames a new inode into
+    // place (birthtime resets to now), then `utimes` stamps mtime back
+    // to the original createdAt. Some filesystems (APFS) propagate the
+    // earlier mtime to birthtime, so `min(birthtime, mtime)` robustly
+    // recovers the original create time across platforms. `ctime` is
+    // always updated by the kernel on any inode change (including
+    // utimes), so it moves forward and tracks the true update time.
     return {
       id: memoryRecordId(filenameToId(filename)),
       name: parsed.frontmatter.name,
@@ -229,8 +429,8 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
       type: parsed.frontmatter.type,
       content: parsed.content,
       filePath: filename,
-      createdAt: linkStat.birthtimeMs,
-      updatedAt: linkStat.mtimeMs,
+      createdAt: Math.min(linkStat.birthtimeMs, linkStat.mtimeMs),
+      updatedAt: linkStat.ctimeMs,
     };
   } catch (e: unknown) {
     // File vanished between readdir and read — skip it
@@ -245,22 +445,8 @@ function filenameToId(filename: string): string {
 }
 
 /**
- * Best-effort index rebuild from fresh disk scan.
- * Avoids stale snapshots from concurrent mutations.
- */
-async function tryRebuildIndexFromDisk(dir: string): Promise<void> {
-  try {
-    const freshRecords = await scanRecords(dir);
-    await rebuildIndex(dir, freshRecords);
-  } catch {
-    // Index write failed — record mutation already committed.
-    // Index will be rebuilt on the next successful mutation.
-  }
-}
-
-/**
  * Atomically create a new .md file using exclusive flag.
- * Retries with a suffixed name on EEXIST (concurrent write race).
+ * Retries with a suffixed name on EEXIST (stray pre-existing file).
  */
 async function writeExclusive(dir: string, name: string, content: string): Promise<string> {
   const MAX_ATTEMPTS = 5;

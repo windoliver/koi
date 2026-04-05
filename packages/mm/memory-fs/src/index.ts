@@ -6,13 +6,26 @@
 
 export { findDuplicate, jaccard, tokenize } from "./dedup.js";
 export { readIndex, rebuildIndex } from "./index-file.js";
-export { resolveMemoryDir } from "./resolve-dir.js";
+export type {
+  MemoryDirMode,
+  ResolvedMemoryDir,
+  ResolveMemoryDirOptions,
+} from "./resolve-dir.js";
+export {
+  MemoryPolicyMismatch,
+  MemoryResolutionError,
+  resolveMemoryDir,
+} from "./resolve-dir.js";
 export { deriveFilename, slugifyMemoryName } from "./slug.js";
 export { createMemoryStore } from "./store.js";
 export type {
   DedupResult,
+  DeleteResult,
+  IndexErrorCallback,
   MemoryListFilter,
   MemoryStore,
   MemoryStoreConfig,
+  MemoryStoreOperation,
+  UpdateResult,
 } from "./types.js";
 export { DEFAULT_DEDUP_THRESHOLD } from "./types.js";
