@@ -29,3 +29,11 @@ export {
   ParseError,
   parseArgs,
 } from "./args.js";
+export { COMMAND_LOADERS } from "./registry.js";
+export type {
+  CheckStatus,
+  CommandModule,
+  DiagnosticCheck,
+  JsonOutput,
+} from "./types.js";
+export { ExitCode } from "./types.js";
