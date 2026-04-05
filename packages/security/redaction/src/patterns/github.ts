@@ -16,11 +16,29 @@ import { collectMatches, EMPTY_MATCHES } from "./collect.js";
 const GITHUB_CLASSIC_PATTERN = /gh[psuor]_[A-Za-z0-9_]{36,}/g;
 
 /**
- * Fine-grained PATs: github_pat_ + 22 base62 + _ + 59 base62 (82 suffix chars total).
- * Require at least 40 chars after prefix to avoid over-redacting short identifiers
- * while still catching tokens with minor format variations.
+ * Fine-grained PATs: `github_pat_` + 82 word chars, matching the gitleaks
+ * authoritative rule `github_pat_\w{82}`. Only GitHub's `github_pat_` prefix is
+ * publicly documented; inner shape (e.g. a `_` at offset 22) is observed but not
+ * guaranteed, so we do NOT enforce it — enforcing an inferred layout would risk
+ * silent false negatives (unredacted real tokens = secret leak) if the format
+ * drifts.
+ *
+ * Leading lookbehind prevents attacker-injected prefixes (`xxgithub_pat_…`) from
+ * anchoring a match. We deliberately do NOT require a trailing non-word boundary:
+ * a real token concatenated with adjacent word chars must still redact its 93
+ * known-secret chars rather than failing open.
+ *
+ * Accepted residual risk: an attacker who can inject into logs/audit can still
+ * cause a bounded 93-char redaction by emitting `github_pat_` + 82 word chars.
+ * This is the cost of leak-prevention priority — in a secret-redaction library,
+ * false negatives (missed real tokens) are categorically worse than bounded
+ * false positives (attacker-driven over-redaction of 93 chars).
+ *
+ * Fixes #1494 by capping the match span to 93 chars (prefix + 82) instead of
+ * the previous unbounded `{40,}` quantifier that redacted arbitrary-length
+ * payload.
  */
-const GITHUB_PAT_PATTERN = /github_pat_[A-Za-z0-9_]{40,}/g;
+const GITHUB_PAT_PATTERN = /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{82}/g;
 
 export function createGitHubDetector(): SecretPattern {
   return {
