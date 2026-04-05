@@ -18,6 +18,17 @@
  * instead of relying on runtime fake-timer support).
  */
 
+/**
+ * Opaque timer handle returned by scheduleTimeout and consumed by cancelTimeout.
+ *
+ * Union of `number` (DOM/browser) and `ReturnType<typeof setTimeout>` (Node.js
+ * `NodeJS.Timeout` / Bun `Timer`) because ambient type declarations from both
+ * `@types/bun` and `@types/node` are present at DTS build time, causing the
+ * call site to produce a union. Widening here keeps the build clean in all
+ * environments.
+ */
+export type TimerHandle = number | ReturnType<typeof setTimeout>;
+
 export interface EventBatcher<T> {
   /** Add an event to the pending batch. No-op after dispose(). */
   enqueue(event: T): void;
@@ -39,9 +50,9 @@ export interface EventBatcherOptions {
    * Injectable timeout scheduler (default: globalThis.setTimeout).
    * Pass a synchronous spy in tests to avoid real timer waits.
    */
-  readonly scheduleTimeout?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  readonly scheduleTimeout?: (fn: () => void, ms: number) => TimerHandle;
   /** Injectable cancel function (default: globalThis.clearTimeout). */
-  readonly cancelTimeout?: (id: ReturnType<typeof setTimeout>) => void;
+  readonly cancelTimeout?: (id: TimerHandle) => void;
 }
 
 /**
@@ -63,7 +74,7 @@ export function createEventBatcher<T>(
   // `let` justified: reassigned on each flush cycle and by dispose()
   let buffer: T[] = [];
   let microtaskPending = false;
-  let flushTimer: ReturnType<typeof doSetTimeout> | null = null;
+  let flushTimer: TimerHandle | null = null;
   let disposed = false;
 
   function scheduleFlush(): void {
