@@ -60,24 +60,58 @@ export function normalizeText(text: string): string {
 /**
  * Extract keywords (>= 4 chars) from objective text for matching.
  *
- * Falls back to all non-empty tokens (including short words and numerals)
- * when no 4+ char words exist. This keeps short/symbolic objectives such
- * as "Add UI", "Fix CI", or "7 + 5" participating in drift detection and
- * completion tracking instead of silently disabling the middleware.
+ * Fallback is per-objective: when an individual objective has no 4+ char
+ * words, its short tokens (including numerals) are kept instead. This
+ * keeps short/symbolic objectives such as "Add UI", "Fix CI", or "7 + 5"
+ * participating in drift detection and completion tracking even when
+ * mixed alongside longer-worded objectives.
  */
 export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
-  const longKeywords = new Set<string>();
-  const allKeywords = new Set<string>();
+  const result = new Set<string>();
   for (const obj of objectives) {
+    const longWords = new Set<string>();
+    const allWords = new Set<string>();
     for (const word of normalizeText(obj).split(/\s+/)) {
       if (word.length === 0) continue;
-      allKeywords.add(word);
+      allWords.add(word);
       if (word.length >= MIN_KEYWORD_LENGTH) {
-        longKeywords.add(word);
+        longWords.add(word);
       }
     }
+    const chosen = longWords.size > 0 ? longWords : allWords;
+    for (const kw of chosen) result.add(kw);
   }
-  return longKeywords.size > 0 ? longKeywords : allKeywords;
+  return result;
+}
+
+/** Tokenize normalized text into a set of words for token-based matching. */
+function tokenizeNormalized(normalized: string): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  for (const t of normalized.split(/\s+/)) {
+    if (t.length > 0) tokens.add(t);
+  }
+  return tokens;
+}
+
+/**
+ * Check whether a keyword matches any token in the set.
+ *
+ * Short keywords (< 3 chars, e.g. "ci", "ui", "7") require exact token
+ * equality, so they cannot match inside longer words like "specific" or
+ * "cinema". Longer keywords (>= 3 chars) match when they are a prefix of
+ * any token, so inflected forms like "fixing" still satisfy "fix" and
+ * "tests" still satisfies "testsuite". This mirrors the original
+ * substring-match leniency but only at word boundaries.
+ */
+const MIN_PREFIX_KEYWORD_LENGTH = 3;
+function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
+  if (keyword.length < MIN_PREFIX_KEYWORD_LENGTH) {
+    return tokens.has(keyword);
+  }
+  for (const t of tokens) {
+    if (t.startsWith(keyword)) return true;
+  }
+  return false;
 }
 
 /** Render a markdown todo block from goal items. */
@@ -108,13 +142,14 @@ export function detectCompletions(
     return items;
   }
 
-  const normalized = normalizeText(responseText);
+  const textTokens = tokenizeNormalized(normalizeText(responseText));
   return items.map((item) => {
     if (item.completed) return item;
     const keywords = extractKeywords([item.text]);
     if (keywords.size === 0) return item;
 
-    const matchCount = [...keywords].filter((kw) => normalized.includes(kw)).length;
+    // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
+    const matchCount = [...keywords].filter((kw) => matchesToken(kw, textTokens)).length;
     // Require majority match: at least half the keywords, minimum 2 if available
     const threshold = keywords.size === 1 ? 1 : Math.max(2, Math.ceil(keywords.size / 2));
     if (matchCount >= threshold) {
@@ -131,18 +166,21 @@ export function isDrifting(
 ): boolean {
   if (keywords.size === 0) return false;
   const recent = messages.slice(-3);
-  const text = normalizeText(
-    recent
-      .map((m) =>
-        m.content
-          .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-          .map((b) => b.text)
-          .join(" "),
-      )
-      .join(" "),
+  const textTokens = tokenizeNormalized(
+    normalizeText(
+      recent
+        .map((m) =>
+          m.content
+            .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+            .map((b) => b.text)
+            .join(" "),
+        )
+        .join(" "),
+    ),
   );
 
-  return ![...keywords].some((kw) => text.includes(kw));
+  // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
+  return ![...keywords].some((kw) => matchesToken(kw, textTokens));
 }
 
 /** Compute next interval based on drift. */

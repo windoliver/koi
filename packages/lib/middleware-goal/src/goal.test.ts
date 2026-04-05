@@ -102,11 +102,14 @@ describe("extractKeywords", () => {
     expect(kw.has("5")).toBe(true);
   });
 
-  it("keeps long words when mixed with a short-only objective", () => {
-    // Global keyword set across objectives: long words win if present
-    const kw = extractKeywords(["Write tests", "Add UI"]);
+  it("unions per-objective keywords across mixed objective lists", () => {
+    // Per-objective fallback: each objective contributes its own keywords.
+    // "Write tests" keeps long words; "Fix CI" falls back to its short tokens.
+    const kw = extractKeywords(["Write tests", "Fix CI"]);
     expect(kw.has("write")).toBe(true);
     expect(kw.has("tests")).toBe(true);
+    expect(kw.has("fix")).toBe(true);
+    expect(kw.has("ci")).toBe(true);
   });
 });
 
@@ -170,6 +173,27 @@ describe("detectCompletions", () => {
     const result = detectCompletions("completed: add UI polish", items);
     expect(result[0]?.completed).toBe(true);
   });
+
+  it("does not substring-match short tokens inside longer words", () => {
+    // "Fix CI" → keywords {fix, ci}. "specific" contains "ci" but must NOT match.
+    const items = [{ text: "Fix CI", completed: false }];
+    const result = detectCompletions("completed a specific refactor fix", items);
+    expect(result[0]?.completed).toBe(false);
+  });
+
+  it("matches inflected completion forms via prefix match on long-enough keywords", () => {
+    // "Fix CI" → keywords {fix, ci}. "finished fixing CI" should match: "fix" is
+    // a prefix of "fixing" (>=3 chars → prefix rule); "ci" matches exactly.
+    const items = [{ text: "Fix CI", completed: false }];
+    const result = detectCompletions("finished fixing CI", items);
+    expect(result[0]?.completed).toBe(true);
+  });
+
+  it("matches identifier-style completions echoing the objective", () => {
+    const items = [{ text: "Fix CI", completed: false }];
+    const result = detectCompletions("completed CI fixups in the pipeline", items);
+    expect(result[0]?.completed).toBe(true);
+  });
 });
 
 describe("isDrifting", () => {
@@ -197,6 +221,13 @@ describe("isDrifting", () => {
     expect(isDrifting(drifting, keywords)).toBe(true);
     const onTopic = [makeTextMessage("Running ci now to see if fix holds.")];
     expect(isDrifting(onTopic, keywords)).toBe(false);
+  });
+
+  it("does not substring-match short keywords inside longer words", () => {
+    // "ci" must not match inside "specific" or "precision"
+    const keywords = new Set(["fix", "ci"]);
+    const messages = [makeTextMessage("working on specific precision tuning")];
+    expect(isDrifting(messages, keywords)).toBe(true);
   });
 
   it("checks only last 3 messages", () => {
