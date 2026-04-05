@@ -1811,6 +1811,48 @@ describe("Golden: @koi/fs-nexus", () => {
     const agentSteps = steps.filter((s) => s.source === "agent");
     expect(agentSteps.length).toBeGreaterThanOrEqual(1);
   });
+
+  test("ATIF trajectory: gdrive OAuth E2E — auth_required → callback → token exchange", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/gdrive-oauth-e2e.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "gdrive-oauth-e2e.trajectory.json not found. Re-record via test-gdrive-auth.py",
+      );
+    }
+
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly identifier: string;
+        readonly outcome: string;
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    const steps = trajectory.steps;
+
+    // Mount succeeds
+    const mountStep = steps.find((s) => s.identifier === "nexus.fs.mount");
+    expect(mountStep?.outcome).toBe("success");
+
+    // First read triggers auth failure (no token yet)
+    const firstRead = steps.find((s) => s.identifier === "fs.read");
+    expect(firstRead?.outcome).toBe("failure");
+
+    // OAuth URL generated with localhost redirect
+    const urlStep = steps.find((s) => s.identifier === "generate_auth_url");
+    expect(urlStep?.outcome).toBe("success");
+
+    // Browser callback received automatically
+    const callbackStep = steps.find((s) => s.identifier === "oauth_callback");
+    expect(callbackStep?.outcome).toBe("success");
+
+    // Token exchanged and stored successfully
+    const exchangeStep = steps.find((s) => s.identifier === "exchange_auth_code");
+    expect(exchangeStep?.outcome).toBe("success");
+  });
 });
 
 // ---------------------------------------------------------------------------

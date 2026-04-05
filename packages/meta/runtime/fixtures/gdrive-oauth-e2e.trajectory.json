@@ -1,0 +1,93 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "document_id": "gdrive-oauth-e2e",
+  "agent_name": "koi-fs-nexus-bridge",
+  "created_at": 1775366883853,
+  "steps": [
+    {
+      "stepIndex": 0,
+      "timestamp": 4085,
+      "source": "system",
+      "kind": "model_call",
+      "identifier": "nexus.fs.mount",
+      "outcome": "success",
+      "request": {
+        "text": "mount gdrive://my-drive"
+      },
+      "response": {
+        "text": "mounts: ['/gdrive/my-drive']"
+      }
+    },
+    {
+      "stepIndex": 1,
+      "timestamp": 10775,
+      "source": "tool",
+      "kind": "tool_call",
+      "identifier": "fs.read",
+      "outcome": "failure",
+      "request": {
+        "text": "/gdrive/my-drive/test.txt"
+      },
+      "response": {
+        "text": "No OAuth credential found for google-drive:local"
+      }
+    },
+    {
+      "stepIndex": 2,
+      "timestamp": 10784,
+      "source": "system",
+      "kind": "model_call",
+      "identifier": "generate_auth_url",
+      "outcome": "success",
+      "request": {
+        "text": "provider=google-drive redirect_uri=http://127.0.0.1:49645/callback"
+      },
+      "response": {
+        "text": "https://accounts.google.com/o/oauth2/v2/auth?client_id=685112155035-3kh1g6i2hud83m8t1ofa4qi3a0qajlkj.apps.googleusercontent.com&redirect_uri=http%3A%2F%2F127.0.0.1%3A49645%2Fcallback&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file&access_type=offline&prompt=consent"
+      }
+    },
+    {
+      "stepIndex": 3,
+      "timestamp": 49699,
+      "source": "system",
+      "kind": "model_call",
+      "identifier": "oauth_callback",
+      "outcome": "success",
+      "request": {
+        "text": "port=49645"
+      },
+      "response": {
+        "text": "code=4/0Aci98E-..."
+      }
+    },
+    {
+      "stepIndex": 4,
+      "timestamp": 51106,
+      "source": "system",
+      "kind": "model_call",
+      "identifier": "exchange_auth_code",
+      "outcome": "success",
+      "request": {
+        "text": "provider=google-drive code=4/0Aci98E-..."
+      },
+      "response": {
+        "text": "token stored"
+      }
+    },
+    {
+      "stepIndex": 5,
+      "timestamp": 52388,
+      "source": "tool",
+      "kind": "tool_call",
+      "identifier": "fs.read",
+      "outcome": "failure",
+      "request": {
+        "text": "/gdrive/my-drive/test.txt"
+      },
+      "response": {
+        "text": "File not found: koi-test.txt (expected \u2014 auth succeeded, file does not exist on drive)"
+      }
+    }
+  ],
+  "notes": "E2E OAuth flow: AuthenticationError \u2192 localhost callback \u2192 token exchange. Auth steps 0-4 all succeed. Step 5 fails with FileNotFound (file does not exist on test drive) \u2014 auth itself is fully functional."
+}
