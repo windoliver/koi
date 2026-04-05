@@ -94,22 +94,23 @@ function tokenizeNormalized(normalized: string): ReadonlySet<string> {
 }
 
 /**
- * Check whether a keyword matches any token in the set.
+ * Check whether a keyword matches within a set of tokens.
  *
  * Short keywords (< 3 chars, e.g. "ci", "ui", "7") require exact token
  * equality, so they cannot match inside longer words like "specific" or
- * "cinema". Longer keywords (>= 3 chars) match when they are a prefix of
- * any token, so inflected forms like "fixing" still satisfy "fix" and
- * "tests" still satisfies "testsuite". This mirrors the original
- * substring-match leniency but only at word boundaries.
+ * "cinema". Longer keywords (>= 3 chars) match as a substring within any
+ * single token, so inflected forms ("fixing" satisfies "fix") and
+ * separator-collapsed identifiers ("recordedTrajectoryPath",
+ * "recorded_trajectory_path", "fixtures/recorded-trajectory-path.json"
+ * — all normalize to one joined token) still satisfy their keywords.
  */
-const MIN_PREFIX_KEYWORD_LENGTH = 3;
+const MIN_LONG_KEYWORD_LENGTH = 3;
 function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
-  if (keyword.length < MIN_PREFIX_KEYWORD_LENGTH) {
+  if (keyword.length < MIN_LONG_KEYWORD_LENGTH) {
     return tokens.has(keyword);
   }
   for (const t of tokens) {
-    if (t.startsWith(keyword)) return true;
+    if (t.includes(keyword)) return true;
   }
   return false;
 }

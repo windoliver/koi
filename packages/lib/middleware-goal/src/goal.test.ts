@@ -194,6 +194,23 @@ describe("detectCompletions", () => {
     const result = detectCompletions("completed CI fixups in the pipeline", items);
     expect(result[0]?.completed).toBe(true);
   });
+
+  it("matches multi-word objectives echoed inside camelCase/snake/path tokens", () => {
+    // normalizeText strips separators, so all three of these flatten into
+    // one composite token. Long keywords must still find their substring
+    // inside that token.
+    const items = [{ text: "recorded trajectory path", completed: false }];
+    expect(
+      detectCompletions("completed work on recordedTrajectoryPath today", items)[0]?.completed,
+    ).toBe(true);
+    expect(
+      detectCompletions("done updating recorded_trajectory_path handling", items)[0]?.completed,
+    ).toBe(true);
+    expect(
+      detectCompletions("finished fixtures/recorded-trajectory-path.json rewrites", items)[0]
+        ?.completed,
+    ).toBe(true);
+  });
 });
 
 describe("isDrifting", () => {
