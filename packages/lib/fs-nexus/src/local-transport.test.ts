@@ -1,17 +1,208 @@
 /**
- * Integration tests for local subprocess transport.
+ * Tests for local subprocess transport.
  *
- * Requires nexus-fs Python package installed.
- * Skipped when nexus-fs is not available.
+ * Unit tests (notification protocol) — require Python 3 only.
+ * Integration tests — require nexus-fs Python package installed.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalTransport } from "./local-transport.js";
 import { createNexusFileSystem } from "./nexus-filesystem-backend.js";
-import type { NexusTransport } from "./types.js";
+import type { BridgeNotification, NexusTransport } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Write a temp Python bridge script and return its path. */
+function writeMockBridge(tmpDir: string, name: string, script: string): string {
+  const path = join(tmpDir, `${name}.py`);
+  writeFileSync(path, script, "utf8");
+  return path;
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — notification protocol (Python 3 only, no nexus-fs)
+// ---------------------------------------------------------------------------
+
+describe("createLocalTransport notification protocol", () => {
+  let tmpDir: string;
+  let transport: NexusTransport;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "koi-transport-unit-"));
+  });
+
+  afterEach(() => {
+    transport?.close();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  // Test 9-A: notification arrives on stdout BEFORE the response to an in-flight call.
+  // The background reader must dispatch the notification and still resolve the call.
+  test("auth_required notification before response — call resolves correctly", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-interleave",
+      `
+import sys, json
+
+# Redirect print to stderr — stdout is the JSON-RPC channel
+sys.stdout = sys.stderr
+
+import sys as _sys
+_stdout = open(1, "w", closefd=False)
+
+def out(obj):
+    _stdout.write(json.dumps(obj) + "\\n")
+    _stdout.flush()
+
+# Ready signal
+out({"ready": True, "mounts": []})
+
+# Read one request
+line = sys.stdin.readline()
+req = json.loads(line)
+
+# Send auth_required notification (no id — this is the interleaving case)
+out({"jsonrpc": "2.0", "method": "auth_required", "params": {
+    "provider": "google-drive",
+    "user_email": "test@example.com",
+    "auth_url": "https://accounts.google.com/auth?test=1",
+    "message": "Authorize Google Drive"
+}})
+
+# Then send the actual response for the request
+out({"jsonrpc": "2.0", "id": req["id"], "result": {"content": "file content"}})
+`,
+    );
+
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+    });
+
+    const notifications: BridgeNotification[] = [];
+    transport.subscribe((n) => notifications.push(n));
+
+    const result = await transport.call<{ readonly content: string }>("read", {
+      path: "/file.txt",
+    });
+
+    // Call must succeed despite the notification arriving first
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.content).toBe("file content");
+
+    // Notification must have been dispatched
+    await new Promise<void>((r) => setTimeout(r, 10)); // microtask flush
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.method).toBe("auth_required");
+  });
+
+  // Test 11-B: pre-authed connector emits ZERO notifications (no regression).
+  test("pre-authed connector — zero notifications emitted", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-preauthed",
+      `
+import sys, json
+sys.stdout = sys.stderr
+_stdout = open(1, "w", closefd=False)
+
+def out(obj):
+    _stdout.write(json.dumps(obj) + "\\n")
+    _stdout.flush()
+
+out({"ready": True, "mounts": []})
+
+line = sys.stdin.readline()
+req = json.loads(line)
+# Respond immediately — no auth_required sent
+out({"jsonrpc": "2.0", "id": req["id"], "result": {"content": "already authed"}})
+`,
+    );
+
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+    });
+
+    const notifications: BridgeNotification[] = [];
+    transport.subscribe((n) => notifications.push(n));
+
+    const result = await transport.call<{ readonly content: string }>("read", {
+      path: "/file.txt",
+    });
+
+    expect(result.ok).toBe(true);
+    await new Promise<void>((r) => setTimeout(r, 10));
+    // Critical: no spurious auth notifications on pre-authed connectors
+    expect(notifications).toHaveLength(0);
+  });
+
+  // Test 12-A: when bridge returns AUTH_TIMEOUT (-32007), transport returns AUTH_REQUIRED.
+  // Uses a very small authTimeoutMs so the bridge-side poll expires quickly.
+  test("auth timeout — call returns AUTH_REQUIRED with retryable:false", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-auth-timeout",
+      `
+import sys, json, os, time
+sys.stdout = sys.stderr
+_stdout = open(1, "w", closefd=False)
+
+def out(obj):
+    _stdout.write(json.dumps(obj) + "\\n")
+    _stdout.flush()
+
+out({"ready": True, "mounts": []})
+
+line = sys.stdin.readline()
+req = json.loads(line)
+
+# Send auth_required
+out({"jsonrpc": "2.0", "method": "auth_required", "params": {
+    "provider": "google-drive",
+    "user_email": "test@example.com",
+    "auth_url": "https://accounts.google.com/auth?test=1",
+    "message": "Authorize Google Drive"
+}})
+
+# Simulate poll timeout — immediately return AUTH_TIMEOUT error
+# (In production the bridge polls for NEXUS_AUTH_TIMEOUT_MS, then returns this)
+out({"jsonrpc": "2.0", "id": req["id"], "error": {
+    "code": -32007,
+    "message": "OAuth authorization timed out. Complete the authorization and try again."
+}})
+`,
+    );
+
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+      authTimeoutMs: 10_000, // extended so Koi doesn't time out before bridge responds
+    });
+
+    const result = await transport.call("read", { path: "/gdrive/file.txt" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("AUTH_REQUIRED");
+      expect(result.error.retryable).toBe(false); // user gave up — not auto-retryable
+      expect(result.error.message).toMatch(/timed out/i);
+    }
+  });
+});
 
 // Check if nexus-fs is available
 let nexusFsAvailable = false;
@@ -224,6 +415,99 @@ describeIf("createLocalTransport (requires nexus-fs)", () => {
     const readResult = await backend.read("/e2e-dryrun.txt");
     expect(readResult.ok).toBe(true);
     if (readResult.ok) expect(readResult.value.content).toBe("original content");
+  });
+});
+
+// Test 10-A: multi-mount auth with serial transport.
+// The bridge is serial — one auth challenge blocks all queued calls until it resolves.
+// This test verifies that after a gdrive auth failure (-32007), the next queued call
+// (local) still executes and succeeds. Uses a mock async bridge (no nexus-fs needed).
+// Note: with a real serial bridge, the local call is QUEUED behind the gdrive call —
+// it does not run concurrently. Both resolve in order: gdrive first, then local.
+describe("createLocalTransport multi-mount serial auth", () => {
+  let tmpDir: string;
+  let transport: NexusTransport;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "koi-multi-auth-"));
+  });
+
+  afterEach(() => {
+    transport?.close();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  test("local mount call succeeds after gdrive auth failure resolves (serial ordering)", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-multi-mount-auth",
+      `
+import sys, json, asyncio
+sys.stdout = sys.stderr
+_stdout = open(1, "w", closefd=False)
+
+def out(obj):
+    _stdout.write(json.dumps(obj) + "\\n")
+    _stdout.flush()
+
+async def main():
+    out({"ready": True, "mounts": ["/local/ws", "/gdrive"]})
+
+    loop = asyncio.get_event_loop()
+
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        path = req.get("params", {}).get("path", "")
+
+        if "gdrive" in path:
+            # Simulate auth required for gdrive calls — send notification then error
+            out({"jsonrpc": "2.0", "method": "auth_required", "params": {
+                "provider": "google-drive",
+                "user_email": "",
+                "auth_url": "https://accounts.google.com/auth?test=1",
+                "message": "Authorize Google Drive"
+            }})
+            out({"jsonrpc": "2.0", "id": req["id"], "error": {
+                "code": -32007, "message": "Auth timed out"
+            }})
+        else:
+            # Local paths succeed immediately
+            out({"jsonrpc": "2.0", "id": req["id"], "result": {"content": "local file"}})
+
+asyncio.run(main())
+`,
+    );
+
+    transport = await createLocalTransport({
+      mountUri: ["local:///ws", "gdrive://my-drive"],
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+    });
+
+    // Queue both calls — the transport is serial, so gdrive runs first, then local.
+    // Promise.all submits both to callQueue; gdrive acquires the slot first.
+    const [gdriveResult, localResult] = await Promise.all([
+      transport.call("read", { path: "/gdrive/secret.txt" }),
+      transport.call<{ readonly content: string }>("read", { path: "/local/ws/readme.txt" }),
+    ]);
+
+    // gdrive fails with AUTH_REQUIRED (auth timed out)
+    expect(gdriveResult.ok).toBe(false);
+    if (!gdriveResult.ok) expect(gdriveResult.error.code).toBe("AUTH_REQUIRED");
+
+    // local succeeds — it ran after gdrive resolved (serial ordering)
+    expect(localResult.ok).toBe(true);
+    if (localResult.ok) expect(localResult.value.content).toBe("local file");
   });
 });
 

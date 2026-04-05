@@ -81,14 +81,6 @@ export interface PresetStacks {
   readonly filesystem?: boolean;
   /** Enable RLM stack (rlm_process tool for large-input virtualization). */
   readonly rlmStack?: boolean;
-  /** Enable data source discovery and tools (query_datasource, probe_schema). */
-  readonly dataSourceStack?: boolean;
-  /** Enable Nexus-backed agent workspace (filesystem, scope enforcement, semantic search). */
-  readonly workspaceStack?: boolean;
-  /** Enable skill discovery, progressive loading, and hot-plug. */
-  readonly skillStack?: boolean;
-  /** Enable IPC stack (messaging, delegation, scratchpad, federation). */
-  readonly ipcStack?: boolean;
 }
 
 /** A complete runtime preset definition. */

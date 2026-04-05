@@ -6,8 +6,7 @@
  * the cold-start minimal for presets that don't use them.
  */
 
-import type { ComponentProvider, KoiError, KoiMiddleware, Result } from "@koi/core";
-import type { GovernancePendingItem } from "@koi/dashboard-types";
+import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { PresetStacks } from "@koi/runtime-presets";
 import type { PackageContribution, StackContribution } from "../../contribution-graph.js";
 
@@ -34,17 +33,6 @@ export interface ActivatedStacks {
     ) => Promise<import("@koi/core").BrickArtifact | null>;
     readonly maxSynthesesPerSession: number;
     readonly policyCacheHandle: unknown;
-  };
-  /** Governance queue commands for the admin bridge (present when governance stack is active). */
-  readonly governanceCommands?: {
-    readonly listGovernanceQueue: () => Result<readonly GovernancePendingItem[], KoiError>;
-    readonly reviewGovernance: (
-      id: string,
-      decision: "approved" | "rejected",
-      reason?: string,
-    ) => Result<void, KoiError>;
-    /** Set a callback to be called immediately when a governance item is enqueued. */
-    readonly setOnEnqueue: (cb: (item: GovernancePendingItem) => void) => void;
   };
 }
 
@@ -75,12 +63,6 @@ export interface StackActivationConfig {
   readonly nexusApiKey?: string;
   /** Agent name for scoping Nexus ACE store paths (e.g. "agents/{name}/ace/..."). */
   readonly agentName?: string;
-  /** Model call for ACE reflector/curator LLM pipeline. When provided, enables the
-   *  3-agent ACE pipeline (reflector → curator → structured playbooks) with rich
-   *  trajectory support via an internal audit observer. */
-  readonly aceModelCall?: (
-    messages: readonly import("@koi/core/message").InboundMessage[],
-  ) => Promise<string>;
   /**
    * Sandbox config from the manifest `sandbox` field.
    * Required when sandboxStack is enabled. Passed to `createCloudSandbox()`.
@@ -143,181 +125,15 @@ async function activateGovernance(
   middleware: KoiMiddleware[],
   providers: ComponentProvider[],
   disposables: (() => Promise<void> | void)[],
-): Promise<ActivatedStacks["governanceCommands"]> {
+): Promise<void> {
   const { createGovernanceStack } = await import("@koi/governance");
-
-  // In-memory pending queue bridges exec-approvals onAsk to the admin API.
-  // When a tool call hits an "ask" rule, it lands here until the operator
-  // approves/denies via the TUI governance view.
-  const pendingQueue = new Map<
-    string,
-    {
-      readonly item: GovernancePendingItem;
-      readonly resolve: (decision: "approved" | "rejected") => void;
-    }
-  >();
-  let nextId = 0;
-  let onEnqueueCb: ((item: GovernancePendingItem) => void) | undefined;
-
-  // Shared helper: push a tool call into the pending queue and block until operator decides.
-  function enqueue(
-    toolId: string,
-    agentId: string,
-    payload: Readonly<Record<string, unknown>>,
-  ): Promise<boolean> {
-    const id = `gov-${String(++nextId)}-${Date.now()}`;
-    const item: GovernancePendingItem = {
-      id,
-      agentId,
-      requestKind: toolId,
-      payload,
-      timestamp: Date.now(),
-    };
-    return new Promise((resolve) => {
-      pendingQueue.set(id, {
-        item,
-        resolve: (decision) => {
-          pendingQueue.delete(id);
-          resolve(decision === "approved");
-        },
-      });
-      // Notify the TUI immediately — no polling needed
-      onEnqueueCb?.(item);
-    });
-  }
-
-  // Bridge: permissions middleware "ask" tier → pending queue → admin API.
-  // Approval caching is handled by permissions.cache: true (keyed by agentId + toolId + serialized input).
-  const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
-    requestApproval: async (toolId, input, _reason, agentId) => {
-      return enqueue(toolId, agentId ?? "unknown", input as Readonly<Record<string, unknown>>);
-    },
-  };
-
-  // Full governance stack with Nexus-backed audit + all standard middleware.
-  // "standard" preset resolves: permissions, pii, redaction, sanitize, agent-monitor, scope.
-  // Permissions middleware handles tool approval via approvalHandler + cache.
-  // exec-approvals is NOT wired — permissions already covers the approval flow.
-  const nexusUrl = config.nexusBaseUrl;
-  const nexusApiKey = config.nexusApiKey;
-
-  const bundle = createGovernanceStack({
-    preset: "standard",
-    permissions: {
-      backend: (await import("@koi/middleware-permissions")).createPatternPermissionBackend({
-        rules: {
-          allow: [
-            "group:fs_read",
-            "group:fs_write",
-            "group:web",
-            "group:browser",
-            "group:lsp",
-            "rlm_*",
-            "chub_*",
-            "ask_user",
-            "execute_code",
-            "execute_script",
-            // Forge tools — allowed when forge.enabled is true in manifest
-            "forge_tool",
-            "forge_skill",
-            "forge_edit",
-            "search_forge",
-            "promote_forge",
-            "plan_autonomous",
-            "task_complete",
-            "task_status",
-            "task_update",
-            "task_review",
-            "task_synthesize",
-          ],
-          deny: ["group:fs_delete", "group:runtime"],
-          ask: [],
-        },
-        groups: (await import("@koi/middleware-permissions")).DEFAULT_GROUPS,
-      }),
-      approvalHandler,
-      approvalTimeoutMs: 300_000, // 5 minutes — operator needs time to navigate to governance view
-      cache: true, // Cache approvals so the same tool doesn't need re-approval in the same session
-    },
-    // Sanitize: enable all built-in presets (prompt injection, control chars, HTML, zero-width).
-    // Standard preset has empty rules [] which makes sanitize a no-op — override with presets.
-    sanitize: {
-      presets: ["prompt-injection", "control-chars", "html-tags", "zero-width"],
-    },
-    // Agent monitor: set reasonable thresholds so anomaly detection actually fires.
-    // Standard preset has empty {} which means no thresholds — override with sensible defaults.
-    agentMonitor: {
-      thresholds: {
-        maxToolCallsPerTurn: 20,
-        maxErrorCallsPerSession: 10,
-        maxConsecutiveRepeatCalls: 5,
-        maxDeniedCallsPerSession: 3,
-      },
-    },
-    governanceBackend: {
-      backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({
-        rules: [
-          {
-            id: "permit-all",
-            effect: "permit" as const,
-            priority: 0,
-            condition: () => true,
-            message: "Default permit — governance-backend allows all requests",
-          },
-        ],
-      }),
-    },
-    ...(nexusUrl !== undefined && nexusApiKey !== undefined
-      ? {
-          auditBackend: {
-            kind: "nexus" as const,
-            baseUrl: nexusUrl,
-            apiKey: nexusApiKey,
-          },
-        }
-      : {}),
-  });
+  const bundle = createGovernanceStack({});
   middleware.push(...bundle.middlewares);
   providers.push(...bundle.providers);
   for (const d of bundle.disposables) {
     disposables.push(() => d[Symbol.dispose]());
   }
-  // On shutdown, reject all pending approval promises so the process can exit cleanly.
-  disposables.push(() => {
-    for (const entry of pendingQueue.values()) {
-      entry.resolve("rejected");
-    }
-    pendingQueue.clear();
-  });
-  log(
-    config,
-    `Stack: governance (${String(bundle.middlewares.length)} middleware, preset: standard)`,
-  );
-
-  return {
-    listGovernanceQueue: (): Result<readonly GovernancePendingItem[], KoiError> => ({
-      ok: true,
-      value: [...pendingQueue.values()].map((e) => e.item),
-    }),
-    reviewGovernance: (id: string, decision: "approved" | "rejected"): Result<void, KoiError> => {
-      const entry = pendingQueue.get(id);
-      if (entry === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "NOT_FOUND",
-            message: `Governance item ${id} not found`,
-            retryable: false,
-          },
-        };
-      }
-      entry.resolve(decision);
-      return { ok: true, value: undefined };
-    },
-    setOnEnqueue: (cb: (item: GovernancePendingItem) => void) => {
-      onEnqueueCb = cb;
-    },
-  };
+  log(config, `Stack: governance (${String(bundle.middlewares.length)} middleware)`);
 }
 
 async function activateContextHub(
@@ -352,40 +168,19 @@ async function activateContextArena(
 async function activateAce(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
-  providers: ComponentProvider[],
 ): Promise<void> {
   const backend = config.stacks.aceStoreBackend ?? "memory";
-  const {
-    createAceMiddleware,
-    createAceReflectTool,
-    createAceToolsProvider,
-    createAtifDocumentStore,
-    createInMemoryAtifDocumentStore,
-  } = await import("@koi/middleware-ace");
-
-  // Build LLM pipeline config when model call is available
-  const llmConfig = await buildAceLlmConfig(config);
-
-  // Error handler for LLM pipeline — wired to TUI log channel
-  const onLlmPipelineError = (error: unknown, sessionId: string): void => {
-    log(config, `ACE: LLM pipeline failed for session ${sessionId}: ${String(error)}`);
-  };
+  const { createAceMiddleware } = await import("@koi/middleware-ace");
 
   if (backend === "nexus" && config.nexusBaseUrl !== undefined) {
     const {
       createNexusTrajectoryStore,
       createNexusPlaybookStore,
       createNexusStructuredPlaybookStore,
-      createNexusAtifDelegate,
     } = await import("@koi/nexus-store");
 
-    // Use config key, fall back to env var (set during Nexus startup), never empty string
-    const nexusApiKey = config.nexusApiKey ?? process.env.NEXUS_API_KEY ?? "";
-    if (nexusApiKey.length === 0) {
-      log(config, "Stack: ace — Nexus API key is empty, falling back to sqlite");
-    }
     const agentPrefix = config.agentName !== undefined ? `agents/${config.agentName}/` : "";
-    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: nexusApiKey };
+    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: config.nexusApiKey ?? "" };
     const trajectoryStore = createNexusTrajectoryStore({
       ...nexusBase,
       basePath: `${agentPrefix}ace/trajectories`,
@@ -399,63 +194,9 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
-    // ATIF document store — Nexus-backed for persistent rich trajectory
-    const atifStore =
-      llmConfig !== undefined
-        ? createAtifDocumentStore(
-            { agentName: config.agentName ?? "koi-agent" },
-            createNexusAtifDelegate({
-              ...nexusBase,
-              basePath: `${agentPrefix}ace/atif-documents`,
-            }) as import("@koi/middleware-ace").AtifDocumentDelegate,
-          )
-        : undefined;
-
-    const aceFullConfig = {
-      trajectoryStore,
-      playbookStore,
-      structuredPlaybookStore,
-      ...llmConfig?.aceConfig,
-      ...(atifStore !== undefined ? { atifStore } : {}),
-      onLlmPipelineError,
-    };
-
-    // When LLM pipeline + ATIF store are available, create with handle for ace_reflect
-    if (llmConfig !== undefined && atifStore !== undefined) {
-      const handle = createAceMiddleware(aceFullConfig, { withHandle: true });
-      middleware.push(handle.middleware);
-      middleware.push(llmConfig.auditMiddleware);
-
-      // Register ace_reflect tool via a ComponentProvider
-      if (handle.atifBuffer !== undefined && handle.llmPipeline !== undefined) {
-        const reflectTool = createAceReflectTool({
-          atifBuffer: handle.atifBuffer,
-          llmPipeline: handle.llmPipeline,
-          structuredPlaybookStore,
-          atifStore,
-          aceHandle: handle,
-          trajectoryBuffer: handle.trajectoryBuffer,
-          getConversationId: handle.getConversationId,
-        });
-        providers.push(
-          createAceToolsProvider({
-            playbookStore,
-            structuredPlaybookStore,
-            aceReflectTool: reflectTool,
-            includeCompanionSkill: false,
-          }),
-        );
-      }
-    } else {
-      const mw = createAceMiddleware(aceFullConfig);
-      middleware.push(mw);
-      if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
-    }
-
-    log(
-      config,
-      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on, ace_reflect=on" : ""})`,
-    );
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    middleware.push(mw);
+    log(config, `Stack: ace (backend=nexus, url=${config.nexusBaseUrl})`);
     return;
   }
 
@@ -481,28 +222,9 @@ async function activateAce(
     const playbookStore = createSqlitePlaybookStore({ dbPath });
     const structuredPlaybookStore = createSqliteStructuredPlaybookStore({ dbPath });
 
-    // ATIF document store for canonical trajectory persistence
-    const atifStore =
-      llmConfig !== undefined
-        ? createInMemoryAtifDocumentStore({
-            agentName: config.agentName ?? "koi-agent",
-          })
-        : undefined;
-
-    const mw = createAceMiddleware({
-      trajectoryStore,
-      playbookStore,
-      structuredPlaybookStore,
-      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
-      ...(atifStore !== undefined ? { atifStore } : {}),
-      onLlmPipelineError,
-    });
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
     middleware.push(mw);
-    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
-    log(
-      config,
-      `Stack: ace (backend=sqlite, db=${dbPath}${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`,
-    );
+    log(config, `Stack: ace (backend=sqlite, db=${dbPath})`);
   } else {
     const {
       createInMemoryTrajectoryStore,
@@ -514,77 +236,10 @@ async function activateAce(
     const playbookStore = createInMemoryPlaybookStore();
     const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
 
-    // ATIF document store for canonical trajectory persistence
-    const atifStore =
-      llmConfig !== undefined
-        ? createInMemoryAtifDocumentStore({
-            agentName: config.agentName ?? "koi-agent",
-          })
-        : undefined;
-
-    const mw = createAceMiddleware({
-      trajectoryStore,
-      playbookStore,
-      structuredPlaybookStore,
-      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
-      ...(atifStore !== undefined ? { atifStore } : {}),
-      onLlmPipelineError,
-    });
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
     middleware.push(mw);
-    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
-    log(config, `Stack: ace (backend=memory${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`);
+    log(config, `Stack: ace (backend=memory)`);
   }
-}
-
-/**
- * Build the ACE LLM pipeline config (reflector + curator + rich trajectory).
- *
- * Returns undefined when aceModelCall is not configured, which means only
- * the stat-based pipeline runs.
- */
-async function buildAceLlmConfig(config: StackActivationConfig): Promise<
-  | {
-      readonly aceConfig: {
-        readonly reflector: import("@koi/middleware-ace").ReflectorAdapter;
-        readonly curator: import("@koi/middleware-ace").CuratorAdapter;
-        readonly richTrajectorySource: (
-          sessionId: string,
-        ) => Promise<readonly import("@koi/core/rich-trajectory").RichTrajectoryStep[]>;
-        readonly playbookTokenBudget: number;
-        readonly maxReflectorTokens: number;
-      };
-      readonly auditMiddleware: KoiMiddleware;
-    }
-  | undefined
-> {
-  if (config.aceModelCall === undefined) return undefined;
-
-  const { createDefaultReflector, createDefaultCurator, createAuditTrajectoryAdapter } =
-    await import("@koi/middleware-ace");
-  const { createInMemoryAuditSink } = await import("@koi/middleware-audit");
-  const { createAuditMiddleware } = await import("@koi/middleware-audit");
-
-  // Create a lightweight in-memory audit sink shared between the audit
-  // observer middleware and the ACE adapter. This sink captures full
-  // request/response payloads that the adapter transforms into rich
-  // trajectory steps.
-  const sink = createInMemoryAuditSink();
-  const auditMiddleware = createAuditMiddleware({ sink });
-
-  const reflector = createDefaultReflector(config.aceModelCall);
-  const curator = createDefaultCurator(config.aceModelCall);
-  const richTrajectorySource = createAuditTrajectoryAdapter({ sink });
-
-  return {
-    aceConfig: {
-      reflector,
-      curator,
-      richTrajectorySource,
-      playbookTokenBudget: 2000,
-      maxReflectorTokens: 4000,
-    },
-    auditMiddleware,
-  };
 }
 
 async function activateSandboxStack(
@@ -653,18 +308,13 @@ async function activateRlmStack(
   middleware: KoiMiddleware[],
   providers: ComponentProvider[],
 ): Promise<void> {
-  const { createRlmVirtualizeMiddleware, createRlmToolsProvider } = await import(
-    "@koi/middleware-rlm"
-  );
+  const { createRlmStackFromPreset } = await import("@koi/rlm-stack");
+  const { createRlmVirtualizeMiddleware } = await import("@koi/middleware-rlm");
   // Auto-virtualization middleware (priority 250, runs first)
   const virtualizeMiddleware = createRlmVirtualizeMiddleware({
-    virtualizeThreshold: 500, // ~2K chars — triggers virtualization for moderate-sized content
+    virtualizeThreshold: 500, // ~2K chars — low for testing, raise in production
   });
   middleware.push(virtualizeMiddleware);
-  // Register RLM tools as entity tools so the engine adapter includes them
-  // in its executable tool list. Middleware's wrapToolCall handles dispatch.
-  const toolsProvider = createRlmToolsProvider();
-  providers.push(toolsProvider);
   log(config, "Stack: rlm-stack (auto-virtualize + rlm_examine/chunk/input_info tools)");
 }
 
@@ -690,7 +340,7 @@ export async function activatePresetStacks(
       await fn();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`  warn: ${name} failed: ${message}\n`);
+      if (config.verbose) process.stderr.write(`  warn: ${name} failed: ${message}\n`);
       // Record as failed contribution so the debug view shows what failed and why
       contributions.push({
         id: name,
@@ -808,13 +458,12 @@ export async function activatePresetStacks(
     }
   }
 
-  let governanceCommands: ActivatedStacks["governanceCommands"];
   if (config.stacks.governance === true) {
     const mwBefore = middleware.length;
     const provBefore = providers.length;
-    await tryActivate("governance", async () => {
-      governanceCommands = await activateGovernance(config, middleware, providers, disposables);
-    });
+    await tryActivate("governance", () =>
+      activateGovernance(config, middleware, providers, disposables),
+    );
     if (middleware.length > mwBefore || providers.length > provBefore) {
       const pkgs: PackageContribution[] = [];
       if (middleware.length > mwBefore) {
@@ -901,7 +550,7 @@ export async function activatePresetStacks(
 
   if (config.stacks.ace === true) {
     const before = middleware.length;
-    await tryActivate("ace", () => activateAce(config, middleware, providers));
+    await tryActivate("ace", () => activateAce(config, middleware));
     if (middleware.length > before) {
       contributions.push({
         id: "ace",
@@ -926,7 +575,7 @@ export async function activatePresetStacks(
     const provBefore = providers.length;
     await tryActivate("goal-stack", async () => {
       const { createGoalStack } = await import("@koi/goal-stack");
-      const bundle = createGoalStack({ preset: "minimal" });
+      const bundle = createGoalStack({});
       middleware.push(...bundle.middlewares);
       providers.push(...bundle.providers);
       log(config, `Stack: goal-stack (${String(bundle.middlewares.length)} middleware)`);
@@ -1101,6 +750,5 @@ export async function activatePresetStacks(
     disposables,
     contributions,
     ...(autoHarnessResult !== undefined ? { autoHarness: autoHarnessResult } : {}),
-    ...(governanceCommands !== undefined ? { governanceCommands } : {}),
   };
 }
