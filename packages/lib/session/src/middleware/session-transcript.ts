@@ -15,6 +15,7 @@ import type {
   KoiMiddleware,
   ModelChunk,
   ModelRequest,
+  ModelResponse,
   ModelStreamHandler,
   SessionId,
   SessionTranscript,
@@ -50,44 +51,105 @@ export function createSessionTranscriptMiddleware(
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> => {
-      // Append last user message synchronously before the stream starts
+      // Serialize all content blocks from the last incoming message:
+      // text blocks as plain text, all other block kinds as JSON strings.
+      // Map senderId to the correct transcript role so tool results and
+      // system messages are not mis-recorded as user messages.
       const lastMsg = request.messages.at(-1);
       if (lastMsg !== undefined) {
-        const text = lastMsg.content
-          .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
-          .map((c) => c.text)
+        const content = lastMsg.content
+          .map((c) => (c.kind === "text" ? c.text : JSON.stringify(c)))
           .join("\n");
-        if (text.length > 0) {
+        if (content.length > 0) {
+          const role: TranscriptEntry["role"] =
+            lastMsg.senderId === "tool"
+              ? "tool_result"
+              : lastMsg.senderId === "system"
+                ? "system"
+                : lastMsg.senderId === "assistant"
+                  ? "assistant"
+                  : "user";
           const entry: TranscriptEntry = {
             id: transcriptEntryId(`${String(sessionId)}-u-${ctx.turnIndex}-${Date.now()}`),
-            role: "user",
-            content: text,
+            role,
+            content,
             timestamp: lastMsg.timestamp,
           };
-          void Promise.resolve(transcript.append(sessionId, [entry])).catch(() => {});
+          void Promise.resolve(transcript.append(sessionId, [entry])).catch((e: unknown) => {
+            console.error("[@koi/session:transcript] failed to append user entry:", e);
+          });
         }
       }
 
       const inner = next(request);
 
-      // Wrap stream: accumulate text_delta chunks, append assistant entry on completion
+      // Wrap stream: accumulate text_delta and tool_call_* chunks, capture
+      // the done chunk, then append transcript entries only on successful
+      // completion. Aborted/errored streams are not recorded to avoid
+      // replaying truncated turns during crash recovery.
       return (async function* (): AsyncIterable<ModelChunk> {
-        const parts: string[] = [];
+        const textParts: string[] = [];
+        // Map preserves insertion order — use as ordered tool-call accumulator
+        const toolCallArgs = new Map<string, { toolName: string; args: string }>();
+        // let — set when the stream signals successful completion via "done" chunk
+        let doneResponse: ModelResponse | undefined;
+
         try {
           for await (const chunk of inner) {
-            if (chunk.kind === "text_delta") parts.push(chunk.delta);
+            if (chunk.kind === "text_delta") {
+              textParts.push(chunk.delta);
+            } else if (chunk.kind === "tool_call_start") {
+              toolCallArgs.set(String(chunk.callId), { toolName: chunk.toolName, args: "" });
+            } else if (chunk.kind === "tool_call_delta") {
+              const prev = toolCallArgs.get(String(chunk.callId));
+              if (prev !== undefined) {
+                toolCallArgs.set(String(chunk.callId), {
+                  toolName: prev.toolName,
+                  args: prev.args + chunk.delta,
+                });
+              }
+            } else if (chunk.kind === "done") {
+              doneResponse = chunk.response;
+            }
             yield chunk;
           }
         } finally {
-          const content = parts.join("");
-          if (content.length > 0) {
-            const entry: TranscriptEntry = {
-              id: transcriptEntryId(`${String(sessionId)}-a-${ctx.turnIndex}-${Date.now()}`),
-              role: "assistant",
-              content,
-              timestamp: Date.now(),
-            };
-            void Promise.resolve(transcript.append(sessionId, [entry])).catch(() => {});
+          // Only persist on successful completion — doneResponse undefined means
+          // the stream was aborted or errored, so partial output is not recorded.
+          if (doneResponse !== undefined) {
+            const toAppend: TranscriptEntry[] = [];
+
+            // Prefer accumulated text_delta parts; fall back to done.response.content
+            // for adapters that emit a complete response only in the done chunk.
+            const textContent = textParts.length > 0 ? textParts.join("") : doneResponse.content;
+            if (textContent.length > 0) {
+              toAppend.push({
+                id: transcriptEntryId(`${String(sessionId)}-a-${ctx.turnIndex}-${Date.now()}`),
+                role: "assistant",
+                content: textContent,
+                timestamp: Date.now(),
+              });
+            }
+
+            if (toolCallArgs.size > 0) {
+              const calls = [...toolCallArgs.entries()].map(([id, call]) => ({
+                id,
+                toolName: call.toolName,
+                args: call.args,
+              }));
+              toAppend.push({
+                id: transcriptEntryId(`${String(sessionId)}-tc-${ctx.turnIndex}-${Date.now()}`),
+                role: "tool_call",
+                content: JSON.stringify(calls),
+                timestamp: Date.now(),
+              });
+            }
+
+            if (toAppend.length > 0) {
+              void Promise.resolve(transcript.append(sessionId, toAppend)).catch((e: unknown) => {
+                console.error("[@koi/session:transcript] failed to append assistant entries:", e);
+              });
+            }
           }
         }
       })();

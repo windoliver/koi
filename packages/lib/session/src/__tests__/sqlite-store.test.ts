@@ -182,6 +182,101 @@ describe("SqliteSessionPersistence (corruption recovery)", () => {
       // best effort cleanup
     }
   });
+
+  test("orphan pending frames (session not recovered) are moved to skipped", () => {
+    const tmpPath = `/tmp/koi-test-orphan-frame-${Date.now()}.db`;
+    const rawDb = new Database(tmpPath, { create: true });
+    rawDb.run("PRAGMA journal_mode = WAL");
+    rawDb.run(`
+      CREATE TABLE IF NOT EXISTS session_records (
+        sessionId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0,
+        remoteSeq INTEGER NOT NULL DEFAULT 0,
+        connectedAt INTEGER NOT NULL,
+        lastPersistedAt INTEGER NOT NULL,
+        lastEngineState TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}'
+      )
+    `);
+    rawDb.run(`
+      CREATE TABLE IF NOT EXISTS pending_frames (
+        frameId TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        frameType TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        orderIndex INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL,
+        ttl INTEGER,
+        retryCount INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    // A corrupt session row — this session will fail to recover
+    rawDb.run(`
+      INSERT INTO session_records
+        (sessionId, agentId, manifest, seq, remoteSeq, connectedAt, lastPersistedAt, metadata)
+      VALUES
+        ('bad-session', 'agent-1', 'not valid json', 0, 0, 1000, 1000, '{}')
+    `);
+
+    // A valid session
+    rawDb.run(`
+      INSERT INTO session_records
+        (sessionId, agentId, manifest, seq, remoteSeq, connectedAt, lastPersistedAt, metadata)
+      VALUES
+        ('good-session', 'agent-1', '{"name":"test","version":"0.1.0","model":{"name":"m"}}', 0, 0, 1000, 1000, '{}')
+    `);
+
+    // A valid frame for the good session
+    rawDb.run(`
+      INSERT INTO pending_frames
+        (frameId, sessionId, agentId, frameType, payload, orderIndex, createdAt, retryCount)
+      VALUES
+        ('frame-good', 'good-session', 'agent-1', 'agent:message', '{"kind":"text","text":"hi"}', 0, 1000, 0)
+    `);
+
+    // An orphan frame for the corrupt (unrecoverable) session
+    rawDb.run(`
+      INSERT INTO pending_frames
+        (frameId, sessionId, agentId, frameType, payload, orderIndex, createdAt, retryCount)
+      VALUES
+        ('frame-orphan', 'bad-session', 'agent-1', 'agent:message', '{"kind":"text","text":"lost"}', 0, 1000, 0)
+    `);
+    rawDb.close();
+
+    const fileStore = createSqliteSessionPersistence({ dbPath: tmpPath });
+    const result = fileStore.recover();
+
+    if (!("then" in result)) {
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // Only the good session recovers
+        expect(result.value.sessions.length).toBe(1);
+        expect(result.value.sessions[0]?.sessionId).toBe(sessionId("good-session"));
+
+        // The good session's frame is in pendingFrames
+        expect(result.value.pendingFrames.get(String(sessionId("good-session")))?.length).toBe(1);
+
+        // The orphan frame is NOT in pendingFrames
+        expect(result.value.pendingFrames.has(String(sessionId("bad-session")))).toBe(false);
+
+        // The orphan frame ends up in skipped (1 for corrupt session + 1 for orphan frame)
+        const orphanSkip = result.value.skipped.find((s) => s.id === "frame-orphan");
+        expect(orphanSkip).toBeDefined();
+        expect(orphanSkip?.source).toBe("pending_frame");
+      }
+    }
+
+    fileStore.close();
+    try {
+      Bun.file(tmpPath).delete?.();
+    } catch {
+      // best effort cleanup
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

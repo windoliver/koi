@@ -291,23 +291,27 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     const check = validateSessionIdSyntax(sid, "Session ID");
     if (!check.ok) return check;
 
-    try {
-      const file = Bun.file(filePath(sid));
-      if (await file.exists()) {
-        await unlink(filePath(sid));
+    // Serialized to prevent delete racing with an in-flight append or compact
+    // (e.g. compact rename could resurrect a transcript after unlink).
+    return serialized(sid, async () => {
+      try {
+        const file = Bun.file(filePath(sid));
+        if (await file.exists()) {
+          await unlink(filePath(sid));
+        }
+        return { ok: true as const, value: undefined };
+      } catch (e: unknown) {
+        return {
+          ok: false as const,
+          error: {
+            code: "INTERNAL" as const,
+            message: `Failed to remove transcript: ${extractMessage(e)}`,
+            retryable: false,
+            cause: e,
+          },
+        };
       }
-      return { ok: true, value: undefined };
-    } catch (e: unknown) {
-      return {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: `Failed to remove transcript: ${extractMessage(e)}`,
-          retryable: false,
-          cause: e,
-        },
-      };
-    }
+    });
   };
 
   const close = (): void => {

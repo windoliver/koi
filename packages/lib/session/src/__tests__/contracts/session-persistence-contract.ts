@@ -266,6 +266,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
   describe("pending frames", () => {
     test("savePendingFrame persists frame", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(makeFrame({ frameId: "f1", sessionId: sessionId("s1") }));
 
       const result = await store.loadPendingFrames("s1");
@@ -278,6 +279,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("loadPendingFrames ordered by orderIndex", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f3", sessionId: sessionId("s1"), orderIndex: 3 }),
       );
@@ -306,6 +308,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("clearPendingFrames removes all for session", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
@@ -323,6 +326,8 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("clearPendingFrames does not affect other sessions", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
+      await store.saveSession(makeSession({ sessionId: sessionId("s2") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
@@ -399,6 +404,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("removePendingFrame removes single frame", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
@@ -417,6 +423,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("removePendingFrame for unknown frameId is no-op", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
@@ -431,6 +438,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("savePendingFrame upserts retryCount", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0, retryCount: 0 }),
       );
@@ -448,6 +456,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("pending frame preserves payload round-trip", async () => {
       const store = createStore();
+      await store.saveSession(makeSession({ sessionId: sessionId("s1") }));
       const payload = { nested: { data: [1, 2, 3] }, flag: true };
       await store.savePendingFrame(
         makeFrame({ frameId: "f1", sessionId: sessionId("s1"), payload, orderIndex: 0 }),

@@ -175,7 +175,8 @@ export function createSqliteSessionPersistence(
   db.run(`
     CREATE TABLE IF NOT EXISTS pending_frames (
       frameId     TEXT PRIMARY KEY,
-      sessionId   TEXT NOT NULL,
+      sessionId   TEXT NOT NULL
+                    REFERENCES session_records(sessionId) ON DELETE CASCADE,
       agentId     TEXT NOT NULL,
       frameType   TEXT NOT NULL,
       payload     TEXT NOT NULL,
@@ -395,12 +396,26 @@ export function createSqliteSessionPersistence(
           }
         }
 
+        // Build the set of successfully recovered session IDs so pending frames
+        // can be filtered to only those whose session is known-good.
+        const recoveredIds = new Set(sessions.map((s) => s.sessionId));
+
         // Batch load all pending frames (one query, no N+1) — decision 13-A
+        // Frames for sessions that failed to recover are moved to skipped to
+        // prevent replaying outbound messages into non-existent/corrupt sessions.
         const pendingFrames = new Map<string, PendingFrame[]>();
         const allFrameRows = selectAllPendingFramesStmt.all();
         for (const row of allFrameRows) {
           try {
             const frame = rowToPendingFrame(row);
+            if (!recoveredIds.has(row.sessionId)) {
+              skipped.push({
+                source: "pending_frame",
+                id: row.frameId,
+                error: `Orphan frame: session ${row.sessionId} was not recovered`,
+              });
+              continue;
+            }
             const existing = pendingFrames.get(row.sessionId);
             if (existing !== undefined) {
               existing.push(frame);
