@@ -480,6 +480,13 @@ interface HookRegistry {
     readonly cleanup: (sessionId: string) => void;
     /** Returns true if the session has registered hooks. */
     readonly has: (sessionId: string) => boolean;
+    /**
+     * Returns true if the session has any registered hook whose filter
+     * matches the given event. Lets callers narrow fail-closed behavior
+     * (e.g. "did any post-hook match this tool call?") without inventing
+     * a synthetic event to call execute() with.
+     */
+    readonly hasMatching: (sessionId: string, event: HookEvent) => boolean;
     /** Returns the number of active sessions. */
     readonly size: () => number;
     /** Mark a session as belonging to a hook agent — hooks will be suppressed for it. */

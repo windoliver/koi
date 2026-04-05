@@ -99,6 +99,13 @@ export interface HookRegistry {
   readonly cleanup: (sessionId: string) => void;
   /** Returns true if the session has registered hooks. */
   readonly has: (sessionId: string) => boolean;
+  /**
+   * Returns true if the session has any registered hook whose filter
+   * matches the given event. Lets callers narrow fail-closed behavior
+   * (e.g. "did any post-hook match this tool call?") without inventing
+   * a synthetic event to call execute() with.
+   */
+  readonly hasMatching: (sessionId: string, event: HookEvent) => boolean;
   /** Returns the number of active sessions. */
   readonly size: () => number;
   /** Mark a session as belonging to a hook agent — hooks will be suppressed for it. */
@@ -307,13 +314,36 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     safeEvent: HookEvent,
     callSignal?: AbortSignal,
   ): Promise<readonly HookExecutionResult[]> {
+    // Keep the chain advancing (downstream queued calls must not be blocked
+    // by a caller that gave up) but let this caller exit promptly when its
+    // signal aborts while queued. Without this race, a second call queued
+    // behind an in-flight once-hook would hang waiting for the first hook
+    // to finish even after its own caller canceled.
     const resultPromise = state.executeChain.then(() => doExecute(state, safeEvent, callSignal));
     // Chain the next call behind this one (swallow rejection to keep chain alive)
     state.executeChain = resultPromise.then(
       () => {},
       () => {},
     );
-    return resultPromise;
+    if (callSignal === undefined) return resultPromise;
+    return new Promise<readonly HookExecutionResult[]>((resolve, reject) => {
+      const onAbort = (): void => resolve([]);
+      if (callSignal.aborted) {
+        resolve([]);
+        return;
+      }
+      callSignal.addEventListener("abort", onAbort, { once: true });
+      resultPromise.then(
+        (value) => {
+          callSignal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (err: unknown) => {
+          callSignal.removeEventListener("abort", onAbort);
+          reject(err as Error);
+        },
+      );
+    });
   }
 
   return {
@@ -405,6 +435,12 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     has(sessionId: string): boolean {
       const state = sessions.get(sessionId);
       return state !== undefined && !state.cleaned;
+    },
+
+    hasMatching(sessionId: string, event: HookEvent): boolean {
+      const state = sessions.get(sessionId);
+      if (state === undefined || state.cleaned) return false;
+      return state.hooks.some((h) => matchesHookFilter(h.filter, event));
     },
 
     size(): number {

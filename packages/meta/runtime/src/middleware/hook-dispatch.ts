@@ -59,6 +59,12 @@ export interface HookRegistryLike {
    * fail-closed assumptions.
    */
   readonly has?: (sessionId: string) => boolean;
+  /**
+   * Returns true if the session has any registered hook whose filter
+   * matches the given event. Optional; when absent, the middleware
+   * falls back to `has` (then to fail-closed).
+   */
+  readonly hasMatching?: (sessionId: string, event: HookEvent) => boolean;
 }
 
 export interface HookDispatchConfig {
@@ -106,12 +112,28 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
    * Registry path: we cannot introspect registered hooks from outside,
    * so we fail closed (return true and redact on cancel).
    */
-  function hasPostHookFor(toolId: string, sessionId: string): boolean {
+  function hasPostHookFor(toolId: string, sessionId: string, agentId: string): boolean {
     if (registry !== undefined) {
-      // If the registry exposes `has`, use it to avoid redacting when the
-      // session was never registered (registry.execute returns [] for
-      // unregistered sessions, so no post-hook could have run). If the
-      // registry doesn't expose `has`, fail closed.
+      // Prefer the tight `hasMatching` query — asks the registry whether
+      // any registered hook's filter matches tool.succeeded/tool.failed for
+      // this specific tool. Falls back to `has` (any hooks at all), then
+      // to fail-closed when neither introspection method exists.
+      if (registry.hasMatching !== undefined) {
+        return (
+          registry.hasMatching(sessionId, {
+            event: "tool.succeeded",
+            agentId,
+            sessionId,
+            toolName: toolId,
+          }) ||
+          registry.hasMatching(sessionId, {
+            event: "tool.failed",
+            agentId,
+            sessionId,
+            toolName: toolId,
+          })
+        );
+      }
       if (registry.has !== undefined) return registry.has(sessionId);
       return true;
     }
@@ -421,9 +443,16 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
         // bypassing any contract and the raw output is returned normally.
         // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
         const postAborted = effectiveSignal !== undefined && effectiveSignal.aborted;
+        // Only redact when post-hooks actually got skipped: results must be
+        // empty (dispatched but short-circuited on cancel) AND a matching
+        // post-hook could have run. If postResults is non-empty, hooks DID
+        // run and checkPostHookFailures below will honor their decisions;
+        // redacting on top of that would be double-redaction and would
+        // corrupt successful tool output races with late aborts.
         if (
           postAborted &&
-          hasPostHookFor(request.toolId, ctx.session.sessionId as string) &&
+          postResults.length === 0 &&
+          hasPostHookFor(request.toolId, ctx.session.sessionId as string, ctx.session.agentId) &&
           response !== undefined
         ) {
           return {

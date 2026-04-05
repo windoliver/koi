@@ -580,6 +580,39 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
   });
 
+  test("non-empty post-hook results take precedence — no double-redaction on late abort", async () => {
+    // Regression: if post-hooks DID run and returned results, the abort
+    // check must not redact on top of that. checkPostHookFailures handles
+    // their decisions; redacting here would corrupt successful tool output
+    // when an abort arrives right after post-hooks completed.
+    const controller = new AbortController();
+    const registry: HookRegistryLike = {
+      register: () => {},
+      execute: async (_sid, event, _signal) => {
+        if (event.event === "tool.before") return [];
+        // Post-hook ran successfully, THEN caller aborts.
+        const result: readonly HookExecutionResult[] = [
+          { ok: true, hookName: "audit", durationMs: 1, decision: { kind: "continue" } },
+        ];
+        controller.abort();
+        return result;
+      },
+      cleanup: () => {},
+      has: () => true,
+    };
+    const mw = createHookDispatchMiddleware({ hooks: [], registry });
+
+    const ctx = makeTurnCtx({ signal: controller.signal });
+    const next = async (_r: ToolRequest): Promise<ToolResponse> => ({
+      output: "POST_HOOK_RAN_SUCCESSFULLY",
+    });
+
+    const result = await mw.wrapToolCall?.(ctx, { toolId: "t", input: {} } as never, next);
+    // Post-hook returned continue, so the raw output should pass through.
+    expect(result?.output).toBe("POST_HOOK_RAN_SUCCESSFULLY");
+    expect((result?.metadata as JsonObject)?.committedButRedacted).toBeUndefined();
+  });
+
   test("late abort during post-hook dispatch redacts tool output (fail-closed)", async () => {
     // Regression: if the caller cancels AFTER the tool succeeded but BEFORE
     // post-hooks run, registry.execute() returns [] on the aborted signal.
