@@ -103,9 +103,109 @@ export function validateRedactionConfig(
     }
   }
 
+  // Snapshot user-supplied untrusted patterns into frozen wrappers that capture
+  // `name` / `kind` / `detect` by value. Without this, a getter-backed pattern
+  // can return a benign `detect` to the probe loop and a slow/throwing one to
+  // the runtime — the probe would call a fresh property read each adversarial
+  // input and the redactor would later read it again to store its reference.
+  // Snapshotting once here closes that gap: the same captured `detect` is
+  // probed AND installed into the redactor.
+  // Reject non-array containers up front — a proxy/iterable with a throwing
+  // `Symbol.iterator` or `next()` would otherwise crash the snapshot loop
+  // and escape past the structured VALIDATION result.
+  if (raw.patterns !== undefined && !Array.isArray(raw.patterns)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION" as const,
+        message: "patterns must be an array",
+        retryable: false,
+      },
+    };
+  }
+  if (raw.customPatterns !== undefined && !Array.isArray(raw.customPatterns)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION" as const,
+        message: "customPatterns must be an array",
+        retryable: false,
+      },
+    };
+  }
+  const patternsInput = raw.patterns ?? DEFAULT_REDACTION_CONFIG.patterns;
+  const customPatternsInput = raw.customPatterns ?? DEFAULT_REDACTION_CONFIG.customPatterns;
+  // Snapshot untrusted patterns inside a guarded path — a getter/proxy that
+  // throws on property access must produce a structured validation error, not
+  // an uncaught exception out of createRedactor().
+  const snapshotIfUntrusted = (
+    p: SecretPattern,
+  ):
+    | { readonly ok: true; readonly value: SecretPattern }
+    | { readonly ok: false; readonly reason: string } => {
+    if (isTrustedPattern(p)) return { ok: true, value: p };
+    try {
+      const detect = p.detect;
+      const name = typeof p.name === "string" ? p.name : "<unnamed>";
+      const kind = typeof p.kind === "string" ? p.kind : "<unknown>";
+      // Do NOT bind to the caller's object. Both the probe and runtime call
+      // `snapshot.detect(text)` with this frozen snapshot as the receiver —
+      // the only `this` state a detector ever sees is the immutable
+      // `{name, kind}` we captured here. This closes the post-validation
+      // state-mutation bypass at the cost of rejecting class-based
+      // detectors that read fields beyond `this.name`/`this.kind`: they
+      // throw consistently at probe time and surface as a clean VALIDATION
+      // error. Stateless function-style detectors are the supported path
+      // for custom patterns; use trusted built-ins for full hardening.
+      return { ok: true, value: Object.freeze({ name, kind, detect }) };
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return { ok: false, reason };
+    }
+  };
+  const snapshotAll = (
+    list: readonly SecretPattern[],
+  ):
+    | { readonly ok: true; readonly value: readonly SecretPattern[] }
+    | { readonly ok: false; readonly reason: string } => {
+    // Outer guard: `Array.isArray` passes `Proxy` arrays, and iteration can
+    // still throw via `Symbol.iterator` / indexed-access traps. Treat any
+    // container-level throw as a validation failure.
+    try {
+      const out: SecretPattern[] = [];
+      for (const p of list) {
+        const r = snapshotIfUntrusted(p);
+        if (!r.ok) return { ok: false, reason: r.reason };
+        out.push(r.value);
+      }
+      return { ok: true, value: out };
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return { ok: false, reason };
+    }
+  };
+  const patternsResult = raw.patterns
+    ? snapshotAll(patternsInput)
+    : { ok: true as const, value: patternsInput };
+  if (!patternsResult.ok) {
+    const message = `patterns: property access threw during validation — ${patternsResult.reason}`;
+    raw.onError?.(new Error(message));
+    return { ok: false, error: { code: "VALIDATION" as const, message, retryable: false } };
+  }
+  const customPatternsResult = raw.customPatterns
+    ? snapshotAll(customPatternsInput)
+    : { ok: true as const, value: customPatternsInput };
+  if (!customPatternsResult.ok) {
+    const message = `customPatterns: property access threw during validation — ${customPatternsResult.reason}`;
+    raw.onError?.(new Error(message));
+    return { ok: false, error: { code: "VALIDATION" as const, message, retryable: false } };
+  }
+  const patternsSnap: readonly SecretPattern[] = patternsResult.value;
+  const customPatternsSnap: readonly SecretPattern[] = customPatternsResult.value;
+
   const merged: RedactionConfig = {
-    patterns: raw.patterns ?? DEFAULT_REDACTION_CONFIG.patterns,
-    customPatterns: raw.customPatterns ?? DEFAULT_REDACTION_CONFIG.customPatterns,
+    patterns: patternsSnap,
+    customPatterns: customPatternsSnap,
     fieldNames: raw.fieldNames ?? DEFAULT_REDACTION_CONFIG.fieldNames,
     censor: raw.censor ?? DEFAULT_REDACTION_CONFIG.censor,
     fieldCensor: raw.fieldCensor ?? DEFAULT_REDACTION_CONFIG.fieldCensor,
@@ -121,6 +221,18 @@ export function validateRedactionConfig(
     : merged.customPatterns;
 
   for (const pattern of userSuppliedPatterns.filter((p) => !isTrustedPattern(p))) {
+    // `pattern` here is the frozen snapshot built above (not the caller's
+    // original object), so `pattern.detect` reads a plain data property and
+    // cannot re-invoke a getter. Calling via the snapshot preserves the
+    // `this` receiver, which detectors written as object methods may rely on.
+    if (typeof pattern.detect !== "function") {
+      const message = `Pattern "${pattern.name}" has a non-function detect property`;
+      merged.onError?.(new Error(message));
+      return {
+        ok: false,
+        error: { code: "VALIDATION" as const, message, retryable: false },
+      };
+    }
     for (const adversarial of ADVERSARIAL_INPUTS) {
       const start = performance.now();
       let threw = false;

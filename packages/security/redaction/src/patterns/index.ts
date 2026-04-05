@@ -57,7 +57,7 @@ export function createDecodingDetectors(): readonly SecretPattern[] {
  * Default sensitive field names for field-name-based redaction.
  * Case-insensitive matching is applied by the field matcher.
  */
-export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = [
+export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = Object.freeze([
   "password",
   "passwd",
   "pwd",
@@ -92,4 +92,4 @@ export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = [
   "awsSecretAccessKey",
   "database_url",
   "databaseUrl",
-];
+]);

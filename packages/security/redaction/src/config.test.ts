@@ -213,6 +213,86 @@ describe("validateRedactionConfig — branding bypass regression (#1495)", () =>
     }
   });
 
+  test("method-style detector relying on `this` still validates", () => {
+    // Regression: probing must preserve the `this` receiver for detectors
+    // written as object methods (e.g. `detect(text) { return this.kind ... }`).
+    const pattern = {
+      name: "method-style",
+      kind: "demo",
+      detect(_text: string) {
+        // Accessing `this` should not throw — snapshot object carries the
+        // captured name/kind as data properties.
+        const k: unknown = (this as { kind?: unknown }).kind;
+        if (typeof k !== "string") {
+          throw new Error("lost receiver");
+        }
+        return [];
+      },
+    };
+    const result = validateRedactionConfig({ patterns: [pattern] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("proxy-backed array with throwing Symbol.iterator is converted to validation error", () => {
+    // Array.isArray(new Proxy([], ...)) is true, so we must also guard the
+    // iteration itself. A proxy that throws on Symbol.iterator access must
+    // produce a structured VALIDATION error, not an uncaught exception.
+    const hostile = new Proxy([] as SecretPattern[], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator) {
+          throw new Error("iter-trap");
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const r = validateRedactionConfig({ patterns: hostile });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.message).toContain("iter-trap");
+    }
+  });
+
+  test("non-array patterns / customPatterns are rejected before iteration", () => {
+    // Regression: proxy/iterable with a throwing Symbol.iterator would
+    // otherwise escape the guarded snapshot path.
+    const throwingIterable = {
+      [Symbol.iterator]: () => {
+        throw new Error("iter-boom");
+      },
+    };
+    const r1 = validateRedactionConfig({
+      patterns: throwingIterable as unknown as readonly SecretPattern[],
+    });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error.message).toContain("patterns must be an array");
+
+    const r2 = validateRedactionConfig({
+      customPatterns: throwingIterable as unknown as readonly SecretPattern[],
+    });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error.message).toContain("customPatterns must be an array");
+  });
+
+  test("getter on detect/name/kind that throws is converted to a validation error", () => {
+    // Regression: snapshotIfUntrusted must not leak exceptions past
+    // validateRedactionConfig — a throwing getter must produce a structured
+    // VALIDATION Result, not an uncaught exception out of createRedactor().
+    const pattern = {
+      get name(): string {
+        throw new Error("boom-name");
+      },
+      kind: "x",
+      detect: () => [],
+    } as unknown as SecretPattern;
+    const result = validateRedactionConfig({ patterns: [pattern] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("property access threw");
+    }
+  });
+
   test("detector that throws unconditionally during probe is rejected", () => {
     // Reviewer-requested regression: throw-during-probe must fail validation,
     // not be deferred to runtime (which would turn every redact call into

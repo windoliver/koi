@@ -34,12 +34,12 @@ export function createRedactor(config?: Partial<RedactionConfig>): Redactor {
 
   const cfg = validated.value;
 
-  // Merge built-in + custom patterns, snapshotting each into an internal frozen
-  // wrapper. Without this, a caller can pass validation with a benign `detect`,
-  // then swap `pattern.detect` on their original object after createRedactor()
-  // returns — the validated pattern reference held by the redactor would pick
-  // up the mutated function at runtime (TOCTOU). Snapshotting captures the
-  // validated `detect` reference by value at construction time.
+  // Defense-in-depth: re-snapshot every pattern into a redactor-owned frozen
+  // wrapper. The validator already snapshots untrusted patterns and trusted
+  // built-ins are frozen by `markTrusted`, but this boundary guarantees the
+  // runtime never holds a reference to any caller-visible pattern object.
+  // The safety invariant doesn't depend on a distant guarantee from
+  // `markTrusted` or on every upstream code path preserving immutability.
   const allPatterns: readonly SecretPattern[] = [...cfg.patterns, ...cfg.customPatterns].map((p) =>
     Object.freeze({ name: p.name, kind: p.kind, detect: p.detect }),
   );
