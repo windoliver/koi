@@ -96,24 +96,41 @@ interface CallbackHarnessOptions {
 }
 
 /**
+ * Tagged result from a callback invocation.
+ *
+ * - `ok: true`: callback resolved successfully with value.
+ * - `reason: "aborted"`: upstream run cancellation — caller should stop
+ *   processing, NOT apply heuristic fallback or fire side effects.
+ * - `reason: "timeout"` / `"error"`: callback failure — caller applies
+ *   its fail-safe / heuristic policy.
+ */
+export type CallbackOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: "aborted" | "timeout" | "error" };
+
+/**
  * Invoke `isDrifting` callback with timeout + composed signal + error
- * hook. On error/timeout returns `undefined` (caller applies fail-safe
- * policy). Success returns the boolean result.
+ * hook. Returns a tagged outcome so callers can distinguish upstream
+ * cancellation from timeout/error.
  */
 export async function invokeIsDriftingCallback(
   callback: IsDriftingFn,
   input: DriftJudgeInput,
   opts: CallbackHarnessOptions,
-): Promise<boolean | undefined> {
+): Promise<CallbackOutcome<boolean>> {
+  // Pre-abort guard: if upstream is already cancelled, do NOT invoke the
+  // user callback body (avoid external side effects after abort).
+  if (opts.ctx.signal?.aborted === true) {
+    return { ok: false, reason: "aborted" };
+  }
   const { signal, cleanup } = composeTimeoutSignal(opts.ctx.signal, opts.timeoutMs);
   const callbackCtx: TurnContext = { ...opts.ctx, signal };
   try {
     const resultPromise = Promise.resolve(callback(input, callbackCtx));
-    const result = await raceSignal(resultPromise, signal);
-    return result;
+    const value = await raceSignal(resultPromise, signal);
+    return { ok: true, value };
   } catch (err: unknown) {
-    fireErrorHook(opts.onError, "isDrifting", err, opts.ctx);
-    return undefined;
+    return classifyCallbackError(err, "isDrifting", opts);
   } finally {
     cleanup();
   }
@@ -121,27 +138,49 @@ export async function invokeIsDriftingCallback(
 
 /**
  * Invoke `detectCompletions` callback with timeout + composed signal +
- * error hook. On error/timeout returns `undefined` (caller falls back to
- * heuristic). Success returns the newly-completed IDs.
+ * error hook. Returns a tagged outcome.
  */
 export async function invokeDetectCompletionsCallback(
   callback: DetectCompletionsFn,
   responseTexts: readonly string[],
   items: readonly GoalItemWithId[],
   opts: CallbackHarnessOptions,
-): Promise<readonly string[] | undefined> {
+): Promise<CallbackOutcome<readonly string[]>> {
+  // Pre-abort guard: if upstream is already cancelled, do NOT invoke the
+  // user callback body (avoid external side effects after abort).
+  if (opts.ctx.signal?.aborted === true) {
+    return { ok: false, reason: "aborted" };
+  }
   const { signal, cleanup } = composeTimeoutSignal(opts.ctx.signal, opts.timeoutMs);
   const callbackCtx: TurnContext = { ...opts.ctx, signal };
   try {
     const resultPromise = Promise.resolve(callback(responseTexts, items, callbackCtx));
-    const result = await raceSignal(resultPromise, signal);
-    return result;
+    const value = await raceSignal(resultPromise, signal);
+    return { ok: true, value };
   } catch (err: unknown) {
-    fireErrorHook(opts.onError, "detectCompletions", err, opts.ctx);
-    return undefined;
+    return classifyCallbackError(err, "detectCompletions", opts);
   } finally {
     cleanup();
   }
+}
+
+/**
+ * Classify a caught error into upstream-abort vs timeout vs error.
+ * Upstream-abort does NOT fire the error hook — it is not a callback
+ * failure, it is cooperative cancellation.
+ */
+function classifyCallbackError<T>(
+  err: unknown,
+  kind: "isDrifting" | "detectCompletions",
+  opts: CallbackHarnessOptions,
+): CallbackOutcome<T> {
+  const timeout = isTimeoutAbort(err);
+  const upstreamAborted = opts.ctx.signal?.aborted === true && !timeout;
+  if (upstreamAborted) {
+    return { ok: false, reason: "aborted" };
+  }
+  fireErrorHook(opts.onError, kind, err, opts.ctx);
+  return { ok: false, reason: timeout ? "timeout" : "error" };
 }
 
 function fireErrorHook(

@@ -1088,6 +1088,147 @@ describe("detectCompletions callback", () => {
   });
 });
 
+describe("cancellation safety", () => {
+  it("pre-aborted signal does NOT invoke callback body (no side effects)", async () => {
+    let callbackInvoked = false;
+    const controller = new AbortController();
+    controller.abort(); // already aborted before any turn work
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      detectCompletions: () => {
+        callbackInvoked = true;
+        return [];
+      },
+      isDrifting: () => {
+        callbackInvoked = true;
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, { signal: controller.signal });
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("x"));
+    await mw.onAfterTurn?.(ctx);
+
+    expect(callbackInvoked).toBe(false);
+  });
+
+  it("upstream abort does NOT fire onComplete or run heuristic fallback", async () => {
+    const completed: string[] = [];
+    const errors: string[] = [];
+    const controller = new AbortController();
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      onComplete: (obj) => completed.push(obj),
+      detectCompletions: async (_texts, _items, ctx) => {
+        // wait until upstream aborts
+        await new Promise<void>((resolve, reject) => {
+          ctx.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+        return [];
+      },
+      onCallbackError: (info) => errors.push(info.reason),
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, { signal: controller.signal });
+    await mw.onBeforeTurn?.(ctx);
+    // Heuristic-matching response text — would mark complete if fallback ran
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("completed write tests task"),
+    );
+    // Abort before onAfterTurn awaits the callback
+    queueMicrotask(() => controller.abort());
+    await mw.onAfterTurn?.(ctx);
+
+    // Upstream abort must NOT trigger heuristic fallback or onComplete
+    expect(completed).toEqual([]);
+    // onCallbackError must NOT fire for upstream cancellation
+    expect(errors).toEqual([]);
+  });
+
+  it("upstream abort during isDrifting skips interval update", async () => {
+    const controller = new AbortController();
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: async (_input, ctx) => {
+        await new Promise<void>((resolve, reject) => {
+          ctx.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+        return true;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session, { signal: controller.signal });
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("x"));
+    queueMicrotask(() => controller.abort());
+    // Should complete without throwing; interval update is skipped
+    await mw.onAfterTurn?.(ctx);
+  });
+});
+
+describe("isDrifting response-text buffer", () => {
+  it("sees assistant responses even without detectCompletions opt-in", async () => {
+    let receivedTexts: readonly string[] = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      isDrifting: (input) => {
+        receivedTexts = input.responseTexts;
+        return false;
+      },
+      // detectCompletions NOT provided
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("first response"),
+    );
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () =>
+      makeModelResponse("second response"),
+    );
+    await mw.onAfterTurn?.(ctx);
+
+    expect(receivedTexts).toEqual(["first response", "second response"]);
+  });
+});
+
+describe("drift sees post-completion state", () => {
+  it("isDrifting receives items updated by detectCompletions in the same turn", async () => {
+    let observedCompleted: ReadonlyArray<{ id: string; completed: boolean }> = [];
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests", "Fix bug"],
+      // Complete item 0 this turn
+      detectCompletions: (_texts, items) => {
+        const first = items[0];
+        return first ? [first.id] : [];
+      },
+      isDrifting: (input) => {
+        observedCompleted = input.items.map((i) => ({ id: i.id, completed: i.completed }));
+        return false;
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    const ctx = makeTurnCtx(session);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeModelRequest(), async () => makeModelResponse("done"));
+    await mw.onAfterTurn?.(ctx);
+
+    expect(observedCompleted[0]?.completed).toBe(true);
+    expect(observedCompleted[1]?.completed).toBe(false);
+  });
+});
+
 describe("callbackTimeoutMs validation", () => {
   it("rejects zero, negative, NaN, non-integer, or > MAX_CALLBACK_TIMEOUT_MS", () => {
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 100000]) {

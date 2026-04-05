@@ -260,6 +260,10 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
   const deferCompletions = config.detectCompletions !== undefined;
+  // Buffer response text whenever EITHER callback is configured — isDrifting
+  // callback needs recent assistant responses even when detectCompletions
+  // is not deferred.
+  const bufferResponses = deferCompletions || config.isDrifting !== undefined;
 
   /**
    * Apply heuristic completion detection to a single response text.
@@ -328,11 +332,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   /**
    * Evaluate drift for this turn, using the callback if configured.
    * On callback error/timeout, fail-safe to drifting=true so reminders
-   * fire more aggressively (v1 semantics).
+   * fire more aggressively (v1 semantics). On upstream abort, returns
+   * undefined to signal the caller to skip interval updates entirely.
    */
-  async function resolveDrift(state: GoalSessionState, ctx: TurnContext): Promise<boolean> {
+  async function resolveDrift(
+    state: GoalSessionState,
+    ctx: TurnContext,
+  ): Promise<boolean | undefined> {
     if (config.isDrifting) {
-      const result = await invokeIsDriftingCallback(
+      const outcome = await invokeIsDriftingCallback(
         config.isDrifting,
         {
           userMessages: state.userMessageBuffer.slice(),
@@ -341,10 +349,14 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         },
         { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
       );
-      if (result === undefined) return true; // fail-safe
-      return result;
+      if (outcome.ok) return outcome.value;
+      if (outcome.reason === "aborted") return undefined; // skip interval update
+      return true; // fail-safe on timeout/error
     }
-    return isDrifting(state.userMessageBuffer, allKeywords);
+    // Heuristic default: unchanged from pre-callback behavior — uses
+    // ctx.messages exactly as before. Callers needing richer context
+    // should provide an `isDrifting` callback.
+    return isDrifting(ctx.messages, allKeywords);
   }
 
   /**
@@ -360,17 +372,21 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   ): Promise<void> {
     if (!config.detectCompletions || entries.length === 0) return;
 
-    const completedIds = await invokeDetectCompletionsCallback(
+    const outcome = await invokeDetectCompletionsCallback(
       config.detectCompletions,
       entries,
       state.items,
       { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
     );
 
-    const next =
-      completedIds !== undefined
-        ? mergeByIds(state.items, completedIds)
-        : applyHeuristicFallback(state.items, entries);
+    // Upstream abort: the run was cancelled — do not mutate goal state or
+    // fire onComplete side effects. The documented cancellation contract
+    // is that completions from the aborted turn are lost.
+    if (!outcome.ok && outcome.reason === "aborted") return;
+
+    const next = outcome.ok
+      ? mergeByIds(state.items, outcome.value)
+      : applyHeuristicFallback(state.items, entries);
 
     sessions.set(ctx.session.sessionId, { ...state, items: next });
     fireOnCompleteForTransitions(state.items, next);
@@ -436,7 +452,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
       state.injectedThisTurn = false;
-      if (deferCompletions) state.responseBuffer.length = 0;
+      if (bufferResponses) state.responseBuffer.length = 0;
 
       // Append real user-facing messages into rolling buffer (for isDrifting callback).
       const filtered = filterSyntheticRetryMessages(ctx.messages);
@@ -461,22 +477,25 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       if (blocked) return;
 
       if (state.injectedThisTurn) {
-        const drifting = await resolveDrift(state, ctx);
+        // Re-read session state so drift evaluation sees the post-deferred-
+        // completions item status, not the stale snapshot from turn start.
+        const refreshed = sessions.get(ctx.session.sessionId) ?? state;
+        const drifting = await resolveDrift(refreshed, ctx);
+        if (drifting === undefined) return; // upstream abort: skip interval update
+
         const nextInterval = computeNextInterval(
-          state.currentInterval,
+          refreshed.currentInterval,
           drifting,
           baseInterval,
           maxInterval,
         );
-        const latest = sessions.get(ctx.session.sessionId);
-        if (latest) {
-          sessions.set(ctx.session.sessionId, {
-            ...latest,
-            currentInterval: nextInterval,
-            lastReminderTurn: ctx.turnIndex,
-            shouldInject: false,
-          });
-        }
+        const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
+        sessions.set(ctx.session.sessionId, {
+          ...latest,
+          currentInterval: nextInterval,
+          lastReminderTurn: ctx.turnIndex,
+          shouldInject: false,
+        });
       }
     },
 
@@ -494,11 +513,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      if (deferCompletions) {
-        state.responseBuffer.push(response.content);
-      } else {
-        applyHeuristicCompletions(ctx.session.sessionId, response.content);
-      }
+      if (bufferResponses) state.responseBuffer.push(response.content);
+      if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, response.content);
 
       return response;
     },
@@ -539,11 +555,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       } finally {
         // Only update state if stream completed successfully
         if (succeeded) {
-          if (deferCompletions) {
-            state.responseBuffer.push(bufferedText);
-          } else {
-            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
-          }
+          if (bufferResponses) state.responseBuffer.push(bufferedText);
+          if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
         }
       }
     },
