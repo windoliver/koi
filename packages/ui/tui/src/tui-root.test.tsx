@@ -5,12 +5,11 @@
  * (handleGlobalKey). These tests verify that TuiRoot correctly renders the
  * right component when state changes — dispatch-driven, not input-driven.
  *
- * Uses testRender from @opentui/react/test-utils.
+ * Uses testRender from @opentui/solid.
  */
 
-import { testRender } from "@opentui/react/test-utils";
+import { testRender } from "@opentui/solid";
 import { describe, expect, mock, test } from "bun:test";
-import { act } from "react";
 import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
@@ -34,10 +33,13 @@ async function renderRoot(overrideState?: Partial<ReturnType<typeof createInitia
     : createInitialState();
   const store = createStore(state);
   const props = makeProps();
+  // TuiRoot creates TuiStateContext internally — only StoreContext.Provider needed
   const utils = await testRender(
-    <StoreContext.Provider value={store}>
-      <TuiRoot {...props} />
-    </StoreContext.Provider>,
+    () => (
+      <StoreContext.Provider value={store}>
+        <TuiRoot {...props} />
+      </StoreContext.Provider>
+    ),
     OPTS,
   );
   await utils.renderOnce();
@@ -54,7 +56,7 @@ describe("TuiRoot — view routing", () => {
     const frame = captureCharFrame();
     // StatusBar is always present (no session = "no session")
     expect(frame).toContain("no session");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("conversation view renders by default", async () => {
@@ -62,28 +64,28 @@ describe("TuiRoot — view routing", () => {
     const frame = captureCharFrame();
     // InputArea placeholder text appears in conversation view when focused
     expect(frame).toContain("Type a message");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("sessions view renders placeholder", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "sessions" });
     const frame = captureCharFrame();
     expect(frame).toContain("sessions");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("doctor view renders placeholder", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "doctor" });
     const frame = captureCharFrame();
     expect(frame).toContain("doctor");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("help view renders placeholder", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "help" });
     const frame = captureCharFrame();
     expect(frame).toContain("help");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 });
 
@@ -98,7 +100,7 @@ describe("TuiRoot — modal overlay", () => {
     });
     const frame = captureCharFrame();
     expect(frame).toContain("Commands");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("permission-prompt modal renders over conversation view", async () => {
@@ -116,14 +118,14 @@ describe("TuiRoot — modal overlay", () => {
     });
     const frame = captureCharFrame();
     expect(frame).toContain("bash");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("null modal renders no overlay", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ modal: null });
     const frame = captureCharFrame();
     expect(frame).not.toContain("Commands");
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 
   test("InputArea is unfocused when modal is open (focused prop propagates)", async () => {
@@ -134,7 +136,7 @@ describe("TuiRoot — modal overlay", () => {
     });
     const frame = captureCharFrame();
     expect(frame).toContain("Commands"); // modal visible
-    act(() => { renderer.destroy(); });
+    renderer.destroy();
   });
 });
 

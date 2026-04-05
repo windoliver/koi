@@ -11,8 +11,8 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import React, { memo, useCallback, useRef } from "react";
+import { useKeyboard } from "@opentui/solid";
+import type { JSX } from "solid-js";
 import { detectSlashPrefix } from "../commands/slash-detection.js";
 import { processInputKey } from "./input-keys.js";
 
@@ -41,72 +41,67 @@ export interface InputAreaProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export const InputArea: React.NamedExoticComponent<InputAreaProps> = memo(function InputArea(props: InputAreaProps): React.ReactNode {
-  const { onSubmit, onSlashDetected, disabled = false, focused } = props;
-  const textareaRef = useRef<TextareaRenderable | null>(null);
+export function InputArea(props: InputAreaProps): JSX.Element {
+  let textareaRef: TextareaRenderable | null = null;
 
-  const handleKey = useCallback(
-    (key: KeyEvent) => {
-      if (!focused || disabled) return;
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused || (props.disabled ?? false)) return;
 
-      const currentText = textareaRef.current?.plainText ?? "";
-      const result = processInputKey(key, currentText);
+    const currentText = textareaRef?.plainText ?? "";
+    const result = processInputKey(key, currentText);
 
-      switch (result.kind) {
-        case "submit": {
-          key.preventDefault();
-          if (result.text.trim() !== "") {
-            onSubmit(result.text);
-          }
-          textareaRef.current?.setText("");
-          onSlashDetected(null);
-          break;
+    switch (result.kind) {
+      case "submit": {
+        key.preventDefault();
+        if (result.text.trim() !== "") {
+          props.onSubmit(result.text);
         }
-        case "clear-line":
-          key.preventDefault();
-          textareaRef.current?.setText("");
-          onSlashDetected(null);
-          break;
-        case "insert-newline":
-          // Let textarea handle the actual newline insertion
-          break;
-        case "insert-char": {
-          // After this key is processed by textarea, check for slash
-          // Use queueMicrotask to read the updated plainText after textarea processes it
-          queueMicrotask(() => {
-            const text = textareaRef.current?.plainText ?? "";
-            onSlashDetected(detectSlashPrefix(text));
-          });
-          break;
-        }
-        case "backspace":
-        case "delete-word": {
-          queueMicrotask(() => {
-            const text = textareaRef.current?.plainText ?? "";
-            onSlashDetected(detectSlashPrefix(text));
-          });
-          break;
-        }
-        case "noop":
-          break;
+        textareaRef?.setText("");
+        props.onSlashDetected(null);
+        break;
       }
-    },
-    [focused, disabled, onSubmit, onSlashDetected],
-  );
+      case "clear-line":
+        key.preventDefault();
+        textareaRef?.setText("");
+        props.onSlashDetected(null);
+        break;
+      case "insert-newline":
+        // Let textarea handle the actual newline insertion
+        break;
+      case "insert-char": {
+        // After this key is processed by textarea, check for slash
+        // Use queueMicrotask to read the updated plainText after textarea processes it
+        queueMicrotask(() => {
+          const text = textareaRef?.plainText ?? "";
+          props.onSlashDetected(detectSlashPrefix(text));
+        });
+        break;
+      }
+      case "backspace":
+      case "delete-word": {
+        queueMicrotask(() => {
+          const text = textareaRef?.plainText ?? "";
+          props.onSlashDetected(detectSlashPrefix(text));
+        });
+        break;
+      }
+      case "noop":
+        break;
+    }
+  });
 
   // Register global keyboard handler (OpenTUI pattern: intercepts before textarea)
-  useKeyboard(handleKey);
 
   return (
     <box flexDirection="column">
       <textarea
         ref={(el: TextareaRenderable | null) => {
-          textareaRef.current = el;
+          textareaRef = el;
         }}
         height={3}
-        focused={focused && !disabled}
-        placeholder={disabled ? "" : "Type a message... (/ for commands)"}
+        focused={props.focused && !(props.disabled ?? false)}
+        placeholder={(props.disabled ?? false) ? "" : "Type a message... (/ for commands)"}
       />
     </box>
   );
-});
+}

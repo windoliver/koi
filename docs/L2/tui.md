@@ -35,7 +35,11 @@ EngineEvent (from @koi/core)
 └──────────────────────┘
            │
            ▼
-    useSyncExternalStore (React 18+)
+┌──────────────────────┐
+│  TuiStateContext      │  ← one shared reactive signal per component tree
+│  createStoreSignal()  │     adapts TuiStore → Solid Accessor<TuiState>
+│  useTuiStore(sel)     │     returns Accessor<T> (call as sel() in JSX)
+└──────────────────────┘
 ```
 
 ## State Shape
@@ -140,7 +144,7 @@ and implicit assistant creation), not just user input.
 
 ## Store
 
-Minimal API matching `useSyncExternalStore` contract:
+Minimal API matching the `subscribe`/`getState` contract:
 
 - `getState()` — always returns latest state (never stale, even during batched notify)
 - `dispatch(action)` — applies reducer synchronously, coalesces notifications via `queueMicrotask`
@@ -181,6 +185,51 @@ dispatch skips notification entirely.
 | `set_session_list` > 50 items | Truncated to 50 most-recent (`MAX_SESSIONS`) |
 | `set_session_list` out-of-order | Sorted by `lastActivityAt` desc before storage |
 
+## Phase 2k: SolidJS Migration + Worker Infrastructure
+
+Phase 2k migrated all 15 components from `@opentui/react` + React to `@opentui/solid` + SolidJS,
+added a reactive store context layer, and introduced the batcher/worker infrastructure for the
+main-thread ↔ Bun Worker bridge.
+
+### Framework swap
+
+All components now use `@opentui/solid` primitives. Build system changed from `tsup` to
+`Bun.build` + `@opentui/solid/bun-plugin` so the Solid JSX transform is applied correctly
+in `dist/`. A package-level `bunfig.toml` sets `conditions=["browser"]` and preloads Solid.
+
+### Component pattern changes
+
+- **Props access**: all components use `props.x` instead of destructured `({ x })` — destructuring kills Solid reactivity.
+- **No `React.memo` / `useCallback`**: Solid components never re-render; stale-closure wrappers are not needed.
+- **Control flow**: ternaries → `<Show>`, `.map()` → `<For>`, multi-branch → `<Switch><Match>`.
+
+### TuiStateContext + createStoreSignal
+
+Connecting TuiStore (imperative subscribe/getState) to Solid's fine-grained reactivity
+requires a single shared signal per component tree to prevent torn reads across multiple
+selectors.
+
+- `createStoreSignal(store)` — creates one `Accessor<TuiState>` signal that drives the whole tree. Call once at tree root.
+- `TuiStateContext` — Solid context carrying that accessor. `TuiRoot` creates the `TuiStateContext.Provider` internally.
+- Both `TuiStateContext` and `createStoreSignal` are exported from the public barrel.
+
+### EventBatcher (`src/batcher/event-batcher.ts`, ~70 LOC)
+
+`createEventBatcher<T>` — rate-limiter between high-frequency Bun Worker messages and store
+dispatches:
+
+- 16ms `queueMicrotask` + `setTimeout` double-buffer (aligns with one frame budget).
+- Injectable timer DI for deterministic testing.
+- `flushSync()` for ordered end-of-stream delivery (drains queue synchronously).
+
+### EngineChannel (`src/worker/engine-channel.ts`, ~120 LOC)
+
+`createEngineChannel` — main-thread bridge: Bun Worker → EventBatcher → `store.dispatch`.
+
+- Handles `approval_request` bidirectional flow (sends response back to worker).
+- Calls `cancelAllApprovals` on worker failure so pending permission prompts are never stuck.
+- `src/worker/_stub-worker.ts` provides a lightweight test stub.
+
 ## File Organization
 
 ```
@@ -197,16 +246,23 @@ packages/ui/tui/src/
 │   ├── thinking-block.tsx ~15 LOC   — dimmed thinking display
 │   ├── tool-call-block.tsx ~55 LOC  — tool lifecycle (spinner/result/error)
 │   ├── error-block.tsx    ~30 LOC   — styled error display
-│   ├── message-row.tsx    ~90 LOC   — turn router, React.memo wrapped
+│   ├── message-row.tsx    ~90 LOC   — turn router; <Switch><Match> for kind routing
 │   ├── message-list.tsx   ~30 LOC   — scrollable conversation
 │   └── index.ts           ~7 LOC    — re-exports
-├── store-context.tsx      ~35 LOC   — useTuiStore(selector) hook + Context
+├── batcher/
+│   └── event-batcher.ts   ~70 LOC   — createEventBatcher: 16ms rate-limiter + flushSync
+├── worker/
+│   ├── engine-channel.ts  ~120 LOC  — createEngineChannel: Worker → batcher → store bridge
+│   └── _stub-worker.ts    —         test stub
+├── store-context.tsx      ~35 LOC   — TuiStateContext, createStoreSignal, useTuiStore
+├── build.ts               —         Bun.build script (replaces tsup)
+├── bunfig.toml            —         Solid preload + conditions=["browser"]
 └── index.ts               ~10 LOC   — top-level re-exports
 ```
 
 ## Components
 
-Fifteen components built on OpenTUI primitives:
+Fifteen components built on OpenTUI + SolidJS primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
@@ -214,7 +270,7 @@ Fifteen components built on OpenTUI primitives:
 | `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
 | `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
 | `ErrorBlock` | Error display | Red border, code + message |
-| `MessageRow` | Turn router | `React.memo` — only re-renders when message reference changes |
+| `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
 | `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
 | `InputArea` | Text input | `<textarea>` with slash detection; Enter submits, Ctrl+J for newline |
 | `SlashOverlay` | Slash completion | Fuzzy-filtered `<select>` dropdown; Escape dismisses |
@@ -247,13 +303,19 @@ Host wires `Ctrl+P` → `dispatch({ kind: "set_modal", modal: { kind: "command-p
 
 ## Store Hook
 
-`useTuiStore(selector)` — wraps `useSyncExternalStore` with selector support.
-Components select only the state slice they need, preventing unnecessary re-renders.
+`useTuiStore(selector)` — returns a Solid `Accessor<T>`. The selector is applied reactively
+inside a derived signal backed by `TuiStateContext`. Callers must invoke the accessor in JSX:
 
 ```typescript
 const messages = useTuiStore(s => s.messages);
 const view = useTuiStore(s => s.activeView);
+// In JSX — call as a function:
+// <For each={messages()}> ...
+// <Show when={view() === "sessions"}> ...
 ```
+
+`TuiRoot` creates `TuiStateContext.Provider` internally. Consumers only need
+`<StoreContext.Provider value={store}>` at the tree root.
 
 ## Phase 2j-5: Root Component + Keyboard + Theme + Factory
 
@@ -285,7 +347,7 @@ prompt replaces palette (known limitation, intentional for v2 scope).
 
 **Auto-mount factory (4A):** `createTuiApp(config)` does TTY check first (returns
 `Result<TuiAppHandle, TuiStartError>`). Calling `handle.start()` mounts the renderer and
-React tree. `handle.stop()` is idempotent.
+Solid component tree. `handle.stop()` is idempotent.
 
 ### `createTuiApp` flow
 
@@ -295,10 +357,16 @@ if (!result.ok) {
   // result.error.kind === "no_tty" — not a terminal (CI, pipe, etc.)
   process.exit(1)
 }
-await result.value.start()   // mounts renderer + React, starts rendering
+await result.value.start()   // mounts renderer + Solid tree, starts rendering
 // ...
 await result.value.stop()    // cleans up renderer, bridge, resize listener
 ```
+
+Solid-specific details:
+- Uses `render()` + `createComponent()` from `@opentui/solid` (not React's `createRoot`).
+- `solidRootDispose` is captured via `renderer.once()` intercept at mount time — no fake destroy event.
+- A `stopGeneration` counter prevents a late `start()` re-animation after `stop()` has already begun its 5-second timeout.
+- `render()` errors trigger full rollback (unmount + renderer teardown) before re-throwing.
 
 ### Theme
 
@@ -324,8 +392,8 @@ because it is a pure structural invariant with no domain business logic.
 
 `TuiRoot` only subscribes to the two fields it needs for routing:
 ```typescript
-const activeView = useTuiStore((s) => s.activeView)  // re-renders on navigation only
-const modal = useTuiStore((s) => s.modal)            // re-renders on modal open/close only
+const activeView = useTuiStore((s) => s.activeView)  // reactive only on navigation
+const modal = useTuiStore((s) => s.modal)            // reactive only on modal open/close
 ```
 Zero re-renders during streaming. StatusBar, MessageList, InputArea each manage their own
 subscriptions.
@@ -336,11 +404,12 @@ subscriptions.
 |---------|----------|
 | `process.stdout.isTTY === false` | `createTuiApp` returns `{ ok: false, error: { kind: "no_tty" } }` |
 | `createCliRenderer()` throws | `handle.start()` throws `Error("Failed to start TUI renderer", { cause })` |
+| `render()` throws | Full rollback: unmount + renderer teardown before re-throw |
 | `stop()` before `start()` | No-op (idempotent) |
 | `stop()` called twice | No-op (idempotent) |
 
 ## Layer Compliance
 
 - State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
-- Component layer imports from `@koi/core` + `@opentui/core` + `@opentui/react` + `react`
+- Component layer imports from `@koi/core` + `@opentui/core` + `@opentui/solid` + `solid-js`
 - No imports from `@koi/engine`, peer L2, or external state libraries

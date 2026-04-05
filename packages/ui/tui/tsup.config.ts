@@ -7,6 +7,8 @@ export default defineConfig({
     "src/bridge/permission-bridge.ts",
     "src/commands/slash-detection.ts",
     "src/components/index.ts",
+    "src/batcher/event-batcher.ts",
+    "src/worker/engine-channel.ts",
   ],
   format: ["esm"],
   dts: {

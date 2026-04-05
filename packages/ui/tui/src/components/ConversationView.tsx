@@ -10,7 +10,7 @@
  */
 
 import type { SyntaxStyle } from "@opentui/core";
-import React, { memo } from "react";
+import type { JSX } from "solid-js";
 import { InputArea } from "./InputArea.js";
 import { MessageList } from "./message-list.js";
 
@@ -33,34 +33,31 @@ export interface ConversationViewProps {
 // Conversation view
 // ---------------------------------------------------------------------------
 
-export const ConversationView: React.NamedExoticComponent<ConversationViewProps> = memo(
-  function ConversationView(props: ConversationViewProps): React.ReactNode {
-    const { onSubmit, onSlashDetected, focused, syntaxStyle } = props;
-    return (
-      <box flexDirection="column" flexGrow={1}>
-        <MessageList syntaxStyle={syntaxStyle} />
-        <InputArea
-          onSubmit={onSubmit}
-          onSlashDetected={onSlashDetected}
-          focused={focused}
-        />
-      </box>
-    );
-  },
-);
+export function ConversationView(props: ConversationViewProps): JSX.Element {
+  return (
+    <box flexDirection="column" flexGrow={1}>
+      <MessageList syntaxStyle={props.syntaxStyle} />
+      <InputArea
+        onSubmit={props.onSubmit}
+        onSlashDetected={props.onSlashDetected}
+        focused={props.focused}
+      />
+    </box>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Placeholder views — Phase 2j-5 stubs, replaced in future phases
 // ---------------------------------------------------------------------------
 
-export function SessionsPlaceholder(): React.ReactNode {
+export function SessionsPlaceholder(): JSX.Element {
   return <text fg="#64748B">{"[sessions view — coming in a future phase]"}</text>;
 }
 
-export function DoctorPlaceholder(): React.ReactNode {
+export function DoctorPlaceholder(): JSX.Element {
   return <text fg="#64748B">{"[doctor view — coming in a future phase]"}</text>;
 }
 
-export function HelpPlaceholder(): React.ReactNode {
+export function HelpPlaceholder(): JSX.Element {
   return <text fg="#64748B">{"[help view — coming in a future phase]"}</text>;
 }
