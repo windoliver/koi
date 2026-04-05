@@ -118,10 +118,10 @@ describe("createGitHubDetector", () => {
     expect(detector.detect(`${token} suffix`).length).toBe(1);
   });
 
-  test("detects PAT even with unexpected inner layout (provider-format drift)", () => {
+  test("detects PAT at any inner layout (provider-format drift)", () => {
     // If GitHub changes inner structure, we must still redact. The detector
-    // intentionally does not enforce 22/_/59.
-    const driftedA = `github_pat_${"a".repeat(82)}`; // no separator
+    // intentionally does not enforce 22/_/59 or any specific separator.
+    const driftedA = `github_pat_${"a".repeat(82)}`; // no separator (all plain alnum)
     const driftedB = `github_pat_${"a".repeat(40)}_${"b".repeat(41)}`; // separator at 40
     const driftedC = `github_pat_${"a".repeat(10)}_${"b".repeat(71)}`; // separator at 10
     expect(detector.detect(driftedA).length).toBe(1);

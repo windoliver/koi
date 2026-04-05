@@ -26,11 +26,17 @@ const GITHUB_CLASSIC_PATTERN = /gh[psuor]_[A-Za-z0-9_]{36,}/g;
  * Leading lookbehind prevents attacker-injected prefixes (`xxgithub_pat_…`) from
  * anchoring a match. We deliberately do NOT require a trailing non-word boundary:
  * a real token concatenated with adjacent word chars must still redact its 93
- * known-secret chars rather than failing open. Trailing payload is left visible,
- * which is the correct tradeoff for a redaction library.
+ * known-secret chars rather than failing open.
  *
- * Fixes #1494 by capping the match span to 93 chars (prefix + 82) instead of the
- * previous unbounded `{40,}` quantifier that redacted arbitrary-length payload.
+ * Accepted residual risk: an attacker who can inject into logs/audit can still
+ * cause a bounded 93-char redaction by emitting `github_pat_` + 82 word chars.
+ * This is the cost of leak-prevention priority — in a secret-redaction library,
+ * false negatives (missed real tokens) are categorically worse than bounded
+ * false positives (attacker-driven over-redaction of 93 chars).
+ *
+ * Fixes #1494 by capping the match span to 93 chars (prefix + 82) instead of
+ * the previous unbounded `{40,}` quantifier that redacted arbitrary-length
+ * payload.
  */
 const GITHUB_PAT_PATTERN = /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{82}/g;
 
