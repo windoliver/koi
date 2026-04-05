@@ -251,6 +251,7 @@ export function sanitizeUserMessages(
   const result: InboundMessage[] = [];
   for (const m of messages) {
     if (isNonUserSender(m.senderId)) continue;
+    if (hasNonUserRole(m)) continue;
     if (isSyntheticRetry(m)) continue;
     const textBlocks: Array<{ readonly kind: "text"; readonly text: string }> = [];
     for (const block of m.content) {
@@ -277,6 +278,21 @@ function isNonUserSender(senderId: string): boolean {
   if (senderId.startsWith("assistant:")) return true;
   if (senderId.startsWith("tool:")) return true;
   return false;
+}
+
+/**
+ * Check if a message's `metadata.role` marks it as assistant/tool content.
+ *
+ * Per Koi convention (see `packages/mm/model-openai-compat/src/request-mapper.ts`),
+ * `metadata.role` is authoritative for assistant/tool actors even when
+ * the senderId is unrelated. We filter these regardless of trust mode —
+ * the conservative choice for an external-callback trust boundary.
+ */
+function hasNonUserRole(message: InboundMessage): boolean {
+  const meta = message.metadata as { readonly role?: unknown } | undefined;
+  const role = meta?.role;
+  if (typeof role !== "string") return false;
+  return role === "assistant" || role === "tool";
 }
 
 function isSyntheticRetry(m: InboundMessage): boolean {

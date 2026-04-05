@@ -67,6 +67,13 @@ interface GoalSessionState {
   /** Active per-turn state, keyed by `ctx.turnId`. Entries are created at
    * onBeforeTurn and removed at onAfterTurn (or implicitly on session end). */
   turns: Map<string, PerTurnState>;
+  /**
+   * Per-session promise chain for deferred callback processing. Next
+   * turn's onBeforeTurn awaits this so the injected goal block reflects
+   * the latest completion decisions from the previous turn's
+   * detectCompletions callback. Serializes callback work per session.
+   */
+  pendingWork: Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +456,48 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     }));
   }
 
+  /**
+   * Core callback-processing body — runs serialized via `state.pendingWork`.
+   * Handles deferred completions + drift + interval update for one turn.
+   */
+  async function processTurnCallbacks(
+    state: GoalSessionState,
+    turn: PerTurnState,
+    ctx: TurnContext,
+  ): Promise<void> {
+    const blocked = ctx.stopBlocked === true;
+
+    if (deferCompletions) {
+      const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
+      await processDeferredCompletions(state, entries, ctx);
+    }
+
+    if (blocked) return;
+
+    if (turn.injectedThisTurn) {
+      // Re-read session state so drift evaluation sees the post-deferred-
+      // completions item status, not the stale snapshot from turn start.
+      const refreshed = sessions.get(ctx.session.sessionId) ?? state;
+      const drifting = await resolveDrift(refreshed, turn, ctx);
+      if (drifting === undefined) return; // upstream abort: skip interval update
+
+      const nextInterval = computeNextInterval(
+        refreshed.currentInterval,
+        drifting,
+        baseInterval,
+        maxInterval,
+      );
+      const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
+      // Compare-and-swap: never move lastReminderTurn backwards.
+      if (ctx.turnIndex < latest.lastReminderTurn) return;
+      sessions.set(ctx.session.sessionId, {
+        ...latest,
+        currentInterval: nextInterval,
+        lastReminderTurn: ctx.turnIndex,
+      });
+    }
+  }
+
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
   function consumeInjection(sid: SessionId, turnIdStr: string): boolean {
     const state = sessions.get(sid);
@@ -485,12 +534,18 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         lastReminderTurn: -1,
         userMessageBuffer: [],
         turns: new Map(),
+        pendingWork: Promise.resolve(),
       });
     },
 
     async onBeforeTurn(ctx) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
+
+      // Wait for any in-flight deferred completion/drift processing from
+      // previous turns to finish so this turn's prompt injection sees
+      // the latest item state. Per-session serialization of callback work.
+      await state.pendingWork;
 
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
       const turn: PerTurnState = {
@@ -519,41 +574,17 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       // turn cannot observe it.
       state.turns.delete(turnKey);
 
-      // stop-gate vetoed turns: process completions from accepted earlier model
-      // calls (all but last entry), skip drift update entirely.
-      const blocked = ctx.stopBlocked === true;
-
-      if (deferCompletions) {
-        const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
-        await processDeferredCompletions(state, entries, ctx);
-      }
-
-      if (blocked) return;
-
-      if (turn.injectedThisTurn) {
-        // Re-read session state so drift evaluation sees the post-deferred-
-        // completions item status, not the stale snapshot from turn start.
-        const refreshed = sessions.get(ctx.session.sessionId) ?? state;
-        const drifting = await resolveDrift(refreshed, turn, ctx);
-        if (drifting === undefined) return; // upstream abort: skip interval update
-
-        const nextInterval = computeNextInterval(
-          refreshed.currentInterval,
-          drifting,
-          baseInterval,
-          maxInterval,
-        );
-        const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
-        // Compare-and-swap: never move lastReminderTurn backwards. A
-        // newer turn may have already advanced it while this turn's
-        // callback was awaiting.
-        if (ctx.turnIndex < latest.lastReminderTurn) return;
-        sessions.set(ctx.session.sessionId, {
-          ...latest,
-          currentInterval: nextInterval,
-          lastReminderTurn: ctx.turnIndex,
-        });
-      }
+      // Enqueue this turn's callback processing on the per-session
+      // pendingWork chain. Returning the chained promise ensures the
+      // engine awaits until this turn's work finishes before emitting
+      // turn_end. onBeforeTurn for any subsequent turn will also await
+      // this promise, guaranteeing later prompt injection sees updated
+      // items.
+      const work = state.pendingWork.then(() => processTurnCallbacks(state, turn, ctx));
+      state.pendingWork = work.catch(() => {
+        // Swallow: errors already routed through onCallbackError hook.
+      });
+      return work;
     },
 
     async wrapModelCall(ctx, request, next) {
