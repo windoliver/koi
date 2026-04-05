@@ -42,18 +42,31 @@ import {
 /** Max user messages buffered across turns for the isDrifting callback. */
 const MESSAGE_BUFFER_SIZE = 10;
 
-interface GoalSessionState {
-  readonly items: readonly GoalItemWithId[];
-  readonly currentInterval: number;
-  readonly lastReminderTurn: number;
+/**
+ * State scoped to a single turn. Keyed by `ctx.turnId` so that overlapping
+ * turns for the same session (possible when `onAfterTurn` awaits a
+ * long-running callback up to `callbackTimeoutMs`) cannot corrupt each
+ * other's injection flags or response buffers.
+ */
+interface PerTurnState {
+  readonly turnIndex: number;
   /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn, consumed by first model call. */
   shouldInject: boolean;
   /** Whether injection was performed this turn (for onAfterTurn interval update). */
   injectedThisTurn: boolean;
-  /** Per-turn response texts (one per wrapModelCall / wrapModelStream). Used when detectCompletions callback is configured. */
+  /** Per-turn response texts (one per wrapModelCall / wrapModelStream). */
   responseBuffer: string[];
-  /** Rolling buffer of user-facing messages (retry system msgs filtered out). Used by isDrifting callback. */
+}
+
+interface GoalSessionState {
+  readonly items: readonly GoalItemWithId[];
+  readonly currentInterval: number;
+  readonly lastReminderTurn: number;
+  /** Rolling buffer of user-facing messages (sanitized). Used by isDrifting callback. */
   userMessageBuffer: InboundMessage[];
+  /** Active per-turn state, keyed by `ctx.turnId`. Entries are created at
+   * onBeforeTurn and removed at onAfterTurn (or implicitly on session end). */
+  turns: Map<string, PerTurnState>;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +350,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
    */
   async function resolveDrift(
     state: GoalSessionState,
+    turn: PerTurnState,
     ctx: TurnContext,
   ): Promise<boolean | undefined> {
     if (config.isDrifting) {
@@ -344,7 +358,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         config.isDrifting,
         {
           userMessages: cloneMessages(state.userMessageBuffer),
-          responseTexts: state.responseBuffer.slice(),
+          responseTexts: turn.responseBuffer.slice(),
           items: cloneItems(state.items),
         },
         { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
@@ -436,11 +450,12 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   }
 
   /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
-  function consumeInjection(sid: SessionId): boolean {
+  function consumeInjection(sid: SessionId, turnIdStr: string): boolean {
     const state = sessions.get(sid);
-    if (!state?.shouldInject) return false;
-    state.shouldInject = false;
-    state.injectedThisTurn = true;
+    const turn = state?.turns.get(turnIdStr);
+    if (!turn?.shouldInject) return false;
+    turn.shouldInject = false;
+    turn.injectedThisTurn = true;
     return true;
   }
 
@@ -468,10 +483,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         items,
         currentInterval: baseInterval,
         lastReminderTurn: -1,
-        shouldInject: true,
-        injectedThisTurn: false,
-        responseBuffer: [],
         userMessageBuffer: [],
+        turns: new Map(),
       });
     },
 
@@ -480,14 +493,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       if (!state) return;
 
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
-      state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
-      state.injectedThisTurn = false;
-      if (bufferResponses) state.responseBuffer.length = 0;
+      const turn: PerTurnState = {
+        turnIndex: ctx.turnIndex,
+        shouldInject: turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0,
+        injectedThisTurn: false,
+        responseBuffer: [],
+      };
+      state.turns.set(String(ctx.turnId), turn);
 
       // Append sanitized user-authored text messages into rolling buffer.
-      // sanitizeUserMessages filters non-user senders, synthetic retry
-      // messages, and strips non-text blocks; also deep-clones so callback
-      // mutation cannot poison buffered state.
       const sanitized = sanitizeUserMessages(ctx.messages);
       for (const m of sanitized) state.userMessageBuffer.push(m);
       const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
@@ -497,23 +511,30 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     async onAfterTurn(ctx) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
+      const turnKey = String(ctx.turnId);
+      const turn = state.turns.get(turnKey);
+      if (!turn) return;
+
+      // Always remove our per-turn state before any await so a sibling
+      // turn cannot observe it.
+      state.turns.delete(turnKey);
 
       // stop-gate vetoed turns: process completions from accepted earlier model
       // calls (all but last entry), skip drift update entirely.
       const blocked = ctx.stopBlocked === true;
 
       if (deferCompletions) {
-        const entries = blocked ? state.responseBuffer.slice(0, -1) : state.responseBuffer;
+        const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
         await processDeferredCompletions(state, entries, ctx);
       }
 
       if (blocked) return;
 
-      if (state.injectedThisTurn) {
+      if (turn.injectedThisTurn) {
         // Re-read session state so drift evaluation sees the post-deferred-
         // completions item status, not the stale snapshot from turn start.
         const refreshed = sessions.get(ctx.session.sessionId) ?? state;
-        const drifting = await resolveDrift(refreshed, ctx);
+        const drifting = await resolveDrift(refreshed, turn, ctx);
         if (drifting === undefined) return; // upstream abort: skip interval update
 
         const nextInterval = computeNextInterval(
@@ -523,11 +544,14 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
           maxInterval,
         );
         const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
+        // Compare-and-swap: never move lastReminderTurn backwards. A
+        // newer turn may have already advanced it while this turn's
+        // callback was awaiting.
+        if (ctx.turnIndex < latest.lastReminderTurn) return;
         sessions.set(ctx.session.sessionId, {
           ...latest,
           currentInterval: nextInterval,
           lastReminderTurn: ctx.turnIndex,
-          shouldInject: false,
         });
       }
     },
@@ -535,8 +559,9 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     async wrapModelCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return next(request);
+      const turnKey = String(ctx.turnId);
 
-      const inject = consumeInjection(ctx.session.sessionId);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey);
       const enrichedRequest = inject
         ? {
             ...request,
@@ -546,7 +571,10 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      if (bufferResponses) state.responseBuffer.push(response.content);
+      if (bufferResponses) {
+        const turn = state.turns.get(turnKey);
+        if (turn) turn.responseBuffer.push(response.content);
+      }
       if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, response.content);
 
       return response;
@@ -563,7 +591,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         return;
       }
 
-      const inject = consumeInjection(ctx.session.sessionId);
+      const turnKey = String(ctx.turnId);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey);
       const enrichedRequest = inject
         ? {
             ...request,
@@ -588,7 +617,10 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       } finally {
         // Only update state if stream completed successfully
         if (succeeded) {
-          if (bufferResponses) state.responseBuffer.push(bufferedText);
+          if (bufferResponses) {
+            const turn = state.turns.get(turnKey);
+            if (turn) turn.responseBuffer.push(bufferedText);
+          }
           if (!deferCompletions) applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
         }
       }
