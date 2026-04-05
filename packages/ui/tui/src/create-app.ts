@@ -164,7 +164,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                 ? await createCliRenderer({
                     exitOnCtrlC: false,
                     screenMode,
-                    footerHeight,
+                    ...(footerHeight !== undefined ? { footerHeight } : {}),
                   })
                 : await createCliRenderer({ exitOnCtrlC: false });
           } catch (e: unknown) {
