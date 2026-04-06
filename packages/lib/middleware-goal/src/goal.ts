@@ -748,31 +748,46 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
           }
         : request;
 
-      // Buffer streamed text for completion detection — only on success
+      // Buffer streamed text for completion detection.
+      // Flush eagerly on the terminal `done` chunk BEFORE yielding it —
+      // `consumeModelStream` calls iterator.return() after processing `done`,
+      // which aborts this generator before the `for await` loop can exit
+      // naturally. Eager flush ensures the responseBuffer is populated even
+      // when the consumer returns early (#1530).
+      //
+      // Only flush when this stream is a final assistant answer:
+      //  - No tool calls were emitted (sawToolCall is false)
+      //  - The stop reason is not a known non-final/error value
+      // This avoids false completions from partial reasoning before tool
+      // calls, truncated output, or provider-level blocks.
       let bufferedText = "";
-      let succeeded = false;
-      try {
-        for await (const chunk of next(enrichedRequest)) {
-          if (chunk.kind === "text_delta") {
-            bufferedText += chunk.delta;
-          } else if (chunk.kind === "done" && bufferedText.length === 0) {
-            // Fallback: some adapters only emit done.response.content with no text_delta
-            bufferedText = chunk.response.content;
+      let sawToolCall = false;
+      for await (const chunk of next(enrichedRequest)) {
+        if (chunk.kind === "text_delta") {
+          bufferedText += chunk.delta;
+        } else if (chunk.kind === "tool_call_start") {
+          sawToolCall = true;
+        } else if (chunk.kind === "done" && !sawToolCall) {
+          const stopReason = chunk.response.stopReason;
+          // Skip non-final stop reasons: tool_use (legacy adapters may set
+          // this even without tool_call_start), length (truncated), and
+          // hook_blocked (provider-level denial).
+          const isNonFinal =
+            stopReason === "tool_use" || stopReason === "length" || stopReason === "hook_blocked";
+          if (!isNonFinal) {
+            if (bufferedText.length === 0) {
+              bufferedText = chunk.response.content;
+            }
+            if (bufferResponses) {
+              const turn = state.turns.get(turnKey);
+              if (turn) turn.responseBuffer.push(bufferedText);
+            }
+            if (!deferCompletions && !bufferResponses) {
+              applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+            }
           }
-          yield chunk;
         }
-        succeeded = true;
-      } finally {
-        // Only update state if stream completed successfully
-        if (succeeded) {
-          if (bufferResponses) {
-            const turn = state.turns.get(turnKey);
-            if (turn) turn.responseBuffer.push(bufferedText);
-          }
-          if (!deferCompletions && !bufferResponses) {
-            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
-          }
-        }
+        yield chunk;
       }
     },
 
