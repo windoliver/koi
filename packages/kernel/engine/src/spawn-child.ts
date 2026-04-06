@@ -34,6 +34,7 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,
   ENV,
+  isAttachResult,
 } from "@koi/core";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
@@ -283,15 +284,48 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     );
   }
 
-  // 8. Delegate to createKoi with child-specific options
-  //    Manifest lifecycle drives agentType — no explicit agentType override needed.
+  // 8. Delegate to createKoi with child-specific options.
+  //    Apply selfCeiling filter to raw providers: any tool:* component whose name is not
+  //    in the selfCeiling must be stripped, otherwise a privileged caller could bypass the
+  //    ceiling by passing an extra provider instead of going through additionalTools.
+  const rawProviders = options.providers ?? [];
+  const selfCeilingFilteredProviders: ComponentProvider[] =
+    selfCeilingSet !== undefined
+      ? rawProviders.map(
+          (p): ComponentProvider => ({
+            name: p.name,
+            priority: p.priority,
+            attach: async (agent) => {
+              const result = await p.attach(agent);
+              // AttachResult and ReadonlyMap both expose iteration via entries.
+              // Strip tool:* keys that exceed the selfCeiling — same filter as
+              // additionalTools above, but applied to provider-injected components.
+              const raw: ReadonlyMap<string, unknown> = isAttachResult(result)
+                ? result.components
+                : result;
+              const filtered = new Map<string, unknown>();
+              for (const [key, val] of raw) {
+                if (key.startsWith("tool:") && !selfCeilingSet.has(key.slice(5))) {
+                  continue; // drop tool not in selfCeiling
+                }
+                filtered.set(key, val);
+              }
+              if (isAttachResult(result)) {
+                return { components: filtered, skipped: result.skipped };
+              }
+              return filtered;
+            },
+            ...(p.detach !== undefined ? { detach: p.detach } : {}),
+          }),
+        )
+      : rawProviders;
   let childRuntime: KoiRuntime;
   try {
     childRuntime = await createKoi({
       manifest: options.manifest,
       adapter: options.adapter,
       parentPid: options.parentAgent.pid,
-      providers: [inheritedProvider, ...inheritanceProviders, ...(options.providers ?? [])],
+      providers: [inheritedProvider, ...inheritanceProviders, ...selfCeilingFilteredProviders],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),

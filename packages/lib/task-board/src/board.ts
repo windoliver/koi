@@ -427,6 +427,35 @@ function createBoardFromState(
       return ok(newBoard);
     },
 
+    unassign(taskId: TaskItemId): Result<TaskBoard, KoiError> {
+      const task = items.get(taskId);
+      if (task === undefined) {
+        return fail(notFoundError(taskId));
+      }
+      if (task.status !== "in_progress") {
+        return fail(
+          validationError(
+            `Cannot unassign task ${taskId}: task is '${task.status}', expected 'in_progress'`,
+          ),
+        );
+      }
+      // Directly build the updated task bypassing transitionTask — in_progress → pending
+      // is not in VALID_TASK_TRANSITIONS (which exists to prevent accidental resets by
+      // generic callers). unassign() is the intentional, guarded exception.
+      const updated: Task = {
+        ...task,
+        status: "pending",
+        assignedTo: undefined,
+        version: task.version + 1,
+        updatedAt: now(),
+      };
+      const newItems = new Map(items);
+      newItems.set(taskId, updated);
+      const newBoard = createBoardFromState(newItems, results, unreachableIds, config);
+      emit(config, { kind: "task:unassigned", taskId });
+      return ok(newBoard);
+    },
+
     complete(taskId: TaskItemId, taskResult: TaskResult): Result<TaskBoard, KoiError> {
       if (taskResult.taskId !== taskId) {
         return fail(

@@ -1,5 +1,8 @@
 /**
  * recoverOrphanedTasks — unit tests (Issue 10A scenario 3: crash recovery).
+ *
+ * Uses board.unassign() for atomic in_progress → pending recovery.
+ * No tasks are killed; task IDs are preserved; no data-loss or duplicate windows.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -32,7 +35,7 @@ async function addTask(
 }
 
 describe("recoverOrphanedTasks", () => {
-  test("kills orphaned in_progress tasks and re-queues them as pending", async () => {
+  test("unassigns orphaned in_progress tasks and re-queues them as pending (same IDs)", async () => {
     const board = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
@@ -47,22 +50,25 @@ describe("recoverOrphanedTasks", () => {
     // Coordinator crashes — newAgent restarts and finds orphaned tasks
     const result = await recoverOrphanedTasks(board, newAgent);
 
-    expect(result.killed.length).toBe(3);
+    // killed is always empty (unassign does not kill tasks)
+    expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(3);
+    expect(result.failed.length).toBe(0);
 
-    // Orphaned tasks are now killed (terminal)
+    // Recovered tasks preserve their original IDs and are now pending
     const snapshot = board.snapshot();
-    for (const id of result.killed) {
-      expect(snapshot.get(id)?.status).toBe("killed");
-    }
-
-    // Replacement tasks are pending
     for (const id of result.requeued) {
       expect(snapshot.get(id)?.status).toBe("pending");
     }
+
+    // Same IDs — task IDs are preserved by unassign()
+    const requeuedSet = new Set<TaskItemId>(result.requeued);
+    expect(requeuedSet.has(id1)).toBe(true);
+    expect(requeuedSet.has(id2)).toBe(true);
+    expect(requeuedSet.has(id3)).toBe(true);
   });
 
-  test("does not kill tasks assigned to the current coordinator", async () => {
+  test("does not unassign tasks assigned to the current coordinator", async () => {
     const board = await freshBoard();
     const coordAgent = agentId("coordinator");
 
@@ -74,6 +80,7 @@ describe("recoverOrphanedTasks", () => {
     // id1 belongs to coordAgent — not orphaned
     expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(0);
+    expect(result.failed.length).toBe(0);
 
     expect(board.snapshot().get(id1)?.status).toBe("in_progress");
   });
@@ -85,6 +92,7 @@ describe("recoverOrphanedTasks", () => {
     const result = await recoverOrphanedTasks(board, agentId("coordinator"));
     expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(0);
+    expect(result.failed.length).toBe(0);
   });
 
   test("result always includes a failed field (empty on full success)", async () => {
@@ -98,6 +106,8 @@ describe("recoverOrphanedTasks", () => {
 
     expect(result.failed).toBeDefined();
     expect(result.failed.length).toBe(0);
+    expect(result.requeued.length).toBe(1);
+    expect(result.requeued[0]).toBe(id1);
   });
 
   test("preserves subject and description in re-queued tasks", async () => {
@@ -110,64 +120,71 @@ describe("recoverOrphanedTasks", () => {
     const result = await recoverOrphanedTasks(board, newAgent);
     expect(result.requeued.length).toBe(1);
 
-    const newTaskId = result.requeued[0];
-    if (newTaskId === undefined) throw new Error("Expected a requeued task");
-    const newTask = board.snapshot().get(newTaskId);
-    expect(newTask?.subject).toBe("Research OAuth2");
-    expect(newTask?.description).toBe("Investigate OAuth2 integration patterns");
+    // Same ID — task preserved in place by unassign()
+    const recoveredId = result.requeued[0];
+    if (recoveredId === undefined) throw new Error("Expected a requeued task");
+    expect(recoveredId).toBe(id1);
+    const task = board.snapshot().get(id1);
+    expect(task?.subject).toBe("Research OAuth2");
+    expect(task?.description).toBe("Investigate OAuth2 integration patterns");
+    expect(task?.status).toBe("pending");
+    expect(task?.assignedTo).toBeUndefined();
   });
 
   // ---------------------------------------------------------------------------
-  // Partial failure cases (Decision 7-A / 12-A)
+  // Partial failure cases
   // ---------------------------------------------------------------------------
 
-  test("reports failed IDs when add fails after kill — original killed, replacement missing", async () => {
+  test("reports failed IDs when unassign fails — original task left in_progress (no data loss)", async () => {
     const realBoard = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
     const id1 = await addTask(realBoard, "Task 1");
     await realBoard.assign(id1, agentId("child-1"));
 
-    // Wrap the real board with a proxy that makes add() always fail
+    // Wrap the real board with a proxy that makes unassign() always fail
     const failingBoard: ManagedTaskBoard = {
       ...realBoard,
-      add: async () => ({
+      unassign: async () => ({
         ok: false as const,
-        error: { code: "INTERNAL" as const, message: "simulated add failure", retryable: false },
+        error: {
+          code: "INTERNAL" as const,
+          message: "simulated unassign failure",
+          retryable: false,
+        },
       }),
     };
 
     const result = await recoverOrphanedTasks(failingBoard, newAgent);
 
-    // kill-then-add: kill() succeeds first, then add() fails.
-    // Original is killed (no duplicate live work) but no replacement exists (data loss).
-    // The failed ID is the orphan's original ID — coordinator can investigate.
-    expect(result.killed.length).toBe(0); // not in killed: only fully recovered orphans go here
+    // unassign() failed — original task remains in_progress (no data loss, no kill)
+    expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(0);
     expect(result.failed.length).toBe(1);
     expect(result.failed[0]).toBe(id1);
-    // Original task is now killed (terminated) even though recovery is "failed"
-    expect(realBoard.snapshot().get(id1)?.status).toBe("killed");
+    expect(realBoard.snapshot().get(id1)?.status).toBe("in_progress");
   });
 
-  test("skips already-terminal tasks (kill fails) without adding to failed", async () => {
+  test("skips tasks assigned to coordinator even when other orphans exist", async () => {
     const board = await freshBoard();
-    const newAgent = agentId("new-coordinator");
+    const coordAgent = agentId("coordinator");
 
-    const id1 = await addTask(board, "Task 1");
+    const id1 = await addTask(board, "Orphan task");
+    const id2 = await addTask(board, "Coordinator's task");
     await board.assign(id1, agentId("child-1"));
-    // Pre-kill the task so it is already terminal when recovery runs
-    await board.kill(id1);
+    await board.assign(id2, coordAgent);
 
-    const result = await recoverOrphanedTasks(board, newAgent);
+    // coordAgent is the current coordinator — id2 is its own task, not an orphan
+    const result = await recoverOrphanedTasks(board, coordAgent);
 
-    // Task was already terminal — kill fails silently, not added to failed
-    expect(result.killed.length).toBe(0);
-    expect(result.requeued.length).toBe(0);
-    expect(result.failed.length).toBe(0);
+    // id2 belongs to coordAgent (the current coordinator) — not orphaned
+    // id1 is orphaned (belongs to child-1)
+    expect(result.requeued.length).toBe(1);
+    expect(result.requeued[0]).toBe(id1);
+    expect(board.snapshot().get(id2)?.status).toBe("in_progress"); // coord's task untouched
   });
 
-  test("processes all orphans sequentially: all killed and requeued when board healthy", async () => {
+  test("processes all orphans sequentially: all recovered when board healthy", async () => {
     const board = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
@@ -180,15 +197,15 @@ describe("recoverOrphanedTasks", () => {
 
     const result = await recoverOrphanedTasks(board, newAgent);
 
-    // All 3 should be killed and requeued with no failures
-    expect(result.killed.length).toBe(3);
+    // All 3 should be unassigned and requeued with no failures
+    expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(3);
     expect(result.failed.length).toBe(0);
 
-    // Killed IDs are the original IDs
-    const killedSet = new Set<TaskItemId>(result.killed);
-    expect(killedSet.has(id1)).toBe(true);
-    expect(killedSet.has(id2)).toBe(true);
-    expect(killedSet.has(id3)).toBe(true);
+    // Requeued IDs are the original IDs (preserved by unassign)
+    const requeuedSet = new Set<TaskItemId>(result.requeued);
+    expect(requeuedSet.has(id1)).toBe(true);
+    expect(requeuedSet.has(id2)).toBe(true);
+    expect(requeuedSet.has(id3)).toBe(true);
   });
 });
