@@ -64,6 +64,22 @@ export const CONNECTION_STATUS_CONFIG: Record<
 };
 
 // ---------------------------------------------------------------------------
+// Modal positioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared absolute-position props for all modal overlays.
+ * Apply to any modal's outer <box> to ensure consistent placement and z-stacking.
+ */
+export const MODAL_POSITION = {
+  position: "absolute",
+  top: 1,
+  left: 2,
+  zIndex: 20,
+  backgroundColor: "#0D1B2A",
+} as const;
+
+// ---------------------------------------------------------------------------
 // Layout helpers
 // ---------------------------------------------------------------------------
 

@@ -2,12 +2,13 @@
  * ConversationView — the "conversation" screen (activeView === "conversation").
  */
 
-import type { SyntaxStyle } from "@opentui/core";
+import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createSignal, Show } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import type { SlashCommand } from "../commands/slash-detection.js";
 import { useTuiStore } from "../store-context.js";
+import { COLORS } from "../theme.js";
 import { InputArea } from "./InputArea.js";
 import { MessageList } from "./message-list.js";
 import { SlashOverlay } from "./SlashOverlay.js";
@@ -23,6 +24,7 @@ export interface ConversationViewProps {
   readonly onSlashSelect?: ((command: SlashCommand) => void) | undefined;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 export function ConversationView(props: ConversationViewProps): JSX.Element {
@@ -42,16 +44,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
 
   return (
     <box flexDirection="column" flexGrow={1}>
-      <MessageList syntaxStyle={props.syntaxStyle} />
-      <Show when={slashQuery() !== null}>
-        <SlashOverlay
-          query={slashQuery() ?? ""}
-          commands={SLASH_COMMANDS}
-          onSelect={handleSlashSelect}
-          onDismiss={dismissOverlay}
-          focused={props.focused}
-        />
-      </Show>
+      <MessageList syntaxStyle={props.syntaxStyle} treeSitterClient={props.treeSitterClient} />
       <InputArea
         onSubmit={props.onSubmit}
         onSlashDetected={props.onSlashDetected}
@@ -63,6 +56,20 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         // the query at the first "/" and break slash-command filtering.
         clearTrigger={clearTrigger()}
       />
+      {/* SlashOverlay is rendered after InputArea with position="absolute" so it
+          floats just above the input without affecting the flex layout.
+          bottom={3} matches the 3-row InputArea height. */}
+      <Show when={slashQuery() !== null}>
+        <box position="absolute" bottom={3} left={0} zIndex={10} backgroundColor={COLORS.bgElevated} >
+          <SlashOverlay
+            query={slashQuery() ?? ""}
+            commands={SLASH_COMMANDS}
+            onSelect={handleSlashSelect}
+            onDismiss={dismissOverlay}
+            focused={props.focused}
+          />
+        </box>
+      </Show>
     </box>
   );
 }

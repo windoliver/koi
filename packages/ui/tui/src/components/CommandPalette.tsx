@@ -22,7 +22,7 @@ import {
 } from "../commands/command-definitions.js";
 import { fuzzyFilter } from "../commands/fuzzy-match.js";
 import { StoreContext, useTuiStore } from "../store-context.js";
-import { COLORS } from "../theme.js";
+import { COLORS, MODAL_POSITION } from "../theme.js";
 import { SelectOverlay } from "./SelectOverlay.js";
 
 // ---------------------------------------------------------------------------
@@ -147,10 +147,7 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
       border={true}
       borderColor={COLORS.blueAccent}
       width={60}
-      position="absolute"
-      top={1}
-      left={2}
-      zIndex={20}
+      {...MODAL_POSITION}
     >
       {/* Header */}
       <box paddingLeft={1} paddingTop={1}>

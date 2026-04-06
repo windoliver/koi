@@ -9,7 +9,7 @@
 import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import type { SessionSummary } from "../state/types.js";
-import { COLORS } from "../theme.js";
+import { COLORS, MODAL_POSITION } from "../theme.js";
 import { SelectOverlay } from "./SelectOverlay.js";
 import { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
 
@@ -47,10 +47,7 @@ export function SessionPicker(props: SessionPickerProps): JSX.Element {
       border={true}
       borderColor={COLORS.purple}
       width={70}
-      position="absolute"
-      top={1}
-      left={2}
-      zIndex={20}
+      {...MODAL_POSITION}
     >
       {/* Header */}
       <box paddingLeft={1} paddingTop={1} paddingBottom={1}>

@@ -13,10 +13,10 @@
  * createTuiApp, not by TuiRoot itself).
  */
 
-import type { KeyEvent } from "@opentui/core";
+import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Show, Switch, Match, createMemo, useContext } from "solid-js";
+import { Show, Switch, Match, createEffect, createMemo, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
@@ -84,6 +84,19 @@ export interface TuiRootProps {
   readonly onInterrupt: () => void;
   /** Called when the user responds to a permission prompt (y/n/a). */
   readonly onPermissionRespond: (requestId: string, decision: ApprovalDecision) => void;
+  /**
+   * Optional syntax highlighting style. Required alongside treeSitterClient
+   * for full markdown rendering in TextBlock; also enables <code> syntax
+   * highlighting in tool call blocks (works without treeSitterClient).
+   */
+  readonly syntaxStyle?: SyntaxStyle | undefined;
+  /**
+   * Optional tree-sitter client for rich markdown rendering in TextBlock.
+   * When provided alongside syntaxStyle, assistant text blocks use <markdown>
+   * with full prose/heading/code-fence rendering. When omitted, TextBlock
+   * falls back to <text> (prose renders correctly; see #1542 for full init).
+   */
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +130,30 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
   // Zero re-renders during streaming text_delta events.
   const activeView = useTuiStore((s) => s.activeView);
   const modal = useTuiStore((s) => s.modal);
+
+  // DEV ONLY: keyboard focus invariant.
+  // Exactly one "zone" must have focused=true at all times:
+  //   - ConversationView (when modal === null → focused={!hasModal()} = true)
+  //   - The active modal (when modal !== null → modal gets focused={true})
+  // If this assertion fires, a refactor has broken the mutual-exclusion contract
+  // and keyboard events will double-fire. This is the anchor point for any
+  // future migration to OpenTUI's priority-based keyboard routing API.
+  if (process.env.NODE_ENV !== "production") {
+    createEffect(() => {
+      const m = modal();
+      const focusedZones = [
+        m === null,   // ConversationView: focused={!hasModal()}
+        m !== null,   // active modal: focused={true}
+      ].filter(Boolean).length;
+      console.assert(
+        focusedZones === 1,
+        "[koi/tui] Focus invariant: expected exactly 1 focused zone, got %d (modal=%s). " +
+          "Update keyboard routing if adding modal stacking.",
+        focusedZones,
+        m?.kind ?? "none",
+      );
+    });
+  }
 
   // Terminal width for StatusBar compact mode (read-only hook, not state I/O)
   const terminalDimensions = useTerminalDimensions();
@@ -220,6 +257,8 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
             onSlashDetected={handleSlashDetected}
             onSlashSelect={handleSlashSelect}
             focused={!hasModal()}
+            syntaxStyle={props.syntaxStyle}
+            treeSitterClient={props.treeSitterClient}
           />
         </Match>
         <Match when={activeView() === "sessions"}>

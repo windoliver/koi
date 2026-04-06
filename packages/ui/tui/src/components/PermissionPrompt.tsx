@@ -17,7 +17,7 @@ import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { PermissionPromptData, PermissionRiskLevel } from "../state/types.js";
-import { COLORS } from "../theme.js";
+import { COLORS, MODAL_POSITION } from "../theme.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -101,6 +101,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       borderColor={riskColor()}
       paddingLeft={1}
       paddingRight={1}
+      {...MODAL_POSITION}
     >
       {/* Title */}
       <box flexDirection="row" gap={1}>
