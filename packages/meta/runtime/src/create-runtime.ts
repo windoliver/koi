@@ -12,6 +12,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  RetrySignalReader,
   RichTrajectoryStep,
   ToolDescriptor,
   ToolRequest,
@@ -174,6 +175,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     config.userId,
     config.channelId,
     allToolDescriptors,
+    config.retrySignalReader,
+    config.agentName ?? DEFAULT_AGENT_NAME,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -620,6 +623,8 @@ function composeMiddlewareIntoAdapter(
   userId?: string,
   channelId?: string,
   toolDescriptors?: readonly ToolDescriptor[],
+  retrySignalReader?: RetrySignalReader,
+  agentName?: string,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -666,7 +671,12 @@ function composeMiddlewareIntoAdapter(
       // in one trajectory document.
       const perStreamEventTrace =
         store !== undefined
-          ? createEventTraceMiddleware({ store, docId, agentName: "runtime" }).middleware
+          ? createEventTraceMiddleware({
+              store,
+              docId,
+              agentName: agentName ?? "runtime",
+              ...(retrySignalReader !== undefined ? { signalReader: retrySignalReader } : {}),
+            }).middleware
           : undefined;
 
       const perStreamMiddleware =

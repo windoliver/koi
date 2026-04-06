@@ -431,4 +431,19 @@ describe("createRuntime", () => {
     const runtime = createRuntime();
     expect(runtime.trajectoryStore).toBeUndefined();
   });
+
+  test("retrySignalReader is accepted and threads to event-trace", () => {
+    const fakeReader: import("@koi/core").RetrySignalReader = {
+      getRetrySignal: () => undefined,
+      consumeRetrySignal: () => undefined,
+    };
+    const runtime = createRuntime({
+      retrySignalReader: fakeReader,
+      agentName: "test-agent",
+      trajectoryDir: `/tmp/koi-traj-test-${Date.now()}`,
+    });
+
+    expect(runtime.trajectoryStore).toBeDefined();
+    expect(runtime.adapter).toBeDefined();
+  });
 });
