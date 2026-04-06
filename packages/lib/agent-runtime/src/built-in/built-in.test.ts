@@ -84,16 +84,21 @@ describe("getBuiltInAgents", () => {
 // ---------------------------------------------------------------------------
 
 describe("COORDINATOR_TOOL_ALLOWLIST", () => {
-  test("coordinator manifest spawn.tools.list is the worker ceiling (excludes Spawn)", () => {
+  test("coordinator manifest spawn.tools.list is the worker ceiling (excludes Spawn and task_delegate)", () => {
     // The manifest ceiling controls what workers spawned BY the coordinator can use.
-    // Workers do actual work — they must NOT have Spawn (no further delegation).
-    // COORDINATOR_TOOL_ALLOWLIST (assembler-facing) includes "Spawn"; manifest ceiling does not.
+    // Workers do actual work — they must NOT have:
+    //   "Spawn" (no further delegation to sub-agents)
+    //   "task_delegate" (workers cannot re-assign tasks; prevents stale workers from
+    //                    hijacking recovered tasks after a coordinator crash)
     const spawnToolsList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list;
     expect(spawnToolsList).toBeDefined();
     expect(spawnToolsList).not.toContain("Spawn");
-    // All non-Spawn tools from assembler allowlist must appear in worker ceiling
-    const nonSpawnAllowlist = [...COORDINATOR_TOOL_ALLOWLIST].filter((t) => t !== "Spawn");
-    expect(spawnToolsList).toEqual(nonSpawnAllowlist);
+    expect(spawnToolsList).not.toContain("task_delegate");
+    // Worker ceiling = allowlist minus Spawn and task_delegate
+    const workerCeiling = [...COORDINATOR_TOOL_ALLOWLIST].filter(
+      (t) => t !== "Spawn" && t !== "task_delegate",
+    );
+    expect(spawnToolsList).toEqual(workerCeiling);
   });
 
   test("coordinator manifest spawn.tools.policy is allowlist", () => {

@@ -24,9 +24,17 @@ import { parseAgentDefinition } from "../parse-agent-definition.js";
  * it only receives these tools. Includes `"Spawn"` so the coordinator can
  * delegate to workers.
  *
+ * **Provisioning vs. restriction**: `self_ceiling` (and this allowlist) is a
+ * restriction ceiling — it limits which tools the coordinator may receive, but
+ * does not provision tools that the parent does not already have. Board tools
+ * (`task_create`, `task_list`, etc.) reach the coordinator only when the parent
+ * agent's provider chain includes a board tool provider. If the parent lacks
+ * board tools, the coordinator will only inherit whatever tools the parent has
+ * that fall within this allowlist (typically just `"Spawn"`).
+ *
  * Note: the coordinator's manifest `spawn.tools.list` (ceiling for ITS children)
- * does NOT include `"Spawn"` — workers dispatched by the coordinator should not
- * be able to spawn further. See `COORDINATOR_WORKER_CEILING` below.
+ * excludes both `"Spawn"` and `"task_delegate"` — workers do actual work and
+ * must not spawn further agents or re-delegate tasks. See `COORDINATOR_WORKER_CEILING`.
  */
 export const COORDINATOR_TOOL_ALLOWLIST: readonly [
   "Spawn",
@@ -48,13 +56,18 @@ export const COORDINATOR_TOOL_ALLOWLIST: readonly [
 
 /**
  * Tool ceiling for workers spawned BY the coordinator.
- * Derived from COORDINATOR_TOOL_ALLOWLIST minus "Spawn" — workers do actual work
- * and should not spawn further agents.
+ * Derived from COORDINATOR_TOOL_ALLOWLIST minus "Spawn" and "task_delegate":
+ * - Workers do actual work and should not spawn further agents (no "Spawn")
+ * - Workers should not re-delegate tasks to other agents (no "task_delegate")
+ *   This also prevents stale workers from reassigning recovered tasks after a
+ *   coordinator crash, as `board.unassign()` returns tasks to `pending` state.
  *
  * Embedded into the coordinator manifest's `spawn.tools.list`.
  * @internal — not exported; consumers use COORDINATOR_TOOL_ALLOWLIST.
  */
-const COORDINATOR_WORKER_CEILING = COORDINATOR_TOOL_ALLOWLIST.filter((t) => t !== "Spawn");
+const COORDINATOR_WORKER_CEILING = COORDINATOR_TOOL_ALLOWLIST.filter(
+  (t) => t !== "Spawn" && t !== "task_delegate",
+);
 
 export const COORDINATOR_MD: string = `---
 name: coordinator
