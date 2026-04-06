@@ -125,23 +125,25 @@ export function createSessionTranscriptMiddleware(
           if (doneResponse !== undefined && successReasons.has(doneResponse.stopReason)) {
             const toAppend: TranscriptEntry[] = [];
 
-            // Persist the inbound user/tool/system message on commit (not before the
+            // Persist the inbound user/system message on commit (not before the
             // stream starts) so that retry-rewritten requests from semantic-retry do
             // not produce duplicate or synthetic user entries in the transcript.
+            //
+            // Skip senderId === "tool": wrapToolCall already wrote a tool_result entry
+            // immediately after execution. Re-writing it here would produce duplicates
+            // that break one-to-one tool_call/result reconstruction on replay.
             const lastMsg = request.messages.at(-1);
-            if (lastMsg !== undefined) {
+            if (lastMsg !== undefined && lastMsg.senderId !== "tool") {
               const content = lastMsg.content
                 .map((c) => (c.kind === "text" ? c.text : JSON.stringify(c)))
                 .join("\n");
               if (content.length > 0) {
                 const role: TranscriptEntry["role"] =
-                  lastMsg.senderId === "tool"
-                    ? "tool_result"
-                    : lastMsg.senderId === "system"
-                      ? "system"
-                      : lastMsg.senderId === "assistant"
-                        ? "assistant"
-                        : "user";
+                  lastMsg.senderId === "system"
+                    ? "system"
+                    : lastMsg.senderId === "assistant"
+                      ? "assistant"
+                      : "user";
                 toAppend.push({
                   id: transcriptEntryId(`${String(idPrefix)}-u-${ctx.turnIndex}-${Date.now()}`),
                   role,
