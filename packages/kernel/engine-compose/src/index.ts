@@ -17,7 +17,6 @@ export {
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
-  formatCapabilityMessage,
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,

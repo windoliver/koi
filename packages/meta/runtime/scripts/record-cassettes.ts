@@ -849,14 +849,34 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             },
           };
         })();
-      const text = input.kind === "text" ? input.text : "";
       const maxTurns = config.maxTurns ?? 1;
       const msgs: {
         readonly senderId: string;
         readonly timestamp: number;
         readonly content: readonly { readonly kind: "text"; readonly text: string }[];
         readonly metadata?: JsonObject;
-      }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
+      }[] = [];
+      // Seed conversation from input: text prompt → single user message;
+      // messages input (e.g., stop-gate retry with feedback) → preserve
+      // all messages so the model sees the retry context instead of an
+      // empty conversation (#1493 anomaly fix).
+      if (input.kind === "messages") {
+        for (const m of input.messages) {
+          const text = m.content
+            .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
+            .map((c) => c.text)
+            .join("");
+          msgs.push({
+            senderId: m.senderId,
+            timestamp: m.timestamp,
+            content: [{ kind: "text", text }],
+            ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+          });
+        }
+      } else {
+        const text = input.kind === "text" ? input.text : "";
+        msgs.push({ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] });
+      }
       return (async function* () {
         // let: mutable
         let turn = 0;
@@ -1499,17 +1519,42 @@ const queries: readonly QueryConfig[] = [
   },
 
   // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  //
+  // Backend models a two-stage enterprise authorization: `checkBatch` is the
+  // cheap catalog-advertising stage used at tool-filter time (answers "is this
+  // tool listed in the caller's catalog?"), while `check` is the expensive
+  // per-invocation policy stage that also consults request-scoped context like
+  // args, rate limits, or session-level risk signals. Because these two stages
+  // answer different questions, they can legitimately produce different
+  // decisions for the same resource — this is how real ABAC/ReBAC backends
+  // (OPA, OpenFGA, Cedar) are commonly wired.
+  //
+  // In this fixture:
+  //   - catalog stage (checkBatch): add_numbers is in the catalog → allow
+  //   - invocation stage (check):    per-call policy denies add_numbers → deny
+  // The model therefore sees the tool, attempts to call it, and the
+  // wrapToolCall gate denies with a realistic execution-time reason. This
+  // exercises the denial-escalation path (#1493).
+  //
+  // Both paths are derived from single-arrow named functions so the
+  // asymmetry is explicit and auditable — no hidden state, no cross-stage
+  // contradiction dressed up as policy equivalence.
   {
     name: "denial-escalation",
     prompt: "Call the add_numbers tool with a=3 and b=4. Report the result.",
     permissionMode: "default",
     permissionRules: [{ pattern: "*", action: "*", effect: "allow", source: "user" }],
-    permissionDescription: "default mode — policy enforcement active",
+    permissionDescription: "tool catalog",
     permissionBackend: {
+      // Invocation stage: full per-call policy evaluation.
       check: (query) =>
         query.resource === "add_numbers"
-          ? { effect: "deny" as const, reason: "Policy denies add_numbers" }
+          ? {
+              effect: "deny" as const,
+              reason: "add_numbers invocation denied by per-call policy",
+            }
           : { effect: "allow" as const },
+      // Catalog stage: cheap visibility check, tool advertised to callers.
       checkBatch: (queries) => queries.map(() => ({ effect: "allow" as const })),
     },
     denialEscalation: { threshold: 1, windowMs: 300_000 },
