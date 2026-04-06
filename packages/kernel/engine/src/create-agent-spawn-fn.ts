@@ -200,18 +200,26 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
-    //    Attach a fresh Spawn provider for the child only when the effective tool ceiling
-    //    allows it AND the child is not a fork. Fork children never get a fresh Spawn
-    //    provider — this is the hard recursion guard (applyForkDenylist adds "agent_spawn"
-    //    to the inherited-tool denylist as defense-in-depth, but the real guard is here).
+    //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
+    //      a) The parent manifest's spawn ceiling allows Spawn for children
+    //      b) The child is not a fork (fork recursion guard — forks never delegate further)
+    //      c) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
+    //    The selfCeiling check ensures built-ins like coordinator can't receive Spawn from a
+    //    privileged parent even if (a) and (b) would otherwise allow it.
     const isFork = request.fork === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
       request.toolAllowlist,
     );
+    const childSelfCeilingTools = manifest.selfCeiling?.tools;
+    const selfCeilingAllowsSpawn =
+      childSelfCeilingTools === undefined || childSelfCeilingTools.includes("Spawn");
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined && spawnAllowedByManifest && !isFork
+      options.spawnProviderFactory !== undefined &&
+      spawnAllowedByManifest &&
+      !isFork &&
+      selfCeilingAllowsSpawn
         ? [options.spawnProviderFactory()]
         : [];
 

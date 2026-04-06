@@ -114,8 +114,10 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   const baseDenylist = expandDenylistWithAlwaysExcluded(
     options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
   );
-  // Apply fork recursion guard: strip agent_spawn from fork children (Decision 3-A).
-  // This is a type-level guarantee — independent of system prompt or manifest config.
+  // Apply fork recursion guard: strip Spawn from fork children (Decision 3-A).
+  // Defense-in-depth alongside the !isFork check in create-agent-spawn-fn.ts which
+  // prevents attaching a fresh Spawn provider. Together they ensure fork children cannot
+  // delegate further — independent of system prompt or manifest configuration.
   const forkGuardedDenylist = applyForkDenylist(baseDenylist, isFork);
   // let justified: modified below when applying manifest ceiling
   let toolDenylist: ReadonlySet<string> =
@@ -153,9 +155,14 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // This is intersected with the effective allowlist regardless of what the caller requests.
   // Built-in agents (e.g. coordinator) use this to enforce delegation-only surfaces
   // automatically, even when spawned by a privileged parent without an explicit toolAllowlist.
+  // selfCeilingSet is kept in scope to filter additionalTools below (injected tools must also
+  // respect the ceiling — they bypass the inherited-tool path but not the manifest constraint).
   const selfCeilingTools = options.manifest.selfCeiling?.tools;
-  if (selfCeilingTools !== undefined && selfCeilingTools.length > 0) {
-    const selfCeilingSet = new Set(selfCeilingTools);
+  const selfCeilingSet: ReadonlySet<string> | undefined =
+    selfCeilingTools !== undefined && selfCeilingTools.length > 0
+      ? new Set(selfCeilingTools)
+      : undefined;
+  if (selfCeilingSet !== undefined) {
     toolAllowlist =
       toolAllowlist !== undefined
         ? intersectSets(toolAllowlist, selfCeilingSet) // intersect with existing ceiling
@@ -172,21 +179,29 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 4. Build additional providers from inheritance config
   const inheritanceProviders: ComponentProvider[] = [];
 
-  // 4.0 Additional tool descriptors (e.g., HookVerdict for agent hooks)
+  // 4.0 Additional tool descriptors (e.g., HookVerdict for agent hooks).
+  // Apply selfCeiling filter: injected tools must respect the child manifest's ceiling just as
+  // inherited tools do — a privileged parent cannot bypass selfCeiling via additionalTools.
   if (options.additionalTools !== undefined && options.additionalTools.length > 0) {
-    const toolEntries = options.additionalTools.map((desc) => {
-      const tool: Tool = {
-        descriptor: desc,
-        origin: "operator",
-        policy: DEFAULT_UNSANDBOXED_POLICY,
-        execute: async (input) => ({ result: input }),
-      };
-      return [`tool:${desc.name}`, tool] as const;
-    });
-    inheritanceProviders.push({
-      name: "additional-tools",
-      attach: async () => new Map(toolEntries),
-    });
+    const allowedAdditionalTools =
+      selfCeilingSet !== undefined
+        ? options.additionalTools.filter((d) => selfCeilingSet.has(d.name))
+        : options.additionalTools;
+    if (allowedAdditionalTools.length > 0) {
+      const toolEntries = allowedAdditionalTools.map((desc) => {
+        const tool: Tool = {
+          descriptor: desc,
+          origin: "operator",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
+          execute: async (input) => ({ result: input }),
+        };
+        return [`tool:${desc.name}`, tool] as const;
+      });
+      inheritanceProviders.push({
+        name: "additional-tools",
+        attach: async () => new Map(toolEntries),
+      });
+    }
   }
 
   // 4a. Env inheritance — apply manifest ceiling (spawn.env.exclude) before runtime overrides.
@@ -469,7 +484,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
  * Stripping at the denylist level is a type-level guarantee independent of
  * system prompt instructions or manifest configuration.
  */
-const FORK_RECURSION_GUARD_TOOL = "agent_spawn";
+const FORK_RECURSION_GUARD_TOOL = "Spawn";
 
 /**
  * Strips `agent_spawn` from the denylist when `isFork` is true.

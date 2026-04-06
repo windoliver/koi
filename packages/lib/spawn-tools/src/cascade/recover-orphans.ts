@@ -13,6 +13,7 @@
  */
 
 import type { AgentId, ManagedTaskBoard, TaskItemId } from "@koi/core";
+import { isTerminalTaskStatus } from "@koi/core";
 
 export interface OrphanRecoveryResult {
   /** IDs of tasks that were killed (now terminal). */
@@ -90,9 +91,22 @@ export async function recoverOrphanedTasks(
     const killResult = await board.kill(orphan.id);
     if (killResult?.ok) {
       killed.push(orphan.id);
+    } else {
+      // kill() returned non-ok. Two cases:
+      // (a) Task already reached a terminal state concurrently — replacement is valid, no duplication.
+      // (b) Transient store error — original still in_progress alongside the new replacement.
+      //     Case (b) creates duplicate live work, so we roll back the replacement and report failure.
+      const currentStatus = board.snapshot().get(orphan.id)?.status;
+      if (currentStatus !== undefined && isTerminalTaskStatus(currentStatus)) {
+        // Case (a): already terminal — replacement pending is safe. No entry in killed.
+      } else {
+        // Case (b): original still live. Kill the just-added replacement to prevent duplication.
+        await board.kill(newId); // best-effort cleanup
+        requeued.pop(); // undo the requeued push for newId
+        failed.push(orphan.id);
+        break; // stop further recovery on a degraded store
+      }
     }
-    // If kill failed (task already terminal), the replacement is still valid.
-    // The coordinator will find the replacement pending — acceptable state.
   }
 
   return { killed, requeued, failed };

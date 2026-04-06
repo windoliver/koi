@@ -2,9 +2,13 @@
  * spawn-fork — unit tests for fork recursion guard and maxTurns default.
  *
  * Tests the applyForkDenylist() and applyForkMaxTurns() pure helpers directly.
- * These helpers are the sole enforcement mechanism for:
- *   - Recursion guard: fork children cannot call agent_spawn
+ * These helpers are part of the defense-in-depth enforcement for:
+ *   - Recursion guard: fork children cannot use the "Spawn" tool
  *   - Turn cap: fork children default to DEFAULT_FORK_MAX_TURNS when maxTurns is unset
+ *
+ * The primary recursion guard is in create-agent-spawn-fn.ts (!isFork suppresses the
+ * Spawn provider entirely). applyForkDenylist is defense-in-depth on the inherited-tool
+ * path — it ensures "Spawn" is denied even if the provider check were somehow bypassed.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -12,21 +16,21 @@ import { DEFAULT_FORK_MAX_TURNS } from "@koi/core";
 import { applyForkDenylist, applyForkMaxTurns } from "../spawn-child.js";
 
 // applyForkDenylist operates on a DENYLIST (set of tool names to exclude from the child).
-// Adding agent_spawn to the denylist means the child cannot use it — the recursion guard.
+// Adding "Spawn" to the denylist means the tool cannot be inherited — the recursion guard.
 
 describe("applyForkDenylist", () => {
-  test("adds agent_spawn to denylist for fork children (blocks recursive forks)", () => {
-    // Base denylist has no entry for agent_spawn — it would normally be inherited
+  test("adds Spawn to denylist for fork children (blocks recursive forks)", () => {
+    // Base denylist has no entry for Spawn — it would normally be inherited
     const base = new Set<string>(["some_tool"]);
     const result = applyForkDenylist(base, true);
-    expect(result.has("agent_spawn")).toBe(true); // now denied → cannot be inherited
+    expect(result.has("Spawn")).toBe(true); // now denied → cannot be inherited
     expect(result.has("some_tool")).toBe(true); // original denies preserved
   });
 
-  test("does not add agent_spawn to denylist for regular (non-fork) spawns", () => {
+  test("does not add Spawn to denylist for regular (non-fork) spawns", () => {
     const base = new Set<string>(["some_tool"]);
     const result = applyForkDenylist(base, false);
-    expect(result.has("agent_spawn")).toBe(false); // not denied → can be inherited
+    expect(result.has("Spawn")).toBe(false); // not denied → handled by fresh-provider path
     expect(result.has("some_tool")).toBe(true);
   });
 
@@ -34,17 +38,17 @@ describe("applyForkDenylist", () => {
     // Base denylist already denies shell_exec and file_write
     const base = new Set<string>(["shell_exec", "file_write"]);
     const result = applyForkDenylist(base, true);
-    expect(result.has("agent_spawn")).toBe(true); // guard added
+    expect(result.has("Spawn")).toBe(true); // guard added
     expect(result.has("shell_exec")).toBe(true); // original preserved
     expect(result.has("file_write")).toBe(true); // original preserved
   });
 
-  test("is idempotent when agent_spawn is already in the denylist", () => {
-    // If the caller already denied agent_spawn, adding it again is a no-op
-    const base = new Set<string>(["agent_spawn", "task_list"]);
+  test("is idempotent when Spawn is already in the denylist", () => {
+    // If the caller already denied Spawn, adding it again is a no-op
+    const base = new Set<string>(["Spawn", "task_list"]);
     const result = applyForkDenylist(base, true);
-    expect(result.has("agent_spawn")).toBe(true);
-    expect([...result].filter((t) => t === "agent_spawn").length).toBe(1); // only once
+    expect(result.has("Spawn")).toBe(true);
+    expect([...result].filter((t) => t === "Spawn").length).toBe(1); // only once
   });
 
   test("does not mutate the input set", () => {
@@ -52,6 +56,15 @@ describe("applyForkDenylist", () => {
     const before = new Set(base);
     applyForkDenylist(base, true);
     expect(base).toEqual(before);
+  });
+
+  test("fork children have Spawn denied (contract: no recursive delegation from forks)", () => {
+    // This pins the behavioral contract: fork children MUST NOT receive Spawn.
+    // The primary guard is create-agent-spawn-fn.ts (!isFork suppresses the provider).
+    // This test pins the defense-in-depth layer: the denylist also blocks inheritance.
+    const base = new Set<string>();
+    const result = applyForkDenylist(base, true);
+    expect(result.has("Spawn")).toBe(true); // contract: Spawn is always denied for forks
   });
 });
 
