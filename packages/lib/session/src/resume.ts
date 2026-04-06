@@ -46,9 +46,12 @@ export function resumeFromTranscript(
 ): Result<ResumeResult, KoiError> {
   const messages: InboundMessage[] = [];
 
-  // callIds of tool_calls waiting for positional tool_result matching.
-  // Queue semantics: pendingCalls[pendingCallOffset] is the next unmatched callId.
-  const pendingCalls: string[] = [];
+  // Pending tool_calls waiting for positional tool_result matching.
+  // Queue semantics: pendingCalls[pendingCallOffset] is the next unmatched call.
+  // Stores both callId and toolName so tool_result messages can round-trip the
+  // full metadata the request-mapper and repairSession expect (callId, toolCallId,
+  // toolName) without lossy reconstruction.
+  const pendingCalls: Array<{ readonly id: string; readonly toolName: string }> = [];
   let pendingCallOffset = 0;
 
   for (const transcriptEntry of entries) {
@@ -88,28 +91,44 @@ export function resumeFromTranscript(
           // Corrupt tool_call entry — skip to avoid crashing resume
           break;
         }
-        // Each call becomes one assistant message with its callId for pairing
+        // Each call becomes one assistant message. Emit the same metadata shape
+        // that live turns produce (callId, callName, callArgs, toolName) so the
+        // request-mapper can reconstruct the original tool_call block faithfully
+        // and provider-side validation doesn't see unknown({}) placeholders.
         for (const call of calls) {
+          // Use call.id as content text — each callId is unique, so consecutive
+          // assistant messages in a multi-tool turn get distinct content hashes
+          // and survive repairSession()'s dedup phase (which hashes content only,
+          // not metadata). The request-mapper reconstructs the tool_call block
+          // from callId/callName/callArgs metadata and ignores the text content.
           messages.push({
             senderId: "assistant",
-            content: [{ kind: "text", text: call.toolName }],
+            content: [{ kind: "text", text: call.id }],
             timestamp: transcriptEntry.timestamp,
-            metadata: { callId: call.id, toolName: call.toolName },
+            metadata: {
+              callId: call.id,
+              callName: call.toolName,
+              callArgs: call.args,
+              toolName: call.toolName,
+            },
           });
-          pendingCalls.push(call.id);
+          pendingCalls.push({ id: call.id, toolName: call.toolName });
         }
         break;
       }
 
       case "tool_result": {
-        // Positional match: consume the earliest unmatched callId
-        const callId = pendingCalls[pendingCallOffset] ?? "unknown";
+        // Positional match: consume the earliest unmatched call.
+        // Emit toolCallId + toolName alongside callId so the request-mapper
+        // can reconstruct the tool_result block using any of the linkage keys
+        // (callId, toolCallId) and so repairSession can classify the result.
+        const pending = pendingCalls[pendingCallOffset] ?? { id: "unknown", toolName: "unknown" };
         pendingCallOffset++;
         messages.push({
           senderId: "tool",
           content: [{ kind: "text", text: transcriptEntry.content }],
           timestamp: transcriptEntry.timestamp,
-          metadata: { callId },
+          metadata: { callId: pending.id, toolCallId: pending.id, toolName: pending.toolName },
         });
         break;
       }
@@ -121,14 +140,20 @@ export function resumeFromTranscript(
   // repairSession sees a balanced history and the model knows these calls failed.
   const lastTimestamp = entries.at(-1)?.timestamp ?? Date.now();
   for (let i = pendingCallOffset; i < pendingCalls.length; i++) {
-    const callId = pendingCalls[i] ?? "unknown";
+    const pending = pendingCalls[i] ?? { id: "unknown", toolName: "unknown" };
     messages.push({
       senderId: "tool",
       content: [
         { kind: "text", text: "[Tool result lost — session crashed before tool completed]" },
       ],
       timestamp: lastTimestamp,
-      metadata: { callId, synthetic: true, isError: true },
+      metadata: {
+        callId: pending.id,
+        toolCallId: pending.id,
+        toolName: pending.toolName,
+        synthetic: true,
+        isError: true,
+      },
     });
   }
 
