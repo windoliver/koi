@@ -3,7 +3,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ModelRequest, ModelResponse, SessionContext, TurnContext } from "@koi/core";
+import type {
+  ModelRequest,
+  ModelResponse,
+  SessionContext,
+  ToolRequest,
+  ToolResponse,
+  TurnContext,
+} from "@koi/core";
 import { createRetrySignalBroker } from "./retry-signal-broker.js";
 import { createSemanticRetryMiddleware } from "./semantic-retry.js";
 
@@ -245,6 +252,158 @@ describe("createSemanticRetryMiddleware", () => {
       // Budget exhausted — signal must be cleared so later steps
       // are not mislabeled as retries
       expect(broker.getRetrySignal("s1")).toBeUndefined();
+    });
+  });
+
+  describe("hook-blocked tool response detection", () => {
+    it("records failure when tool response has blockedByHook metadata", async () => {
+      const broker = createRetrySignalBroker();
+      const handle = createSemanticRetryMiddleware({ signalWriter: broker });
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      const blockedResponse: ToolResponse = {
+        output: { error: "Hook blocked tool_call: tool not permitted" },
+        metadata: { blockedByHook: true, hookName: "test-hook" },
+      };
+      const toolRequest: ToolRequest = {
+        toolId: "dangerous-tool",
+        input: { path: "/etc/passwd" },
+      };
+
+      const result = await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1"),
+        toolRequest,
+        async () => blockedResponse,
+      );
+
+      // Response is returned unchanged (model sees the blocked message)
+      expect(result).toBe(blockedResponse);
+      // No record appended — hook denials must not pollute retry history
+      // (would misnumber later real retry attempts)
+      expect(handle.getRecords("s1").length).toBe(0);
+      expect(handle.getRetryBudget("s1")).toBe(3); // budget unchanged
+    });
+
+    it("preserves prior retry signal when hook-blocked response arrives", async () => {
+      const broker = createRetrySignalBroker();
+      const handle = createSemanticRetryMiddleware({ signalWriter: broker });
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      // Simulate a prior failure that set a retry signal
+      const priorSignal = {
+        retrying: true as const,
+        originTurnIndex: 0,
+        reason: "prior failure",
+        failureClass: "unknown",
+        attemptNumber: 1,
+      };
+      broker.setRetrySignal("s1", priorSignal);
+
+      const blockedResponse: ToolResponse = {
+        output: { error: "Hook blocked tool_call: denied" },
+        metadata: { blockedByHook: true },
+      };
+
+      await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1", 1),
+        { toolId: "test-tool", input: {} } as ToolRequest,
+        async () => blockedResponse,
+      );
+
+      // Signal preserved — event-trace needs it to annotate the actual retry step
+      expect(broker.getRetrySignal("s1")).toEqual(priorSignal);
+    });
+
+    it("preserves pendingAction from prior failure when hook-blocked response arrives", async () => {
+      const handle = createSemanticRetryMiddleware({});
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      // Trigger a failure to set pendingAction (abort or rewrite)
+      try {
+        await handle.middleware.wrapModelCall?.(
+          createMinimalTurnCtx("s1"),
+          createMinimalRequest(),
+          async () => {
+            throw new Error("simulated failure");
+          },
+        );
+      } catch {
+        // Expected — the error is re-thrown
+      }
+
+      // A hook-blocked tool response arrives — must NOT clear pendingAction
+      const blockedResponse: ToolResponse = {
+        output: { error: "blocked" },
+        metadata: { blockedByHook: true },
+      };
+      await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1", 1),
+        { toolId: "test-tool", input: {} } as ToolRequest,
+        async () => blockedResponse,
+      );
+
+      // Next model call should see the prior failure's pending action
+      // (rewrite or abort), not bypass it
+      expect(handle.getRecords("s1").length).toBeGreaterThan(0);
+    });
+
+    it("does not emit retry signal for hook-blocked tool response", async () => {
+      const broker = createRetrySignalBroker();
+      const handle = createSemanticRetryMiddleware({ signalWriter: broker });
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      const blockedResponse: ToolResponse = {
+        output: { error: "Hook blocked tool_call: denied" },
+        metadata: { blockedByHook: true },
+      };
+
+      await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1", 5),
+        { toolId: "test-tool", input: {} } as ToolRequest,
+        async () => blockedResponse,
+      );
+
+      // No signal emitted — hook denials are non-retryable and emitting a
+      // signal would poison the next successful step with stale retry metadata
+      const signal = broker.getRetrySignal("s1");
+      expect(signal).toBeUndefined();
+    });
+
+    it("does not record failure for normal tool responses", async () => {
+      const handle = createSemanticRetryMiddleware({});
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      const normalResponse: ToolResponse = {
+        output: "success",
+      };
+
+      const result = await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1"),
+        { toolId: "safe-tool", input: {} } as ToolRequest,
+        async () => normalResponse,
+      );
+
+      expect(result).toBe(normalResponse);
+      expect(handle.getRecords("s1").length).toBe(0);
+    });
+
+    it("does not record failure for committedButRedacted responses", async () => {
+      const handle = createSemanticRetryMiddleware({});
+      await handle.middleware.onSessionStart?.(createMinimalSessionCtx("s1"));
+
+      const redactedResponse: ToolResponse = {
+        output: "[redacted]",
+        metadata: { committedButRedacted: true },
+      };
+
+      const result = await handle.middleware.wrapToolCall?.(
+        createMinimalTurnCtx("s1"),
+        { toolId: "test-tool", input: {} } as ToolRequest,
+        async () => redactedResponse,
+      );
+
+      expect(result).toBe(redactedResponse);
+      expect(handle.getRecords("s1").length).toBe(0);
     });
   });
 
