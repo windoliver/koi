@@ -1,5 +1,5 @@
 {
-  "name": "@koi/cli",
+  "name": "@koi-agent/cli",
   "description": "Interactive command-line interface for agent initialization and local execution",
   "version": "0.1.0",
   "type": "module",

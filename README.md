@@ -33,7 +33,7 @@
 **From npm** (requires [Bun](https://bun.sh)):
 
 ```bash
-bun install -g @koi/cli
+bun install -g @koi-agent/cli
 ```
 
 **From source:**
