@@ -3739,8 +3739,8 @@ describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
 // ---------------------------------------------------------------------------
 // spawn-fork ATIF trajectory (golden file) — #1241
 // Validates fork=true is passed to Spawn and the child agent runs to completion.
-// Note: fork children DO get a fresh Spawn provider (bound to themselves) — the
-// "agent_spawn" denylist guard targets coordinator-style tools, not the default "Spawn".
+// Note: fork children do NOT get a fresh Spawn provider — the recursion guard in
+// create-agent-spawn-fn suppresses spawnProviderFactory when fork=true.
 // ---------------------------------------------------------------------------
 
 describe("spawn-fork ATIF trajectory (golden file)", () => {
@@ -5231,11 +5231,11 @@ describe("Approval trajectory capture (e2e)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: fork mode + coordinator allowlist (#1241)", () => {
-  test("COORDINATOR_TOOL_ALLOWLIST contains delegation tools and agent_spawn (fork recursion guard)", async () => {
+  test("COORDINATOR_TOOL_ALLOWLIST contains Spawn and delegation tools (assembler-facing)", async () => {
     const { COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
-    // agent_spawn in allowlist: coordinator can spawn children but fork recursion guard
-    // strips agent_spawn from fork children, preventing recursive forks (#1241)
-    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("agent_spawn");
+    // "Spawn" (runtime name) must be in the assembler allowlist so the coordinator
+    // can delegate to workers. "agent_spawn" was the wrong name — runtime tool is "Spawn".
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("Spawn");
     expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_create");
     expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_delegate");
     expect(COORDINATOR_TOOL_ALLOWLIST).toContain("send_message");
@@ -5245,13 +5245,18 @@ describe("Golden: fork mode + coordinator allowlist (#1241)", () => {
     expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Grep");
   });
 
-  test("coordinator manifest spawn.tools.policy is allowlist with correct list", async () => {
+  test("coordinator manifest spawn ceiling excludes Spawn (workers cannot delegate further)", async () => {
     const { COORDINATOR_MANIFEST, COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
-    // The manifest's spawn config matches the declared allowlist (single source of truth)
+    // The manifest's spawn.tools.list is the ceiling for workers the coordinator spawns.
+    // Workers should NOT have Spawn — only the coordinator itself needs it.
+    // COORDINATOR_TOOL_ALLOWLIST (assembler-facing) includes Spawn; manifest ceiling does not.
     expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
     const manifestList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list ?? [];
-    expect([...manifestList].sort()).toEqual([...COORDINATOR_TOOL_ALLOWLIST].sort());
-    // File/shell tools must never be in the coordinator's allowlist
+    expect(manifestList).not.toContain("Spawn"); // workers cannot delegate further
+    // All non-Spawn tools from assembler allowlist must be in worker ceiling
+    const nonSpawnAllowlist = [...COORDINATOR_TOOL_ALLOWLIST].filter((t) => t !== "Spawn");
+    expect([...manifestList].sort()).toEqual(nonSpawnAllowlist.sort());
+    // File/shell tools must never be in the worker ceiling
     expect(manifestList).not.toContain("Glob");
     expect(manifestList).not.toContain("Grep");
     expect(manifestList).not.toContain("ToolSearch");

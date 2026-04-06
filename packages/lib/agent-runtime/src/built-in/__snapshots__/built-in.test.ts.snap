@@ -31,7 +31,7 @@ exports[`getBuiltInAgents structural snapshot: agentType, tools, model 1`] = `
 
 exports[`COORDINATOR_TOOL_ALLOWLIST COORDINATOR_TOOL_ALLOWLIST snapshot — adding tools requires deliberate update 1`] = `
 [
-  "agent_spawn",
+  "Spawn",
   "task_create",
   "task_list",
   "task_output",

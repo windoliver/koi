@@ -15,18 +15,21 @@ import { deepFreezeDefinition } from "../freeze.js";
 import { parseAgentDefinition } from "../parse-agent-definition.js";
 
 /**
- * The canonical tool surface for a coordinator agent.
+ * The canonical tool surface for a coordinator agent (assembler-facing).
  *
  * Coordinators may ONLY use delegation and task-board tools — no file system,
  * shell, or search tools. This matches CC's `COORDINATOR_MODE_ALLOWED_TOOLS`.
  *
- * Used in two places:
- * 1. Embedded into `COORDINATOR_MD` as `spawn.tools.list` (ceiling for children)
- * 2. Exported for L3 assemblers to use as `SpawnRequest.toolAllowlist` when spawning
- *    a coordinator (ensures the coordinator itself only receives these tools)
+ * Pass as `SpawnRequest.toolAllowlist` when spawning a coordinator to ensure
+ * it only receives these tools. Includes `"Spawn"` so the coordinator can
+ * delegate to workers.
+ *
+ * Note: the coordinator's manifest `spawn.tools.list` (ceiling for ITS children)
+ * does NOT include `"Spawn"` — workers dispatched by the coordinator should not
+ * be able to spawn further. See `COORDINATOR_WORKER_CEILING` below.
  */
 export const COORDINATOR_TOOL_ALLOWLIST: readonly [
-  "agent_spawn",
+  "Spawn",
   "task_create",
   "task_list",
   "task_output",
@@ -34,7 +37,7 @@ export const COORDINATOR_TOOL_ALLOWLIST: readonly [
   "task_stop",
   "send_message",
 ] = [
-  "agent_spawn",
+  "Spawn",
   "task_create",
   "task_list",
   "task_output",
@@ -43,14 +46,24 @@ export const COORDINATOR_TOOL_ALLOWLIST: readonly [
   "send_message",
 ] as const;
 
+/**
+ * Tool ceiling for workers spawned BY the coordinator.
+ * Derived from COORDINATOR_TOOL_ALLOWLIST minus "Spawn" — workers do actual work
+ * and should not spawn further agents.
+ *
+ * Embedded into the coordinator manifest's `spawn.tools.list`.
+ * @internal — not exported; consumers use COORDINATOR_TOOL_ALLOWLIST.
+ */
+const COORDINATOR_WORKER_CEILING = COORDINATOR_TOOL_ALLOWLIST.filter((t) => t !== "Spawn");
+
 export const COORDINATOR_MD: string = `---
 name: coordinator
-description: Multi-agent coordinator that decomposes a goal into parallel tasks, delegates each to a specialist child agent via agent_spawn, monitors progress via task_list and task_output, and synthesizes a coherent result once all tasks complete. Use when a goal is too broad for a single agent or would benefit from parallel specialist execution.
+description: Multi-agent coordinator that decomposes a goal into parallel tasks, delegates each to a specialist child agent via Spawn, monitors progress via task_list and task_output, and synthesizes a coherent result once all tasks complete. Use when a goal is too broad for a single agent or would benefit from parallel specialist execution.
 model: opus
 spawn:
   tools:
     policy: allowlist
-    list: [${COORDINATOR_TOOL_ALLOWLIST.join(", ")}]
+    list: [${COORDINATOR_WORKER_CEILING.join(", ")}]
 ---
 
 You are a coordinator agent. Your role is to decompose complex goals into focused parallel tasks, delegate each to the right specialist agent, monitor progress, and synthesize a coherent final result.
@@ -59,7 +72,7 @@ You are a coordinator agent. Your role is to decompose complex goals into focuse
 
 1. **Decompose** — Use \`task_create\` to add all subtasks to the board. Set \`metadata.kind\` on each task to enable result schema validation (e.g. \`{ kind: "research" }\`).
 
-2. **Fan-out** — For each pending task, call \`task_delegate\` to assign it, then immediately call \`agent_spawn\` to dispatch a child agent. Do NOT use \`task_update\` for delegation — \`task_delegate\` allows multiple simultaneous assignments.
+2. **Fan-out** — For each pending task, call \`task_delegate\` to assign it, then immediately call \`Spawn\` to dispatch a child agent. Do NOT use \`task_update\` for delegation — \`task_delegate\` allows multiple simultaneous assignments.
 
 3. **Poll** — Call \`task_list({ updated_since: <lastPollMs> })\` to see only changed tasks since your last check. Store the timestamp after each poll to avoid re-reading unchanged tasks.
 

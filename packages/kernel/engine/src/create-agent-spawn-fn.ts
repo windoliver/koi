@@ -201,16 +201,17 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
 
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when the effective tool ceiling
-    //    allows it. If the parent manifest denylists "Spawn" or uses an allowlist that
-    //    does not include "Spawn", do not attach a fresh provider — the child cannot
-    //    delegate further. This closes the recursive-spawn bypass.
+    //    allows it AND the child is not a fork. Fork children never get a fresh Spawn
+    //    provider — this is the hard recursion guard (applyForkDenylist adds "agent_spawn"
+    //    to the inherited-tool denylist as defense-in-depth, but the real guard is here).
+    const isFork = request.fork === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
       request.toolAllowlist,
     );
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined && spawnAllowedByManifest
+      options.spawnProviderFactory !== undefined && spawnAllowedByManifest && !isFork
         ? [options.spawnProviderFactory()]
         : [];
 
@@ -219,8 +220,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     if (!validation.ok) {
       return { ok: false, error: validation.error };
     }
-
-    const isFork = request.fork === true;
     // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
     const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
 

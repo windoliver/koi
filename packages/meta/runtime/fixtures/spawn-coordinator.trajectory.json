@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:24.913Z",
+      "timestamp": "2026-04-06T18:14:31.195Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -42,7 +42,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:24.913Z",
+      "timestamp": "2026-04-06T18:14:31.195Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -56,7 +56,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-06T05:40:24.914Z",
+      "timestamp": "2026-04-06T18:14:31.202Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
       "observation": {
@@ -68,9 +68,9 @@
       },
       "metrics": {
         "prompt_tokens": 699,
-        "completion_tokens": 15
+        "completion_tokens": 12
       },
-      "duration_ms": 674,
+      "duration_ms": 787,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -100,10 +100,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:25.589Z",
+      "timestamp": "2026-04-06T18:14:31.998Z",
       "model_name": "middleware:semantic-retry",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 674.399042,
+      "duration_ms": 796.4040829999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -117,10 +117,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:25.589Z",
+      "timestamp": "2026-04-06T18:14:31.998Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 674.4502499999999,
+      "duration_ms": 796.7545,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -134,10 +134,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:25.589Z",
+      "timestamp": "2026-04-06T18:14:31.999Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 674.60925,
+      "duration_ms": 798.3278329999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -151,10 +151,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:25.589Z",
+      "timestamp": "2026-04-06T18:14:31.999Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 674.6310829999998,
+      "duration_ms": 799.1918329999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -168,7 +168,7 @@
     {
       "step_id": 7,
       "source": "agent",
-      "timestamp": "2026-04-06T05:40:25.589Z",
+      "timestamp": "2026-04-06T18:14:32.001Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "List your available tools by name.",
       "observation": {
@@ -179,10 +179,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 1070,
-        "completion_tokens": 14
+        "prompt_tokens": 1068,
+        "completion_tokens": 6
       },
-      "duration_ms": 679,
+      "duration_ms": 740,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -211,13 +211,13 @@
     {
       "step_id": 8,
       "source": "tool",
-      "timestamp": "2026-04-06T05:40:26.270Z",
+      "timestamp": "2026-04-06T18:14:32.742Z",
       "tool_calls": [
         {
           "tool_call_id": "call_ToolSearch_8",
           "function_name": "ToolSearch",
           "arguments": {
-            "query": "select:Glob,Grep,ToolSearch,Spawn"
+            "query": "list all tools"
           }
         }
       ],
@@ -229,27 +229,27 @@
           }
         ]
       },
-      "duration_ms": 0,
+      "duration_ms": 1,
       "outcome": "success"
     },
     {
       "step_id": 9,
       "source": "agent",
-      "timestamp": "2026-04-06T05:40:26.271Z",
+      "timestamp": "2026-04-06T18:14:32.743Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"callId\":\"tool_ToolSearch_ojNGNelzHngy8eHpul3T\",\"output\":[]}",
+      "message": "{\"callId\":\"tool_ToolSearch_gkOA8daKBkeShiHe0VAm\",\"output\":[]}",
       "observation": {
         "results": [
           {
-            "content": "I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\n"
+            "content": "I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\n\nMy available tools are:\n- `Glob`\n- `Grep`\n- `ToolSearch`\n- `Spawn`\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 1133,
-        "completion_tokens": 23
+        "prompt_tokens": 1119,
+        "completion_tokens": 49
       },
-      "duration_ms": 1017,
+      "duration_ms": 783,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -278,17 +278,17 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.530Z",
       "model_name": "middleware:hook-dispatch",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"nonInteractive\":true,\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1708.3336669999999,
+      "duration_ms": 1537.092333,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -302,15 +302,14 @@
     {
       "step_id": 11,
       "source": "tool",
-      "timestamp": "2026-04-06T05:40:25.588Z",
+      "timestamp": "2026-04-06T18:14:31.993Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Spawn_11",
           "function_name": "Spawn",
           "arguments": {
-            "description": "List your available tools by name.",
-            "nonInteractive": true,
-            "agentName": "coordinator"
+            "agentName": "coordinator",
+            "description": "List your available tools by name."
           }
         }
       ],
@@ -318,27 +317,27 @@
         "results": [
           {
             "source_call_id": "call_Spawn_11",
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1709,
+      "duration_ms": 1537,
       "outcome": "success"
     },
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.530Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"nonInteractive\":true,\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1708.4649999999997,
+      "duration_ms": 1537.625584,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -352,17 +351,17 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.531Z",
       "model_name": "middleware:hooks",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"nonInteractive\":true,\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1708.5634999999997,
+      "duration_ms": 1538.0529999999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -376,17 +375,17 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.531Z",
       "model_name": "middleware:permissions",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"nonInteractive\":true,\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1708.6800409999996,
+      "duration_ms": 1539.3198329999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -400,17 +399,17 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.531Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"nonInteractive\":true,\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}"
+            "content": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}"
           }
         ]
       },
-      "duration_ms": 1708.8722080000002,
+      "duration_ms": 1540.4057079999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -424,9 +423,9 @@
     {
       "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-06T05:40:27.297Z",
+      "timestamp": "2026-04-06T18:14:33.531Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"output\":\"I can use the following tools: `Glob`, `Grep`, `ToolSearch`, and `Spawn`.\\n\"}",
+      "message": "{\"output\":\"I am missing the ability to call ToolSearch. My apologies. I will respond from memory.\\n\\nMy available tools are:\\n- `Glob`\\n- `Grep`\\n- `ToolSearch`\\n- `Spawn`\\n\"}",
       "observation": {
         "results": [
           {
@@ -435,10 +434,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 757,
+        "prompt_tokens": 777,
         "completion_tokens": 18
       },
-      "duration_ms": 511,
+      "duration_ms": 896,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -468,10 +467,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.808Z",
+      "timestamp": "2026-04-06T18:14:34.428Z",
       "model_name": "middleware:semantic-retry",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 510.58445800000027,
+      "duration_ms": 896.6053749999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -485,10 +484,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.808Z",
+      "timestamp": "2026-04-06T18:14:34.428Z",
       "model_name": "middleware:hooks",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 510.6364160000003,
+      "duration_ms": 896.6385420000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -502,10 +501,10 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.808Z",
+      "timestamp": "2026-04-06T18:14:34.428Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 510.7826249999998,
+      "duration_ms": 896.9401659999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -519,10 +518,10 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-06T05:40:27.808Z",
+      "timestamp": "2026-04-06T18:14:34.428Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List yo…",
-      "duration_ms": 510.8426250000002,
+      "duration_ms": 897.1177080000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
