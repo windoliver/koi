@@ -321,6 +321,31 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
       records.set(id, record);
       return { ok: true as const, value: record };
     },
+    storeWithDedup: (input: MemoryRecordInput, opts: { readonly force: boolean }) => {
+      const match = [...records.values()].find(
+        (r) => r.name === input.name && r.type === input.type,
+      );
+      if (match !== undefined) {
+        if (!opts.force) {
+          return { ok: true as const, value: { action: "conflict" as const, existing: match } };
+        }
+        const updated = {
+          ...match,
+          description: input.description,
+          content: input.content,
+          updatedAt: Date.now(),
+        } as MemoryRecord;
+        records.set(match.id, updated);
+        return { ok: true as const, value: { action: "updated" as const, record: updated } };
+      }
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: { action: "created" as const, record } };
+    },
     recall: (_query, _options) => {
       return { ok: true as const, value: [...records.values()] };
     },
@@ -330,8 +355,9 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
       return { ok: true as const, value: filtered };
     },
     delete: (id) => {
+      const wasPresent = records.has(id);
       records.delete(id);
-      return { ok: true as const, value: undefined };
+      return { ok: true as const, value: { wasPresent } };
     },
     findByName: (name, type) => {
       const match = [...records.values()].find(
@@ -357,7 +383,10 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
 }
 
 const memoryBackend = createInMemoryMemoryBackend();
-const memoryProviderResult = createMemoryToolProvider({ backend: memoryBackend });
+const memoryProviderResult = createMemoryToolProvider({
+  backend: memoryBackend,
+  memoryDir: "/tmp/koi-memory",
+});
 if (!memoryProviderResult.ok) {
   console.error(`createMemoryToolProvider failed: ${memoryProviderResult.error.message}`);
   process.exit(1);

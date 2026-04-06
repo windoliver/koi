@@ -18,6 +18,32 @@ import type {
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Atomic store result
+// ---------------------------------------------------------------------------
+
+/** Discriminated result of an atomic store-with-dedup operation. */
+export type StoreWithDedupResult =
+  | { readonly action: "created"; readonly record: MemoryRecord }
+  | { readonly action: "updated"; readonly record: MemoryRecord }
+  | { readonly action: "conflict"; readonly existing: MemoryRecord };
+
+/** Options for storeWithDedup. */
+export interface StoreWithDedupOptions {
+  /** When true, overwrite an existing record with the same name+type. */
+  readonly force: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Idempotent delete result
+// ---------------------------------------------------------------------------
+
+/** Result of an idempotent delete operation. */
+export interface DeleteResult {
+  /** Whether the record was present and actually removed (false = already absent). */
+  readonly wasPresent: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Recall options
 // ---------------------------------------------------------------------------
 
@@ -58,6 +84,24 @@ export interface MemoryToolBackend {
     input: MemoryRecordInput,
   ) => Result<MemoryRecord, KoiError> | Promise<Result<MemoryRecord, KoiError>>;
 
+  /**
+   * Atomically store a memory record with name+type dedup.
+   *
+   * Contract:
+   * - `force=false` + existing match by `(name, type)` → `{ action: "conflict", existing }`
+   * - `force=false` + no match → `{ action: "created", record }`
+   * - `force=true` + existing match → `{ action: "updated", record }`
+   * - `force=true` + no match → `{ action: "created", record }`
+   *
+   * Implementations MUST enforce name-uniqueness-per-type atomically.
+   * For in-memory backends (single JS tick), Map operations are trivially atomic.
+   * For filesystem backends, use exclusive file creation (O_EXCL / `wx` flag).
+   */
+  readonly storeWithDedup: (
+    input: MemoryRecordInput,
+    opts: StoreWithDedupOptions,
+  ) => Result<StoreWithDedupResult, KoiError> | Promise<Result<StoreWithDedupResult, KoiError>>;
+
   readonly recall: (
     query: string,
     options?: MemoryToolRecallOptions,
@@ -71,7 +115,16 @@ export interface MemoryToolBackend {
     | Result<readonly MemoryRecord[], KoiError>
     | Promise<Result<readonly MemoryRecord[], KoiError>>;
 
-  readonly delete: (id: MemoryRecordId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  /**
+   * Idempotent delete — removes a record by ID.
+   *
+   * Returns `{ wasPresent: true }` if the record existed and was removed,
+   * `{ wasPresent: false }` if it was already absent. Both are success.
+   * Only returns an error Result on infrastructure failures.
+   */
+  readonly delete: (
+    id: MemoryRecordId,
+  ) => Result<DeleteResult, KoiError> | Promise<Result<DeleteResult, KoiError>>;
 
   readonly findByName: (
     name: string,
@@ -99,6 +152,12 @@ export interface MemoryToolBackend {
 /** Configuration for createMemoryToolProvider. */
 export interface MemoryToolProviderConfig {
   readonly backend: MemoryToolBackend;
+  /**
+   * Absolute path to the memory storage directory.
+   * Used to declare filesystem capabilities on the tool sandbox boundary.
+   * Must be an absolute path (starts with `/`).
+   */
+  readonly memoryDir: string;
   readonly prefix?: string | undefined;
   readonly recallLimit?: number | undefined;
   readonly searchLimit?: number | undefined;
