@@ -3738,9 +3738,9 @@ describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
 
 // ---------------------------------------------------------------------------
 // spawn-fork ATIF trajectory (golden file) — #1241
-// Validates fork=true is passed to Spawn and the child agent runs without
-// the agent_spawn recursion guard. Child tool list does NOT contain Spawn
-// (fork children strip the agent_spawn provider to prevent recursive forks).
+// Validates fork=true is passed to Spawn and the child agent runs to completion.
+// Note: fork children DO get a fresh Spawn provider (bound to themselves) — the
+// "agent_spawn" denylist guard targets coordinator-style tools, not the default "Spawn".
 // ---------------------------------------------------------------------------
 
 describe("spawn-fork ATIF trajectory (golden file)", () => {

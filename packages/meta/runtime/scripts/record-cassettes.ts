@@ -2008,9 +2008,10 @@ const queries: readonly QueryConfig[] = [
     },
   },
 
-  // spawn-fork: fork mode — child inherits all parent tools except agent_spawn (recursion guard).
-  //   Parent has Glob + Grep + ToolSearch (builtin search) + Spawn. LLM calls Spawn with fork=true.
-  //   Child model step in ATIF shows tools WITHOUT agent_spawn, proving the recursion guard works.
+  // spawn-fork: fork mode — parent calls Spawn(fork=true), child inherits all parent tools.
+  //   Note: "agent_spawn" denylist guard prevents coordinator-style tool inheritance, NOT the
+  //   default "Spawn" tool. Fork children DO get a fresh Spawn provider (bound to themselves).
+  //   The parent's Spawn closure is always excluded from inheritance; each child gets a fresh one.
   //   maxTurns defaults to DEFAULT_FORK_MAX_TURNS (200) since fork=true and no explicit maxTurns.
   //   Uses Gemini Flash — only one Spawn tool call needed, not a 3+ chain, so Flash is reliable.
   {
