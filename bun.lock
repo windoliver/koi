@@ -231,6 +231,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/session": {
+      "name": "@koi/session",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -367,6 +375,7 @@
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/session": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -820,6 +829,8 @@
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
+
+    "@koi/session": ["@koi/session@workspace:packages/lib/session"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 

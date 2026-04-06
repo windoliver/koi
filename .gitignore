@@ -27,5 +27,6 @@ my-test/
 agents/
 nexus-data/
 session/
+!packages/lib/session/
 tasks/
 varfolders/

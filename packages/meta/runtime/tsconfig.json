@@ -36,6 +36,7 @@
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
     { "path": "../../sandbox/sandbox-os" },
+    { "path": "../../lib/session" },
     { "path": "../../security/permissions" },
     { "path": "../../lib/validation" }
   ]

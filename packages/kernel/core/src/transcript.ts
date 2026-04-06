@@ -80,6 +80,11 @@ export interface SkippedTranscriptEntry {
   readonly lineNumber: number;
   readonly raw: string;
   readonly error: string;
+  /**
+   * Whether this is an expected crash artifact (trailing partial write on the last line)
+   * or actual mid-file corruption. Use to route to different log severity levels.
+   */
+  readonly reason: "crash_artifact" | "parse_error";
 }
 
 /** Result of loading a full transcript — includes corruption diagnostics. */

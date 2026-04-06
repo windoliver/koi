@@ -41,6 +41,7 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import {
   createFileSystemProvider,
   createFileSystemTools,
@@ -75,7 +76,21 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
-  const { middleware, stubInstances } = resolveMiddleware(config.middleware);
+  const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
+  // Prepend session transcript middleware when transcriptDir is configured.
+  // Observe-phase, priority 200 — runs after event-trace (priority 100) so
+  // spans are already open when the transcript write occurs.
+  const sessionTranscriptMw =
+    config.session !== undefined
+      ? createSessionTranscriptMiddleware({
+          transcript: createJsonlTranscript({ baseDir: config.session.transcriptDir }),
+          sessionId: sessionId("runtime"),
+        })
+      : undefined;
+  const middleware =
+    sessionTranscriptMw !== undefined
+      ? [sessionTranscriptMw, ...resolvedMiddleware]
+      : resolvedMiddleware;
   const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
   // Filesystem: strict host opt-in only.
   // config.filesystem === false is a kill switch; undefined means no filesystem.

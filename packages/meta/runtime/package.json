@@ -37,6 +37,7 @@
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
+    "@koi/session": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
