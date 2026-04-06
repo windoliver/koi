@@ -9,9 +9,29 @@
  * Uses `board.unassign()` — an atomic in_progress → pending transition that
  * preserves the task ID. No kill, no new task creation: no data-loss window
  * and no duplicate-live-work window.
+ *
+ * **Stale-worker window**: between unassign() and the coordinator's next
+ * task_delegate call, the task is in `pending` state with no owner. A stale
+ * child that survived the coordinator crash could theoretically call
+ * task_update on the task during this window. In practice this window is very
+ * short (recovery runs before the coordinator enters its delegation loop) and
+ * requires the stale worker to act on a task ID it was no longer assigned to.
+ * A future enhancement will add generation tokens to owned board mutations to
+ * close this gap without requiring process-level coordination.
+ *
+ * **Error handling**
+ * - Per-task races (NOT_FOUND, VALIDATION): the task was completed or removed
+ *   concurrently (e.g. a surviving worker finished during recovery). Skip and
+ *   continue — this is normal, not store degradation.
+ * - Store-layer errors (EXTERNAL, INTERNAL): the store may be degraded. Stop
+ *   processing remaining orphans and report the failing task in `failed`.
+ * - CONFLICT: treated as a per-task race — skip and continue.
  */
 
-import type { AgentId, ManagedTaskBoard, TaskItemId } from "@koi/core";
+import type { AgentId, KoiError, ManagedTaskBoard, TaskItemId } from "@koi/core";
+
+/** Error codes that indicate a per-task race rather than store degradation. */
+const TASK_RACE_CODES = new Set<KoiError["code"]>(["NOT_FOUND", "VALIDATION", "CONFLICT"]);
 
 export interface OrphanRecoveryResult {
   /**
@@ -20,10 +40,10 @@ export interface OrphanRecoveryResult {
    */
   readonly requeued: readonly TaskItemId[];
   /**
-   * IDs of orphaned tasks that could NOT be recovered (unassign() failed).
-   * The original task remains in_progress. Coordinator should log and retry
-   * on the next restart; processing stops at the first failure to avoid
-   * further operations on a potentially degraded store.
+   * IDs of orphaned tasks that could NOT be recovered (unassign() failed with
+   * a store-layer error). The original task may be in an indeterminate state.
+   * The coordinator should log and retry on the next restart; processing stops
+   * at the first store-layer failure to avoid further ops on a degraded store.
    */
   readonly failed: readonly TaskItemId[];
   /**
@@ -38,9 +58,9 @@ export interface OrphanRecoveryResult {
  * Finds all in_progress tasks NOT assigned to coordinatorAgentId and
  * unassigns each one, atomically resetting it to pending.
  *
- * Processing is sequential: stops at the first unassign() failure so the
- * remaining orphans are left untouched and will be re-discovered on the
- * next coordinator restart.
+ * Per-task races (NOT_FOUND, VALIDATION, CONFLICT) are skipped — a surviving
+ * worker completing its task during recovery is benign. Processing only stops
+ * on genuine store-layer errors (EXTERNAL, INTERNAL).
  */
 export async function recoverOrphanedTasks(
   board: ManagedTaskBoard,
@@ -64,8 +84,14 @@ export async function recoverOrphanedTasks(
     const result = await board.unassign(orphan.id);
     if (result.ok) {
       requeued.push(orphan.id);
+    } else if (TASK_RACE_CODES.has(result.error.code)) {
+      // Task changed state concurrently (completed/failed/vanished during recovery).
+      // This is normal — a surviving worker may have finished its work.
+      // Skip this orphan and continue recovering the rest.
+      continue;
     } else {
-      // unassign() failed — store may be degraded. Stop processing.
+      // Store-layer error (EXTERNAL/INTERNAL) — stop to avoid further ops
+      // on a potentially degraded store. Caller should retry on next restart.
       failed.push(orphan.id);
       break;
     }

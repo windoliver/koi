@@ -3,6 +3,9 @@
  *
  * Uses board.unassign() for atomic in_progress → pending recovery.
  * No tasks are killed; task IDs are preserved; no data-loss or duplicate windows.
+ *
+ * Error handling: per-task races (NOT_FOUND, VALIDATION, CONFLICT) are skipped;
+ * store-layer errors (EXTERNAL, INTERNAL) stop the recovery pass.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -132,38 +135,134 @@ describe("recoverOrphanedTasks", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Partial failure cases
+  // Per-task race cases — skip, do not abort
   // ---------------------------------------------------------------------------
 
-  test("reports failed IDs when unassign fails — original task left in_progress (no data loss)", async () => {
+  test("skips orphan that completed during recovery (VALIDATION race is non-fatal)", async () => {
+    const board = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(board, "Task 1"); // will be recovered
+    const id2 = await addTask(board, "Task 2"); // will complete mid-recovery
+    const id3 = await addTask(board, "Task 3"); // will be recovered
+
+    const childCoord = agentId("child-coord");
+    await board.assign(id1, agentId("child-1"));
+    await board.assign(id2, agentId("child-2"));
+    await board.assign(id3, agentId("child-3"));
+
+    // Simulate: id2 completes just before its unassign() runs (VALIDATION race)
+    // Use a proxy that fails unassign for id2 with VALIDATION (task not in_progress)
+    const failOnId2: ManagedTaskBoard = {
+      ...board,
+      unassign: async (taskId) => {
+        if (taskId === id2) {
+          return {
+            ok: false as const,
+            error: {
+              code: "VALIDATION" as const,
+              message: "task is completed, not in_progress",
+              retryable: false,
+            },
+          };
+        }
+        return board.unassign(taskId);
+      },
+    };
+
+    const result = await recoverOrphanedTasks(failOnId2, newAgent);
+
+    // id2 skipped (VALIDATION race), id1 and id3 recovered
+    expect(result.killed.length).toBe(0);
+    expect(result.requeued.length).toBe(2); // id1 + id3
+    expect(result.failed.length).toBe(0); // VALIDATION is not a store failure
+
+    const requeuedSet = new Set<TaskItemId>(result.requeued);
+    expect(requeuedSet.has(id1)).toBe(true);
+    expect(requeuedSet.has(id2)).toBe(false); // skipped, not failed
+    expect(requeuedSet.has(id3)).toBe(true);
+
+    // id2 was not touched (proxy blocked unassign) — still in_progress
+    expect(board.snapshot().get(id2)?.status).toBe("in_progress");
+
+    void childCoord; // suppress unused warning
+  });
+
+  test("stops on store-layer error (EXTERNAL) and reports failed ID", async () => {
     const realBoard = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
     const id1 = await addTask(realBoard, "Task 1");
     await realBoard.assign(id1, agentId("child-1"));
 
-    // Wrap the real board with a proxy that makes unassign() always fail
+    // Wrap the real board with a proxy that makes unassign() fail with EXTERNAL
     const failingBoard: ManagedTaskBoard = {
       ...realBoard,
       unassign: async () => ({
         ok: false as const,
         error: {
-          code: "INTERNAL" as const,
-          message: "simulated unassign failure",
-          retryable: false,
+          code: "EXTERNAL" as const,
+          message: "simulated store failure",
+          retryable: true,
         },
       }),
     };
 
     const result = await recoverOrphanedTasks(failingBoard, newAgent);
 
-    // unassign() failed — original task remains in_progress (no data loss, no kill)
+    // Store-layer error — stop processing, report as failed
     expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(0);
     expect(result.failed.length).toBe(1);
     expect(result.failed[0]).toBe(id1);
+    // Original task left in_progress (failingBoard proxy, realBoard unchanged)
     expect(realBoard.snapshot().get(id1)?.status).toBe("in_progress");
   });
+
+  test("continues past first CONFLICT race: recovers remaining orphans", async () => {
+    const board = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(board, "Task 1");
+    const id2 = await addTask(board, "Task 2");
+    const id3 = await addTask(board, "Task 3");
+    await board.assign(id1, agentId("child-1"));
+    await board.assign(id2, agentId("child-2"));
+    await board.assign(id3, agentId("child-3"));
+
+    // id2 has a CONFLICT race (version conflict) — should be skipped, not aborted
+    const conflictOnId2: ManagedTaskBoard = {
+      ...board,
+      unassign: async (taskId) => {
+        if (taskId === id2) {
+          return {
+            ok: false as const,
+            error: {
+              code: "CONFLICT" as const,
+              message: "version conflict",
+              retryable: true,
+            },
+          };
+        }
+        return board.unassign(taskId);
+      },
+    };
+
+    const result = await recoverOrphanedTasks(conflictOnId2, newAgent);
+
+    // id2 skipped (CONFLICT), id1 and id3 recovered
+    expect(result.killed.length).toBe(0);
+    expect(result.requeued.length).toBe(2);
+    expect(result.failed.length).toBe(0);
+
+    const requeuedSet = new Set<TaskItemId>(result.requeued);
+    expect(requeuedSet.has(id1)).toBe(true);
+    expect(requeuedSet.has(id3)).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Other edge cases
+  // ---------------------------------------------------------------------------
 
   test("skips tasks assigned to coordinator even when other orphans exist", async () => {
     const board = await freshBoard();
