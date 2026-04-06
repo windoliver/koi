@@ -1,37 +1,37 @@
 {
   "name": "hook-once",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775299999085,
+  "recordedAt": 1775427631838,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "add_numbers",
-      "callId": "tool_add_numbers_JJiDS3Nnq4YEkINMpGiZ"
+      "callId": "tool_add_numbers_26tt0ecpdcFynkZVSiEh"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_JJiDS3Nnq4YEkINMpGiZ",
+      "callId": "tool_add_numbers_26tt0ecpdcFynkZVSiEh",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_JJiDS3Nnq4YEkINMpGiZ",
-      "delta": "{\"b\":4,\"a\":3}"
+      "callId": "tool_add_numbers_26tt0ecpdcFynkZVSiEh",
+      "delta": "{\"a\":3,\"b\":4}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "add_numbers",
-      "callId": "tool_add_numbers_mkoTf2a2FytNqiLHEAjo"
+      "callId": "tool_add_numbers_28057ehmobtB2kEeQpV9"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_mkoTf2a2FytNqiLHEAjo",
+      "callId": "tool_add_numbers_28057ehmobtB2kEeQpV9",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_add_numbers_mkoTf2a2FytNqiLHEAjo",
-      "delta": "{\"a\":10,\"b\":20}"
+      "callId": "tool_add_numbers_28057ehmobtB2kEeQpV9",
+      "delta": "{\"b\":20,\"a\":10}"
     },
     {
       "kind": "usage",
@@ -40,11 +40,11 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_add_numbers_JJiDS3Nnq4YEkINMpGiZ"
+      "callId": "tool_add_numbers_26tt0ecpdcFynkZVSiEh"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_add_numbers_mkoTf2a2FytNqiLHEAjo"
+      "callId": "tool_add_numbers_28057ehmobtB2kEeQpV9"
     },
     {
       "kind": "done",
@@ -52,24 +52,24 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775299998-vOD3AnDMB6JxLVZlOxif",
+        "responseId": "gen-1775427631-GzukL3111vhZgXf2spp9",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_add_numbers_JJiDS3Nnq4YEkINMpGiZ",
+            "id": "tool_add_numbers_26tt0ecpdcFynkZVSiEh",
             "name": "add_numbers",
             "arguments": {
-              "b": 4,
-              "a": 3
+              "a": 3,
+              "b": 4
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_add_numbers_mkoTf2a2FytNqiLHEAjo",
+            "id": "tool_add_numbers_28057ehmobtB2kEeQpV9",
             "name": "add_numbers",
             "arguments": {
-              "a": 10,
-              "b": 20
+              "b": 20,
+              "a": 10
             }
           }
         ],

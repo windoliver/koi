@@ -2,11 +2,22 @@
  * @koi/middleware-goal — Goal-tracking middleware with adaptive reminders.
  */
 
-export type { GoalMiddlewareConfig } from "./config.js";
+export type {
+  DetectCompletionsFn,
+  DriftJudgeInput,
+  DriftUserMessage,
+  GoalItem,
+  GoalItemWithId,
+  GoalMiddlewareConfig,
+  IsDriftingFn,
+  OnCallbackErrorFn,
+} from "./config.js";
 export {
   DEFAULT_BASE_INTERVAL,
+  DEFAULT_CALLBACK_TIMEOUT_MS,
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
+  MAX_CALLBACK_TIMEOUT_MS,
   validateGoalConfig,
 } from "./config.js";
 export {

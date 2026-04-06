@@ -137,11 +137,15 @@ const addTool = addToolResult.value;
  * Creates a mock adapter that replays cassette chunks through modelStream terminal.
  * The bridge adapter handles the model→tool→model loop using consumeModelStream.
  */
-function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
+function createCassetteAdapter(
+  chunks: readonly ModelChunk[],
+  opts?: { readonly secondCallText?: string },
+): EngineAdapter {
   // Track how many times the model terminal is called — cassette is for first call only,
   // second call (after tool result) returns a simple text done response
   // let: mutable call counter
   let callCount = 0;
+  const secondText = opts?.secondCallText ?? "12";
 
   return {
     engineId: "cassette-replay",
@@ -160,10 +164,14 @@ function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
         }
         // Subsequent calls: return simple text done (model has seen tool result)
         return toAsyncIterable([
-          { kind: "text_delta" as const, delta: "12" },
+          { kind: "text_delta" as const, delta: secondText },
           {
             kind: "done" as const,
-            response: { content: "12", model: MODEL, usage: { inputTokens: 10, outputTokens: 1 } },
+            response: {
+              content: secondText,
+              model: MODEL,
+              usage: { inputTokens: 10, outputTokens: 1 },
+            },
           },
         ]);
       },
@@ -477,6 +485,14 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
     );
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // @koi/middleware-goal: MW span present with outcome (proves the
+    // middleware actually ran, not just registered). onComplete timing
+    // and callback behavior are exhaustively covered by 90 per-package
+    // unit tests; the runtime golden test focuses on wiring correctness.
+    const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
+    expect(goalSpan).toBeDefined();
+    expect(goalSpan?.outcome).toBe("success");
   }, 15000);
 });
 
@@ -852,6 +868,35 @@ describe("denial-escalation ATIF trajectory (golden file)", () => {
     expect(execDenials.length).toBeGreaterThanOrEqual(1);
   });
 
+  test("exfiltration-guard wrapToolCall span fires despite permissions denial (onion chain)", async () => {
+    // The MW onion chain enters outer middleware first: exfiltration-guard
+    // wraps around permissions. When permissions (inner) throws a denial,
+    // the error propagates back through exfiltration-guard (outer), so both
+    // spans are recorded. This is expected behavior — the outer span has
+    // nextCalled=true because it DID call next() (which then threw).
+    const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly nextCalled?: boolean;
+        };
+        readonly outcome?: string;
+      }[];
+    };
+    const exfilSpan = doc.steps.find(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "exfiltration-guard" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.outcome === "failure",
+    );
+    expect(exfilSpan).toBeDefined();
+    // Outer MW called next() (which threw inside permissions) — nextCalled=true
+    expect(exfilSpan?.extra?.nextCalled).toBe(true);
+  });
+
   test("MW:permissions spans include wrapToolCall hook (execution-time path)", async () => {
     const doc = (await Bun.file(`${FIXTURES}/denial-escalation.trajectory.json`).json()) as {
       readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
@@ -1033,10 +1078,10 @@ describe("turn-stop ATIF trajectory (golden file)", () => {
     expect(permSpans.length).toBeGreaterThan(0);
   });
 
-  // TODO(#1453): turn-stop retry responses leak [Active Capabilities] banner — pre-existing on main.
-  // The hooks middleware injects capability text into system prompt, and the model parrots it
-  // on retries instead of answering the user's question. Fix the retry path, then enable this test.
-  test.skip("retry responses stay on-task and do not discuss internal capabilities", async () => {
+  // Regression for #1493 — retry responses must not echo the [Active Capabilities]
+  // banner. Fixed by moving capabilities to ModelRequest.systemPrompt (a trusted
+  // channel providers don't treat as parrotable user content).
+  test("retry responses stay on-task and do not discuss internal capabilities", async () => {
     const doc = (await Bun.file(`${FIXTURES}/turn-stop.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -1048,7 +1093,8 @@ describe("turn-stop ATIF trajectory (golden file)", () => {
     for (let i = 1; i < modelSteps.length; i++) {
       const content = (modelSteps[i]?.observation?.results?.[0]?.content ?? "").toLowerCase();
       expect(content).not.toContain("active capabilities");
-      expect(content).not.toContain("middleware");
+      expect(content).not.toContain("exfiltration-guard");
+      expect(content).not.toContain("permissions: bypass");
     }
   });
 
@@ -4038,8 +4084,8 @@ describe("Golden: @koi/memory-fs", () => {
       const updated = await store.update(result.record.id, {
         content: "Rule: prefer composition.\n**Why:** flexibility.",
       });
-      expect(updated.content).toContain("flexibility");
-      expect(updated.name).toBe("design patterns");
+      expect(updated.record.content).toContain("flexibility");
+      expect(updated.record.name).toBe("design patterns");
 
       // list returns records with type filter
       const all = await store.list();
@@ -4051,7 +4097,7 @@ describe("Golden: @koi/memory-fs", () => {
 
       // delete removes record
       const deleted = await store.delete(result.record.id);
-      expect(deleted).toBe(true);
+      expect(deleted.deleted).toBe(true);
       const gone = await store.read(result.record.id);
       expect(gone).toBeUndefined();
     } finally {

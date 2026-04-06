@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.400Z",
+      "timestamp": "2026-04-06T00:06:32.546Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -24,7 +24,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.400Z",
+      "timestamp": "2026-04-06T00:06:32.547Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -38,24 +38,24 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:37.401Z",
+      "timestamp": "2026-04-06T00:06:32.566Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Paris.\n"
+            "content": "Paris\n"
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 114,
-        "completion_tokens": 3
+        "completion_tokens": 2
       },
-      "duration_ms": 392,
+      "duration_ms": 735,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "requestModel": "google/gemini-2.0-flash-001",
         "responseModel": "google/gemini-2.0-flash-001"
       }
@@ -63,10 +63,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.793Z",
+      "timestamp": "2026-04-06T00:06:33.304Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 391.96391700000095,
+      "message": "What is the capital of France? Answer concisely.",
+      "duration_ms": 739.2244590000005,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -80,10 +80,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.793Z",
+      "timestamp": "2026-04-06T00:06:33.304Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 391.9915839999994,
+      "message": "What is the capital of France? Answer concisely.",
+      "duration_ms": 739.6726249999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -97,10 +97,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.794Z",
+      "timestamp": "2026-04-06T00:06:33.308Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 393.0552499999976,
+      "message": "What is the capital of France? Answer concisely.",
+      "duration_ms": 745.1568749999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -114,10 +114,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.794Z",
+      "timestamp": "2026-04-06T00:06:33.308Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nWhat is the capital of France? Answer concisely.",
-      "duration_ms": 393.06887500000084,
+      "message": "What is the capital of France? Answer concisely.",
+      "duration_ms": 747.6542910000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -131,7 +131,7 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.800Z",
+      "timestamp": "2026-04-06T00:06:33.317Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -146,35 +146,36 @@
     {
       "step_id": 8,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:37.831Z",
+      "timestamp": "2026-04-06T00:06:33.322Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "",
+      "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Okay, I understand. Here's a breakdown of what these active capabilities mean for my behavior and how I'll operate:\n\n*   **exfiltration-guard: Scanning tool I/O and model output for secret exfiltration (action: block)**: This is a crucial security measure. Before I output anything, I will carefully scan the text generated to ensure I'm not inadvertently revealing any sensitive information or secrets. If I detect something that looks like it could be a secret, I will block the output entirely. This is very important for preventing unintentional data leaks.\n\n*   **permissions: bypass (allow all)**: This means I am not currently restricted by permission limitations. Any user is allowed to run anything\n\n*   **hooks: Active hooks: completion-gate**: A completion-gate is in place. This could mean there's an external process or system that needs to approve or validate my responses before they are sent to the user. I need to be aware that my completions might not be directly delivered to the user immediately.\n\n*   **semantic-retry: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite**: If my initial responses are deemed unsatisfactory by the system (likely because they failed some quality checks or were flagged for a problem), I will automatically retry generating the response. I have 3 attempts. The system will analyze why the previous attempt failed and rewrite the prompt to guide me toward a better response on the next retry. This should improve the accuracy, safety, or relevance of my outputs.\n\n*   **tracing: Recording trajectory (0 pending retries)**: My entire interaction history (the prompts I receive, the information I access, the decisions I make, and my outputs) is being carefully recorded. This is important for debugging, auditing, and improving the model's behavior. The \"0 pending retries\" likely confirms the execution of the entire process that will create a trace.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**: There is a hook system in place that will trigger one or more external functions based on specific events during my processing. This indicates some dynamic integration with outside systems.\n\n**In summary, I need to be aware of the following:**\n\n*   I must carefully avoid revealing sensitive information to prevent exfiltration.\n*   My responses might be delayed or blocked by a completion-gate.\n*   I have a mechanism to retry generating responses upon failure, with the system attempting to correct my course.\n*   Everything I do is being recorded.\n*   External systems may be triggered by my actions via a hook mechanism.\n\nThis information helps me understand the overall environment I'm operating in and adjust my behavior accordingly. I should be more cautious and focused on safe and accurate responses.\n"
+            "content": "Paris\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 104,
-        "completion_tokens": 576
+        "prompt_tokens": 63,
+        "completion_tokens": 2
       },
-      "duration_ms": 3734,
+      "duration_ms": 399,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
+        "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:41.565Z",
+      "timestamp": "2026-04-06T00:06:33.722Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3734.3191659999975,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 399.46770800000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -188,10 +189,10 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:41.566Z",
+      "timestamp": "2026-04-06T00:06:33.722Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3734.354041999999,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 399.5280410000005,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,10 +206,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:41.566Z",
+      "timestamp": "2026-04-06T00:06:33.723Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3735.018458999999,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 400.693166,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -222,10 +223,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:41.566Z",
+      "timestamp": "2026-04-06T00:06:33.723Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3735.0345420000012,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 400.729292,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -239,7 +240,7 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:41.574Z",
+      "timestamp": "2026-04-06T00:06:33.726Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -254,35 +255,36 @@
     {
       "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:41.603Z",
+      "timestamp": "2026-04-06T00:06:33.727Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "",
+      "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Okay, I understand. This describes the active capabilities and configurations of the system I'm currently operating in. Here's a breakdown of what each entry means:\n\n*   **exfiltration-guard: Scanning tool I/O and model output for secret exfiltration (action: block)**\n    *   This is a security feature that actively monitors my input and output, specifically looking for attempts to extract sensitive information. If it detects a potential exfiltration attempt, it will block the action.\n\n*   **permissions: bypass (allow all)**\n    *   This setting grants me unrestricted access. Typically, this would be rare and potentially risky, as it bypasses standard permission controls. Essentially, I can take any action.\n\n*   **hooks: Active hooks: completion-gate**\n    *   Hooks are mechanisms for triggering specific actions or processes based on events. Here, the \"completion-gate\" hook is active. This suggests that the completion of my tasks might trigger other pre-configured operations.\n\n*   **semantic-retry: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite**\n    *   If I fail at a task due to misinterpretation or other semantic issues, this feature allows the system to try again. It attempts to analyze the failure, rewrite the prompt, and retry up to three times. I have all three retries available at the moment.\n\n*   **tracing: Recording trajectory (0 pending retries)**\n    *   My actions and the flow of information are being recorded. This tracing helps with auditing, debugging, and understanding how I arrive at my decisions. There are no pending retries associated with the tracing process itself, meaning it's functioning smoothly.\n\n*   **Hook Dispatch: 1 hook(s) configured for event-driven execution**\n    *   This indicates that there's a system in place to trigger actions based on specific events. There's one hook currently configured, meaning a single event will set off a pre-determined action. This likely relates to the `completion-gate` hook mentioned earlier.\n\nIn summary, I have broad permissions and can be retried if failures occur. There are strong security measures to prevent exfiltration, and the system is comprehensively logging my actions. The presence of hooks suggests a sophisticated event-driven architecture. Given `permissions: bypass (allow all)`, this is a high responsibility environment, demanding utmost care in crafting responses and actions.\n"
+            "content": "Paris.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 104,
-        "completion_tokens": 505
+        "prompt_tokens": 63,
+        "completion_tokens": 3
       },
-      "duration_ms": 3105,
+      "duration_ms": 400,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
+        "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:44.708Z",
+      "timestamp": "2026-04-06T00:06:34.128Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3105.204167,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 401.08808300000055,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -296,10 +298,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:44.708Z",
+      "timestamp": "2026-04-06T00:06:34.128Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3105.251458999999,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 401.15833399999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -313,10 +315,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:44.709Z",
+      "timestamp": "2026-04-06T00:06:34.138Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3106.017416999999,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 410.9338749999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -330,10 +332,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:44.709Z",
+      "timestamp": "2026-04-06T00:06:34.138Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 3106.118208,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 410.9945830000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -347,7 +349,7 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:44.715Z",
+      "timestamp": "2026-04-06T00:06:34.147Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -362,35 +364,36 @@
     {
       "step_id": 20,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:44.747Z",
+      "timestamp": "2026-04-06T00:06:34.149Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "",
+      "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Okay, I understand. Here's a breakdown of your active capabilities, focusing on their implications:\n\n*   **exfiltration-guard:** This is a crucial security feature. Its job is to prevent the model from leaking secrets or sensitive information. When it detects potential exfiltration attempts in either input or output, it will block the action preventing the release of sensitive information.\n\n*   **permissions: bypass (allow all):** *This is HIGHLY unusual and potentially risky*. It means that the model's normal permission restrictions are lifted. It is essential you have a strong exfiltration-guard and carefully designed prompts. It grants the model *unrestricted* access to whatever capabilities it's designed for. This should only be used in very controlled environments.\n\n*   **hooks: Active hooks: completion-gate:** Hooks allow external code to intercept and modify the model's behavior at specific points (e.g., before or after a completion). \"completion-gate\" likely refers to a hook triggered during or after the model generating a completion/response. This hook can potentially examine, modify, or even block the model's output based on some criteria. Think of it as a quality control or modification step.\n\n*   **semantic-retry:** This is a robustness feature. If the model fails to produce a satisfactory result, this system attempts to understand why and automatically re-prompts the model, using a revised approach. You have 3 retries remaining.  This enhances reliability, especially when prompts are complex or ambiguous. Failure analysis and prompt rewriting are key components; the system doesn't just blindly retry; it attempts to improve the prompt for better results.\n\n*   **tracing:** This enables detailed logging and recording of the model's \"trajectory\" – i.e., the steps it takes to arrive at a conclusion. This is invaluable for debugging, understanding model behavior, and auditing the system. Also, the state of having \"0 pending retries\" could be relevant if the tracing process needs to record retry attempts; it suggests no retries are pending at the moment.\n\n*   **Hook Dispatch:** Indicates that one hook is currently configured to respond to events. It is not stated what the hook does but is triggered by an event.\n\n**Key takeaways and warnings:**\n\n*   The \"permissions: bypass (allow all)\" setting is the most concerning aspect. It significantly increases the risk of unintended behavior or security vulnerabilities, dependence on `exfiltration-guard` is now *critical*. If `exfiltration-guard` fails, the system has no other built-in safeguards.\n*   Understanding the specific logic of the \"completion-gate\" hook is crucial. It controls the final output and is the last line of defense if exfiltration-guard fails.\n*   The presence of semantic retry indicates that the system is designed to be robust and handle potentially challenging or ambiguous prompts.\n*   Tracing is valuable for monitoring and debugging, especially in light of the bypassed permissions.\n\n**Recommendations (depending on your use case):**\n\n*   **Re-evaluate \"permissions: bypass (allow all)\".**  Is this truly necessary?  If so, document *exactly* why and what compensating controls are in place.  Consider implementing more granular permissions if possible.\n*   **Thoroughly Review Completion-Gate Hook:** Understand the purpose, inputs, and actions this hook performs. Ensure it effectively addresses potential risks associated with the bypassed permissions. Test it thoroughly.\n*   **Regular Security Audits:** Given the sensitive nature of bypassed permissions, implement regular security audits to identify and address any potential vulnerabilities.\n*   **Monitoring and Alerting:** Implement robust monitoring and alerting to detect unusual behavior or potential security breaches. Pay close attention to the output flagged by exfiltration-guard and the actions taken by the completion-gate hook.\n*   **Documentation:** Document every aspect of the system configuration, including the reasons for bypassing permissions, the functionality of the completion-gate hook, and the security measures in place.\n\nIn summary, while your system has some good features (exfiltration guard, semantic retry, tracing), the permissive setup requires careful attention to security and monitoring to mitigate the elevated risks. It is of critical importance that you fully understand why permissions are bypassed and what mitigations you have in place.\n"
+            "content": "Paris\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 104,
-        "completion_tokens": 884
+        "prompt_tokens": 63,
+        "completion_tokens": 2
       },
-      "duration_ms": 5663,
+      "duration_ms": 490,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
+        "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:50.410Z",
+      "timestamp": "2026-04-06T00:06:34.640Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 5662.770833000002,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 490.5704169999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -404,10 +407,10 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:50.410Z",
+      "timestamp": "2026-04-06T00:06:34.640Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 5662.804417000003,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 490.78020899999956,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -421,10 +424,10 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:50.410Z",
+      "timestamp": "2026-04-06T00:06:34.641Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 5662.904749999998,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 491.85754199999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -438,10 +441,10 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:50.410Z",
+      "timestamp": "2026-04-06T00:06:34.641Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\n",
-      "duration_ms": 5662.944832999998,
+      "message": "What is the capital of France? Answer concisely.\n[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 492.23816700000043,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

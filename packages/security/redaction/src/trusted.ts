@@ -1,35 +1,37 @@
 /**
- * Module-private trusted-pattern branding.
+ * Module-private trusted-pattern registry.
  *
- * Factory-created patterns are stamped with a non-enumerable Symbol so the
+ * Factory-created patterns are recorded in a module-private `WeakSet` so the
  * ReDoS timing check in config.ts can skip them — they are curated built-ins.
+ *
+ * Why a WeakSet rather than a symbol attached to the object:
+ *   A symbol stamped on an exported pattern is discoverable via
+ *   `Object.getOwnPropertySymbols(builtin)` and can be re-applied to a
+ *   caller-controlled object to bypass the trust check. Keeping the trust
+ *   state in a module-private registry means the trust decision cannot be
+ *   influenced from outside this module by reflection on pattern objects.
  */
 
 import type { SecretPattern } from "./types.js";
 
-/** Invisible brand key — not exported from the package public API. */
-const TRUSTED_PATTERN: unique symbol = Symbol("koi.redaction.trusted");
+/** Module-private — never exported. Entries are GC'd with their pattern object. */
+const trustedRegistry = new WeakSet<SecretPattern>();
 
 /** Check whether a pattern was produced by the built-in factory. */
 export function isTrustedPattern(p: SecretPattern): boolean {
-  return TRUSTED_PATTERN in p;
+  return trustedRegistry.has(p);
 }
 
 /**
- * Stamp a pattern as trusted and freeze it so its `detect` function cannot
+ * Register a pattern as trusted and freeze it so its `detect` function cannot
  * be replaced by a caller who obtains the object reference.
  *
- * Freezing prevents the mutable-identity bypass: a caller could otherwise
- * get a branded built-in, overwrite its `detect` with a slow implementation,
- * and re-submit it; the trust check would still pass and the ReDoS probe
- * would be skipped. Freezing closes that door.
+ * Freezing also prevents a caller from mutating a shared built-in detector
+ * (reachable via `DEFAULT_REDACTION_CONFIG.patterns`) to poison redaction
+ * process-wide.
  */
 export function markTrusted<T extends SecretPattern>(p: T): Readonly<T> {
-  Object.defineProperty(p, TRUSTED_PATTERN, {
-    value: true,
-    enumerable: false,
-    writable: false,
-    configurable: false,
-  });
-  return Object.freeze(p);
+  const frozen = Object.freeze(p);
+  trustedRegistry.add(frozen);
+  return frozen;
 }

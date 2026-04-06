@@ -1,0 +1,313 @@
+/**
+ * Callback harness: timeout + AbortSignal + error hook wrapping for
+ * user-supplied `isDrifting` / `detectCompletions` callbacks.
+ */
+
+import type { InboundMessage, TurnContext } from "@koi/core";
+
+import type {
+  DetectCompletionsFn,
+  DriftJudgeInput,
+  DriftUserMessage,
+  GoalItemWithId,
+  IsDriftingFn,
+  OnCallbackErrorFn,
+} from "./config.js";
+
+/**
+ * Compose an upstream `AbortSignal` with a timeout. Returned signal aborts
+ * when either source fires. Returns a cleanup fn that clears the timer.
+ */
+export function composeTimeoutSignal(
+  upstream: AbortSignal | undefined,
+  timeoutMs: number,
+): { readonly signal: AbortSignal; readonly cleanup: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException("callback timeout", "TimeoutError"));
+  }, timeoutMs);
+
+  const onUpstreamAbort = (): void => {
+    controller.abort(upstream?.reason);
+  };
+
+  if (upstream !== undefined) {
+    if (upstream.aborted) {
+      controller.abort(upstream.reason);
+    } else {
+      upstream.addEventListener("abort", onUpstreamAbort, { once: true });
+    }
+  }
+
+  const cleanup = (): void => {
+    clearTimeout(timer);
+    if (upstream !== undefined) {
+      upstream.removeEventListener("abort", onUpstreamAbort);
+    }
+  };
+
+  return { signal: controller.signal, cleanup };
+}
+
+/** Race a promise against the signal — settles on abort. */
+async function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      const reason: unknown = signal.reason;
+      if (reason instanceof Error) {
+        reject(reason);
+      } else {
+        reject(new Error("aborted"));
+      }
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
+/** Classify an abort error as timeout vs upstream cancellation. */
+function isTimeoutAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
+}
+
+interface CallbackHarnessOptions {
+  readonly timeoutMs: number;
+  readonly ctx: TurnContext;
+  readonly onError?: OnCallbackErrorFn | undefined;
+}
+
+/**
+ * Tagged result from a callback invocation.
+ *
+ * - `ok: true`: callback resolved successfully with value.
+ * - `reason: "aborted"`: upstream run cancellation — caller should stop
+ *   processing, NOT apply heuristic fallback or fire side effects.
+ * - `reason: "timeout"` / `"error"`: callback failure — caller applies
+ *   its fail-safe / heuristic policy.
+ */
+export type CallbackOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: "aborted" | "timeout" | "error" };
+
+/**
+ * Invoke `isDrifting` callback with timeout + composed signal + error
+ * hook. Returns a tagged outcome so callers can distinguish upstream
+ * cancellation from timeout/error.
+ */
+export async function invokeIsDriftingCallback(
+  callback: IsDriftingFn,
+  input: DriftJudgeInput,
+  opts: CallbackHarnessOptions,
+): Promise<CallbackOutcome<boolean>> {
+  // Pre-abort guard: if upstream is already cancelled, do NOT invoke the
+  // user callback body (avoid external side effects after abort).
+  if (opts.ctx.signal?.aborted === true) {
+    return { ok: false, reason: "aborted" };
+  }
+  const { signal, cleanup } = composeTimeoutSignal(opts.ctx.signal, opts.timeoutMs);
+  const callbackCtx: TurnContext = { ...opts.ctx, signal };
+  try {
+    const resultPromise = Promise.resolve(callback(input, callbackCtx));
+    const value = await raceSignal(resultPromise, signal);
+    if (typeof value !== "boolean") {
+      const err = new TypeError(`isDrifting callback returned ${typeof value}, expected boolean`);
+      fireErrorHook(opts.onError, "isDrifting", err, opts.ctx);
+      return { ok: false, reason: "error" };
+    }
+    return { ok: true, value };
+  } catch (err: unknown) {
+    return classifyCallbackError(err, "isDrifting", opts);
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * Invoke `detectCompletions` callback with timeout + composed signal +
+ * error hook. Returns a tagged outcome.
+ */
+export async function invokeDetectCompletionsCallback(
+  callback: DetectCompletionsFn,
+  responseTexts: readonly string[],
+  items: readonly GoalItemWithId[],
+  opts: CallbackHarnessOptions,
+): Promise<CallbackOutcome<readonly string[]>> {
+  // Pre-abort guard: if upstream is already cancelled, do NOT invoke the
+  // user callback body (avoid external side effects after abort).
+  if (opts.ctx.signal?.aborted === true) {
+    return { ok: false, reason: "aborted" };
+  }
+  const { signal, cleanup } = composeTimeoutSignal(opts.ctx.signal, opts.timeoutMs);
+  const callbackCtx: TurnContext = { ...opts.ctx, signal };
+  try {
+    const resultPromise = Promise.resolve(callback(responseTexts, items, callbackCtx));
+    const value = await raceSignal(resultPromise, signal);
+    const validated = validateCompletedIds(value);
+    if (validated === null) {
+      const err = new TypeError(
+        `detectCompletions callback returned ${describeValue(value)}, expected string[]`,
+      );
+      fireErrorHook(opts.onError, "detectCompletions", err, opts.ctx);
+      return { ok: false, reason: "error" };
+    }
+    return { ok: true, value: validated };
+  } catch (err: unknown) {
+    return classifyCallbackError(err, "detectCompletions", opts);
+  } finally {
+    cleanup();
+  }
+}
+
+/** Returns a safe `string[]` copy when input is an array of strings; null otherwise. */
+function validateCompletedIds(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value)) return null;
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    result.push(item);
+  }
+  return result;
+}
+
+function describeValue(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array with non-string element";
+  return typeof v;
+}
+
+/**
+ * Classify a caught error into upstream-abort vs timeout vs error.
+ * Upstream-abort does NOT fire the error hook — it is not a callback
+ * failure, it is cooperative cancellation.
+ *
+ * Only errors whose shape matches abort semantics (AbortError name, or
+ * matching ctx.signal.reason identity) are classified as aborted. A
+ * real parser/network/runtime failure that happens to land during the
+ * same microtask as cancellation stays in the error path so the
+ * observability hook still fires and heuristic fallback still runs.
+ */
+function classifyCallbackError<T>(
+  err: unknown,
+  kind: "isDrifting" | "detectCompletions",
+  opts: CallbackHarnessOptions,
+): CallbackOutcome<T> {
+  if (isTimeoutAbort(err)) {
+    fireErrorHook(opts.onError, kind, err, opts.ctx);
+    return { ok: false, reason: "timeout" };
+  }
+  if (isUpstreamAbortError(err, opts.ctx.signal)) {
+    return { ok: false, reason: "aborted" };
+  }
+  fireErrorHook(opts.onError, kind, err, opts.ctx);
+  return { ok: false, reason: "error" };
+}
+
+/** Match only genuine abort-shaped failures, not arbitrary errors that
+ * happened to occur while the signal was aborted. */
+function isUpstreamAbortError(err: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal === undefined || !signal.aborted) return false;
+  if (err instanceof Error && err.name === "AbortError") return true;
+  if (err === signal.reason) return true;
+  if (err instanceof Error && err.message === "aborted") return true; // our raceSignal reason
+  return false;
+}
+
+function fireErrorHook(
+  onError: OnCallbackErrorFn | undefined,
+  callback: "isDrifting" | "detectCompletions",
+  err: unknown,
+  ctx: TurnContext,
+): void {
+  if (onError === undefined) return;
+  try {
+    onError({
+      callback,
+      reason: isTimeoutAbort(err) ? "timeout" : "error",
+      error: err,
+      sessionId: ctx.session.sessionId,
+      turnId: ctx.turnId,
+    });
+  } catch {
+    // Observability must not fail the turn
+  }
+}
+
+/**
+ * Sanitize an inbound message list into the minimal `DriftUserMessage`
+ * DTO before exposing it to user callbacks.
+ *
+ * - Drops assistant/system/tool-authored messages (callbacks see only
+ *   user-authored content — trust boundary).
+ * - Drops synthetic `[Completion blocked] ...` stop-gate retry messages.
+ * - Drops messages with `metadata.role !== "user"`.
+ * - Reduces to text content; concatenates multiple text blocks with
+ *   newlines.
+ * - Returns a purpose-built DTO, NOT a full InboundMessage — no file/
+ *   image blocks, no threadId, no metadata, no pinned flag are exposed.
+ */
+export function sanitizeUserMessages(
+  messages: readonly InboundMessage[],
+): readonly DriftUserMessage[] {
+  const result: DriftUserMessage[] = [];
+  for (const m of messages) {
+    if (!isUserAuthored(m)) continue;
+    if (isSyntheticRetry(m)) continue;
+    const texts: string[] = [];
+    for (const block of m.content) {
+      if (block.kind === "text") texts.push(block.text);
+    }
+    if (texts.length === 0) continue;
+    result.push({
+      senderId: m.senderId,
+      timestamp: m.timestamp,
+      text: texts.join("\n"),
+    });
+  }
+  return result;
+}
+
+/**
+ * Strict default-deny check: a message is user-authored only when its
+ * `metadata.role` is explicitly `"user"` OR — if role metadata is absent —
+ * its `senderId` is `"user"` or the `user:` prefix. Every other case is
+ * rejected from the external-callback trust boundary, including
+ * arbitrary roleless sender IDs from unknown adapters.
+ */
+function isUserAuthored(message: InboundMessage): boolean {
+  const meta = message.metadata as { readonly role?: unknown } | undefined;
+  const role = meta?.role;
+  if (typeof role === "string") return role === "user";
+  if (role !== undefined) return false; // unexpected type → reject
+  // Roleless: only accept explicit user sender identity.
+  return message.senderId === "user" || message.senderId.startsWith("user:");
+}
+
+function isSyntheticRetry(m: InboundMessage): boolean {
+  if (m.senderId !== "system") return false;
+  for (const block of m.content) {
+    if (block.kind === "text" && block.text.startsWith("[Completion blocked]")) {
+      return true;
+    }
+  }
+  return false;
+}

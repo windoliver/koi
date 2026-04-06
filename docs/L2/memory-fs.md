@@ -920,6 +920,53 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | Cache consistency | Lazy write-through `Map<entity, facts[]>` |
 | Malformed data | `isMemoryFact` type guard validates every fact from disk |
 
+### v2 flat-file store — concurrency model
+
+The v2 L2 `createMemoryStore` uses a two-layer lock keyed per directory:
+
+| Layer | Scope | Mechanism |
+|-------|-------|-----------|
+| In-process mutex | Same process | `Map<canonicalDir, Promise>` chain. Mutex key is `realpath(dir)` so aliased paths (trailing `/./`, symlinked parents) share one bucket. |
+| File lock | Cross-process | `.memory.lock` in the directory, created with `O_EXCL` (`wx`). Body is `{pid, host, nonce}` JSON. |
+
+Every `write` / `update` / `delete` / `rebuildIndex` call acquires both locks, performs the record-level file operation, and releases. The dedup scan and the file create are inside the same critical section, so two writers cannot both observe "no duplicate" and both succeed.
+
+**The post-mutation `MEMORY.md` rebuild runs OUTSIDE the mutation lock** so a slow rebuild or degraded filesystem cannot stall other writers. Rebuilds are instead serialized per canonical directory via a module-level chain, so a later rebuild cannot overtake an earlier one and publish a stale snapshot. `MEMORY.md` is written via `writeFile(tmp, wx)` + `rename(tmp, MEMORY.md)`, so partially-written indexes cannot appear on disk.
+
+**Updates are atomic.** `updateRecord` writes to a unique temp file then `rename`s over the final path, so concurrent rebuild scans cannot read a truncated record mid-update. The new inode's `birthtimeMs` is reset on update — the returned `record.createdAt` stays stable within a call, but subsequent disk scans will report the update time as the record's birthtime.
+
+**`onIndexError` is fire-and-forget.** The callback is invoked but its completion is not awaited on the mutation return path, so a hanging observer cannot delay `store.write` / `update` / `delete`. Rejections inside the callback are silently dropped. The authoritative failure signal is the `indexError` field on the mutation return value, which is always populated when rebuild fails.
+
+**Stale lock handling:** if the lock file exists and its owner's `{host} === this host` and `process.kill(pid, 0)` throws `ESRCH`, the lock is atomically stolen. Stealing uses two atomic primitives composed: `rename(lockPath, uniqueScratch)` (only one stealer wins — rename of a non-existent source returns `ENOENT`), followed by `writeFile(lockPath, …, wx)` (a racing legitimate writer's fresh lock blocks this with `EEXIST`). Together these rule out the "two winners" case. Liveness via `process.kill` is the only staleness signal — no mtime or lease heuristics.
+
+**Release safety:** the release function re-reads the lock file and only `unlink`s if the nonce still matches. Another process that stole the lock will never have its lock deleted.
+
+**Release ordering:** the file lock is released inside the `finally` before the in-process mutex unwinds, so the next in-process waiter can acquire the file lock immediately without contention.
+
+**NFS:** unsupported. `O_EXCL` semantics are unreliable on some NFS servers. Use a local filesystem.
+
+### v2 flat-file store — worktree isolation
+
+`resolveMemoryDir(cwd, options?)` defaults to **worktree-local**: the memory directory is `{gitRoot}/.koi/memory/` where `gitRoot` is the directory containing the `.git` file or directory. Each git worktree owns its own store.
+
+Opt into cross-worktree sharing with `{ shared: true }`: the resolver walks git's `commondir` to the main-worktree root and returns `{mainRoot}/.koi/memory/`. A `.policy.json` file is pinned in the memory directory on first resolution. If a later caller asks for a mode that disagrees with the pinned policy, `MemoryPolicyMismatch` is thrown — mixed-mode usage within the same repo must be reconciled explicitly (delete the policy file) before mutations can proceed.
+
+Hardening around shared mode:
+- The resolved `commondir` target is `realpath`'d and verified to contain a `.git` directory.
+- **Structural check**: the worktree's `gitdir` must be a direct child of `<commondir>/worktrees/` — git creates linked-worktree gitdirs nowhere else. This rejects a manipulated `.git` file whose `commondir` content redirects at an unrelated repository's worktree slot. Without this check, an attacker who can write to the worktree's `.git` file could silently re-point shared memory at a different on-disk repo.
+- If `shared: true` is requested but `commondir` is missing or the `gitdir:` line is malformed, `MemoryResolutionError` is thrown — there is no silent fallback to the worktree-local path.
+
+### v2 flat-file store — index-error surfacing
+
+`MEMORY.md` is rebuilt after every successful mutation. Rebuild failures (`EACCES`, `ENOSPC`, etc.) do **not** fail the mutation — the record is already on disk. Instead they are surfaced via two channels:
+
+| Channel | Shape |
+|---------|-------|
+| Return value | `DedupResult.indexError`, `UpdateResult.indexError`, `DeleteResult.indexError` — populated only when rebuild failed. |
+| Observer callback | `MemoryStoreConfig.onIndexError(error, { operation })` — fire-and-forget. Optional, purely for logging/telemetry. The return-value channel is the authoritative signal. |
+
+Use `MemoryStore.rebuildIndex()` to force a repair from a fresh disk scan; it acquires the same lock as writes and propagates errors (unlike the best-effort post-mutation rebuild).
+
 ---
 
 ## Testing

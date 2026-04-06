@@ -57,7 +57,6 @@ export {
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
   detectRepeatingPattern,
-  formatCapabilityMessage,
   injectCapabilities,
   isSignificantTransition,
   recomposeChains,
