@@ -102,8 +102,11 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         // Let textarea handle the actual newline insertion
         break;
       case "insert-char": {
-        // After this key is processed by textarea, check for slash
-        // Use queueMicrotask to read the updated plainText after textarea processes it
+        // OpenTUI processes key events synchronously before yielding to the
+        // microtask queue, so the textarea's plainText is updated by the time
+        // this microtask fires. This contract is not documented in the OpenTUI
+        // API — if a future version defers textarea updates asynchronously,
+        // replace this with an onInput/onChange callback on <textarea> instead.
         queueMicrotask(() => {
           const text = textareaRef?.plainText ?? "";
           props.onSlashDetected(detectSlashPrefix(text));

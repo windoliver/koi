@@ -43,15 +43,6 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   return (
     <box flexDirection="column" flexGrow={1}>
       <MessageList syntaxStyle={props.syntaxStyle} />
-      <Show when={slashQuery() !== null}>
-        <SlashOverlay
-          query={slashQuery() ?? ""}
-          commands={SLASH_COMMANDS}
-          onSelect={handleSlashSelect}
-          onDismiss={dismissOverlay}
-          focused={props.focused}
-        />
-      </Show>
       <InputArea
         onSubmit={props.onSubmit}
         onSlashDetected={props.onSlashDetected}
@@ -63,6 +54,20 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         // the query at the first "/" and break slash-command filtering.
         clearTrigger={clearTrigger()}
       />
+      {/* SlashOverlay is rendered after InputArea with position="absolute" so it
+          floats just above the input without affecting the flex layout.
+          bottom={3} matches the 3-row InputArea height. */}
+      <Show when={slashQuery() !== null}>
+        <box position="absolute" bottom={3} left={0} zIndex={10}>
+          <SlashOverlay
+            query={slashQuery() ?? ""}
+            commands={SLASH_COMMANDS}
+            onSelect={handleSlashSelect}
+            onDismiss={dismissOverlay}
+            focused={props.focused}
+          />
+        </box>
+      </Show>
     </box>
   );
 }

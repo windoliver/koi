@@ -26,7 +26,7 @@ export {
   type SelectOverlayProps,
 } from "./SelectOverlay.js";
 export { SessionPicker, type SessionPickerProps } from "./SessionPicker.js";
-export { handleSlashOverlayKey, SlashOverlay, type SlashOverlayProps } from "./SlashOverlay.js";
+export { SlashOverlay, type SlashOverlayProps } from "./SlashOverlay.js";
 export { StatusBar, type StatusBarProps } from "./StatusBar.js";
 export { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
 // Phase 2j-4: Pure helpers (importable without JSX runtime)
