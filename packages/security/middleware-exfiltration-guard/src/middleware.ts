@@ -198,9 +198,17 @@ export function createExfiltrationGuardMiddleware(
       const response = await next(effectiveRequest);
 
       // --- Output scanning (always-on, independent of scanToolInput) ---
-      // For non-serializable types (BigInt, cyclic), fall back to String(output)
-      // so legitimate non-JSON tool results aren't hard-blocked.
-      const outputToScan = safeSerializeForScan(response.output) ?? String(response.output);
+      // Scan both JSON serialization AND String() representation to catch secrets
+      // hidden by toJSON() or non-enumerable properties (e.g., Error.message).
+      const jsonScan = safeSerializeForScan(response.output);
+      const stringScan =
+        response.output !== null && response.output !== undefined
+          ? String(response.output)
+          : undefined;
+      const outputToScan =
+        jsonScan !== undefined && stringScan !== undefined && stringScan !== jsonScan
+          ? `${jsonScan}\n${stringScan}`
+          : (jsonScan ?? stringScan ?? "");
       const outputResult = redactor.redactString(outputToScan);
 
       // Fail-closed: redaction engine failure on tool output
