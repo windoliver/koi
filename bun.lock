@@ -316,8 +316,8 @@
       },
     },
     "packages/meta/cli": {
-      "name": "@koi/cli",
-      "version": "0.0.0",
+      "name": "@koi-agent/cli",
+      "version": "0.1.0",
       "bin": {
         "koi": "./dist/bin.js",
       },
@@ -743,6 +743,8 @@
 
     "@jscpd/tokenizer": ["@jscpd/tokenizer@4.0.4", "", { "dependencies": { "@jscpd/core": "4.0.4", "reprism": "^0.0.11", "spark-md5": "^3.0.2" } }, "sha512-xxYYY/qaLah/FlwogEbGIxx9CjDO+G9E6qawcy26WwrflzJb6wsnhjwdneN6Wb0RNCDsqvzY+bzG453jsin4UQ=="],
 
+    "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
+
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
@@ -750,8 +752,6 @@
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
-
-    "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
