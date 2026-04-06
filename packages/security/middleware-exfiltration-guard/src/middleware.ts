@@ -486,15 +486,38 @@ export function createExfiltrationGuardMiddleware(
         }
       }
 
-      // If stream ended without a "done" chunk, flush held chunks
+      // If stream ended without a "done" chunk, flush held chunks.
+      // Apply same block/redact/warn semantics as the normal done path.
       if (!scanned && !overflowed && heldChunks.length > 0) {
         const result = redactor.redactString(buffer);
-        if (result.matchCount > 0 && config.action === "redact") {
-          yield { kind: "text_delta", delta: result.text };
-        } else {
-          for (const held of heldChunks) {
-            yield held;
+        if (result.matchCount > 0 || result.matchCount === -1) {
+          fireDetection({
+            location: "model-output",
+            matchCount: Math.max(0, result.matchCount),
+            kinds: result.matchCount === -1 ? ["redaction_failure"] : [],
+            action: config.action,
+          });
+          if (config.action === "block") {
+            yield {
+              kind: "error",
+              message: `Exfiltration guard: ${result.matchCount === -1 ? "redaction failure" : `${String(result.matchCount)} secret(s) detected`} in truncated model output — blocked`,
+              code: result.matchCount === -1 ? "INTERNAL" : "PERMISSION",
+              retryable: false,
+            };
+            return;
           }
+          if (config.action === "redact") {
+            if (textOnlyBuffer.length > 0) {
+              const textRedacted = redactor.redactString(textOnlyBuffer);
+              yield { kind: "text_delta", delta: textRedacted.text };
+            }
+            return;
+          }
+          // "warn" — fall through to replay
+        }
+        // No secrets or warn mode — replay all held chunks
+        for (const held of heldChunks) {
+          yield held;
         }
       }
     },
