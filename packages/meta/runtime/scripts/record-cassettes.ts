@@ -46,7 +46,7 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId, sessionId } from "@koi/core";
+import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -74,7 +74,11 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
-import { createInMemoryTranscript, createSessionTranscriptMiddleware } from "@koi/session";
+import {
+  createInMemoryTranscript,
+  createSessionTranscriptMiddleware,
+  resumeFromTranscript,
+} from "@koi/session";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -641,6 +645,15 @@ interface QueryConfig {
    * These are wrapped with wrapMiddlewareWithTrace automatically.
    */
   readonly extraMiddleware?: readonly KoiMiddleware[];
+  /**
+   * Optional prior messages to seed the conversation before `prompt`.
+   * Use for session-resume scenarios where a crashed session's transcript has
+   * been converted to InboundMessages via resumeFromTranscript() and should
+   * appear as existing context when the agent starts its new turn.
+   * When provided, runtime.run() receives { kind: "messages" } with these
+   * prepended before a synthetic user message containing `prompt`.
+   */
+  readonly initialMessages?: readonly import("@koi/core").InboundMessage[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,7 +1033,21 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   // Hook registration is handled internally by createHookMiddleware — hooks are
   // registered per session in onSessionStart and cleaned up in onSessionEnd.
 
-  for await (const _e of runtime.run({ kind: "text", text: prompt })) {
+  const runInput: import("@koi/core").EngineInput =
+    config.initialMessages !== undefined
+      ? {
+          kind: "messages",
+          messages: [
+            ...config.initialMessages,
+            {
+              senderId: "user",
+              timestamp: Date.now(),
+              content: [{ kind: "text", text: prompt }],
+            },
+          ],
+        }
+      : { kind: "text", text: prompt };
+  for await (const _e of runtime.run(runInput)) {
     /* drain */
   }
 
@@ -2205,6 +2232,78 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
   },
+
+  // @koi/session — session-resume: exercises crash recovery + resumeFromTranscript().
+  // A prior session had a tool call that completed (add_numbers: 3+7=10), which was
+  // written to a transcript. The session then "crashed". On restart, resumeFromTranscript()
+  // converts those transcript entries into InboundMessages and they are injected as
+  // prior context via initialMessages. The agent resumes mid-conversation, sees the
+  // prior tool_call/tool_result pair, and continues by calling add_numbers again.
+  // Trajectory proves: (1) resume messages appear in model context, (2) session
+  // transcript MW fires on the new turn, (3) compact boundary extension is exercised.
+  (() => {
+    // Simulate the crashed session's transcript
+    const crashedTranscript = [
+      {
+        id: transcriptEntryId("crash-e1"),
+        role: "user" as const,
+        content: "Use add_numbers to compute 3 + 7.",
+        timestamp: Date.now() - 60000,
+      },
+      {
+        id: transcriptEntryId("crash-e2"),
+        role: "tool_call" as const,
+        content: JSON.stringify([
+          { id: "call-crashed-01", toolName: "add_numbers", args: '{"a":3,"b":7}' },
+        ]),
+        timestamp: Date.now() - 59000,
+      },
+      {
+        id: transcriptEntryId("crash-e3"),
+        role: "tool_result" as const,
+        content: '{"result":10}',
+        timestamp: Date.now() - 58500,
+      },
+      {
+        id: transcriptEntryId("crash-e4"),
+        role: "assistant" as const,
+        content: "The result of 3 + 7 is 10.",
+        timestamp: Date.now() - 58000,
+      },
+    ];
+
+    // resumeFromTranscript converts the crashed transcript to InboundMessages
+    const resumeResult = resumeFromTranscript(crashedTranscript);
+    const resumeMessages = resumeResult.ok ? resumeResult.value.messages : [];
+
+    const resumeTranscript = createInMemoryTranscript();
+    return {
+      name: "session-resume",
+      prompt:
+        "The previous session crashed mid-conversation. " +
+        "You previously used add_numbers to compute 3+7=10. " +
+        "Now use add_numbers to compute 15 + 25. Report both results.",
+      permissionMode: "bypass" as const,
+      permissionRules: BYPASS_RULES,
+      permissionDescription: "bypass (allow all)",
+      hooks: [],
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      maxTurns: 2,
+      initialMessages: resumeMessages,
+      extraMiddleware: [
+        createSessionTranscriptMiddleware({
+          transcript: resumeTranscript,
+          sessionId: sessionId("golden-session-resume"),
+        }),
+      ],
+    };
+  })(),
 ];
 
 // =========================================================================

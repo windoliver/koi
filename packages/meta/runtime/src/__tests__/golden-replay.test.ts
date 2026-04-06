@@ -5307,6 +5307,72 @@ describe("Golden: @koi/session — session-transcript-compaction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 2e-2: session-resume trajectory (crash recovery end-to-end)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — session-resume trajectory", () => {
+  type Step = {
+    readonly source: string;
+    readonly tool_calls?: readonly {
+      readonly function_name: string;
+      readonly arguments?: Record<string, unknown>;
+    }[];
+    readonly observation?: {
+      readonly results?: readonly { readonly content: string }[];
+    };
+    readonly extra?: {
+      readonly type?: string;
+      readonly middlewareName?: string;
+      readonly hook?: string;
+    };
+  };
+
+  const loadTrajectory = async (): Promise<readonly Step[]> => {
+    const doc = (await Bun.file(`${FIXTURES}/session-resume.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly steps: readonly Step[];
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    return doc.steps;
+  };
+
+  test("trajectory has add_numbers tool call with a=15, b=25 (new turn after resume)", async () => {
+    const steps = await loadTrajectory();
+    const toolStep = steps.find(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "add_numbers"),
+    );
+    expect(toolStep).toBeDefined();
+    const tc = toolStep?.tool_calls?.find((c) => c.function_name === "add_numbers");
+    expect(tc?.arguments?.a).toBe(15);
+    expect(tc?.arguments?.b).toBe(25);
+  });
+
+  test("trajectory has @koi/session:transcript wrapToolCall span (transcript captured new tool call)", async () => {
+    const steps = await loadTrajectory();
+    const transcriptSpans = steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "@koi/session:transcript",
+    );
+    expect(transcriptSpans.length).toBeGreaterThanOrEqual(1);
+    const toolCallSpan = transcriptSpans.find((s) => s.extra?.hook === "wrapToolCall");
+    expect(toolCallSpan).toBeDefined();
+  });
+
+  test("trajectory final agent step reports both prior result (10) and new result (40)", async () => {
+    const steps = await loadTrajectory();
+    // Last agent step should contain the model's summary mentioning both results
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+    const lastAgentStep = agentSteps.at(-1);
+    const lastContent = lastAgentStep?.observation?.results?.[0]?.content ?? "";
+    // Model should mention 10 (prior 3+7) and 40 (new 15+25)
+    expect(lastContent).toContain("10");
+    expect(lastContent).toContain("40");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase 2e-2: resumeFromTranscript (crash recovery + resume)
 // ---------------------------------------------------------------------------
 
