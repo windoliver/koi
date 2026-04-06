@@ -5305,17 +5305,21 @@ describe("Golden: fork mode + coordinator allowlist (#1241)", () => {
     expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Grep");
   });
 
-  test("coordinator manifest spawn ceiling excludes Spawn (workers cannot delegate further)", async () => {
-    const { COORDINATOR_MANIFEST, COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
-    // The manifest's spawn.tools.list is the ceiling for workers the coordinator spawns.
-    // Workers should NOT have Spawn — only the coordinator itself needs it.
-    // COORDINATOR_TOOL_ALLOWLIST (assembler-facing) includes Spawn; manifest ceiling does not.
+  test("coordinator manifest spawn ceiling is the explicit worker ceiling (not coordinator allowlist)", async () => {
+    const { COORDINATOR_MANIFEST } = await import("@koi/agent-runtime");
+    // The manifest's spawn.tools.list is COORDINATOR_WORKER_CEILING — an explicit list for
+    // workers, NOT derived from COORDINATOR_TOOL_ALLOWLIST. Workers have a different role:
+    // they execute tasks (task_update), not orchestrate (task_create, task_delegate, Spawn).
     expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
     const manifestList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list ?? [];
-    expect(manifestList).not.toContain("Spawn"); // workers cannot delegate further
-    // All non-Spawn tools from assembler allowlist must be in worker ceiling
-    const nonSpawnAllowlist = [...COORDINATOR_TOOL_ALLOWLIST].filter((t) => t !== "Spawn");
-    expect([...manifestList].sort()).toEqual(nonSpawnAllowlist.sort());
+    // Workers must NOT have these — only the coordinator orchestrator needs them
+    expect(manifestList).not.toContain("Spawn"); // workers do not spawn further agents
+    expect(manifestList).not.toContain("task_delegate"); // workers cannot reassign tasks
+    expect(manifestList).not.toContain("task_create"); // workers don't create new board entries
+    expect(manifestList).not.toContain("task_stop"); // workers don't kill other tasks
+    // Workers MUST have these — they execute and report
+    expect(manifestList).toContain("task_update"); // workers complete/fail their own task
+    expect(manifestList).toContain("send_message"); // workers may send status messages
     // File/shell tools must never be in the worker ceiling
     expect(manifestList).not.toContain("Glob");
     expect(manifestList).not.toContain("Grep");
