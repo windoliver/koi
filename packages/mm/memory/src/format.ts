@@ -45,6 +45,15 @@ function escapeMemoryContent(content: string): string {
   return content.replace(/</g, "&lt;");
 }
 
+/**
+ * Strips newlines and carriage returns from a metadata value to enforce
+ * single-line rendering inside `<memory-data>`. Prevents a multi-line
+ * name or type from breaking out of its `key: value` line.
+ */
+function sanitizeMetadataValue(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 // ---------------------------------------------------------------------------
 // Formatting functions
 // ---------------------------------------------------------------------------
@@ -52,17 +61,25 @@ function escapeMemoryContent(content: string): string {
 /**
  * Formats a single scored memory as a Markdown block.
  *
- * Content is wrapped in `<memory-data>` tags with delimiter escaping
- * to prevent trust-boundary breakout.
+ * ALL user-derived fields (name, type, content) are placed inside the
+ * `<memory-data>` trust boundary with delimiter escaping. The heading
+ * is a static label so no user-controlled data can be interpreted as
+ * prompt instructions.
+ *
+ * Inside the trust boundary, metadata is serialized as JSON string
+ * literals so imperative content in names cannot be interpreted as
+ * executable prose by the model. Content follows after a `---` separator.
  *
  * The `[score: ...]` suffix is only included when `includeScore` is true.
  */
 export function formatSingleMemory(scored: ScoredMemory, includeScore?: boolean): string {
-  const safeName = escapeMemoryContent(scored.memory.record.name);
-  const heading = `### ${safeName} (${scored.memory.record.type})`;
   const scoreSuffix = includeScore === true ? ` [score: ${scored.salienceScore.toFixed(2)}]` : "";
+  const heading = `### Memory entry${scoreSuffix}`;
+  const safeName = escapeMemoryContent(sanitizeMetadataValue(scored.memory.record.name));
+  const safeType = escapeMemoryContent(sanitizeMetadataValue(scored.memory.record.type));
   const safeContent = escapeMemoryContent(scored.memory.record.content);
-  return `${heading}${scoreSuffix}\n<memory-data>\n${safeContent}\n</memory-data>`;
+  const meta = `{"name":${JSON.stringify(safeName)},"type":${JSON.stringify(safeType)}}`;
+  return `${heading}\n<memory-data>\n${meta}\n---\n${safeContent}\n</memory-data>`;
 }
 
 /**

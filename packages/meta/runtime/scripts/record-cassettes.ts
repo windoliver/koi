@@ -529,6 +529,7 @@ const memoryRecallResult = buildTool({
       totalScanned: result.totalScanned,
       truncated: result.truncated,
       degraded: result.degraded,
+      candidateLimitHit: result.candidateLimitHit,
       skippedFiles: result.skippedFiles,
       totalTokens: result.totalTokens,
       formatted: result.formatted,
