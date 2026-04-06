@@ -29,6 +29,7 @@ import type {
 } from "@koi/core";
 import {
   channelToken,
+  DEFAULT_FORK_MAX_TURNS,
   DEFAULT_SPAWN_CHANNEL_POLICY,
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,
@@ -109,14 +110,21 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // Always exclude Spawn (and nonInteractive tools when applicable) from inheritance.
   // Spawn carries a parent-bound closure; inheriting it would mis-attribute nested
   // spawns to the ancestor. Each child that needs Spawn must get a fresh provider.
+  const isFork = options.fork === true;
   const baseDenylist = expandDenylistWithAlwaysExcluded(
     options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
   );
+  // Apply fork recursion guard: strip agent_spawn from fork children (Decision 3-A).
+  // This is a type-level guarantee — independent of system prompt or manifest config.
+  const forkGuardedDenylist = applyForkDenylist(baseDenylist, isFork);
   // let justified: modified below when applying manifest ceiling
   let toolDenylist: ReadonlySet<string> =
-    options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
+    options.nonInteractive === true
+      ? expandDenylistForNonInteractive(forkGuardedDenylist)
+      : forkGuardedDenylist;
+  // Fork inherits all parent tools (no allowlist). Regular spawns may have an allowlist.
   const baseAllowlist =
-    options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
+    !isFork && options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
   // let justified: modified below when applying manifest ceiling
   let toolAllowlist: ReadonlySet<string> | undefined =
     options.nonInteractive === true && baseAllowlist !== undefined
@@ -437,6 +445,45 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Fork helpers (Decision 1-A / 3-A / 14-A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool name unconditionally stripped from fork children.
+ * Prevents recursive forks — a fork child should never itself fork.
+ * Stripping at the denylist level is a type-level guarantee independent of
+ * system prompt instructions or manifest configuration.
+ */
+const FORK_RECURSION_GUARD_TOOL = "agent_spawn";
+
+/**
+ * Strips `agent_spawn` from the denylist when `isFork` is true.
+ * Pure function — safe to call in parallel child assembly.
+ *
+ * @internal exported for unit testing
+ */
+export function applyForkDenylist(base: ReadonlySet<string>, isFork: boolean): ReadonlySet<string> {
+  if (!isFork) return base;
+  const extended = new Set(base);
+  extended.add(FORK_RECURSION_GUARD_TOOL);
+  return extended;
+}
+
+/**
+ * Applies the default fork `maxTurns` cap when `isFork` is true and `maxTurns` is
+ * not explicitly set. Prevents runaway fork children from holding ledger slots.
+ *
+ * @internal exported for unit testing
+ */
+export function applyForkMaxTurns(
+  maxTurns: number | undefined,
+  isFork: boolean,
+): number | undefined {
+  if (!isFork) return maxTurns;
+  return maxTurns ?? DEFAULT_FORK_MAX_TURNS;
+}
 
 /** Tool names stripped from nonInteractive agents to prevent user-facing prompts. */
 const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([

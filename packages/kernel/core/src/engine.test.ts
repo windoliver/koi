@@ -49,6 +49,8 @@ function engineEventLabel(event: EngineEvent): string {
       return "spawned";
     case "agent_status_changed":
       return "status";
+    case "permission_attempt":
+      return "permission";
     default: {
       const _exhaustive: never = event;
       return String(_exhaustive);

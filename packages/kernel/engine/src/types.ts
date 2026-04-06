@@ -235,6 +235,13 @@ export interface SpawnChildOptions {
   readonly toolDenylist?: readonly string[] | undefined;
   /** Tool names to exclusively allow from inherited parent tools. Mutually exclusive with toolDenylist. Does not filter additionalTools. */
   readonly toolAllowlist?: readonly string[] | undefined;
+  /**
+   * When true, this is a fork spawn — inherits all parent tools and has
+   * `agent_spawn` automatically stripped (recursion guard). Compatible with
+   * `toolDenylist` for additional narrowing. `DEFAULT_FORK_MAX_TURNS` is applied
+   * when `limits.maxTurns` is not set.
+   */
+  readonly fork?: true | undefined;
   /** Additional tool descriptors to inject into the child's tool set. */
   readonly additionalTools?: readonly ToolDescriptor[] | undefined;
   /**

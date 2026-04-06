@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ToolConfig } from "@koi/core";
+import { COORDINATOR_MANIFEST, COORDINATOR_TOOL_ALLOWLIST } from "./coordinator.js";
 import { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./index.js";
 
 describe("getBuiltInAgents", () => {
@@ -75,5 +76,43 @@ describe("getBuiltInAgents", () => {
       expect(agent.systemPrompt).toBeDefined();
       expect((agent.systemPrompt ?? "").length).toBeGreaterThan(100);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinator tool surface (Decision 2-A / 8-A / 11-A)
+// ---------------------------------------------------------------------------
+
+describe("COORDINATOR_TOOL_ALLOWLIST", () => {
+  test("coordinator manifest spawn.tools.list equals COORDINATOR_TOOL_ALLOWLIST (single source of truth)", () => {
+    const spawnToolsList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list;
+    expect(spawnToolsList).toBeDefined();
+    expect(spawnToolsList).toEqual([...COORDINATOR_TOOL_ALLOWLIST]);
+  });
+
+  test("coordinator manifest spawn.tools.policy is allowlist", () => {
+    expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
+  });
+
+  test("COORDINATOR_TOOL_ALLOWLIST contains the core delegation tools", () => {
+    const allowlist = [...COORDINATOR_TOOL_ALLOWLIST];
+    expect(allowlist).toContain("agent_spawn");
+    expect(allowlist).toContain("task_create");
+    expect(allowlist).toContain("task_list");
+    expect(allowlist).toContain("task_output");
+    expect(allowlist).toContain("task_delegate");
+    expect(allowlist).toContain("task_stop");
+    expect(allowlist).toContain("send_message");
+  });
+
+  test("COORDINATOR_TOOL_ALLOWLIST snapshot — adding tools requires deliberate update", () => {
+    expect([...COORDINATOR_TOOL_ALLOWLIST]).toMatchSnapshot();
+  });
+
+  test("COORDINATOR_MANIFEST is the pre-parsed coordinator used by getBuiltInAgents", () => {
+    const agents = getBuiltInAgents();
+    const coordinator = agents.find((a) => a.agentType === "coordinator");
+    // Reference equality: getBuiltInAgents() pushes COORDINATOR_MANIFEST directly
+    expect(coordinator).toBe(COORDINATOR_MANIFEST);
   });
 });

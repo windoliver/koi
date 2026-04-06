@@ -29,7 +29,7 @@ import { runWithAgentContext } from "@koi/execution-context";
 import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
 import { createTextCollector } from "./output-collector.js";
 import { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
-import { spawnChildAgent } from "./spawn-child.js";
+import { applyForkMaxTurns, spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -220,11 +220,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       return { ok: false, error: validation.error };
     }
 
+    const isFork = request.fork === true;
+    // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
+    const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
+
     const spawnOptions: SpawnChildOptions = {
       ...base,
       manifest,
       adapter,
       signal: request.signal,
+      ...(isFork ? { fork: true as const } : {}),
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
       ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
@@ -234,7 +239,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       ...(request.nonInteractive !== undefined ? { nonInteractive: request.nonInteractive } : {}),
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
       limits: {
-        ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
+        ...(effectiveMaxTurns !== undefined ? { maxTurns: effectiveMaxTurns } : {}),
         ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
       },
     };

@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ManagedTaskBoard } from "@koi/core";
+import type { ManagedTaskBoard, TaskItemId } from "@koi/core";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { recoverOrphanedTasks } from "./recover-orphans.js";
 
@@ -87,6 +87,19 @@ describe("recoverOrphanedTasks", () => {
     expect(result.requeued.length).toBe(0);
   });
 
+  test("result always includes a failed field (empty on full success)", async () => {
+    const board = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(board, "Task 1");
+    await board.assign(id1, agentId("child-1"));
+
+    const result = await recoverOrphanedTasks(board, newAgent);
+
+    expect(result.failed).toBeDefined();
+    expect(result.failed.length).toBe(0);
+  });
+
   test("preserves subject and description in re-queued tasks", async () => {
     const board = await freshBoard();
     const newAgent = agentId("new-coordinator");
@@ -102,5 +115,76 @@ describe("recoverOrphanedTasks", () => {
     const newTask = board.snapshot().get(newTaskId);
     expect(newTask?.subject).toBe("Research OAuth2");
     expect(newTask?.description).toBe("Investigate OAuth2 integration patterns");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Partial failure cases (Decision 7-A / 12-A)
+  // ---------------------------------------------------------------------------
+
+  test("reports failed IDs when kill succeeds but add fails (partial data loss)", async () => {
+    const realBoard = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(realBoard, "Task 1");
+    await realBoard.assign(id1, agentId("child-1"));
+
+    // Wrap the real board with a proxy that makes add() always fail
+    const failingBoard: ManagedTaskBoard = {
+      ...realBoard,
+      add: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "simulated add failure", retryable: false },
+      }),
+    };
+
+    const result = await recoverOrphanedTasks(failingBoard, newAgent);
+
+    // Task was killed but could not be requeued
+    expect(result.killed.length).toBe(1);
+    expect(result.requeued.length).toBe(0);
+    expect(result.failed.length).toBe(1);
+    expect(result.failed[0]).toBe(id1);
+  });
+
+  test("skips already-terminal tasks (kill fails) without adding to failed", async () => {
+    const board = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(board, "Task 1");
+    await board.assign(id1, agentId("child-1"));
+    // Pre-kill the task so it is already terminal when recovery runs
+    await board.kill(id1);
+
+    const result = await recoverOrphanedTasks(board, newAgent);
+
+    // Task was already terminal — kill fails silently, not added to failed
+    expect(result.killed.length).toBe(0);
+    expect(result.requeued.length).toBe(0);
+    expect(result.failed.length).toBe(0);
+  });
+
+  test("parallelises correctly with mixed kill results: some fail, some succeed", async () => {
+    const board = await freshBoard();
+    const newAgent = agentId("new-coordinator");
+
+    const id1 = await addTask(board, "Task 1");
+    const id2 = await addTask(board, "Task 2");
+    const id3 = await addTask(board, "Task 3");
+    await board.assign(id1, agentId("child-1"));
+    await board.assign(id2, agentId("child-2"));
+    await board.assign(id3, agentId("child-3"));
+
+    const result = await recoverOrphanedTasks(board, newAgent);
+
+    // All 3 should be killed and requeued with no failures
+    expect(result.killed.length).toBe(3);
+    expect(result.requeued.length).toBe(3);
+    expect(result.failed.length).toBe(0);
+
+    // Killed IDs are the original IDs
+    const killedSet = new Set<TaskItemId>(result.killed);
+    expect(killedSet.has(id1)).toBe(true);
+    expect(killedSet.has(id2)).toBe(true);
+    expect(killedSet.has(id3)).toBe(true);
   });
 });

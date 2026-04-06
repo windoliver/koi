@@ -5,7 +5,13 @@
  * the shape expected by AgentDefinition from @koi/core.
  */
 
-import type { AgentDefinition, AgentDefinitionSource, AgentManifest, ModelConfig } from "@koi/core";
+import type {
+  AgentDefinition,
+  AgentDefinitionSource,
+  AgentManifest,
+  ManifestSpawnConfig,
+  ModelConfig,
+} from "@koi/core";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -16,29 +22,55 @@ import { z } from "zod";
  * Zod schema for the YAML frontmatter in an agent definition `.md` file.
  *
  * Required: `name`, `description`.
- * Optional: `model`.
+ * Optional: `model`, `spawn`.
  *
  * The schema is STRICT — unknown keys are rejected, not silently dropped.
  * This prevents users from configuring unsupported fields and believing
  * they are enforced when they are not.
  *
  * Fields intentionally NOT supported yet (will be added when enforcement lands):
- * - `tools` — spawn-time tool restriction (#1425)
  * - `permissions` — permission policy enforcement (#1425)
  * - `maxTurns` — SpawnRequest turn limits (#1424)
  */
+
+/** Validated frontmatter shape for `spawn.tools`. */
+export interface AgentFrontmatterSpawnTools {
+  readonly policy?: "allowlist" | "denylist" | undefined;
+  readonly list?: readonly string[] | undefined;
+}
+
+/** Validated frontmatter shape for `spawn`. */
+export interface AgentFrontmatterSpawn {
+  readonly tools?: AgentFrontmatterSpawnTools | undefined;
+}
+
 /** Validated frontmatter shape for an agent definition `.md` file. */
 export interface AgentFrontmatter {
   readonly name: string;
   readonly description: string;
   readonly model?: string | undefined;
+  readonly spawn?: AgentFrontmatterSpawn | undefined;
 }
+
+const spawnToolsSchema: z.ZodType<AgentFrontmatterSpawnTools> = z
+  .object({
+    policy: z.enum(["allowlist", "denylist"]).optional(),
+    list: z.array(z.string()).optional(),
+  })
+  .strict();
+
+const spawnSchema: z.ZodType<AgentFrontmatterSpawn> = z
+  .object({
+    tools: spawnToolsSchema.optional(),
+  })
+  .strict();
 
 const agentFrontmatterSchema: z.ZodType<AgentFrontmatter> = z
   .object({
     name: z.string().min(1, "Agent name is required"),
     description: z.string().min(1, "Agent description is required"),
     model: z.string().optional(),
+    spawn: spawnSchema.optional(),
   })
   .strict();
 
@@ -70,6 +102,17 @@ function mapModelConfig(model: string | undefined): ModelConfig {
   return { name: model ?? "sonnet" };
 }
 
+/** Map frontmatter spawn config to ManifestSpawnConfig (exactOptionalPropertyTypes-safe). */
+function mapSpawnConfig(spawn: AgentFrontmatterSpawn): ManifestSpawnConfig {
+  if (spawn.tools === undefined) return {};
+  const { policy, list } = spawn.tools;
+  const tools: ManifestSpawnConfig["tools"] = {
+    ...(policy !== undefined ? { policy } : {}),
+    ...(list !== undefined ? { list } : {}),
+  };
+  return { tools };
+}
+
 // ---------------------------------------------------------------------------
 // Transform to AgentDefinition
 // ---------------------------------------------------------------------------
@@ -84,11 +127,16 @@ export function mapFrontmatterToDefinition(
   systemPrompt: string,
   source: AgentDefinitionSource,
 ): AgentDefinition {
+  const spawnConfig: ManifestSpawnConfig | undefined = frontmatter.spawn
+    ? mapSpawnConfig(frontmatter.spawn)
+    : undefined;
+
   const manifest: AgentManifest = {
     name: frontmatter.name,
     version: "0.0.0",
     description: frontmatter.description,
     model: mapModelConfig(frontmatter.model),
+    ...(spawnConfig !== undefined ? { spawn: spawnConfig } : {}),
   };
 
   return {
