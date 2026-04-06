@@ -26,6 +26,7 @@ describe("Golden: @koi/session — session recovery", () => {
       remoteSeq: 3,
       connectedAt: now - 10000,
       lastPersistedAt: now - 1000,
+      status: "idle",
       metadata: { channel: "cli" },
     });
     store.saveSession({
@@ -36,6 +37,7 @@ describe("Golden: @koi/session — session recovery", () => {
       remoteSeq: 1,
       connectedAt: now - 5000,
       lastPersistedAt: now - 500,
+      status: "idle",
       metadata: {},
     });
     store.saveSession({
@@ -46,6 +48,7 @@ describe("Golden: @koi/session — session recovery", () => {
       remoteSeq: 0,
       connectedAt: now - 3000,
       lastPersistedAt: now - 300,
+      status: "idle",
       metadata: {},
     });
 
@@ -120,6 +123,7 @@ describe("Golden: @koi/session — session recovery", () => {
       remoteSeq: 8,
       connectedAt: Date.now() - 5000,
       lastPersistedAt: Date.now() - 100,
+      status: "idle",
       metadata: {},
       lastEngineState: {
         engineId: "langgraph-v2",

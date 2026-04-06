@@ -269,3 +269,104 @@ describe("Golden: @koi/session — transcript compaction", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// compact() boundary extension — must not split tool_call/tool_result pairs
+//
+// Written BEFORE the implementation (red phase) — tests must fail until
+// compact() in jsonl-store.ts is updated to extend the boundary.
+//
+// Three cases:
+//   A: clean boundary — preserveLastN lands between pairs → no extension
+//   B: boundary splits a pair → extended to preserve the full pair
+//   C: boundary before a pair — whole pair is preserved, no extension needed
+// ---------------------------------------------------------------------------
+
+describe("JsonlTranscript (compact boundary extension)", () => {
+  test("case A: clean boundary — preserveLastN lands outside any pair, extended=false", async () => {
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const sid = sessionId("bound-a");
+
+    // 4 plain user entries, then 1 more — cut after 2, which lands cleanly between entries
+    const entries = Array.from({ length: 5 }, (_, i) =>
+      makeTranscriptEntry({ content: `msg-${i}`, timestamp: 1000 * (i + 1) }),
+    );
+    await store.append(sid, entries);
+
+    const result = await store.compact(sid, "Summary", 2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.preserved).toBe(2);
+      expect(result.value.extended).toBe(false);
+    }
+  });
+
+  test("case B: boundary splits tool_call/tool_result pair → extended to preserve both", async () => {
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const sid = sessionId("bound-b");
+
+    // Transcript: user, tool_call, tool_result, user (4 entries)
+    // preserveLastN=2 → cut would be at index 2 (tool_result, user), splitting the pair
+    const entries = [
+      makeTranscriptEntry({ content: "user question", role: "user" }),
+      makeTranscriptEntry({
+        content: JSON.stringify([{ id: "c1", toolName: "bash", args: "" }]),
+        role: "tool_call",
+      }),
+      makeTranscriptEntry({
+        content: JSON.stringify({ toolId: "bash", output: "ok" }),
+        role: "tool_result",
+      }),
+      makeTranscriptEntry({ content: "user followup", role: "user" }),
+    ];
+    await store.append(sid, entries);
+
+    // preserveLastN=2: naive slice keeps [tool_result, user] — splits the pair
+    // with boundary extension: must extend to keep [tool_call, tool_result, user] = 3 entries
+    const result = await store.compact(sid, "Summary", 2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.extended).toBe(true);
+      expect(result.value.preserved).toBe(3); // extended by 1 to include tool_call
+    }
+
+    // Verify the resulting file is clean (no split pair)
+    const loaded = await store.load(sid);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // compaction entry + 3 preserved = 4 total
+      expect(loaded.value.entries.length).toBe(4);
+      expect(loaded.value.entries[0]?.role).toBe("compaction");
+      expect(loaded.value.entries[1]?.role).toBe("tool_call");
+      expect(loaded.value.entries[2]?.role).toBe("tool_result");
+      expect(loaded.value.entries[3]?.role).toBe("user");
+    }
+  });
+
+  test("case C: boundary is already before any pair → no extension needed", async () => {
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const sid = sessionId("bound-c");
+
+    // Transcript: user, tool_call, tool_result (3 entries)
+    // preserveLastN=3 keeps all 3 — tool_call and tool_result both preserved
+    const entries = [
+      makeTranscriptEntry({ content: "question", role: "user" }),
+      makeTranscriptEntry({
+        content: JSON.stringify([{ id: "c2", toolName: "bash", args: "" }]),
+        role: "tool_call",
+      }),
+      makeTranscriptEntry({
+        content: JSON.stringify({ toolId: "bash", output: "ok" }),
+        role: "tool_result",
+      }),
+    ];
+    await store.append(sid, entries);
+
+    const result = await store.compact(sid, "Summary", 3);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.preserved).toBe(3);
+      expect(result.value.extended).toBe(false);
+    }
+  });
+});

@@ -10,11 +10,13 @@
  * - O_APPEND atomicity: appendFile uses O_APPEND for concurrent-safe per-write atomicity
  * - Atomic compaction: write-temp + rename (POSIX atomic)
  * - SkippedTranscriptEntry.reason: distinguishes crash artifacts from real corruption
+ * - queues Map is instance-local (inside factory): separate instances don't interfere
  */
 
 import { appendFile, mkdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type {
+  CompactResult,
   KoiError,
   Result,
   SessionId,
@@ -34,48 +36,6 @@ import { extractMessage } from "@koi/errors";
 
 export interface JsonlTranscriptConfig {
   readonly baseDir: string;
-}
-
-// ---------------------------------------------------------------------------
-// Per-session async serialization queue (decision 6-A)
-//
-// compact() rewrites the file via write-temp + rename. If append() races with
-// compact(), the rename overwrites the appended data — silent loss. The queue
-// serializes all ops per sessionId so append and compact never overlap.
-//
-// Single-process guarantee only: the queue prevents races within one Node/Bun
-// process. For O_APPEND atomicity across processes, kernel guarantees are
-// sufficient for appends alone, but compact() + remove() (rename/unlink) are
-// NOT multi-process safe. This store is designed for single-process CLI use.
-// If multi-process concurrent access is required, use a backend with
-// transactional semantics (e.g. SQLite WAL).
-// ---------------------------------------------------------------------------
-
-const queues = new Map<string, Promise<void>>();
-
-function serialized<T>(sid: string, fn: () => Promise<T>): Promise<T> {
-  const prev = queues.get(sid) ?? Promise.resolve();
-  // Run fn regardless of whether prev resolved or rejected
-  const result = prev.then(
-    () => fn(),
-    () => fn(),
-  );
-  // Store a void-typed tail so the next operation can chain on it
-  const tail = result.then(
-    () => {
-      /* next op may proceed */
-    },
-    () => {
-      /* error — next op still proceeds */
-    },
-  );
-  queues.set(sid, tail);
-  // GC: once this tail settles with no subsequent op queued, remove the entry.
-  // Prevents unbounded Map growth in long-lived processes with many transient sessions.
-  void tail.then(() => {
-    if (queues.get(sid) === tail) queues.delete(sid);
-  });
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +115,45 @@ function parseJsonlLines(text: string): {
 
 export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTranscript {
   const { baseDir } = config;
+
+  // Per-session async serialization queue (decision 6-A, instance-local per issue 5-A)
+  //
+  // compact() rewrites the file via write-temp + rename. If append() races with
+  // compact(), the rename overwrites the appended data — silent loss. The queue
+  // serializes all ops per sessionId so append and compact never overlap.
+  //
+  // Instance-local: each createJsonlTranscript() gets its own Map. Module-level
+  // state would cause separate instances (e.g. in tests) to share queues and
+  // interfere with each other.
+  //
+  // Single-process guarantee only: multi-process concurrent access requires a
+  // backend with transactional semantics (e.g. SQLite WAL).
+  const queues = new Map<string, Promise<void>>();
+
+  function serialized<T>(sid: string, fn: () => Promise<T>): Promise<T> {
+    const prev = queues.get(sid) ?? Promise.resolve();
+    // Run fn regardless of whether prev resolved or rejected
+    const result = prev.then(
+      () => fn(),
+      () => fn(),
+    );
+    // Store a void-typed tail so the next operation can chain on it
+    const tail = result.then(
+      () => {
+        /* next op may proceed */
+      },
+      () => {
+        /* error — next op still proceeds */
+      },
+    );
+    queues.set(sid, tail);
+    // GC: once this tail settles with no subsequent op queued, remove the entry.
+    // Prevents unbounded Map growth in long-lived processes with many transient sessions.
+    void tail.then(() => {
+      if (queues.get(sid) === tail) queues.delete(sid);
+    });
+    return result;
+  }
 
   function filePath(sid: string): string {
     // URL-encode the session ID to produce a safe filename for any session ID
@@ -245,7 +244,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     sid: SessionId,
     summary: string,
     preserveLastN: number,
-  ): Promise<Result<void, KoiError>> => {
+  ): Promise<Result<CompactResult, KoiError>> => {
     const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
@@ -264,11 +263,23 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
       try {
         const file = Bun.file(filePath(sid));
         if (!(await file.exists())) {
-          return { ok: true as const, value: undefined };
+          return { ok: true as const, value: { preserved: 0, extended: false } };
         }
 
         const text = await file.text();
         const { entries } = parseJsonlLines(text);
+
+        // Boundary extension (decision 12-B): if the naive cut lands on a tool_result
+        // entry, extend backward until the cut is before the tool_call that owns it.
+        // This prevents the compaction from splitting a tool_call/tool_result pair —
+        // a split pair causes replay to fail because the model sees an orphan result.
+        const naiveCutIndex = Math.max(0, entries.length - preserveLastN);
+        let cutIndex = naiveCutIndex;
+        while (cutIndex > 0 && entries[cutIndex]?.role === "tool_result") {
+          cutIndex--;
+        }
+        const preserved = entries.slice(cutIndex);
+        const extended = cutIndex < naiveCutIndex;
 
         const compactionEntry: TranscriptEntry = {
           id: transcriptEntryId(`compaction-${Date.now()}`),
@@ -277,7 +288,6 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
           timestamp: Date.now(),
         };
 
-        const preserved = preserveLastN === 0 ? [] : entries.slice(-preserveLastN);
         const jsonl = `${[compactionEntry, ...preserved].map((e) => JSON.stringify(e)).join("\n")}\n`;
 
         // Atomic replace: write to temp, then rename (POSIX atomic)
@@ -285,7 +295,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
         await Bun.write(tmp, jsonl);
         await rename(tmp, filePath(sid));
 
-        return { ok: true as const, value: undefined };
+        return { ok: true as const, value: { preserved: preserved.length, extended } };
       } catch (e: unknown) {
         return {
           ok: false as const,

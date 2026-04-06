@@ -94,6 +94,22 @@ export interface TranscriptLoadResult {
 }
 
 // ---------------------------------------------------------------------------
+// Compaction result
+// ---------------------------------------------------------------------------
+
+/** Result of a compact() operation — describes what was kept and whether the boundary moved. */
+export interface CompactResult {
+  /** Actual number of entries preserved (may exceed preserveLastN if boundary was extended). */
+  readonly preserved: number;
+  /**
+   * True if the boundary was extended beyond preserveLastN to avoid splitting a
+   * tool_call/tool_result pair. @koi/context-manager should use this to reconcile
+   * its own token accounting when the actual preserved count differs from requested.
+   */
+  readonly extended: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Main interface
 // ---------------------------------------------------------------------------
 
@@ -126,7 +142,7 @@ export interface SessionTranscript {
     sessionId: SessionId,
     summary: string,
     preserveLastN: number,
-  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  ) => Result<CompactResult, KoiError> | Promise<Result<CompactResult, KoiError>>;
 
   readonly remove: (
     sessionId: SessionId,

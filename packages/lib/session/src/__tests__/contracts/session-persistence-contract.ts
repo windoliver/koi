@@ -40,6 +40,7 @@ function makeSession(
     remoteSeq: 0,
     connectedAt: Date.now(),
     lastPersistedAt: Date.now(),
+    status: "idle",
     metadata: {},
     ...overrides,
   };

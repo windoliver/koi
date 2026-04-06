@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/session-repair": "workspace:*"
   }
 }

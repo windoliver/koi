@@ -4,6 +4,7 @@
  */
 
 import type {
+  CompactResult,
   KoiError,
   Result,
   SessionId,
@@ -58,7 +59,7 @@ export function createInMemoryTranscript(): SessionTranscript {
     sid: SessionId,
     summary: string,
     preserveLastN: number,
-  ): Result<void, KoiError> => {
+  ): Result<CompactResult, KoiError> => {
     const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
 
@@ -74,15 +75,24 @@ export function createInMemoryTranscript(): SessionTranscript {
     }
 
     const existing = store.get(sid) ?? [];
+
+    // Boundary extension: extend backward to avoid splitting tool_call/tool_result pairs
+    const naiveCutIndex = Math.max(0, existing.length - preserveLastN);
+    let cutIndex = naiveCutIndex;
+    while (cutIndex > 0 && existing[cutIndex]?.role === "tool_result") {
+      cutIndex--;
+    }
+    const preserved = existing.slice(cutIndex);
+    const extended = cutIndex < naiveCutIndex;
+
     const compactionEntry: TranscriptEntry = {
       id: transcriptEntryId(`compaction-${Date.now()}`),
       role: "compaction",
       content: summary,
       timestamp: Date.now(),
     };
-    const preserved = preserveLastN === 0 ? [] : existing.slice(-preserveLastN);
     store.set(sid, [compactionEntry, ...preserved]);
-    return { ok: true, value: undefined };
+    return { ok: true, value: { preserved: preserved.length, extended } };
   };
 
   const remove = (sid: SessionId): Result<void, KoiError> => {
