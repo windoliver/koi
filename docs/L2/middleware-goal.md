@@ -48,6 +48,79 @@ const mw = createGoalMiddleware({
 | `baseInterval` | `number` | `5` | Turns between goal reminders |
 | `maxInterval` | `number` | `20` | Maximum interval cap |
 | `onComplete` | `(objective: string) => void` | — | Callback on completion |
+| `isDrifting` | `IsDriftingFn` | — | Custom drift judge (replaces heuristic) |
+| `detectCompletions` | `DetectCompletionsFn` | — | Custom completion judge (replaces heuristic) |
+| `callbackTimeoutMs` | `number` | `5000` | Per-callback timeout (1..60000) |
+| `onCallbackError` | `OnCallbackErrorFn` | — | Fires on callback error/timeout |
+
+### Custom Callbacks (opt-in per callback)
+
+Both the drift and completion heuristics can be replaced with user-supplied
+callbacks for semantic judging (LLM-backed, stemmer-backed, etc.). Each
+callback is an **independent opt-in**: providing one does not affect the
+other path.
+
+```typescript
+const mw = createGoalMiddleware({
+  objectives: ["Ship #1234", "Add iOS support"],
+
+  // LLM-based drift judge — replaces heuristic keyword matching
+  isDrifting: async (input, ctx) => {
+    const prompt = buildDriftPrompt(input.userMessages, input.responseTexts, input.items);
+    const result = await callLlm(prompt, { signal: ctx.signal }); // MUST honor signal
+    return result.drifting;
+  },
+
+  // LLM-based completion judge — returns IDs of newly-completed items
+  detectCompletions: async (responseTexts, items, ctx) => {
+    const prompt = buildCompletionPrompt(responseTexts, items);
+    const result = await callLlm(prompt, { signal: ctx.signal });
+    return result.completedIds;
+  },
+
+  callbackTimeoutMs: 3000,
+  onCallbackError: (info) => metrics.increment("goal.callback.error", { ...info }),
+});
+```
+
+**Drift input is redacted**: `input.userMessages` is a `DriftUserMessage[]`
+(NOT `InboundMessage[]`) — the middleware reduces each message to `{ senderId,
+timestamp, text }` and drops non-text content, `threadId`, `metadata`, and
+`pinned` fields before exposing it across the trust boundary.
+
+**Strict user-message filter (default-deny)**: a message reaches `isDrifting`
+only when:
+- `metadata.role === "user"` (explicit), OR
+- `metadata.role` is absent AND `senderId` is exactly `"user"` or starts
+  with `"user:"`.
+
+Roleless messages with custom sender IDs (e.g. `"customer-42"`) are
+**rejected** by default to prevent adapter/version skew from letting
+assistant/tool transcript content leak to external callbacks. Applications
+using custom user sender IDs must set `metadata.role = "user"`.
+
+**Cooperative cancellation**: callbacks receive a composed `AbortSignal` on
+their `ctx` that fires when the timeout expires OR the turn is cancelled
+upstream. Callbacks MUST honor it to stop in-flight work.
+
+**Behavior differences when opting into `detectCompletions`**:
+- Completion evaluation moves from per-model-call synchronous to once-per-turn
+  at turn boundary (`onAfterTurn`).
+- `onComplete` fires at turn boundary (not mid-turn).
+- If the process crashes or the run is cancelled before turn end, completion
+  state and `onComplete` side effects from that turn are lost.
+- Turn teardown and stop-gate retry start wait for the callback (bounded by
+  `callbackTimeoutMs`).
+
+**Failure policy**:
+- `isDrifting` error/timeout → fail-safe: treated as `drifting = true`
+  (reminders fire more aggressively, matching v1 semantics).
+- `detectCompletions` error/timeout → fall back to heuristic (safer to miss
+  a completion than falsely complete).
+- Both fire `onCallbackError` for observability.
+
+Callers who need synchronous, durable `onComplete` semantics should NOT
+provide `detectCompletions` and keep the heuristic path.
 
 ### Pure helpers (exported)
 

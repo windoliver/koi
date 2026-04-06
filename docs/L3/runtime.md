@@ -44,7 +44,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/memory-fs` | File-based memory storage backend — per-dir mutex + `.memory.lock` for write serialization, worktree-local by default (`shared: true` opt-in with policy pinning), atomic temp-rename updates, `indexError` on mutation returns, serialized MEMORY.md rebuilds | standalone |
 | `@koi/memory-tools` | Memory read/write/list tools | `memory-store` |
 | `@koi/middleware-exfiltration-guard` | Credential exfiltration detection middleware | standalone |
-| `@koi/middleware-goal` | Goal drift detection and attention management (keyword heuristic; redesign tracked in #1512) | `tool-use` |
+| `@koi/middleware-goal` | Goal drift + completion (keyword heuristic by default; custom `isDrifting`/`detectCompletions` callbacks per #1512) | `tool-use` |
 | `@koi/middleware-permissions` | Tool/model permission gating middleware | `permission-deny`, `denial-escalation` |
 | `@koi/middleware-report` | RunReport generation middleware | `tool-use` |
 | `@koi/middleware-semantic-retry` | Semantic retry on model failures | standalone |

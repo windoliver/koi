@@ -137,11 +137,15 @@ const addTool = addToolResult.value;
  * Creates a mock adapter that replays cassette chunks through modelStream terminal.
  * The bridge adapter handles the model→tool→model loop using consumeModelStream.
  */
-function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
+function createCassetteAdapter(
+  chunks: readonly ModelChunk[],
+  opts?: { readonly secondCallText?: string },
+): EngineAdapter {
   // Track how many times the model terminal is called — cassette is for first call only,
   // second call (after tool result) returns a simple text done response
   // let: mutable call counter
   let callCount = 0;
+  const secondText = opts?.secondCallText ?? "12";
 
   return {
     engineId: "cassette-replay",
@@ -160,10 +164,14 @@ function createCassetteAdapter(chunks: readonly ModelChunk[]): EngineAdapter {
         }
         // Subsequent calls: return simple text done (model has seen tool result)
         return toAsyncIterable([
-          { kind: "text_delta" as const, delta: "12" },
+          { kind: "text_delta" as const, delta: secondText },
           {
             kind: "done" as const,
-            response: { content: "12", model: MODEL, usage: { inputTokens: 10, outputTokens: 1 } },
+            response: {
+              content: secondText,
+              model: MODEL,
+              usage: { inputTokens: 10, outputTokens: 1 },
+            },
           },
         ]);
       },
@@ -477,6 +485,14 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
     );
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // @koi/middleware-goal: MW span present with outcome (proves the
+    // middleware actually ran, not just registered). onComplete timing
+    // and callback behavior are exhaustively covered by 90 per-package
+    // unit tests; the runtime golden test focuses on wiring correctness.
+    const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
+    expect(goalSpan).toBeDefined();
+    expect(goalSpan?.outcome).toBe("success");
   }, 15000);
 });
 

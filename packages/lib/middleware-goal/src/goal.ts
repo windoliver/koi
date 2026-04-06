@@ -20,9 +20,18 @@ import type {
 import { KoiRuntimeError } from "@koi/errors";
 
 import {
+  invokeDetectCompletionsCallback,
+  invokeIsDriftingCallback,
+  sanitizeUserMessages,
+} from "./callbacks.js";
+import {
   DEFAULT_BASE_INTERVAL,
+  DEFAULT_CALLBACK_TIMEOUT_MS,
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
+  type DriftUserMessage,
+  type GoalItem,
+  type GoalItemWithId,
   type GoalMiddlewareConfig,
   validateGoalConfig,
 } from "./config.js";
@@ -31,19 +40,63 @@ import {
 // Session state
 // ---------------------------------------------------------------------------
 
-interface GoalItem {
-  readonly text: string;
-  readonly completed: boolean;
-}
+/** Max user messages buffered across turns for the isDrifting callback. */
+const MESSAGE_BUFFER_SIZE = 10;
 
-interface GoalSessionState {
-  readonly items: readonly GoalItem[];
-  readonly currentInterval: number;
-  readonly lastReminderTurn: number;
+/**
+ * State scoped to a single turn. Keyed by `ctx.turnId` so that overlapping
+ * turns for the same session (possible when `onAfterTurn` awaits a
+ * long-running callback up to `callbackTimeoutMs`) cannot corrupt each
+ * other's injection flags or response buffers.
+ */
+interface PerTurnState {
+  readonly turnIndex: number;
   /** Whether to inject goals on the next model call this turn. Set by onBeforeTurn, consumed by first model call. */
   shouldInject: boolean;
   /** Whether injection was performed this turn (for onAfterTurn interval update). */
   injectedThisTurn: boolean;
+  /** Per-turn response texts (one per wrapModelCall / wrapModelStream). */
+  responseBuffer: string[];
+  /** Immutable snapshot of the rolling user-messages buffer at turn start.
+   *  Used as drift-callback input so turn N cannot observe turn N+1's
+   *  appended messages under overlap. */
+  userMessagesSnapshot: readonly DriftUserMessage[];
+  /** Previous `lastReminderTurn` value at turn start. Used to roll back
+   * the reminder advance if this turn is stop-gate vetoed, so the retry
+   * turn still sees the original cadence. */
+  previousLastReminderTurn: number;
+}
+
+interface GoalSessionState {
+  readonly items: readonly GoalItemWithId[];
+  readonly currentInterval: number;
+  readonly lastReminderTurn: number;
+  /** Rolling buffer of user-facing messages (sanitized). Used by isDrifting callback. */
+  userMessageBuffer: DriftUserMessage[];
+  /** Active per-turn state, keyed by `ctx.turnId`. Entries are created at
+   * onBeforeTurn and removed at onAfterTurn (or implicitly on session end). */
+  turns: Map<string, PerTurnState>;
+  /**
+   * Per-session promise chain for deferred callback processing. Next
+   * turn's onBeforeTurn awaits this so the injected goal block reflects
+   * the latest completion decisions from the previous turn's
+   * detectCompletions callback. Serializes callback work per session.
+   */
+  pendingWork: Promise<void>;
+  /**
+   * Count of in-flight isDrifting callbacks for this session.
+   * While > 0, `onBeforeTurn` computes reminder cadence against
+   * `baseInterval` instead of `currentInterval` — a fail-safe so slow
+   * drift judges cannot suppress reminders for many turns by holding
+   * a stale large interval.
+   */
+  pendingDrift: number;
+  /**
+   * When `true`, the next `onBeforeTurn` forces goal injection
+   * regardless of cadence. Set after a stop-gate blocked turn so the
+   * retry turn (whatever its index) still injects the goal block.
+   */
+  forceInjectNextTurn: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +218,10 @@ const COMPLETION_SIGNALS = /\b(?:completed|done|finished|accomplished)\b|\[x\]|�
  * prevents false positives from single generic words like "write" or
  * "integration" appearing in unrelated completion text.
  */
-export function detectCompletions(
+export function detectCompletions<T extends GoalItem>(
   responseText: string,
-  items: readonly GoalItem[],
-): readonly GoalItem[] {
+  items: readonly T[],
+): readonly T[] {
   if (!COMPLETION_SIGNALS.test(responseText)) {
     return items;
   }
@@ -246,56 +299,310 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const header = config.header ?? DEFAULT_GOAL_HEADER;
   const baseInterval = config.baseInterval ?? DEFAULT_BASE_INTERVAL;
   const maxInterval = config.maxInterval ?? DEFAULT_MAX_INTERVAL;
+  const callbackTimeoutMs = config.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS;
   const allKeywords = extractKeywords(config.objectives);
   const sessions = new Map<SessionId, GoalSessionState>();
+  const deferCompletions = config.detectCompletions !== undefined;
+  // Buffer response text when either callback is configured. isDrifting
+  // needs recent responses in its DriftJudgeInput; detectCompletions
+  // consumes them at turn end. Default (no callbacks) does NOT buffer —
+  // heuristic completion runs inline per model call to preserve the
+  // synchronous onComplete contract.
+  const bufferResponses = deferCompletions || config.isDrifting !== undefined;
 
   /**
-   * Detect completions in text and update session state + fire callbacks.
-   * Monotonic: completed objectives never revert to pending, even if a
-   * later model call in the same turn lacks the completion signal.
-   * Persists state before invoking callbacks so callback failures cannot
-   * leave stale state.
+   * Apply heuristic completion detection to a single response text.
+   * Monotonic: completed objectives never revert to pending.
+   * Persists state BEFORE invoking `onComplete` callbacks so callback
+   * failures cannot leave stale state.
    */
-  function updateCompletions(sid: SessionId, text: string): void {
+  function applyHeuristicCompletions(sid: SessionId, text: string): void {
     // Always read the latest state from the map to avoid stale snapshots
     const current = sessions.get(sid);
     if (!current) return;
 
     const detected = detectCompletions(text, current.items);
+    const merged = mergeByPosition(current.items, detected);
 
-    // Merge monotonically: true stays true
-    const merged = current.items.map((item, i) => {
+    // Persist state BEFORE invoking callbacks
+    sessions.set(sid, { ...current, items: merged });
+    fireOnCompleteForTransitions(current.items, merged);
+  }
+
+  /** Apply heuristic completion detection to a per-turn buffer of
+   * response texts in sequence, merging monotonically. Called from
+   * onAfterTurn in heuristic (non-callback) mode so stop-gate rollback
+   * can exclude the vetoed final response. */
+  function processHeuristicCompletions(sid: SessionId, entries: readonly string[]): void {
+    const current = sessions.get(sid);
+    if (!current) return;
+    const next = applyHeuristicFallback(current.items, entries);
+    sessions.set(sid, { ...current, items: next });
+    fireOnCompleteForTransitions(current.items, next);
+  }
+
+  /** Merge monotonically (position-based — only for heuristic path where items preserve order). */
+  function mergeByPosition(
+    prev: readonly GoalItemWithId[],
+    detected: readonly GoalItemWithId[],
+  ): readonly GoalItemWithId[] {
+    return prev.map((item, i) => {
       const det = detected[i];
       if (item.completed) return item;
       if (det?.completed) return det;
       return item;
     });
+  }
 
-    // Persist state BEFORE invoking callbacks
-    sessions.set(sid, { ...current, items: merged });
+  /** Merge callback result (IDs of newly-completed items) monotonically into items. */
+  function mergeByIds(
+    prev: readonly GoalItemWithId[],
+    completedIds: readonly string[],
+  ): readonly GoalItemWithId[] {
+    const completedSet = new Set(completedIds);
+    return prev.map((item) => {
+      if (item.completed) return item;
+      if (completedSet.has(item.id)) return { ...item, completed: true };
+      return item;
+    });
+  }
 
-    // Fire callbacks with error isolation — never fail the model call
-    if (config.onComplete) {
-      for (let i = 0; i < merged.length; i++) {
-        const prev = current.items[i];
-        const curr = merged[i];
-        if (prev && curr && !prev.completed && curr.completed) {
-          try {
-            config.onComplete(curr.text);
-          } catch {
-            // Swallow: observability callbacks must not fail model calls
-          }
+  /** Fire onComplete for items that transitioned from pending → completed. */
+  function fireOnCompleteForTransitions(
+    prev: readonly GoalItemWithId[],
+    next: readonly GoalItemWithId[],
+  ): void {
+    if (!config.onComplete) return;
+    for (let i = 0; i < next.length; i++) {
+      const p = prev[i];
+      const n = next[i];
+      if (p && n && !p.completed && n.completed) {
+        try {
+          config.onComplete(n.text);
+        } catch {
+          // Observability must not fail the turn
         }
       }
     }
   }
 
-  /** Consume shouldInject on first model call in a turn. Returns whether to inject. */
-  function consumeInjection(sid: SessionId): boolean {
+  /**
+   * Atomically adjust `pendingDrift` on the current session-state entry.
+   * Always reads the latest value via `sessions.get` and writes via
+   * `sessions.set` so callers can't decrement against a stale snapshot
+   * that may have been replaced by a spread-clone elsewhere.
+   */
+  function adjustPendingDrift(sid: SessionId, delta: number): void {
+    const latest = sessions.get(sid);
+    if (!latest) return;
+    const next = Math.max(0, latest.pendingDrift + delta);
+    sessions.set(sid, { ...latest, pendingDrift: next });
+  }
+
+  /**
+   * Evaluate drift for this turn, using the callback if configured.
+   * On callback error/timeout, fail-safe to drifting=true so reminders
+   * fire more aggressively (v1 semantics). On upstream abort, returns
+   * undefined to signal the caller to skip interval updates entirely.
+   */
+  async function resolveDrift(
+    state: GoalSessionState,
+    turn: PerTurnState,
+    ctx: TurnContext,
+  ): Promise<boolean | undefined> {
+    if (config.isDrifting) {
+      adjustPendingDrift(ctx.session.sessionId, 1);
+      try {
+        const outcome = await invokeIsDriftingCallback(
+          config.isDrifting,
+          {
+            // Use the per-turn snapshot (captured at onBeforeTurn) so turn N
+            // cannot observe turn N+1's appended messages under overlap.
+            userMessages: cloneMessages(turn.userMessagesSnapshot),
+            responseTexts: turn.responseBuffer.slice(),
+            items: cloneItems(state.items),
+          },
+          { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
+        );
+        if (outcome.ok) return outcome.value;
+        if (outcome.reason === "aborted") return undefined; // skip interval update
+        return true; // fail-safe on timeout/error
+      } finally {
+        adjustPendingDrift(ctx.session.sessionId, -1);
+      }
+    }
+    // Heuristic default: unchanged from pre-callback behavior — uses
+    // ctx.messages exactly as before. Callers needing richer context
+    // should provide an `isDrifting` callback.
+    return isDrifting(ctx.messages, allKeywords);
+  }
+
+  /**
+   * Invoke the user's detectCompletions callback with the turn's buffered
+   * response texts. On error/timeout, fall back to heuristic (monotonic,
+   * safer to miss a completion than falsely complete). Merges results by
+   * ID and fires onComplete for transitions.
+   */
+  async function processDeferredCompletions(
+    state: GoalSessionState,
+    entries: readonly string[],
+    ctx: TurnContext,
+  ): Promise<void> {
+    if (!config.detectCompletions || entries.length === 0) return;
+
+    // Refresh session state immediately before invoking the callback so
+    // the items passed in reflect any updates from prior-turn callbacks
+    // that just resolved via the per-session pendingWork chain.
+    const current = sessions.get(ctx.session.sessionId) ?? state;
+
+    const outcome = await invokeDetectCompletionsCallback(
+      config.detectCompletions,
+      entries.slice(),
+      cloneItems(current.items),
+      { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
+    );
+
+    // Upstream abort: the run was cancelled — do not mutate goal state or
+    // fire onComplete side effects. The documented cancellation contract
+    // is that completions from the aborted turn are lost.
+    if (!outcome.ok && outcome.reason === "aborted") return;
+
+    // Re-read session state after the await: another turn for the same
+    // session may have run during the callback (up to callbackTimeoutMs),
+    // and we must not roll back its buffer/flag fields.
+    const latest = sessions.get(ctx.session.sessionId);
+    if (!latest) return;
+
+    const next = outcome.ok
+      ? mergeByIds(latest.items, outcome.value)
+      : applyHeuristicFallback(latest.items, entries);
+
+    sessions.set(ctx.session.sessionId, { ...latest, items: next });
+    fireOnCompleteForTransitions(latest.items, next);
+  }
+
+  /** Fallback heuristic: run detectCompletions on each entry, merge monotonically. */
+  function applyHeuristicFallback(
+    items: readonly GoalItemWithId[],
+    entries: readonly string[],
+  ): readonly GoalItemWithId[] {
+    let acc = items;
+    for (const text of entries) {
+      const detected = detectCompletions(text, acc);
+      acc = mergeByPosition(acc, detected);
+    }
+    return acc;
+  }
+
+  /**
+   * Defensive clone of session items before exposing to user callbacks.
+   * Readonly is only enforced at type level; without cloning, a buggy or
+   * malicious callback could mutate session state in place.
+   */
+  function cloneItems(items: readonly GoalItemWithId[]): readonly GoalItemWithId[] {
+    return items.map((i) => ({ id: i.id, text: i.text, completed: i.completed }));
+  }
+
+  /**
+   * Defensive deep-clone of user-messages buffer before exposing to
+   * callbacks. Prevents callback-side mutation from poisoning the
+   * session-state buffer for subsequent turns.
+   */
+  function cloneMessages(messages: readonly DriftUserMessage[]): readonly DriftUserMessage[] {
+    return messages.map((m) => ({
+      senderId: m.senderId,
+      timestamp: m.timestamp,
+      text: m.text,
+    }));
+  }
+
+  /**
+   * Core callback-processing body — runs serialized via `state.pendingWork`.
+   * Handles deferred completions + drift + interval update for one turn.
+   */
+  async function processTurnCallbacks(
+    state: GoalSessionState,
+    turn: PerTurnState,
+    ctx: TurnContext,
+  ): Promise<void> {
+    const blocked = ctx.stopBlocked === true;
+
+    // Stop-gate vetoed turn: roll back the synchronous lastReminderTurn
+    // advance AND set forceInjectNextTurn so the retry turn (at whatever
+    // turnIndex the engine assigns) still re-injects the goal block.
+    if (blocked && turn.injectedThisTurn) {
+      const latest = sessions.get(ctx.session.sessionId);
+      if (latest) {
+        const rolledBack =
+          latest.lastReminderTurn === ctx.turnIndex
+            ? turn.previousLastReminderTurn
+            : latest.lastReminderTurn;
+        sessions.set(ctx.session.sessionId, {
+          ...latest,
+          lastReminderTurn: rolledBack,
+          forceInjectNextTurn: true,
+        });
+      }
+    }
+
+    // Process buffered response texts. Blocked turns drop the last
+    // entry (the vetoed final response).
+    if (bufferResponses) {
+      const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
+      if (deferCompletions) {
+        await processDeferredCompletions(state, entries, ctx);
+      } else if (entries.length > 0) {
+        // isDrifting-only mode: heuristic was NOT run inline; run now
+        // at turn boundary with stop-gate awareness.
+        processHeuristicCompletions(ctx.session.sessionId, entries);
+      }
+    }
+
+    if (blocked) return;
+
+    if (turn.injectedThisTurn) {
+      // Re-read session state so drift evaluation sees the post-deferred-
+      // completions item status, not the stale snapshot from turn start.
+      const refreshed = sessions.get(ctx.session.sessionId) ?? state;
+      const drifting = await resolveDrift(refreshed, turn, ctx);
+      if (drifting === undefined) return; // upstream abort: skip interval update
+
+      const nextInterval = computeNextInterval(
+        refreshed.currentInterval,
+        drifting,
+        baseInterval,
+        maxInterval,
+      );
+      const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
+      // lastReminderTurn was already advanced synchronously in
+      // consumeInjection; here we only settle currentInterval based on
+      // the (possibly async) drift judge result.
+      sessions.set(ctx.session.sessionId, {
+        ...latest,
+        currentInterval: nextInterval,
+      });
+    }
+  }
+
+  /**
+   * Consume shouldInject on first model call in a turn. Returns whether to inject.
+   *
+   * Advances `lastReminderTurn` synchronously here (CAS: never
+   * decreases) so the next turn's `onBeforeTurn` sees the injection
+   * immediately, preventing double-injection in drift-only mode where
+   * `onBeforeTurn` does not await the prior turn's drift callback.
+   * Interval adjustment still lands later in `processTurnCallbacks`
+   * based on the drift judge's decision.
+   */
+  function consumeInjection(sid: SessionId, turnIdStr: string, turnIndex: number): boolean {
     const state = sessions.get(sid);
-    if (!state?.shouldInject) return false;
-    state.shouldInject = false;
-    state.injectedThisTurn = true;
+    const turn = state?.turns.get(turnIdStr);
+    if (!state || !turn?.shouldInject) return false;
+    turn.shouldInject = false;
+    turn.injectedThisTurn = true;
+    if (turnIndex > state.lastReminderTurn) {
+      sessions.set(sid, { ...state, lastReminderTurn: turnIndex });
+    }
     return true;
   }
 
@@ -314,7 +621,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async onSessionStart(ctx) {
-      const items: readonly GoalItem[] = config.objectives.map((text) => ({
+      const items: readonly GoalItemWithId[] = config.objectives.map((text, index) => ({
+        id: `goal-${String(index)}`,
         text,
         completed: false,
       }));
@@ -322,8 +630,11 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         items,
         currentInterval: baseInterval,
         lastReminderTurn: -1,
-        shouldInject: true,
-        injectedThisTurn: false,
+        userMessageBuffer: [],
+        turns: new Map(),
+        pendingWork: Promise.resolve(),
+        pendingDrift: 0,
+        forceInjectNextTurn: false,
       });
     },
 
@@ -331,37 +642,72 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
 
+      // Only block on prior turns when `detectCompletions` is configured —
+      // item state mutation must be visible before this turn renders the
+      // goal-injection block. Drift-only callbacks do NOT block the next
+      // turn: interval updates land best-effort via CAS and at worst are
+      // one turn late, which is preferable to a session-wide latency
+      // cliff when the drift judge is slow or remote.
+      if (deferCompletions) await state.pendingWork;
+
+      // Append sanitized user-authored text messages into rolling buffer
+      // FIRST, then snapshot it for this turn. The snapshot captures a
+      // stable view so later turns cannot mutate what this turn sees.
+      const sanitized = sanitizeUserMessages(ctx.messages);
+      for (const m of sanitized) state.userMessageBuffer.push(m);
+      const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
+      if (excess > 0) state.userMessageBuffer.splice(0, excess);
+
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
-      state.shouldInject = turnsSinceReminder >= state.currentInterval || ctx.turnIndex === 0;
-      state.injectedThisTurn = false;
+      // Fail-safe: if any drift callbacks are in flight, we haven't yet
+      // confirmed whether to back off — treat the effective interval as
+      // `baseInterval` so reminders don't go silent during a stall.
+      const effectiveInterval = state.pendingDrift > 0 ? baseInterval : state.currentInterval;
+      const force = state.forceInjectNextTurn;
+      if (force) {
+        sessions.set(ctx.session.sessionId, { ...state, forceInjectNextTurn: false });
+      }
+      const turn: PerTurnState = {
+        turnIndex: ctx.turnIndex,
+        shouldInject: force || turnsSinceReminder >= effectiveInterval || ctx.turnIndex === 0,
+        injectedThisTurn: false,
+        responseBuffer: [],
+        userMessagesSnapshot: cloneMessages(state.userMessageBuffer),
+        previousLastReminderTurn: state.lastReminderTurn,
+      };
+      state.turns.set(String(ctx.turnId), turn);
     },
 
     async onAfterTurn(ctx) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return;
+      const turnKey = String(ctx.turnId);
+      const turn = state.turns.get(turnKey);
+      if (!turn) return;
 
-      if (state.injectedThisTurn) {
-        const drifting = isDrifting(ctx.messages, allKeywords);
-        const nextInterval = computeNextInterval(
-          state.currentInterval,
-          drifting,
-          baseInterval,
-          maxInterval,
-        );
-        sessions.set(ctx.session.sessionId, {
-          ...state,
-          currentInterval: nextInterval,
-          lastReminderTurn: ctx.turnIndex,
-          shouldInject: false,
-        });
-      }
+      // Always remove our per-turn state before any await so a sibling
+      // turn cannot observe it.
+      state.turns.delete(turnKey);
+
+      // Enqueue this turn's callback processing on the per-session
+      // pendingWork chain. Returning the chained promise ensures the
+      // engine awaits until this turn's work finishes before emitting
+      // turn_end. onBeforeTurn for any subsequent turn will also await
+      // this promise, guaranteeing later prompt injection sees updated
+      // items.
+      const work = state.pendingWork.then(() => processTurnCallbacks(state, turn, ctx));
+      state.pendingWork = work.catch(() => {
+        // Swallow: errors already routed through onCallbackError hook.
+      });
+      return work;
     },
 
     async wrapModelCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
       if (!state) return next(request);
+      const turnKey = String(ctx.turnId);
 
-      const inject = consumeInjection(ctx.session.sessionId);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const enrichedRequest = inject
         ? {
             ...request,
@@ -371,8 +717,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const response: ModelResponse = await next(enrichedRequest);
 
-      // Detect completions in response
-      updateCompletions(ctx.session.sessionId, response.content);
+      if (bufferResponses) {
+        const currentTurn = state.turns.get(turnKey);
+        if (currentTurn) currentTurn.responseBuffer.push(response.content);
+      }
+      if (!deferCompletions && !bufferResponses) {
+        applyHeuristicCompletions(ctx.session.sessionId, response.content);
+      }
 
       return response;
     },
@@ -388,7 +739,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         return;
       }
 
-      const inject = consumeInjection(ctx.session.sessionId);
+      const turnKey = String(ctx.turnId);
+      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const enrichedRequest = inject
         ? {
             ...request,
@@ -411,9 +763,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         }
         succeeded = true;
       } finally {
-        // Only detect completions if stream completed successfully
+        // Only update state if stream completed successfully
         if (succeeded) {
-          updateCompletions(ctx.session.sessionId, bufferedText);
+          if (bufferResponses) {
+            const turn = state.turns.get(turnKey);
+            if (turn) turn.responseBuffer.push(bufferedText);
+          }
+          if (!deferCompletions && !bufferResponses) {
+            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+          }
         }
       }
     },
