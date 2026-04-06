@@ -10,7 +10,7 @@ export type ExfiltrationAction = "block" | "redact" | "warn";
 
 /** Event fired when exfiltration is detected. */
 export interface ExfiltrationEvent {
-  readonly location: "tool-input" | "model-output";
+  readonly location: "tool-input" | "tool-output" | "model-output";
   readonly toolId?: string | undefined;
   readonly matchCount: number;
   readonly kinds: readonly string[];

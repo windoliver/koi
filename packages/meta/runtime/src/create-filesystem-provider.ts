@@ -14,7 +14,12 @@ import type {
   ToolResponse,
 } from "@koi/core";
 import { createServiceProvider, DEFAULT_UNSANDBOXED_POLICY, FILESYSTEM } from "@koi/core";
-import { createFsEditTool, createFsReadTool, createFsWriteTool } from "@koi/tools-builtin";
+import {
+  createFsEditTool,
+  createFsReadTool,
+  createFsWriteTool,
+  type FsToolOptions,
+} from "@koi/tools-builtin";
 
 /** Filesystem operations exposed as tools. */
 type FsOperation = "read" | "write" | "edit";
@@ -28,6 +33,7 @@ const FS_TOOL_FACTORIES: Readonly<
       backend: FileSystemBackend,
       prefix: string,
       policy: import("@koi/core").ToolPolicy,
+      fsToolOptions?: FsToolOptions,
     ) => import("@koi/core").Tool
   >
 > = {
@@ -58,9 +64,12 @@ export function createFileSystemTools(
   backend: FileSystemBackend,
   prefix = "fs",
   operations: readonly FsOperation[] = DEFAULT_FS_OPERATIONS,
+  fsToolOptions?: FsToolOptions,
 ): FileSystemTools {
   const policy = DEFAULT_UNSANDBOXED_POLICY;
-  const toolInstances = operations.map((op) => FS_TOOL_FACTORIES[op](backend, prefix, policy));
+  const toolInstances = operations.map((op) =>
+    FS_TOOL_FACTORIES[op](backend, prefix, policy, fsToolOptions),
+  );
   const tools = new Map(toolInstances.map((t) => [t.descriptor.name, t]));
   const descriptors = toolInstances.map((t) => t.descriptor);
   return { tools, descriptors };
@@ -110,13 +119,30 @@ export function createFileSystemProvider(
   backend: FileSystemBackend,
   prefix = "fs",
   operations: readonly FsOperation[] = DEFAULT_FS_OPERATIONS,
+  fsToolOptions?: FsToolOptions,
 ): ComponentProvider {
+  // When fsToolOptions is provided, bind it into 3-arg factory closures so
+  // createServiceProvider (which calls factories with 3 args) still applies the guard.
+  const boundFactories: Readonly<
+    Record<
+      FsOperation,
+      (b: FileSystemBackend, p: string, pol: import("@koi/core").ToolPolicy) => Tool
+    >
+  > =
+    fsToolOptions !== undefined
+      ? {
+          read: (b, p, pol) => createFsReadTool(b, p, pol, fsToolOptions),
+          write: (b, p, pol) => createFsWriteTool(b, p, pol, fsToolOptions),
+          edit: (b, p, pol) => createFsEditTool(b, p, pol, fsToolOptions),
+        }
+      : FS_TOOL_FACTORIES;
+
   return createServiceProvider<FileSystemBackend, FsOperation>({
     name: `filesystem:${backend.name}`,
     singletonToken: FILESYSTEM,
     backend,
     operations,
-    factories: FS_TOOL_FACTORIES,
+    factories: boundFactories,
     prefix,
     detach: async (b) => {
       await b.dispose?.();
