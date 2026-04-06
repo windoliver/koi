@@ -177,7 +177,7 @@ describe("resumeFromTranscript - case 4: tool_call/tool_result pairs", () => {
       expect(toolResultMsg).toBeDefined();
       // toolCalls[0].id must match the result's callId
       const toolCalls = toolCallMsg?.metadata?.toolCalls as Array<{ id: string }> | undefined;
-      expect(toolCalls?.[0]?.id).toBe(toolResultMsg?.metadata?.callId);
+      expect(toolCalls?.[0]?.id).toBe(toolResultMsg?.metadata?.callId as string | undefined);
     }
   });
 
