@@ -255,6 +255,71 @@ describe("recallMemories", () => {
     expect(result.selected.length).toBe(1);
   });
 
+  test("sets degraded when scan is starved (all files corrupt)", async () => {
+    const files = Array.from({ length: 5 }, (_, i) => ({
+      path: `/mem/bad${i}.md`,
+      content: "no frontmatter here",
+      modifiedAt: now - i * 1000,
+    }));
+    const fs = createMockFs(files);
+    const result = await recallMemories(fs, { memoryDir: "/mem", now });
+
+    expect(result.degraded).toBe(true);
+    expect(result.selected.length).toBe(0);
+    expect(result.skippedFiles).toBe(5);
+    // totalScanned includes examined candidates even when no valid memories found
+    expect(result.totalScanned).toBe(5);
+    expect(result.candidateLimitHit).toBe(false);
+  });
+
+  test("sets candidateLimitHit when budget exhausted before finding all memories", async () => {
+    // 50 corrupt files with explicit maxCandidates=20 → budget hit before exhaustion
+    const files = Array.from({ length: 50 }, (_, i) => ({
+      path: `/mem/bad${i}.md`,
+      content: "no frontmatter",
+      modifiedAt: now - i * 1000,
+    }));
+    const fs = createMockFs(files);
+    const result = await recallMemories(fs, {
+      memoryDir: "/mem",
+      maxFiles: 2,
+      maxCandidates: 20,
+      now,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.candidateLimitHit).toBe(true);
+    expect(result.selected.length).toBe(0);
+  });
+
+  test("allows callers to set maxCandidates to bound I/O via RecallConfig", async () => {
+    // 30 corrupt files followed by valid — explicit maxCandidates=10 caps reads
+    const corruptFiles = Array.from({ length: 30 }, (_, i) => ({
+      path: `/mem/bad${i}.md`,
+      content: "no frontmatter",
+      modifiedAt: now - i * 1000,
+    }));
+    const validFiles = [
+      {
+        path: "/mem/good.md",
+        content: makeMemoryFileContent("Good", "user", "valid"),
+        modifiedAt: now - 100_000_000,
+      },
+    ];
+    const fs = createMockFs([...corruptFiles, ...validFiles]);
+    const result = await recallMemories(fs, {
+      memoryDir: "/mem",
+      maxFiles: 2,
+      maxCandidates: 10,
+      now,
+    });
+
+    // Cap of 10 prevented reaching the valid file after 30 corrupt
+    expect(result.selected.length).toBe(0);
+    expect(result.candidateLimitHit).toBe(true);
+    expect(result.degraded).toBe(true);
+  });
+
   test("formatted output tokens do not exceed budget", async () => {
     const files = Array.from({ length: 10 }, (_, i) => ({
       path: `/mem/mem${i}.md`,

@@ -748,31 +748,42 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
           }
         : request;
 
-      // Buffer streamed text for completion detection — only on success
+      // Buffer streamed text for completion detection.
+      // Flush eagerly on the terminal `done` chunk BEFORE yielding it —
+      // `consumeModelStream` calls iterator.return() after processing `done`,
+      // which aborts this generator before the `for await` loop can exit
+      // naturally. Eager flush ensures the responseBuffer is populated even
+      // when the consumer returns early (#1530).
+      //
+      // Text is buffered for ALL turns including tool-use turns (matching
+      // wrapModelCall semantics where response.content is always recorded).
+      // Only error-class stop reasons skip the flush — length/truncation,
+      // provider blocks, and explicit errors represent failed turns whose
+      // partial text must not be scored as completion evidence.
       let bufferedText = "";
-      let succeeded = false;
-      try {
-        for await (const chunk of next(enrichedRequest)) {
-          if (chunk.kind === "text_delta") {
-            bufferedText += chunk.delta;
-          } else if (chunk.kind === "done" && bufferedText.length === 0) {
-            // Fallback: some adapters only emit done.response.content with no text_delta
-            bufferedText = chunk.response.content;
+      for await (const chunk of next(enrichedRequest)) {
+        if (chunk.kind === "text_delta") {
+          bufferedText += chunk.delta;
+        } else if (chunk.kind === "done") {
+          const stopReason = chunk.response.stopReason;
+          // Skip error-class stop reasons: length (truncated),
+          // hook_blocked (provider-level denial), and error (failed terminal).
+          const isErrorClass =
+            stopReason === "length" || stopReason === "hook_blocked" || stopReason === "error";
+          if (!isErrorClass) {
+            if (bufferedText.length === 0) {
+              bufferedText = chunk.response.content;
+            }
+            if (bufferResponses) {
+              const turn = state.turns.get(turnKey);
+              if (turn) turn.responseBuffer.push(bufferedText);
+            }
+            if (!deferCompletions && !bufferResponses) {
+              applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+            }
           }
-          yield chunk;
         }
-        succeeded = true;
-      } finally {
-        // Only update state if stream completed successfully
-        if (succeeded) {
-          if (bufferResponses) {
-            const turn = state.turns.get(turnKey);
-            if (turn) turn.responseBuffer.push(bufferedText);
-          }
-          if (!deferCompletions && !bufferResponses) {
-            applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
-          }
-        }
+        yield chunk;
       }
     },
 

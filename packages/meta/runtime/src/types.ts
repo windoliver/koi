@@ -15,11 +15,13 @@ import type {
   KoiMiddleware,
   ReportStore,
   RetrySignalReader,
+  RichTrajectoryStep,
   SpawnLedger,
   ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
 import type { SpawnPolicy } from "@koi/engine-compose";
+import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -65,6 +67,23 @@ export interface RuntimeConfig {
    * createRuntime throws — fail closed rather than silently allowing.
    */
   readonly requestApproval?: ApprovalHandler | undefined;
+
+  /**
+   * Handle from `createPermissionsMiddleware` for wiring approval trajectory
+   * capture.  The runtime calls `setApprovalStepSink` with a dispatch relay
+   * that routes approval decisions to the correct per-stream event-trace
+   * `emitExternalStep`, so approval outcomes appear as `source:"user"` steps
+   * in the ATIF trajectory.
+   *
+   * Structural type — no L2 import required.
+   */
+  readonly approvalStepHandle?:
+    | {
+        readonly setApprovalStepSink: (
+          sink: (sessionId: string, step: RichTrajectoryStep) => void,
+        ) => () => void;
+      }
+    | undefined;
 
   /** User identity for tenant-aware middleware. */
   readonly userId?: string | undefined;
@@ -173,6 +192,22 @@ export interface RuntimeConfig {
    * about the semantic-retry package.
    */
   readonly retrySignalReader?: RetrySignalReader | undefined;
+
+  /**
+   * Exfiltration guard middleware configuration. Default: enabled (action: "block").
+   * Scans tool I/O and model output for secret exfiltration attempts.
+   * Pass `false` to disable. Pass partial config to customize (e.g., action: "warn").
+   * Ignored if a middleware named "exfiltration-guard" is already in `middleware`.
+   */
+  readonly exfiltrationGuard?: Partial<ExfiltrationGuardConfig> | false | undefined;
+
+  /**
+   * Credential path guard for filesystem tools. Default: enabled.
+   * Blocks fs_read/fs_write/fs_edit access to ~/.ssh, ~/.aws, ~/.docker,
+   * ~/.gnupg, ~/.config/gcloud, ~/.azure, ~/.kube and sensitive dotfiles.
+   * Pass `false` to disable (e.g., for testing or trusted environments).
+   */
+  readonly credentialPathGuard?: false | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

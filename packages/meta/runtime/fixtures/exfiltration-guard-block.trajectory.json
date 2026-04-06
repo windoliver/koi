@@ -1,5 +1,6 @@
 {
   "schema_version": "ATIF-v1.6",
+  "validated_with": "fix/1503-dead-security-guards — wrapModelCall + tool output scanning + stream chunk buffering",
   "session_id": "exfiltration-guard-block",
   "agent": {
     "name": "golden-exfiltration-guard-block",

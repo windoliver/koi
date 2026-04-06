@@ -360,8 +360,52 @@ function buildPrincipal(agentId: string, userId: string, sessionId: string): str
 
 const PKG = "@koi/middleware-permissions";
 
-export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware {
-  const { backend, auditSink, description, onApprovalStep } = config;
+/**
+ * Extended middleware returned by {@link createPermissionsMiddleware}.
+ * This IS a KoiMiddleware (backward compatible — can be passed directly
+ * into `middleware: [...]`) with an additional method for wiring the
+ * approval trajectory sink at runtime.
+ */
+export interface PermissionsMiddlewareHandle extends KoiMiddleware {
+  /**
+   * Register an additional approval-step sink.  The runtime calls this
+   * with a dispatch relay that routes to the correct per-stream
+   * `EventTraceHandle.emitExternalStep` by sessionId.
+   * Additive: multiple sinks can coexist (multi-runtime safe).
+   * Returns an unsubscribe function to remove the sink on runtime disposal.
+   */
+  readonly setApprovalStepSink: (
+    sink: (sessionId: string, step: RichTrajectoryStep) => void,
+  ) => () => void;
+}
+
+export function createPermissionsMiddleware(
+  config: PermissionsMiddlewareConfig,
+): PermissionsMiddlewareHandle {
+  const { backend, auditSink, description } = config;
+  const originalSink = config.onApprovalStep;
+  // Additive runtime sinks — each createRuntime registers its own dispatch relay.
+  // Using an array allows a single permissions handle to be shared across runtimes.
+  const runtimeSinks: ((sessionId: string, step: RichTrajectoryStep) => void)[] = [];
+
+  /** Fan-out: calls the original onApprovalStep and all runtime-bound sinks.
+   *  Each sink is isolated — a throw in one cannot suppress another. */
+  function approvalSink(sessionId: string, step: RichTrajectoryStep): void {
+    if (originalSink !== undefined) {
+      try {
+        originalSink(sessionId, step);
+      } catch (e: unknown) {
+        swallowError(e, { package: PKG, operation: "approval-step-original" });
+      }
+    }
+    for (const sink of runtimeSinks) {
+      try {
+        sink(sessionId, step);
+      } catch (e: unknown) {
+        swallowError(e, { package: PKG, operation: "approval-step-runtime" });
+      }
+    }
+  }
   const clock = config.clock ?? Date.now;
   const approvalTimeoutMs = config.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
 
@@ -585,7 +629,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     startMs: number,
     coalesced = false,
   ): void {
-    if (onApprovalStep === undefined) return;
+    if (originalSink === undefined && runtimeSinks.length === 0) return;
     const meta: Record<string, unknown> = {
       approvalDecision: approval.kind,
       userId: ctx.session.userId ?? "__anonymous__",
@@ -613,7 +657,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       metadata: meta as JsonObject,
     };
     try {
-      onApprovalStep(ctx.session.sessionId as string, step);
+      approvalSink(ctx.session.sessionId as string, step);
     } catch (e: unknown) {
       swallowError(e, { package: PKG, operation: "approval-step" });
     }
@@ -893,10 +937,10 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   }
 
   // -----------------------------------------------------------------------
-  // Middleware
+  // Middleware + Handle
   // -----------------------------------------------------------------------
 
-  return {
+  const middleware: KoiMiddleware = {
     name: "permissions",
     priority: 100,
     phase: "intercept",
@@ -981,6 +1025,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     },
   };
 
+  return Object.assign(middleware, {
+    setApprovalStepSink(sink: (sessionId: string, step: RichTrajectoryStep) => void): () => void {
+      runtimeSinks.push(sink);
+      return () => {
+        const idx = runtimeSinks.indexOf(sink);
+        if (idx >= 0) runtimeSinks.splice(idx, 1);
+      };
+    },
+  }) as PermissionsMiddlewareHandle;
+
   // -----------------------------------------------------------------------
   // Ask / approval flow
   // -----------------------------------------------------------------------
@@ -1009,14 +1063,22 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const alwaysAllowKey = `${ctx.session.agentId}\0${request.toolId}`;
     const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
     if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
+      const alwaysAllowStartMs = clock();
       getTracker(ctx.session.sessionId as string).record({
         toolId: request.toolId,
         reason: `auto-approved (always-allow session rule, agent: ${ctx.session.agentId})`,
-        timestamp: clock(),
+        timestamp: alwaysAllowStartMs,
         principal: ctx.session.agentId,
         turnIndex: ctx.turnIndex,
         source: "approval",
       });
+      emitApprovalStep(
+        ctx,
+        request.toolId,
+        { kind: "always-allow", scope: "session" },
+        request.input,
+        alwaysAllowStartMs,
+      );
       return next(request);
     }
 
@@ -1038,6 +1100,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       );
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
+        emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
         return next(request);
       }
     }
@@ -1063,7 +1126,30 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       if (inflight !== undefined) {
         // Another call is already waiting for approval — wait for its result
         const coalescedStartMs = clock();
-        const rawResult = await inflight;
+        // let: rawResult is assigned in try, used after
+        let rawResult: unknown;
+        try {
+          rawResult = await inflight;
+        } catch (e: unknown) {
+          // Leader timed out or handler threw — emit failure step for this follower
+          const reason =
+            e instanceof KoiRuntimeError && e.code === "TIMEOUT" ? "timeout" : "handler_error";
+          emitApprovalStep(
+            ctx,
+            request.toolId,
+            { kind: "deny", reason },
+            request.input,
+            coalescedStartMs,
+            true,
+          );
+          if (e instanceof KoiRuntimeError) throw e;
+          throw new KoiRuntimeError({
+            code: "INTERNAL",
+            message: `Coalesced approval error for "${request.toolId}"`,
+            retryable: false,
+            cause: e,
+          });
+        }
         const result = validateApprovalDecision(rawResult);
 
         // Emit approval-outcome audit + trajectory for this coalesced caller.
@@ -1083,6 +1169,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         }
         if (result !== undefined) {
           emitApprovalStep(ctx, request.toolId, result, request.input, coalescedStartMs, true);
+        } else {
+          // Malformed coalesced response — emit failure step so it's observable
+          emitApprovalStep(
+            ctx,
+            request.toolId,
+            { kind: "deny", reason: "malformed_response" },
+            request.input,
+            coalescedStartMs,
+            true,
+          );
         }
 
         if (result === undefined || result.kind === "deny") {
@@ -1132,12 +1228,22 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       inflightApprovals.set(dedupKey, approvalPromise);
     }
 
+    // let: tracks whether an approval step was already emitted in the try block
+    let stepEmitted = false;
     try {
       const rawResult = await approvalPromise;
 
       // Validate approval response at trust boundary — fail closed on malformed
       const approvalResult = validateApprovalDecision(rawResult);
       if (approvalResult === undefined) {
+        emitApprovalStep(
+          ctx,
+          request.toolId,
+          { kind: "deny", reason: "malformed_response" },
+          request.input,
+          approvalStartMs,
+        );
+        stepEmitted = true;
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Malformed approval response for "${request.toolId}" — failing closed`,
@@ -1158,6 +1264,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         );
       }
       emitApprovalStep(ctx, request.toolId, approvalResult, request.input, approvalStartMs);
+      stepEmitted = true;
 
       if (approvalResult.kind === "deny") {
         getTracker(ctx.session.sessionId as string).record({
@@ -1231,6 +1338,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       // "allow"
       return next(request);
     } catch (e: unknown) {
+      // Emit a failure trajectory step for timeout/handler errors so they
+      // are observable in ATIF even though no valid decision was received.
+      // Skip if a step was already emitted (e.g., a deny that throws after emitting).
+      if (!stepEmitted) {
+        const reason =
+          e instanceof KoiRuntimeError && e.code === "TIMEOUT" ? "timeout" : "handler_error";
+        emitApprovalStep(
+          ctx,
+          request.toolId,
+          { kind: "deny", reason },
+          request.input,
+          approvalStartMs,
+        );
+      }
       if (e instanceof KoiRuntimeError) throw e;
       throw new KoiRuntimeError({
         code: "INTERNAL",

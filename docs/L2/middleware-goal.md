@@ -10,12 +10,20 @@ completed via heuristic keyword matching.
 
 ## Architecture
 
-Single `wrapModelCall` + `wrapToolCall` dual middleware (priority 340, phase "resolve").
+Triple-hook middleware (priority 340, phase "resolve"): `wrapModelCall`, `wrapModelStream`, `wrapToolCall`.
 
 ```
-Model call → inject goal system message → call next → detect completions → return
-Tool call  → pass through (reserved for future goal-relevance tracking)
+Model call   → inject goal system message → call next → detect completions → return
+Model stream → inject goal system message → stream next → eager-flush on terminal done → return
+Tool call    → pass through (reserved for future goal-relevance tracking)
 ```
+
+**Stream buffering (#1530):** `wrapModelStream` flushes buffered response text eagerly
+on the terminal `done` chunk *before* yielding it. This is required because
+`consumeModelStream` calls `iterator.return()` after processing `done`, which would
+abort the generator before a post-loop flush could run. Only non-error stop reasons
+are flushed — `length`, `hook_blocked`, and `error` are skipped to prevent false
+completions from truncated or failed turns.
 
 **Session state:** per-session todo list (objectives + status) and adaptive interval
 state (turn count, current interval, last reminder turn).

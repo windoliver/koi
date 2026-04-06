@@ -124,6 +124,14 @@ export interface HookRegistry {
 export interface CreateHookRegistryOptions {
   /** Optional executor for agent-type hooks, threaded through to executeHooks. */
   readonly agentExecutor?: HookExecutor | undefined;
+  /**
+   * Synchronous observer tap — called after every non-empty execute() with
+   * the results and the trigger event. Used by ATIF trajectory recording.
+   * Must not throw (wrapped in try/catch internally).
+   */
+  readonly onExecuted?:
+    | ((results: readonly HookExecutionResult[], event: HookEvent) => void)
+    | undefined;
 }
 
 /**
@@ -156,7 +164,7 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     for (const idx of state.exhaustedBlockers) {
       const hook = state.hooks[idx];
       if (hook !== undefined && matchesHookFilter(hook.filter, safeEvent)) {
-        return [
+        const syntheticResults: readonly HookExecutionResult[] = [
           {
             ok: true,
             hookName: hook.name,
@@ -167,6 +175,15 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
             },
           },
         ];
+        // Notify observer tap so ATIF records the synthetic block.
+        if (options?.onExecuted !== undefined) {
+          try {
+            options.onExecuted(syntheticResults, safeEvent);
+          } catch {
+            /* observer must not break dispatch */
+          }
+        }
+        return syntheticResults;
       }
     }
 
@@ -301,6 +318,17 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     if (callerCancelled) {
       return [];
     }
+
+    // Notify observer tap (ATIF trajectory recording). Fire synchronously
+    // so the tap sees results in dispatch order. Guard against observer errors.
+    if (options?.onExecuted !== undefined && results.length > 0) {
+      try {
+        options.onExecuted(results, safeEvent);
+      } catch {
+        /* observer must not break dispatch */
+      }
+    }
+
     return results;
   }
 

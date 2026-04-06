@@ -17,6 +17,7 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  InboundMessage,
   JsonObject,
   ModelChunk,
   ModelRequest,
@@ -27,17 +28,17 @@ import type {
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
-import { loadHooks } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
-import { consumeModelStream } from "@koi/query-engine";
+import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { loadCassette } from "../cassette/load-cassette.js";
-import { createHookDispatchMiddleware } from "../middleware/hook-dispatch.js";
+import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
@@ -135,11 +136,17 @@ const addTool = addToolResult.value;
 
 /**
  * Creates a mock adapter that replays cassette chunks through modelStream terminal.
- * The bridge adapter handles the model→tool→model loop using consumeModelStream.
+ *
+ * Two modes:
+ * - `useTurnRunner: true`: delegates to runTurn() for proper turn_start/turn_end
+ *   lifecycle events, enabling onAfterTurn hooks and callback-mode middleware (#1530).
+ * - Default: hand-rolled model→tool→model loop (legacy, no turn lifecycle events).
+ *   Kept for cassettes whose tool schemas use keywords that runTurn's validateToolArgs
+ *   doesn't support (e.g., minLength).
  */
 function createCassetteAdapter(
   chunks: readonly ModelChunk[],
-  opts?: { readonly secondCallText?: string },
+  opts?: { readonly secondCallText?: string; readonly useTurnRunner?: boolean },
 ): EngineAdapter {
   // Track how many times the model terminal is called — cassette is for first call only,
   // second call (after tool result) returns a simple text done response
@@ -197,6 +204,19 @@ function createCassetteAdapter(
         })();
       }
       const text = input.kind === "text" ? input.text : "";
+      const messages: InboundMessage[] = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] },
+      ];
+
+      // When useTurnRunner is true, delegate to runTurn() for proper turn_start/turn_end
+      // lifecycle events that enable onAfterTurn hooks (#1530). The legacy loop is kept
+      // for cassettes whose tool schemas use keywords that runTurn's validateToolArgs
+      // doesn't support (e.g., minLength).
+      if (opts?.useTurnRunner === true) {
+        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 2 });
+      }
+
+      // Legacy loop: hand-rolls model→tool→model without turn lifecycle events.
       const msgs: {
         readonly senderId: string;
         readonly timestamp: number;
@@ -293,18 +313,16 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
         filter: { events: ["tool.succeeded"] },
       },
     ]);
-    const hookMw = createHookDispatchMiddleware({
-      hooks: hookResult.ok ? hookResult.value : [],
-      store,
-      docId,
-    });
+    const loadedHooks = hookResult.ok ? hookResult.value : [];
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
 
     // @koi/permissions + @koi/middleware-permissions
     const permBackend = createPermissionBackend({
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -326,7 +344,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     const runtime = await createKoi({
       manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -380,12 +398,12 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     expect(hookSteps.length).toBeGreaterThan(0);
     expect(hookSteps[0]?.metadata?.hookName).toBe("on-tool-exec");
 
-    // MW spans — permissions + hook-dispatch
+    // MW spans — permissions + hooks
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     expect(mwSpans.length).toBeGreaterThan(0);
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   }, 15000);
 });
 
@@ -415,7 +433,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "bypass",
     });
@@ -437,7 +455,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const runtime = await createKoi({
       manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, goalMw, reportHandle.middleware, permMiddleware].map((mw) =>
+      middleware: [eventTrace, goalMw, reportHandle.middleware, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -493,6 +511,279 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
     expect(goalSpan).toBeDefined();
     expect(goalSpan?.outcome).toBe("success");
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () => {
+  test("detectCompletions callback fires at turn boundary via onAfterTurn", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-callback-goal-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-callback-goal";
+
+    const store = createAtifDocumentStore(
+      { agentName: "callback-goal-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "callback-goal-test",
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permMiddleware = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    // Track callback invocations, per-turn payloads, and completions
+    const callbackPayloads: {
+      readonly responseTexts: readonly string[];
+      readonly ids: readonly string[];
+    }[] = [];
+    const completed: string[] = [];
+
+    const goalMw = createGoalMiddleware({
+      objectives: ["Compute the sum of two numbers"],
+      baseInterval: 1, // inject every turn so detection has content
+      onComplete: (obj) => completed.push(obj),
+      detectCompletions: (responseTexts, items) => {
+        // Callback invoked once per turn with buffered response texts.
+        // Detect completion when response contains the expected result "12".
+        const ids = items
+          .filter((item) => !item.completed && responseTexts.some((t) => t.includes("12")))
+          .map((item) => item.id);
+        callbackPayloads.push({ responseTexts: [...responseTexts], ids });
+        return ids;
+      },
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { useTurnRunner: true });
+
+    const runtime = await createKoi({
+      manifest: { name: "callback-goal-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, goalMw, permMiddleware].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      events.push(e);
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // 1. Turn lifecycle: exact turn_end count and ordering.
+    // The adapter's runTurn() emits turn_start/turn_end per internal turn,
+    // and the L1 engine emits its own turn_start before each adapter turn.
+    // Two internal turns (tool-use + text response) produce exactly 2 turn_end events.
+    const turnEnds = events.filter((e) => e.kind === "turn_end");
+    expect(turnEnds.length).toBe(2);
+
+    // Verify turn_end events have sequential turn indices
+    const turnEndIndices = turnEnds.map((e) => (e as { readonly turnIndex: number }).turnIndex);
+    expect(turnEndIndices).toEqual([0, 1]);
+
+    // Verify turn_start precedes each turn_end (structural ordering)
+    const turnStarts = events.filter((e) => e.kind === "turn_start");
+    expect(turnStarts.length).toBeGreaterThanOrEqual(2);
+
+    // done event: assert successful terminal completion shape, not just presence.
+    // A regression ending with "max_turns" or "error" must fail this test.
+    const doneEvent = events.find((e) => e.kind === "done") as
+      | {
+          readonly kind: "done";
+          readonly output: {
+            readonly stopReason: string;
+            readonly metrics: { readonly turns: number };
+          };
+        }
+      | undefined;
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent?.output.stopReason).toBe("completed");
+    expect(doneEvent?.output.metrics.turns).toBe(2);
+
+    // 2. Per-turn callback buffering correctness.
+    // Both turns buffer text (matching wrapModelCall semantics).
+    // Turn 0 (tool-use cassette with empty text) and turn 1 (text "12").
+    expect(callbackPayloads.length).toBe(2);
+
+    // Turn 0 (tool-use): cassette has no text_delta, so buffered text is
+    // the empty done.response.content fallback. No completion detected.
+    expect(callbackPayloads[0]?.ids).toEqual([]);
+
+    // Turn 1 (text response "12"): detects completion via ID.
+    expect(callbackPayloads[1]?.ids).toEqual(["goal-0"]);
+    // Verify the callback received the actual response text "12"
+    expect(callbackPayloads[1]?.responseTexts.some((t) => t.includes("12"))).toBe(true);
+    // Verify exactly one entry per turn (no cross-turn leakage)
+    expect(callbackPayloads[1]?.responseTexts.length).toBe(1);
+
+    // 3. onComplete fired exactly once at turn boundary (not mid-turn, not duplicated)
+    expect(completed.length).toBe(1);
+    expect(completed[0]).toBe("Compute the sum of two numbers");
+
+    // 4. ATIF structural validation — verify step kinds, middleware span
+    // metadata, and per-turn coverage produced by the callback-mode path.
+    const steps = await store.getDocument(docId);
+
+    // Model call steps: two model invocations (turn 0: tool-use, turn 1: text)
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBe(2);
+    expect(modelSteps.every((s) => s.outcome === "success")).toBe(true);
+
+    // Tool call step: add_numbers executed successfully
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBe(1);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Middleware spans: goal + permissions, with correct metadata
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+
+    // Goal MW spans: exactly 2 wrapModelStream spans (one per model turn),
+    // proving per-turn stream interception and ATIF tracing for both turns.
+    const goalSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "goal");
+    expect(goalSpans.every((s) => s.outcome === "success")).toBe(true);
+    const goalStreamSpans = goalSpans.filter((s) => s.metadata?.hook === "wrapModelStream");
+    expect(goalStreamSpans.length).toBe(2);
+    // Verify metadata fields on each goal stream span
+    for (const span of goalStreamSpans) {
+      expect(span.metadata?.phase).toBe("resolve");
+      expect(span.metadata?.priority).toBe(340);
+      expect(span.metadata?.nextCalled).toBe(true);
+    }
+
+    // Permissions MW spans: exactly 2 wrapModelStream spans (one per turn)
+    const permSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "permissions");
+    expect(permSpans.every((s) => s.outcome === "success")).toBe(true);
+    const permStreamSpans = permSpans.filter((s) => s.metadata?.hook === "wrapModelStream");
+    expect(permStreamSpans.length).toBe(2);
+  }, 15000);
+
+  test("error terminal does not flush partial text or complete goals", async () => {
+    // Negative path: model streams partial text then emits an error chunk.
+    // The eager flush in wrapModelStream must NOT score this text as
+    // completion evidence. Goal state must remain unchanged.
+    const errorChunks: readonly ModelChunk[] = [
+      { kind: "text_delta" as const, delta: "I computed 12 for you" },
+      {
+        kind: "error" as const,
+        message: "provider rate limit",
+        retryable: true,
+      },
+    ];
+
+    const errorDetectedIds: string[][] = [];
+    const errorCompleted: string[] = [];
+
+    const errorGoalMw = createGoalMiddleware({
+      objectives: ["Compute the sum of two numbers"],
+      baseInterval: 1,
+      onComplete: (obj) => errorCompleted.push(obj),
+      detectCompletions: (responseTexts, items) => {
+        const ids = items
+          .filter((item) => !item.completed && responseTexts.some((t) => t.includes("12")))
+          .map((item) => item.id);
+        errorDetectedIds.push(ids);
+        return ids;
+      },
+    });
+
+    // Single-turn adapter that streams partial text then errors
+    const errorAdapter: EngineAdapter = {
+      engineId: "error-replay",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async (): Promise<ModelResponse> => ({ content: "fallback", model: MODEL }),
+        modelStream: (): AsyncIterable<ModelChunk> => toAsyncIterable(errorChunks),
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => ({ output: "unused" }),
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        const h = input.callHandlers;
+        if (!h) {
+          return (async function* () {
+            yield {
+              kind: "done" as const,
+              output: {
+                content: [],
+                stopReason: "error" as const,
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 0,
+                  durationMs: 0,
+                },
+              },
+            };
+          })();
+        }
+        const messages: InboundMessage[] = [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [{ kind: "text", text: "compute 7+5" }],
+          },
+        ];
+        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 1 });
+      },
+    };
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+
+    const runtime = await createKoi({
+      manifest: { name: "error-goal-test", version: "0.1.0", model: { name: MODEL } },
+      adapter: errorAdapter,
+      middleware: [
+        errorGoalMw,
+        createPermissionsMiddleware({ backend: permBackend, description: "bypass" }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({ kind: "text", text: "compute 7+5" })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+
+    // Partial text "I computed 12 for you" was streamed before error, but
+    // the eager flush must NOT have persisted it to responseBuffer.
+    // detectCompletions must NOT have been called with that text.
+    const completedIds = errorDetectedIds.flat();
+    expect(completedIds).toEqual([]);
+
+    // onComplete must NOT have fired — no goal should be marked complete
+    // from a failed turn's partial output.
+    expect(errorCompleted).toEqual([]);
   }, 15000);
 });
 
@@ -597,13 +888,13 @@ describe("tool-use ATIF trajectory (golden file)", () => {
     }
   });
 
-  test("MW:hook-dispatch spans (@koi/hooks middleware)", async () => {
+  test("MW:hooks spans (@koi/hooks middleware)", async () => {
     const doc = (await Bun.file(`${FIXTURES}/tool-use.trajectory.json`).json()) as {
       readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
     };
 
     const hookDispatchSpans = doc.steps.filter(
-      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hook-dispatch",
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
     );
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
@@ -732,7 +1023,7 @@ describe("glob-use ATIF trajectory (golden file)", () => {
     expect(content).toContain("package.json");
   });
 
-  test("has MW:permissions + MW:hook-dispatch spans", async () => {
+  test("has MW:permissions + MW:hooks spans", async () => {
     const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
       readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
     };
@@ -743,7 +1034,7 @@ describe("glob-use ATIF trajectory (golden file)", () => {
         .map((s) => s.extra?.middlewareName),
     );
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   });
 
   test("step count >= 10 (MCP + MW + MODEL + TOOL)", async () => {
@@ -2506,7 +2797,7 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     expect(permSpans.length).toBeGreaterThan(0);
 
     const hookDispatchSpans = doc.steps.filter(
-      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hook-dispatch",
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
     );
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
@@ -2718,17 +3009,18 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
         filter: { events: ["tool.succeeded"] },
       },
     ]);
-    const hookMw = createHookDispatchMiddleware({
-      hooks: hookResult.ok ? hookResult.value : [],
+    const loadedHooks2 = hookResult.ok ? hookResult.value : [];
+    const { onExecuted: onExecuted2, middleware: hookObserverMw2 } = createHookObserver({
       store,
       docId,
     });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks2, onExecuted: onExecuted2 });
 
     const permBackend = createPermissionBackend({
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -2893,7 +3185,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const runtime = await createKoi({
       manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMw, hookObserverMw2, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [memProvider],
@@ -2952,7 +3244,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   }, 15000);
 });
 
@@ -3299,13 +3591,59 @@ describe("memory-recall ATIF trajectory (golden file)", () => {
     expect(recallStep).toBeDefined();
     const content = recallStep?.observation?.results?.[0]?.content ?? "";
 
-    // Validate recall returned all 3 memories
-    expect(content).toContain('"totalScanned":3');
-    expect(content).toContain('"degraded":false');
+    // Parse tool output as JSON for structural validation
+    const parsed = JSON.parse(content) as {
+      readonly selected: number;
+      readonly totalScanned: number;
+      readonly degraded: boolean;
+      readonly candidateLimitHit: boolean;
+      readonly formatted: string;
+    };
 
-    // Validate formatted output contains trust boundary
-    expect(content).toContain("memory-data");
-    expect(content).toContain("Memory");
+    // Validate recall returned all 3 memories
+    expect(parsed.selected).toBe(3);
+    expect(parsed.totalScanned).toBe(3);
+    expect(parsed.degraded).toBe(false);
+    expect(parsed.candidateLimitHit).toBe(false);
+
+    // Validate formatted output uses static heading (not user-controlled name)
+    expect(parsed.formatted).toContain("### Memory entry");
+    expect(parsed.formatted).not.toContain("### Testing feedback (feedback)");
+    expect(parsed.formatted).not.toContain("### User role (user)");
+    expect(parsed.formatted).not.toContain("### Project goal (project)");
+
+    // Validate each memory block: JSON metadata line + --- separator + content
+    const blocks = parsed.formatted.split("### Memory entry").slice(1);
+    expect(blocks.length).toBe(3);
+    for (const block of blocks) {
+      // Each block must have <memory-data> with JSON metadata then --- then content
+      expect(block).toContain("<memory-data>");
+      expect(block).toContain("</memory-data>");
+      const inner = block.slice(
+        block.indexOf("<memory-data>\n") + "<memory-data>\n".length,
+        block.indexOf("\n</memory-data>"),
+      );
+      const [metaLine, separator, ...contentLines] = inner.split("\n");
+      // First line must be parseable JSON with name and type
+      const meta = JSON.parse(metaLine ?? "");
+      expect(typeof meta.name).toBe("string");
+      expect(typeof meta.type).toBe("string");
+      // Second line must be the --- separator
+      expect(separator).toBe("---");
+      // Content must follow
+      expect(contentLines.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("no legacy headings in any trajectory step (including truncated middleware spans)", async () => {
+    // Checks the raw fixture text so even middleware spans with truncated JSON
+    // (intentionally truncated by event-trace) are covered. Only the tool step (9)
+    // and agent message (14) carry complete JSON; middleware spans (8, 10-13) are
+    // truncated by design but must still use new-format headings in their prefix.
+    const raw = await Bun.file(`${FIXTURES}/memory-recall.trajectory.json`).text();
+    expect(raw).not.toContain("### Testing feedback (feedback)");
+    expect(raw).not.toContain("### User role (user)");
+    expect(raw).not.toContain("### Project goal (project)");
   });
 
   test("step count: MCP + MW + HOOK + MODEL + TOOL (>= 8)", async () => {
@@ -3789,7 +4127,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" as const }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -3819,7 +4157,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
     const runtime = await createKoi({
       manifest: { name: "replay-spawn-tools", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, permMiddleware].map((mw) =>
+      middleware: [eventTrace, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -4075,6 +4413,160 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     );
 
     expect((result.output as Record<string, unknown>).sum).toBe(7);
+  });
+
+  test("blocks structured tool output where secret is only in String() representation", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapToolCall>>[0];
+
+    const wrapToolCall = mw.wrapToolCall;
+    if (wrapToolCall === undefined) return;
+
+    // Error objects: JSON.stringify returns {} but String() includes the message
+    const secretError = new Error("Credentials: AKIAIOSFODNN7EXAMPLE");
+    const result = await wrapToolCall(
+      mockCtx,
+      { toolId: "run_command", input: { cmd: "env" } },
+      async () => ({ output: secretError }),
+    );
+
+    const output = result.output as Record<string, unknown>;
+    expect(output.error).toBeDefined();
+    expect(String(output.error)).toContain("tool output");
+  });
+
+  test("blocks tool output containing AWS key (tool-output scanning)", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapToolCall>>[0];
+
+    const wrapToolCall = mw.wrapToolCall;
+    if (wrapToolCall === undefined) return;
+
+    // Tool input is clean, but output contains a secret
+    const result = await wrapToolCall(
+      mockCtx,
+      { toolId: "fs_read", input: { path: "/etc/passwd" } },
+      async () => ({ output: "AWS_KEY=AKIAIOSFODNN7EXAMPLE" }),
+    );
+
+    const output = result.output as Record<string, unknown>;
+    expect(output.error).toBeDefined();
+    expect(String(output.error)).toContain("tool output");
+    expect(output.code).toBe("PERMISSION");
+  });
+
+  test("blocks non-streaming model response containing secrets (wrapModelCall)", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapModelCall>>[0];
+
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) return;
+
+    const result = await wrapModelCall(mockCtx, { messages: [] }, async () => ({
+      content: "Here is your key: AKIAIOSFODNN7EXAMPLE",
+      model: "test",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }));
+
+    expect(result.content).toContain("[BLOCKED");
+    expect(result.content).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(result.stopReason).toBe("hook_blocked");
+    expect(result.richContent).toBeUndefined();
+  });
+
+  test("exfiltration-guard-block trajectory shows tool call was blocked", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+
+    const fixturePath = path.resolve(
+      import.meta.dir,
+      "../../fixtures/exfiltration-guard-block.trajectory.json",
+    );
+    const raw = fs.readFileSync(fixturePath, "utf-8");
+    const trajectory = JSON.parse(raw) as Record<string, unknown>;
+
+    // Valid ATIF schema
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+
+    // Non-empty steps
+    const steps = trajectory.steps as readonly Record<string, unknown>[];
+    expect(steps.length).toBeGreaterThan(0);
+
+    // All steps have valid source
+    for (const step of steps) {
+      const source = String(step.source);
+      expect(["agent", "tool", "system"]).toContain(source);
+    }
+
+    // Exfiltration guard wrapToolCall span: intercept phase, nextCalled === false (blocked)
+    const guardToolSpan = steps.find((s) => {
+      if (s.source !== "system") return false;
+      const extra = s.extra as Record<string, unknown> | undefined;
+      return extra?.middlewareName === "exfiltration-guard" && extra?.hook === "wrapToolCall";
+    });
+    expect(guardToolSpan).toBeDefined();
+    if (guardToolSpan !== undefined) {
+      const extra = guardToolSpan.extra as Record<string, unknown>;
+      expect(extra.phase).toBe("intercept");
+      expect(extra.nextCalled).toBe(false);
+    }
+
+    // The blocked response contains a PERMISSION error
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    const blockStep = agentSteps.find((s) => {
+      const msg = String(s.message ?? "");
+      return msg.includes("PERMISSION") && msg.includes("secret(s) detected");
+    });
+    expect(blockStep).toBeDefined();
+
+    // No successful tool execution step (tool was blocked, never executed)
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
   });
 });
 
@@ -4436,6 +4928,215 @@ describe("Golden: @koi/agent-runtime", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval trajectory capture: ask-mode permissions → source:"user" steps
+// ---------------------------------------------------------------------------
+
+describe("Approval trajectory capture (e2e)", () => {
+  test("ask-mode approval produces source:'user' trajectory step with valid stepIndex", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-approval-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-approval";
+
+    const store = createAtifDocumentStore(
+      { agentName: "approval-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    // Event-trace: retain full handle for emitExternalStep
+    const eventTraceHandle = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "approval-test",
+    });
+
+    // Permissions in "ask" mode — every tool call triggers approval flow
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "ask-mode test",
+    });
+
+    // Wire the approval step sink — this is the connection being tested
+    permHandle.setApprovalStepSink(eventTraceHandle.emitExternalStep);
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "approval-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      // Auto-approve all tool calls
+      approvalHandler: async () => ({ kind: "allow" as const }),
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate: trajectory must contain a source:"user" approval step
+    const steps = await store.getDocument(docId);
+    const approvalSteps = steps.filter((s) => s.source === "user");
+
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0]!;
+    expect(step.kind).toBe("tool_call");
+    expect(step.identifier).toBe("add_numbers");
+    // stepIndex must be assigned (not the placeholder -1)
+    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("success");
+    expect(step.metadata?.approvalDecision).toBe("allow");
+  });
+
+  test("deny approval produces source:'user' step with failure outcome", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-denial-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-denial";
+
+    const store = createAtifDocumentStore(
+      { agentName: "denial-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    const eventTraceHandle = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "denial-test",
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "deny-test",
+    });
+
+    permHandle.setApprovalStepSink(eventTraceHandle.emitExternalStep);
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "denial-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      // Deny all tool calls
+      approvalHandler: async () => ({ kind: "deny" as const, reason: "test-deny" }),
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const approvalSteps = steps.filter((s) => s.source === "user");
+
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0]!;
+    expect(step.kind).toBe("tool_call");
+    // stepIndex must be assigned (not the placeholder -1)
+    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("failure");
+    expect(step.metadata?.approvalDecision).toBe("deny");
+    expect(step.metadata?.denyReason).toBe("test-deny");
+  });
+
+  test("runtime dispatch relay routes approval steps by sessionId", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-dispatch-${Date.now()}`;
+    trajDirs.push(trajDir);
+
+    // Permissions in "ask" mode with auto-allow
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "dispatch-relay-test",
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    // Use createRuntime which wires the dispatch relay internally
+    const runtime = createRuntime({
+      adapter,
+      middleware: [permHandle],
+      trajectoryDir: trajDir,
+      requestApproval: async () => ({ kind: "allow" as const }),
+      approvalStepHandle: permHandle,
+    });
+
+    for await (const _e of runtime.adapter.stream({ kind: "text", text: "go" })) {
+      /* drain */
+    }
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Read trajectory from the store — createRuntime uses a per-stream docId
+    // like "stream-<uuid>", so we need to find it
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(trajDir).filter((f: string) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThan(0);
+
+    const { readFileSync } = await import("node:fs");
+    const raw = readFileSync(`${trajDir}/${files[0]}`, "utf-8");
+    const doc = JSON.parse(raw) as { readonly steps?: readonly Record<string, unknown>[] };
+    const steps = doc.steps ?? [];
+
+    // ATIF JSON uses different keys: step_id (stepIndex), source, outcome, extra (metadata)
+    const approvalSteps = steps.filter((s) => s.source === "user");
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0] as Record<string, unknown>;
+    // step_id must be assigned (not the placeholder -1)
+    expect(step.step_id).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("success");
+    expect((step.extra as Record<string, unknown>)?.approvalDecision).toBe("allow");
   });
 });
 

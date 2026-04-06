@@ -12,6 +12,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  RetrySignalReader,
   RichTrajectoryStep,
   ToolDescriptor,
   ToolRequest,
@@ -41,7 +42,9 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
+import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
 import {
   createFileSystemProvider,
   createFileSystemTools,
@@ -77,6 +80,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
   const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
+
   // Prepend session transcript middleware when transcriptDir is configured.
   // Observe-phase, priority 200 — runs after event-trace (priority 100) so
   // spans are already open when the transcript write occurs.
@@ -87,10 +91,39 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           sessionId: sessionId("runtime"),
         })
       : undefined;
-  const middleware =
+  const baseMiddleware: readonly KoiMiddleware[] =
     sessionTranscriptMw !== undefined
       ? [sessionTranscriptMw, ...resolvedMiddleware]
       : resolvedMiddleware;
+
+  // Install exfiltration guard by default when: (1) not explicitly disabled,
+  // (2) not already provided, and (3) the adapter has terminals so the intercept
+  // phase won't be silently bypassed. Stub adapters have no terminals.
+  const providedNames = new Set(baseMiddleware.map((mw) => mw.name));
+  const exfiltrationRequested =
+    config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
+  const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
+  // Fail closed when the user explicitly requested the guard but the adapter can't support it.
+  // The implicit default (config.exfiltrationGuard === undefined) on stub adapters is fine —
+  // that's the normal test/default path and silently skips installation.
+  if (
+    exfiltrationRequested &&
+    !canInstallExfiltrationGuard &&
+    config.exfiltrationGuard !== undefined
+  ) {
+    throw new Error(
+      "Exfiltration guard explicitly requested but adapter has no terminals — " +
+        "intercept-phase middleware cannot be composed. Use an adapter with terminals " +
+        "or pass exfiltrationGuard: false to disable.",
+    );
+  }
+  const middleware: readonly KoiMiddleware[] =
+    exfiltrationRequested && canInstallExfiltrationGuard
+      ? [
+          ...baseMiddleware,
+          createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
+        ]
+      : baseMiddleware;
   const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
   // Filesystem: strict host opt-in only.
   // config.filesystem === false is a kill switch; undefined means no filesystem.
@@ -110,9 +143,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     !isFileSystemBackend(config.filesystem)
       ? config.filesystem.operations
       : config.filesystemOperations;
+  // Credential path guard: enabled by default, blocks access to ~/.ssh, ~/.aws, etc.
+  // Constructed once and shared between the provider path and the dispatch path.
+  const fsToolOptions: FsToolOptions | undefined =
+    filesystemBackend !== undefined && config.credentialPathGuard !== false
+      ? { pathGuard: createCredentialPathGuard() }
+      : undefined;
+
   const filesystemProvider =
     filesystemBackend !== undefined
-      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations)
+      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
       : undefined;
 
   // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -130,6 +170,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Create trajectory store if directory provided
   const trajectoryStore = resolveTrajectoryStore(config);
 
+  // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
+  // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
+  const approvalDispatch = new Map<string, (sessionId: string, step: RichTrajectoryStep) => void>();
+  const unsubApprovalSink =
+    config.approvalStepHandle !== undefined
+      ? config.approvalStepHandle.setApprovalStepSink(
+          (sid: string, step: RichTrajectoryStep): void => {
+            approvalDispatch.get(sid)?.(sid, step);
+          },
+        )
+      : undefined;
+
   // Create debug instrumentation when debug is enabled
   const instrumentation =
     config.debug === true ? createDebugInstrumentation({ enabled: true }) : undefined;
@@ -139,7 +191,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // (e.g., with custom sandboxing), the generated fs tool is excluded.
   const fsTools =
     filesystemBackend !== undefined
-      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations)
+      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
       : undefined;
   const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
   const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
@@ -170,10 +222,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     middleware,
     instrumentation,
     trajectoryStore,
+    approvalDispatch,
     config.requestApproval,
     config.userId,
     config.channelId,
     allToolDescriptors,
+    config.retrySignalReader,
+    config.agentName ?? DEFAULT_AGENT_NAME,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -253,6 +308,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {
+      // Unsubscribe approval sink to prevent leak on long-lived permission handles
+      unsubApprovalSink?.();
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
@@ -616,10 +673,13 @@ function composeMiddlewareIntoAdapter(
   middleware: readonly KoiMiddleware[],
   instrumentation?: DebugInstrumentation,
   store?: TrajectoryDocumentStore,
+  approvalDispatch?: Map<string, (sessionId: string, step: RichTrajectoryStep) => void>,
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
   toolDescriptors?: readonly ToolDescriptor[],
+  retrySignalReader?: RetrySignalReader,
+  agentName?: string,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -664,13 +724,26 @@ function composeMiddlewareIntoAdapter(
       // Per-stream event-trace: writes to the SAME store + docId as harness steps.
       // This unifies model/tool I/O (from event-trace) with middleware spans (from harness)
       // in one trajectory document.
-      const perStreamEventTrace =
+      const eventTraceHandle =
         store !== undefined
-          ? createEventTraceMiddleware({ store, docId, agentName: "runtime" }).middleware
+          ? createEventTraceMiddleware({
+              store,
+              docId,
+              agentName: agentName ?? "runtime",
+              ...(retrySignalReader !== undefined ? { signalReader: retrySignalReader } : {}),
+            })
           : undefined;
 
+      // Register per-stream emitter for approval trajectory capture.
+      // The dispatch relay (wired above) routes onApprovalStep by sessionId
+      // to the correct per-stream emitExternalStep.
+      const sid = ctx.session.sessionId as string;
+      if (eventTraceHandle !== undefined && approvalDispatch !== undefined) {
+        approvalDispatch.set(sid, eventTraceHandle.emitExternalStep);
+      }
+
       const perStreamMiddleware =
-        perStreamEventTrace !== undefined ? [...middleware, perStreamEventTrace] : middleware;
+        eventTraceHandle !== undefined ? [...middleware, eventTraceHandle.middleware] : middleware;
 
       // Wrap middleware with I/O capture when debug + store are both enabled
       const ioCaptures: MiddlewareIOCapture[] = [];
@@ -970,6 +1043,8 @@ function composeMiddlewareIntoAdapter(
           }
         },
         async () => {
+          // Deregister per-stream approval dispatch entry
+          approvalDispatch?.delete(sid);
           // Run lifecycle hooks on ALL middleware for session end
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);

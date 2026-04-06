@@ -368,6 +368,12 @@ interface CreateHookMiddlewareOptions {
      * Defaults to \`POST_TOOL_HOOK_DEADLINE_MS\` (5000ms).
      */
     readonly postToolHookDeadlineMs?: number | undefined;
+    /**
+     * Observer tap — called synchronously after every non-empty hook dispatch
+     * with the execution results and trigger event. Threaded through to the
+     * internal HookRegistry. Used for ATIF trajectory recording.
+     */
+    readonly onExecuted?: ((results: readonly HookExecutionResult[], event: HookEvent) => void) | undefined;
 }
 /** Result of aggregating hook decisions — includes the winning hook's identity. */
 interface AggregatedDecision {
@@ -382,7 +388,8 @@ interface AggregatedDecision {
  * - First \`block\` wins immediately (short-circuits).
  * - Multiple \`modify\` patches are merged (later patches override earlier keys).
  * - \`transform\` decisions are ignored — they are post-call only.
- * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ * - Failed hooks with failClosed !== false → block (deny on failure).
+ * - Failed hooks with failClosed: false → skip (fail-open).
  *
  * Returns the decision plus the winning hook's name (for block decisions).
  */
@@ -500,6 +507,12 @@ interface HookRegistry {
 interface CreateHookRegistryOptions {
     /** Optional executor for agent-type hooks, threaded through to executeHooks. */
     readonly agentExecutor?: HookExecutor | undefined;
+    /**
+     * Synchronous observer tap — called after every non-empty execute() with
+     * the results and the trigger event. Used by ATIF trajectory recording.
+     * Must not throw (wrapped in try/catch internally).
+     */
+    readonly onExecuted?: ((results: readonly HookExecutionResult[], event: HookEvent) => void) | undefined;
 }
 /**
  * Creates a new HookRegistry instance.

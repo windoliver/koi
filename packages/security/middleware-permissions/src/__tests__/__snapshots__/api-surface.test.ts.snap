@@ -136,8 +136,24 @@ declare function createDenialTracker(maxEntries?: number): DenialTracker;
  * and denial tracking.
  */
 
-declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware;
+/**
+ * Extended middleware returned by {@link createPermissionsMiddleware}.
+ * This IS a KoiMiddleware (backward compatible — can be passed directly
+ * into \`middleware: [...]\`) with an additional method for wiring the
+ * approval trajectory sink at runtime.
+ */
+interface PermissionsMiddlewareHandle extends KoiMiddleware {
+    /**
+     * Register an additional approval-step sink.  The runtime calls this
+     * with a dispatch relay that routes to the correct per-stream
+     * \`EventTraceHandle.emitExternalStep\` by sessionId.
+     * Additive: multiple sinks can coexist (multi-runtime safe).
+     * Returns an unsubscribe function to remove the sink on runtime disposal.
+     */
+    readonly setApprovalStepSink: (sink: (sessionId: string, step: RichTrajectoryStep) => void) => () => void;
+}
+declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): PermissionsMiddlewareHandle;
 
-export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
+export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
 "
 `;

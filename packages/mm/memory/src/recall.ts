@@ -23,8 +23,10 @@ export interface RecallConfig {
   readonly memoryDir: string;
   /** Maximum tokens for selected memories. Default: 8000. */
   readonly tokenBudget?: number | undefined;
-  /** Maximum files to scan. Default: 200. */
+  /** Maximum valid memories to collect. Default: 200. */
   readonly maxFiles?: number | undefined;
+  /** Maximum candidate file reads. Default: unlimited (bounded by listing size). */
+  readonly maxCandidates?: number | undefined;
   /** Salience scoring configuration. */
   readonly salience?: SalienceConfig | undefined;
   /** Formatting options for the output section. */
@@ -38,12 +40,15 @@ export interface RecallResult {
   readonly selected: readonly ScoredMemory[];
   readonly formatted: string;
   readonly totalTokens: number;
+  /** Total candidates examined (valid memories + skipped files). */
   readonly totalScanned: number;
   /** Number of files that could not be read or parsed. */
   readonly skippedFiles: number;
   readonly truncated: boolean;
-  /** True if the scan was degraded (list failed, truncated, or files were skipped). */
+  /** True if the scan was degraded (list failed, truncated, starved, or budget-limited). */
   readonly degraded: boolean;
+  /** True if the scan stopped due to candidate-read budget, not full exhaustion. */
+  readonly candidateLimitHit: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,20 +128,29 @@ export async function recallMemories(
   const scanResult = await scanMemoryDirectory(fs, {
     memoryDir: config.memoryDir,
     maxFiles: config.maxFiles,
+    maxCandidates: config.maxCandidates,
   });
 
   const skippedFiles = scanResult.skipped.length;
-  const degraded = scanResult.listFailed || scanResult.truncated || skippedFiles > 0;
+  // totalScanned = valid memories + skipped files (total candidates examined)
+  const totalScanned = scanResult.memories.length + skippedFiles;
+  const degraded =
+    scanResult.listFailed ||
+    scanResult.truncated ||
+    scanResult.starved ||
+    scanResult.candidateLimitHit ||
+    skippedFiles > 0;
 
   if (scanResult.memories.length === 0) {
     return {
       selected: [],
       formatted: "",
       totalTokens: 0,
-      totalScanned: 0,
+      totalScanned,
       skippedFiles,
       truncated: false,
       degraded,
+      candidateLimitHit: scanResult.candidateLimitHit,
     };
   }
 
@@ -153,9 +167,10 @@ export async function recallMemories(
     selected,
     formatted,
     totalTokens,
-    totalScanned: scanResult.memories.length,
+    totalScanned,
     skippedFiles,
     truncated,
     degraded,
+    candidateLimitHit: scanResult.candidateLimitHit,
   };
 }

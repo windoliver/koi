@@ -105,6 +105,32 @@ scan → score → budget-select → format.
 3. **Budget** — `selectWithinBudget(scored, budget)` iterates by salience descending, accumulates tokens via `@koi/token-estimator`, skips memories that exceed remaining budget (no mid-content truncation)
 4. **Format** — `formatMemorySection(selected, options)` renders Markdown section with trusting-recall note ("Memories may be stale. Verify file paths and function names exist before recommending.")
 
+### Trust Boundary
+
+All user-derived fields (`name`, `type`, `content`) are placed inside `<memory-data>`
+tags with delimiter escaping. Headings are static (`### Memory entry`) so no user-controlled
+data can be interpreted as prompt instructions. Metadata is serialized as JSON string
+literals to neutralize imperative content in names:
+
+```
+### Memory entry
+<memory-data>
+{"name":"User role","type":"user"}
+---
+Deep Go expertise, new to React.
+</memory-data>
+```
+
+### Scan Resilience
+
+The scanner exhausts the full candidate list by default (bounded by backend listing
+size and the 50KB per-file cap). Callers can set `maxCandidates` to bound I/O.
+
+Scan results distinguish failure modes:
+- `starved` — all candidates examined, listing not truncated, but no valid memories found
+- `candidateLimitHit` — the `maxCandidates` budget stopped the scan before exhaustion
+- `degraded` — any of: list failed, truncated, starved, candidateLimitHit, or skipped files
+
 ### Entry Point
 
 ```typescript
@@ -112,12 +138,15 @@ import { recallMemories } from "@koi/memory";
 
 const result = await recallMemories(fs, {
   memoryDir: "/path/to/memory",
-  tokenBudget: 8000,   // default
-  now: Date.now(),      // injectable for tests
+  tokenBudget: 8000,        // default
+  maxCandidates: undefined,  // default: unlimited (bounded by listing)
+  now: Date.now(),           // injectable for tests
 });
-// result.formatted — inject into system prompt
-// result.selected  — scored memories included
-// result.truncated — true if budget was exceeded
+// result.formatted        — inject into system prompt
+// result.selected         — scored memories included
+// result.truncated        — true if budget was exceeded
+// result.degraded         — true if scan was incomplete
+// result.candidateLimitHit — true if maxCandidates stopped the scan
 ```
 
 ### Dependencies
