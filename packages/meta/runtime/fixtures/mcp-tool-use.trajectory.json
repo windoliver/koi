@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.210Z",
+      "timestamp": "2026-04-05T22:20:57.109Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -30,7 +30,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.210Z",
+      "timestamp": "2026-04-05T22:20:57.109Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:36.211Z",
+      "timestamp": "2026-04-05T22:20:57.113Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
       "observation": {
@@ -58,10 +58,10 @@
         "prompt_tokens": 145,
         "completion_tokens": 8
       },
-      "duration_ms": 574,
+      "duration_ms": 1132,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -76,10 +76,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.787Z",
+      "timestamp": "2026-04-05T22:20:58.537Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 575.9993340000001,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1423.8343339999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,10 +93,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.787Z",
+      "timestamp": "2026-04-05T22:20:58.554Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 576.5362910000003,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1440.846166999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.787Z",
+      "timestamp": "2026-04-05T22:20:58.554Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 576.6392919999998,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1441.222041000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -127,10 +127,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.787Z",
+      "timestamp": "2026-04-05T22:20:58.554Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 576.651167,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1441.5790409999972,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -144,10 +144,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.789Z",
+      "timestamp": "2026-04-05T22:20:58.623Z",
       "model_name": "hook:on-mcp-tool",
       "message": "tool.succeeded:golden-mcp__weather → on-mcp-tool",
-      "duration_ms": 2.4550000000017462,
+      "duration_ms": 80.08066600000166,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -161,7 +161,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.819Z",
+      "timestamp": "2026-04-05T22:20:58.791Z",
       "model_name": "middleware:hook-dispatch",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -171,7 +171,7 @@
           }
         ]
       },
-      "duration_ms": 33.77087500000198,
+      "duration_ms": 469.1604159999988,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -185,7 +185,7 @@
     {
       "step_id": 9,
       "source": "tool",
-      "timestamp": "2026-04-04T10:53:36.786Z",
+      "timestamp": "2026-04-05T22:20:58.321Z",
       "tool_calls": [
         {
           "tool_call_id": "call_golden-mcp__weather_9",
@@ -203,7 +203,7 @@
           }
         ]
       },
-      "duration_ms": 33,
+      "duration_ms": 470,
       "outcome": "success",
       "extra": {
         "provenance": {
@@ -215,7 +215,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.819Z",
+      "timestamp": "2026-04-05T22:20:58.791Z",
       "model_name": "middleware:semantic-retry",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -225,7 +225,7 @@
           }
         ]
       },
-      "duration_ms": 33.83429199999955,
+      "duration_ms": 471.94679200000246,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -239,7 +239,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.822Z",
+      "timestamp": "2026-04-05T22:20:58.804Z",
       "model_name": "middleware:hooks",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -249,7 +249,7 @@
           }
         ]
       },
-      "duration_ms": 36.12370899999951,
+      "duration_ms": 488.184874999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -263,7 +263,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.822Z",
+      "timestamp": "2026-04-05T22:20:58.813Z",
       "model_name": "middleware:permissions",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -273,7 +273,7 @@
           }
         ]
       },
-      "duration_ms": 36.17183300000033,
+      "duration_ms": 501.8865420000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -287,7 +287,7 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.822Z",
+      "timestamp": "2026-04-05T22:20:58.813Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -297,7 +297,7 @@
           }
         ]
       },
-      "duration_ms": 36.194666999999754,
+      "duration_ms": 506.9569590000028,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -311,7 +311,7 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:36.822Z",
+      "timestamp": "2026-04-05T22:20:58.820Z",
       "tool_calls": [
         {
           "tool_call_id": "call_provenance:turn_summary_14",
@@ -336,24 +336,24 @@
     {
       "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-04T10:53:36.822Z",
+      "timestamp": "2026-04-05T22:20:58.840Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
       "observation": {
         "results": [
           {
-            "content": "Weather in Tokyo: 22°C, partly cloudy.\n"
+            "content": "OK. The weather in Tokyo is 22°C, partly cloudy.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 183,
-        "completion_tokens": 14
+        "prompt_tokens": 188,
+        "completion_tokens": 17
       },
-      "duration_ms": 461,
+      "duration_ms": 965,
       "outcome": "success",
       "extra": {
-        "totalMessages": 4,
+        "totalMessages": 3,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -368,10 +368,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.284Z",
+      "timestamp": "2026-04-05T22:20:59.882Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.…",
-      "duration_ms": 461.60308299999815,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
+      "duration_ms": 1042.0938749999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -385,10 +385,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.284Z",
+      "timestamp": "2026-04-05T22:20:59.882Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.…",
-      "duration_ms": 461.63395799999853,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
+      "duration_ms": 1042.225959000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -402,10 +402,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.284Z",
+      "timestamp": "2026-04-05T22:20:59.888Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.…",
-      "duration_ms": 461.7185000000027,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
+      "duration_ms": 1048.3438749999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -419,10 +419,10 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-04T10:53:37.284Z",
+      "timestamp": "2026-04-05T22:20:59.893Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-mcp-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the golden-mcp__weather tool to get the weather in Tokyo. Report the result.…",
-      "duration_ms": 461.7437499999978,
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
+      "duration_ms": 1053.7180829999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

@@ -381,6 +381,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         });
       }
 
+      // Ref tracking whether capability injection should be suppressed on this
+      // model call. Re-injecting the `[Active Capabilities]` banner on every
+      // retry gave chatty models a fresh surface to parrot (#1493); the model
+      // has already seen capabilities on the initial call, so subsequent
+      // stop-gate retries skip injection. Declared in the outer streamEvents
+      // scope so the stop-gate block handler (below, outside adapter-terminals
+      // block) can flip it.
+      // let justified: mutable flag coordinated between prepareRequest and stop-gate retry
+      let skipCapabilityInjection = false;
+
       // Wire terminals → middleware → callHandlers if adapter is cooperating
       // let justified: effectiveInput may be replaced with callHandlers-augmented input
       let effectiveInput: EngineInput = { ...input, signal: runSignal };
@@ -388,6 +398,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // so cooperating-adapter middleware sees the same messages as onBeforeTurn
       let activeTurnMessages: readonly InboundMessage[] =
         input.kind === "messages" ? input.messages : [];
+
+      // Snapshot the original user prompt for stop-gate retries: when the
+      // initial input is `kind: "text"`, activeTurnMessages is empty (the
+      // bridge builds its own conversation), so stop-gate retries would lose
+      // the original question. This snapshot is prepended to pendingStopInput
+      // so the retry adapter sees the full conversation context (#1493).
+      const originalUserMessages: readonly InboundMessage[] =
+        input.kind === "text" && input.text.length > 0
+          ? [
+              {
+                senderId: "user",
+                timestamp: Date.now(),
+                content: [{ kind: "text" as const, text: input.text }],
+              },
+            ]
+          : input.kind === "messages"
+            ? input.messages
+            : [];
 
       if (adapter.terminals) {
         // Cache turn context per turn index to avoid repeated allocations
@@ -517,13 +545,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
          *
          * Note: Uses static `allMiddleware` (guards + user middleware) for capability injection.
          * Forged and dynamic middleware participate in the call onion (wrapModelCall/wrapToolCall)
-         * but do NOT contribute to the [Active Capabilities] message. This is by design —
-         * injected middleware is "wrappers-only" and joins mid-session.
+         * but do NOT contribute to the [Active Capabilities] banner prepended to systemPrompt.
+         * This is by design — injected middleware is "wrappers-only" and joins mid-session.
+         *
+         * Capability injection is suppressed on stop-gate retries: the model already
+         * saw the banner on the initial call, and re-injecting on each retry causes
+         * chatty models (e.g. Gemini) to fixate on the banner and echo it back as
+         * output instead of answering the user's question (#1493).
          */
         const prepareRequest = (request: ModelRequest): ModelRequest => {
           // Inject tool descriptors if not already present
           const withTools: ModelRequest =
             request.tools !== undefined ? request : { ...request, tools: callHandlers.tools };
+          if (skipCapabilityInjection) return withTools;
           return injectCapabilities(allMiddleware, getTurnContext(), withTools);
         };
 
@@ -779,12 +813,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 const gateResult = await runStopGate(allMiddleware, stopCtx);
                 if (gateResult.kind === "block") {
                   stopRetryCount++;
+                  // Suppress capability banner on retry calls — chatty models
+                  // fixate on the banner and echo it back as output (#1493).
+                  skipCapabilityInjection = true;
+                  // Re-anchor the retry on the user's original request. Vague feedback
+                  // like "address this" lets the model drift onto nearby context —
+                  // in particular, the system-prompt capability banner — and parrot
+                  // it back as output (#1493). Anchoring explicitly on "the user's
+                  // most recent request" and forbidding capability/system commentary
+                  // keeps the retry on task.
                   const blockMessage: InboundMessage = {
                     senderId: "system",
                     content: [
                       {
                         kind: "text",
-                        text: `[Completion blocked]: ${gateResult.reason}. Address this before completing.`,
+                        text: `[Stop hook feedback]: ${gateResult.reason}\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.`,
                       },
                     ],
                     timestamp: Date.now(),
@@ -798,9 +841,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // Always include the block message in the retry stream input.
                   // inject() state may not survive across stream() restarts,
                   // so pendingStopInput is the guaranteed delivery path.
+                  //
+                  // Include the original user messages before the block feedback
+                  // so the retry adapter sees the full conversation context — not
+                  // just the feedback in isolation. Without the original user
+                  // question, the model has no task to re-anchor on (#1493).
+                  // Uses originalUserMessages (snapshot at session start) because
+                  // activeTurnMessages gets overwritten to [] at turn boundaries
+                  // for text inputs.
                   pendingStopInput = {
                     kind: "messages",
-                    messages: [blockMessage],
+                    messages: [...originalUserMessages, blockMessage],
                     ...(effectiveInput.callHandlers !== undefined
                       ? { callHandlers: effectiveInput.callHandlers }
                       : {}),
@@ -864,8 +915,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               if (agent.manifest.reuse === true && event.output.stopReason === "completed") {
                 enterIdle = true;
                 // Reset per-completion retry counter so subsequent idle-wake
-                // completions don't accumulate stale stop-gate retries.
+                // completions don't accumulate stale stop-gate retries. Likewise
+                // re-enable capability injection for the next completion's first
+                // call.
                 stopRetryCount = 0;
+                skipCapabilityInjection = false;
                 yield normalizedDone;
                 break turnLoop;
               }

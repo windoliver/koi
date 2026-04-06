@@ -23,7 +23,6 @@ import {
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
-  formatCapabilityMessage,
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,
@@ -1591,36 +1590,6 @@ describe("collectCapabilities", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatCapabilityMessage
-// ---------------------------------------------------------------------------
-
-describe("formatCapabilityMessage", () => {
-  test("formats single fragment", () => {
-    const msg = formatCapabilityMessage([{ label: "perms", description: "All allowed" }]);
-    expect(msg.senderId).toBe("system:capabilities");
-    expect(msg.content).toHaveLength(1);
-    const text = msg.content[0];
-    expect(text?.kind).toBe("text");
-    if (text?.kind === "text") {
-      expect(text.text).toContain("[Active Capabilities]");
-      expect(text.text).toContain("- **perms**: All allowed");
-    }
-  });
-
-  test("formats multiple fragments", () => {
-    const msg = formatCapabilityMessage([
-      { label: "perms", description: "desc1" },
-      { label: "budget", description: "desc2" },
-    ]);
-    const text = msg.content[0];
-    if (text?.kind === "text") {
-      expect(text.text).toContain("- **perms**: desc1");
-      expect(text.text).toContain("- **budget**: desc2");
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // injectCapabilities
 // ---------------------------------------------------------------------------
 
@@ -1632,7 +1601,7 @@ describe("injectCapabilities", () => {
     expect(result).toBe(request); // same reference = zero allocation
   });
 
-  test("prepends capability message before existing messages", () => {
+  test("writes capabilities to systemPrompt and does not touch messages", () => {
     const mw: KoiMiddleware = {
       name: "perms",
       describeCapabilities: () => ({ label: "permissions", description: "test" }),
@@ -1645,9 +1614,55 @@ describe("injectCapabilities", () => {
     const request: ModelRequest = { messages: [existingMsg] };
     const result = injectCapabilities([mw], mockTurnContext(), request);
 
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[0]?.senderId).toBe("system:capabilities");
-    expect(result.messages[1]?.senderId).toBe("user");
+    // messages unchanged — capabilities no longer live in the conversation transcript
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.senderId).toBe("user");
+
+    // systemPrompt contains capability banner
+    expect(result.systemPrompt).toBeDefined();
+    expect(result.systemPrompt).toContain("[Active Capabilities]");
+    expect(result.systemPrompt).toContain("- **permissions**: test");
+  });
+
+  test("prepends capabilities to existing systemPrompt", () => {
+    const mw: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "permissions", description: "test" }),
+    };
+    const request: ModelRequest = {
+      messages: [],
+      systemPrompt: "You are a helpful assistant.",
+    };
+    const result = injectCapabilities([mw], mockTurnContext(), request);
+
+    expect(result.systemPrompt).toBeDefined();
+    // Capability banner comes first, then existing system prompt
+    const prompt = result.systemPrompt ?? "";
+    const bannerIdx = prompt.indexOf("[Active Capabilities]");
+    const agentIdx = prompt.indexOf("You are a helpful assistant.");
+    expect(bannerIdx).toBeGreaterThanOrEqual(0);
+    expect(agentIdx).toBeGreaterThan(bannerIdx);
+  });
+
+  test("does not mutate request.metadata (preserves permission cacheKey)", () => {
+    // metadata participates in the permission-backend decisionCacheKey, so
+    // flipping it per-request would break denial-escalation matching
+    // (prior denials cannot be linked to current filter queries).
+    const mw: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "p", description: "d" }),
+    };
+    const originalMeta = { requestId: "abc-123", customField: 42 };
+    const request: ModelRequest = {
+      messages: [],
+      metadata: originalMeta,
+    };
+    const result = injectCapabilities([mw], mockTurnContext(), request);
+
+    // Same metadata reference (untouched)
+    expect(result.metadata).toBe(originalMeta);
+    expect(result.metadata?.requestId).toBe("abc-123");
+    expect(result.metadata?.customField).toBe(42);
   });
 
   test("maxCapabilityTokens truncates fragments from end", () => {
@@ -1668,11 +1683,9 @@ describe("injectCapabilities", () => {
     });
 
     // Should include only the first fragment since second would exceed budget
-    const text = result.messages[0]?.content[0];
-    if (text?.kind === "text") {
-      expect(text.text).toContain("**a**");
-      expect(text.text).not.toContain("**b**");
-    }
+    const prompt = result.systemPrompt ?? "";
+    expect(prompt).toContain("**a**");
+    expect(prompt).not.toContain("**b**");
   });
 
   test("returns request unchanged when maxCapabilityTokens is too small for any fragment", () => {
@@ -1723,11 +1736,10 @@ describe("createComposedCallHandlers capability injection", () => {
     await handlers.modelCall(mockModelRequest());
 
     expect(receivedRequest).toBeDefined();
-    expect(receivedRequest?.messages[0]?.senderId).toBe("system:capabilities");
-    const text = receivedRequest?.messages[0]?.content[0];
-    if (text?.kind === "text") {
-      expect(text.text).toContain("**test-cap**: test description");
-    }
+    expect(receivedRequest?.systemPrompt).toContain("**test-cap**: test description");
+    // Capabilities no longer appear as a conversation message
+    const capMsg = receivedRequest?.messages.find((m) => m.senderId === "system:capabilities");
+    expect(capMsg).toBeUndefined();
   });
 
   test("injects capabilities into modelStream request", async () => {
@@ -1762,7 +1774,7 @@ describe("createComposedCallHandlers capability injection", () => {
     }
 
     expect(receivedRequest).toBeDefined();
-    expect(receivedRequest?.messages[0]?.senderId).toBe("system:capabilities");
+    expect(receivedRequest?.systemPrompt).toContain("**stream-cap**: stream desc");
   });
 
   test("skips capability injection when no middleware has describeCapabilities", async () => {
@@ -1792,7 +1804,8 @@ describe("createComposedCallHandlers capability injection", () => {
     await handlers.modelCall(mockModelRequest());
 
     expect(receivedRequest).toBeDefined();
-    // Only injected tools message, no capabilities message
+    // No capabilities injected — systemPrompt not set by capability injection path
+    expect(receivedRequest?.systemPrompt).toBeUndefined();
     const capMsg = receivedRequest?.messages.find((m) => m.senderId === "system:capabilities");
     expect(capMsg).toBeUndefined();
   });
