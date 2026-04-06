@@ -3758,7 +3758,7 @@ describe("spawn-fork ATIF trajectory (golden file)", () => {
     expect(doc.schema_version).toBe("ATIF-v1.6");
   });
 
-  test("Spawn tool called with fork=true and child returned output", async () => {
+  test("Spawn tool called with fork=true and child confirmed no Spawn tool", async () => {
     const { existsSync } = await import("node:fs");
     if (!existsSync(path)) return;
 
@@ -3774,9 +3774,23 @@ describe("spawn-fork ATIF trajectory (golden file)", () => {
     expect(spawnCall?.arguments?.agentName).toBe("researcher");
     expect(spawnCall?.arguments?.fork).toBe(true);
 
-    const result = spawnStep?.observation?.results?.[0]?.content;
-    expect(result).toBeDefined();
-    expect(result?.length).toBeGreaterThan(0);
+    // The child was asked "Do you have a Spawn tool? Answer yes or no."
+    // The fork recursion guard ensures the child does NOT receive Spawn.
+    // Verify the child's answer is "no" in the recorded output.
+    const rawContent = spawnStep?.observation?.results?.[0]?.content ?? "";
+    const childOutput =
+      typeof rawContent === "string"
+        ? (() => {
+            try {
+              return (JSON.parse(rawContent) as { output?: string }).output ?? rawContent;
+            } catch {
+              return rawContent;
+            }
+          })()
+        : String(rawContent);
+    expect(childOutput.length).toBeGreaterThan(0);
+    // Child should report NOT having Spawn — if this fails, the recursion guard regressed.
+    expect(childOutput.toLowerCase()).toContain("no");
   });
 
   test("fork recursion guard: exactly one Spawn call in trajectory (child cannot re-delegate)", async () => {
@@ -3823,7 +3837,7 @@ describe("spawn-coordinator ATIF trajectory (golden file)", () => {
     expect(doc.schema_version).toBe("ATIF-v1.6");
   });
 
-  test("Spawn tool called with agentName='coordinator' and child returned output", async () => {
+  test("Spawn tool called with agentName='coordinator' and coordinator was invoked", async () => {
     const { existsSync } = await import("node:fs");
     if (!existsSync(path)) return;
 
@@ -3837,10 +3851,34 @@ describe("spawn-coordinator ATIF trajectory (golden file)", () => {
     expect(spawnStep).toBeDefined();
     const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
     expect(spawnCall?.arguments?.agentName).toBe("coordinator");
+  });
 
-    const result = spawnStep?.observation?.results?.[0]?.content;
-    expect(result).toBeDefined();
-    expect(result?.length).toBeGreaterThan(0);
+  test("coordinator ceiling: no Glob, Grep, or ToolSearch calls in trajectory", async () => {
+    // The coordinator's selfCeiling restricts it to delegation-only tools.
+    // Glob, Grep, and ToolSearch must NOT appear in any tool call — they are parent tools
+    // that the selfCeiling enforcement should have stripped from the coordinator's surface.
+    // If this test fails, the coordinator received parent capabilities it shouldn't have.
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+
+    const parentOnlyTools = new Set(["Glob", "Grep", "ToolSearch", "Read", "Bash"]);
+    const leakedCalls = doc.steps
+      .flatMap((s) => s.tool_calls ?? [])
+      .filter((tc) => parentOnlyTools.has(tc.function_name ?? ""));
+
+    // No parent-only tools should appear — coordinator ceiling is enforced.
+    expect(leakedCalls).toHaveLength(0);
+    if (leakedCalls.length > 0) {
+      const names = leakedCalls.map((tc) => tc.function_name).join(", ");
+      throw new Error(
+        `Coordinator received parent tools that bypass selfCeiling: ${names}. ` +
+          "Re-check selfCeiling enforcement in spawn-child.ts and create-agent-spawn-fn.ts.",
+      );
+    }
   });
 });
 

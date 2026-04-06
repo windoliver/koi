@@ -111,6 +111,16 @@ const FIXTURES = `${import.meta.dirname}/../fixtures`;
 // callId churn in every PR that happens to run the script, which causes
 // spurious merge conflicts on fixture files.
 const FORCE_RECORD = process.env.FORCE_RECORD === "true";
+// Set RECORD_ONLY=name1,name2 to record only the named queries (comma-separated).
+// Useful for re-recording a subset without touching other fixtures.
+const RECORD_ONLY_FILTER: ReadonlySet<string> | undefined =
+  process.env.RECORD_ONLY !== undefined
+    ? new Set(
+        process.env.RECORD_ONLY.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      )
+    : undefined;
 
 const modelAdapter = createOpenAICompatAdapter({
   apiKey: API_KEY,
@@ -555,6 +565,10 @@ async function recordCassette(
   factory: () => AsyncIterable<ModelChunk>,
   options: { readonly model?: string } = {},
 ): Promise<void> {
+  if (RECORD_ONLY_FILTER !== undefined && !RECORD_ONLY_FILTER.has(name)) {
+    console.log(`Skipping ${name}.cassette.json (not in RECORD_ONLY filter)`);
+    return;
+  }
   const path = `${FIXTURES}/${name}.cassette.json`;
   if (!FORCE_RECORD && (await Bun.file(path).exists())) {
     console.log(
@@ -2008,10 +2022,10 @@ const queries: readonly QueryConfig[] = [
     },
   },
 
-  // spawn-fork: fork mode — parent calls Spawn(fork=true), child inherits all parent tools.
-  //   Note: "agent_spawn" denylist guard prevents coordinator-style tool inheritance, NOT the
-  //   default "Spawn" tool. Fork children DO get a fresh Spawn provider (bound to themselves).
-  //   The parent's Spawn closure is always excluded from inheritance; each child gets a fresh one.
+  // spawn-fork: fork mode — parent calls Spawn(fork=true), child inherits parent tools BUT
+  //   NOT Spawn. The recursion guard in create-agent-spawn-fn.ts suppresses the Spawn provider
+  //   for fork children (!isFork check), and applyForkDenylist adds "Spawn" to the denylist
+  //   as defense-in-depth. Forked children are scoped to do work, not further delegation.
   //   maxTurns defaults to DEFAULT_FORK_MAX_TURNS (200) since fork=true and no explicit maxTurns.
   //   Uses Gemini Flash — only one Spawn tool call needed, not a 3+ chain, so Flash is reliable.
   {
@@ -2019,7 +2033,7 @@ const queries: readonly QueryConfig[] = [
     prompt:
       "You have Glob, Grep, ToolSearch, and Spawn tools. " +
       "Use the Spawn tool with agentName='researcher' and fork=true to delegate: " +
-      "'List your available tools by name. Do you have an agent_spawn tool? Answer yes or no.' " +
+      "'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' " +
       "Then report the researcher's answer verbatim.",
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
@@ -2051,11 +2065,12 @@ const queries: readonly QueryConfig[] = [
     },
   },
 
-  // spawn-coordinator: coordinator allowlist ceiling — when coordinator is spawned as a child,
-  //   its manifest-declared spawn.tools.policy=allowlist restricts its children.
-  //   Parent spawns the built-in coordinator. Coordinator only receives delegation tools
-  //   (agent_spawn, task_create, task_list, task_output, task_delegate, task_stop, send_message).
-  //   Proves the coordinator's COORDINATOR_TOOL_ALLOWLIST ceiling is enforced via manifest.
+  // spawn-coordinator: coordinator self-ceiling + allowlist — when coordinator is spawned,
+  //   its manifest selfCeiling restricts it to delegation-only tools regardless of parent.
+  //   Parent spawns the built-in coordinator. Coordinator only receives:
+  //   [Spawn, task_create, task_list, task_output, task_delegate, task_stop, send_message].
+  //   It should NOT receive Glob, Grep, ToolSearch or other parent capabilities.
+  //   Proves the coordinator's selfCeiling and COORDINATOR_TOOL_ALLOWLIST ceiling are enforced.
   //   Uses Gemini Flash — only one Spawn tool call needed, so Flash is reliable here.
   {
     name: "spawn-coordinator",
@@ -2652,6 +2667,10 @@ await recordCassette("mcp-tool-use", () =>
 
 // Full-stack ATIF trajectories
 for (const q of queries) {
+  if (RECORD_ONLY_FILTER !== undefined && !RECORD_ONLY_FILTER.has(q.name)) {
+    console.log(`Skipping ${q.name}.trajectory.json (not in RECORD_ONLY filter)`);
+    continue;
+  }
   await recordTrajectory(q);
 }
 
