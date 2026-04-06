@@ -84,21 +84,21 @@ describe("getBuiltInAgents", () => {
 // ---------------------------------------------------------------------------
 
 describe("COORDINATOR_TOOL_ALLOWLIST", () => {
-  test("coordinator manifest spawn.tools.list is the worker ceiling (excludes Spawn and task_delegate)", () => {
-    // The manifest ceiling controls what workers spawned BY the coordinator can use.
-    // Workers do actual work — they must NOT have:
-    //   "Spawn" (no further delegation to sub-agents)
-    //   "task_delegate" (workers cannot re-assign tasks; prevents stale workers from
-    //                    hijacking recovered tasks after a coordinator crash)
+  test("coordinator manifest spawn.tools.list is the explicit worker ceiling", () => {
+    // Worker ceiling is defined EXPLICITLY (not derived from coordinator allowlist)
+    // because the roles differ: coordinator orchestrates, workers execute.
     const spawnToolsList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list;
     expect(spawnToolsList).toBeDefined();
-    expect(spawnToolsList).not.toContain("Spawn");
-    expect(spawnToolsList).not.toContain("task_delegate");
-    // Worker ceiling = allowlist minus Spawn and task_delegate
-    const workerCeiling = [...COORDINATOR_TOOL_ALLOWLIST].filter(
-      (t) => t !== "Spawn" && t !== "task_delegate",
-    );
-    expect(spawnToolsList).toEqual(workerCeiling);
+    // Workers must NOT have:
+    expect(spawnToolsList).not.toContain("Spawn"); // no recursive delegation
+    expect(spawnToolsList).not.toContain("task_delegate"); // no task reassignment
+    expect(spawnToolsList).not.toContain("task_create"); // no new board entries
+    expect(spawnToolsList).not.toContain("task_stop"); // workers cannot kill others
+    // Workers MUST have:
+    expect(spawnToolsList).toContain("task_update"); // claim + complete/fail own task
+    expect(spawnToolsList).toContain("task_list"); // read board state
+    expect(spawnToolsList).toContain("task_output"); // read other task results
+    expect(spawnToolsList).toContain("send_message"); // report status
   });
 
   test("coordinator manifest spawn.tools.policy is allowlist", () => {

@@ -56,18 +56,29 @@ export const COORDINATOR_TOOL_ALLOWLIST: readonly [
 
 /**
  * Tool ceiling for workers spawned BY the coordinator.
- * Derived from COORDINATOR_TOOL_ALLOWLIST minus "Spawn" and "task_delegate":
- * - Workers do actual work and should not spawn further agents (no "Spawn")
- * - Workers should not re-delegate tasks to other agents (no "task_delegate")
- *   This also prevents stale workers from reassigning recovered tasks after a
- *   coordinator crash, as `board.unassign()` returns tasks to `pending` state.
+ *
+ * Defined EXPLICITLY rather than derived from COORDINATOR_TOOL_ALLOWLIST because
+ * the coordinator's and workers' tool surfaces serve different roles:
+ * - Coordinator orchestrates: Spawn, task_create, task_delegate, task_list, task_output, task_stop
+ * - Workers execute: task_update (claim + complete/fail), task_list (read-only check), send_message
+ *
+ * Notably EXCLUDED from workers:
+ * - "Spawn"       — workers do actual work, not recursive delegation
+ * - "task_delegate" — workers cannot reassign tasks to other agents; this also
+ *                     prevents stale workers from hijacking recovered tasks after
+ *                     a coordinator crash (board.unassign returns tasks to pending)
+ * - "task_create" — workers execute existing tasks, not create new board entries
+ * - "task_stop"   — workers cannot kill other tasks; use task_update to self-fail
  *
  * Embedded into the coordinator manifest's `spawn.tools.list`.
  * @internal — not exported; consumers use COORDINATOR_TOOL_ALLOWLIST.
  */
-const COORDINATOR_WORKER_CEILING = COORDINATOR_TOOL_ALLOWLIST.filter(
-  (t) => t !== "Spawn" && t !== "task_delegate",
-);
+const COORDINATOR_WORKER_CEILING = [
+  "task_update", // workers claim (→in_progress) and complete/fail their own task
+  "task_list", // read-only: workers may poll board state for context
+  "task_output", // read-only: workers may read other task results for context
+  "send_message", // workers may send status messages
+] as const satisfies readonly string[];
 
 export const COORDINATOR_MD: string = `---
 name: coordinator
