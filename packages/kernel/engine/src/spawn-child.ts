@@ -158,10 +158,10 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // selfCeilingSet is kept in scope to filter additionalTools below (injected tools must also
   // respect the ceiling — they bypass the inherited-tool path but not the manifest constraint).
   const selfCeilingTools = options.manifest.selfCeiling?.tools;
+  // An empty array is authoritative (zero tools allowed) — treat it the same as a populated
+  // list. Only `undefined` (field absent) means "no ceiling declared; inherit freely."
   const selfCeilingSet: ReadonlySet<string> | undefined =
-    selfCeilingTools !== undefined && selfCeilingTools.length > 0
-      ? new Set(selfCeilingTools)
-      : undefined;
+    selfCeilingTools !== undefined ? new Set(selfCeilingTools) : undefined;
   if (selfCeilingSet !== undefined) {
     toolAllowlist =
       toolAllowlist !== undefined

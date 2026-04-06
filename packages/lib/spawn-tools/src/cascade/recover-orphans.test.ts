@@ -121,7 +121,7 @@ describe("recoverOrphanedTasks", () => {
   // Partial failure cases (Decision 7-A / 12-A)
   // ---------------------------------------------------------------------------
 
-  test("reports failed IDs when add fails — original task is NOT killed (no data loss)", async () => {
+  test("reports failed IDs when add fails after kill — original killed, replacement missing", async () => {
     const realBoard = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
@@ -139,12 +139,15 @@ describe("recoverOrphanedTasks", () => {
 
     const result = await recoverOrphanedTasks(failingBoard, newAgent);
 
-    // add() failed before kill() — original task remains alive (no data loss).
-    // The failed ID is the orphan's original ID (not yet killed).
-    expect(result.killed.length).toBe(0); // never killed — add-then-kill ordering
+    // kill-then-add: kill() succeeds first, then add() fails.
+    // Original is killed (no duplicate live work) but no replacement exists (data loss).
+    // The failed ID is the orphan's original ID — coordinator can investigate.
+    expect(result.killed.length).toBe(0); // not in killed: only fully recovered orphans go here
     expect(result.requeued.length).toBe(0);
     expect(result.failed.length).toBe(1);
     expect(result.failed[0]).toBe(id1);
+    // Original task is now killed (terminated) even though recovery is "failed"
+    expect(realBoard.snapshot().get(id1)?.status).toBe("killed");
   });
 
   test("skips already-terminal tasks (kill fails) without adding to failed", async () => {
@@ -164,7 +167,7 @@ describe("recoverOrphanedTasks", () => {
     expect(result.failed.length).toBe(0);
   });
 
-  test("parallelises correctly with mixed kill results: some fail, some succeed", async () => {
+  test("processes all orphans sequentially: all killed and requeued when board healthy", async () => {
     const board = await freshBoard();
     const newAgent = agentId("new-coordinator");
 

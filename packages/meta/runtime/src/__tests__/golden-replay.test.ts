@@ -3778,6 +3778,28 @@ describe("spawn-fork ATIF trajectory (golden file)", () => {
     expect(result).toBeDefined();
     expect(result?.length).toBeGreaterThan(0);
   });
+
+  test("fork recursion guard: exactly one Spawn call in trajectory (child cannot re-delegate)", async () => {
+    // This test pins the recursion guard contract: a forked child must NOT have access to Spawn.
+    // If the guard breaks, the child would call Spawn again and the trajectory would contain a
+    // second Spawn tool_call with a different agentId — this assertion catches that regression.
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+
+    const spawnCalls = doc.steps
+      .filter((s) => s.source === "tool")
+      .flatMap((s) => s.tool_calls ?? [])
+      .filter((tc) => tc.function_name === "Spawn");
+
+    // Exactly one Spawn call: the parent's initial delegation.
+    // A forked child receiving Spawn would produce a second entry here.
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0]?.arguments?.fork).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
