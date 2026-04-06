@@ -3,8 +3,9 @@
  *
  * When a coordinator crashes while children are running, the child tasks
  * remain in `in_progress` with `assignedTo` set to the old child agent IDs.
- * On restart, this helper kills each orphaned task and re-adds an equivalent
- * pending task so the coordinator can re-delegate.
+ * On restart, this helper re-queues each orphaned task as a new pending task
+ * before killing the original — ensuring no work is lost even if the board
+ * store is degraded during recovery.
  *
  * Limitation: re-added tasks receive new IDs. This is acceptable for MVP;
  * a proper `unassign(taskId)` on ManagedTaskBoard (L0) would preserve IDs —
@@ -19,18 +20,26 @@ export interface OrphanRecoveryResult {
   /** IDs of new pending tasks created to replace the killed ones. */
   readonly requeued: readonly TaskItemId[];
   /**
-   * IDs of tasks that were killed but could NOT be requeued (board.add() failed).
-   * Non-empty indicates data loss — coordinator should log and alert on this field.
+   * IDs of orphaned tasks that could NOT be recovered (nextId or board.add() failed).
+   * The original task is still alive when this happens — no data loss occurred.
+   * Recovery stops at the first failure to avoid further board operations on a
+   * degraded store. Coordinator should log and retry on next restart.
    */
   readonly failed: readonly TaskItemId[];
 }
 
 /**
  * Finds all in_progress tasks NOT assigned to coordinatorAgentId,
- * kills them, and re-adds equivalent pending tasks.
+ * re-queues each as a new pending task, then kills the original.
  *
- * Kills and ID allocations are parallelised with Promise.all for O(1) latency
- * regardless of orphan count — important when the board is Nexus-backed.
+ * Processes tasks sequentially with add-then-kill ordering:
+ * 1. Allocate a new ID for the replacement task
+ * 2. Add the replacement task (pending) — if this fails, stop and report failure
+ * 3. Kill the original — the replacement is already persisted, so the work is safe
+ *
+ * This ordering ensures no data loss: if add() fails, the original task remains
+ * alive and will be re-discovered on the next coordinator restart. Recovery stops
+ * at the first add failure to avoid further operations on a degraded store.
  */
 export async function recoverOrphanedTasks(
   board: ManagedTaskBoard,
@@ -45,59 +54,45 @@ export async function recoverOrphanedTasks(
     return { killed: [], requeued: [], failed: [] };
   }
 
-  // Phase 1: kill all orphans in parallel.
-  const killResults = await Promise.all(orphans.map((t) => board.kill(t.id)));
-
-  // Collect successfully killed tasks paired with their original metadata.
-  const killedOrphans: Array<{ id: TaskItemId; task: (typeof orphans)[0] }> = [];
-  for (let i = 0; i < killResults.length; i++) {
-    const result = killResults[i];
-    const orphan = orphans[i];
-    if (result?.ok && orphan !== undefined) {
-      killedOrphans.push({ id: orphan.id, task: orphan });
-    }
-    // Kill failures (already terminal) are silently skipped — the task is already
-    // in a terminal state; no requeue is needed or possible.
-  }
-
-  if (killedOrphans.length === 0) {
-    return { killed: [], requeued: [], failed: [] };
-  }
-
-  // Phase 2: allocate new IDs and re-add all killed tasks in parallel.
-  const newIds = await Promise.all(killedOrphans.map(() => board.nextId()));
-
-  const addResults = await Promise.all(
-    killedOrphans.map(({ task }, i) => {
-      const newId = newIds[i];
-      if (newId === undefined) return Promise.resolve({ ok: false as const });
-      return board.add({
-        id: newId,
-        subject: task.subject,
-        description: task.description,
-        ...(task.dependencies.length > 0 ? { dependencies: task.dependencies } : {}),
-        ...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
-      });
-    }),
-  );
-
   const killed: TaskItemId[] = [];
   const requeued: TaskItemId[] = [];
   const failed: TaskItemId[] = [];
 
-  for (let i = 0; i < killedOrphans.length; i++) {
-    const entry = killedOrphans[i];
-    const addResult = addResults[i];
-    const newId = newIds[i];
-    if (entry === undefined || addResult === undefined || newId === undefined) continue;
-
-    killed.push(entry.id);
-    if (addResult.ok) {
-      requeued.push(newId);
-    } else {
-      // Kill succeeded but requeue failed — task is lost. Caller must handle.
-      failed.push(entry.id);
+  for (const orphan of orphans) {
+    // Step 1: allocate a replacement ID.
+    const newId = await board.nextId();
+    if (newId === undefined) {
+      // ID allocation failed — board is degraded. Stop processing.
+      failed.push(orphan.id);
+      break;
     }
+
+    // Step 2: persist the replacement task BEFORE killing the original.
+    // If this fails, the original task is still alive — no data loss.
+    const addResult = await board.add({
+      id: newId,
+      subject: orphan.subject,
+      description: orphan.description,
+      ...(orphan.dependencies.length > 0 ? { dependencies: orphan.dependencies } : {}),
+      ...(orphan.metadata !== undefined ? { metadata: orphan.metadata } : {}),
+    });
+
+    if (!addResult.ok) {
+      // Replacement could not be persisted — stop to avoid further board operations.
+      // Original task remains alive and will be re-discovered on next restart.
+      failed.push(orphan.id);
+      break;
+    }
+
+    requeued.push(newId);
+
+    // Step 3: kill the original now that the replacement is safely persisted.
+    const killResult = await board.kill(orphan.id);
+    if (killResult?.ok) {
+      killed.push(orphan.id);
+    }
+    // If kill failed (task already terminal), the replacement is still valid.
+    // The coordinator will find the replacement pending — acceptable state.
   }
 
   return { killed, requeued, failed };

@@ -149,6 +149,19 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     }
   }
 
+  // Apply the child manifest's selfCeiling — the child's own declared maximum tool surface.
+  // This is intersected with the effective allowlist regardless of what the caller requests.
+  // Built-in agents (e.g. coordinator) use this to enforce delegation-only surfaces
+  // automatically, even when spawned by a privileged parent without an explicit toolAllowlist.
+  const selfCeilingTools = options.manifest.selfCeiling?.tools;
+  if (selfCeilingTools !== undefined && selfCeilingTools.length > 0) {
+    const selfCeilingSet = new Set(selfCeilingTools);
+    toolAllowlist =
+      toolAllowlist !== undefined
+        ? intersectSets(toolAllowlist, selfCeilingSet) // intersect with existing ceiling
+        : selfCeilingSet; // no prior allowlist: self-ceiling becomes the effective ceiling
+  }
+
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),

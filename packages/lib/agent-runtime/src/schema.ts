@@ -44,12 +44,18 @@ export interface AgentFrontmatterSpawn {
   readonly tools?: AgentFrontmatterSpawnTools | undefined;
 }
 
+/** Validated frontmatter shape for `self_ceiling`. */
+export interface AgentFrontmatterSelfCeiling {
+  readonly tools?: readonly string[] | undefined;
+}
+
 /** Validated frontmatter shape for an agent definition `.md` file. */
 export interface AgentFrontmatter {
   readonly name: string;
   readonly description: string;
   readonly model?: string | undefined;
   readonly spawn?: AgentFrontmatterSpawn | undefined;
+  readonly self_ceiling?: AgentFrontmatterSelfCeiling | undefined;
 }
 
 const spawnToolsSchema: z.ZodType<AgentFrontmatterSpawnTools> = z
@@ -65,12 +71,19 @@ const spawnSchema: z.ZodType<AgentFrontmatterSpawn> = z
   })
   .strict();
 
+const selfCeilingSchema: z.ZodType<AgentFrontmatterSelfCeiling> = z
+  .object({
+    tools: z.array(z.string()).optional(),
+  })
+  .strict();
+
 const agentFrontmatterSchema: z.ZodType<AgentFrontmatter> = z
   .object({
     name: z.string().min(1, "Agent name is required"),
     description: z.string().min(1, "Agent description is required"),
     model: z.string().optional(),
     spawn: spawnSchema.optional(),
+    self_ceiling: selfCeilingSchema.optional(),
   })
   .strict();
 
@@ -131,12 +144,18 @@ export function mapFrontmatterToDefinition(
     ? mapSpawnConfig(frontmatter.spawn)
     : undefined;
 
+  const selfCeilingConfig: AgentManifest["selfCeiling"] | undefined =
+    frontmatter.self_ceiling?.tools !== undefined
+      ? { tools: frontmatter.self_ceiling.tools }
+      : undefined;
+
   const manifest: AgentManifest = {
     name: frontmatter.name,
     version: "0.0.0",
     description: frontmatter.description,
     model: mapModelConfig(frontmatter.model),
     ...(spawnConfig !== undefined ? { spawn: spawnConfig } : {}),
+    ...(selfCeilingConfig !== undefined ? { selfCeiling: selfCeilingConfig } : {}),
   };
 
   return {

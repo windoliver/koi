@@ -115,6 +115,13 @@ describe("COORDINATOR_TOOL_ALLOWLIST", () => {
     expect([...COORDINATOR_TOOL_ALLOWLIST]).toMatchSnapshot();
   });
 
+  test("coordinator manifest selfCeiling matches COORDINATOR_TOOL_ALLOWLIST (self-enforcement)", () => {
+    // selfCeiling.tools is enforced by the spawn engine — coordinator receives only these tools
+    // regardless of what the parent passes. Prevents privilege escalation via a privileged parent.
+    const selfCeilingTools = COORDINATOR_MANIFEST.manifest.selfCeiling?.tools ?? [];
+    expect([...selfCeilingTools].sort()).toEqual([...COORDINATOR_TOOL_ALLOWLIST].sort());
+  });
+
   test("COORDINATOR_MANIFEST is the pre-parsed coordinator used by getBuiltInAgents", () => {
     const agents = getBuiltInAgents();
     const coordinator = agents.find((a) => a.agentType === "coordinator");

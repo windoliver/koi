@@ -121,7 +121,7 @@ describe("recoverOrphanedTasks", () => {
   // Partial failure cases (Decision 7-A / 12-A)
   // ---------------------------------------------------------------------------
 
-  test("reports failed IDs when kill succeeds but add fails (partial data loss)", async () => {
+  test("reports failed IDs when add fails — original task is NOT killed (no data loss)", async () => {
     const realBoard = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
@@ -139,8 +139,9 @@ describe("recoverOrphanedTasks", () => {
 
     const result = await recoverOrphanedTasks(failingBoard, newAgent);
 
-    // Task was killed but could not be requeued
-    expect(result.killed.length).toBe(1);
+    // add() failed before kill() — original task remains alive (no data loss).
+    // The failed ID is the orphan's original ID (not yet killed).
+    expect(result.killed.length).toBe(0); // never killed — add-then-kill ordering
     expect(result.requeued.length).toBe(0);
     expect(result.failed.length).toBe(1);
     expect(result.failed[0]).toBe(id1);

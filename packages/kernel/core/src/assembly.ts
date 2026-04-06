@@ -280,4 +280,23 @@ export interface AgentManifest {
    * When absent, the runtime's default spawn policy applies.
    */
   readonly spawn?: ManifestSpawnConfig | undefined;
+  /**
+   * Self-ceiling: declares the maximum tool surface this agent can receive when spawned.
+   * The spawn engine intersects this allowlist with the parent's effective tool surface
+   * before assembling the child — even if the caller passes no toolAllowlist.
+   *
+   * Use this for built-in agents (coordinator, etc.) that must be confined to a
+   * delegation-only surface regardless of the parent's capabilities.
+   *
+   * When absent, no additional constraint is applied beyond the parent and request ceilings.
+   */
+  readonly selfCeiling?:
+    | {
+        /**
+         * Allowlist of tools this agent may receive. Tools absent from this list
+         * are excluded from the child's assembled tool surface at spawn time.
+         */
+        readonly tools?: readonly string[];
+      }
+    | undefined;
 }

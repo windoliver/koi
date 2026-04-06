@@ -64,6 +64,8 @@ spawn:
   tools:
     policy: allowlist
     list: [${COORDINATOR_WORKER_CEILING.join(", ")}]
+self_ceiling:
+  tools: [${COORDINATOR_TOOL_ALLOWLIST.join(", ")}]
 ---
 
 You are a coordinator agent. Your role is to decompose complex goals into focused parallel tasks, delegate each to the right specialist agent, monitor progress, and synthesize a coherent final result.
