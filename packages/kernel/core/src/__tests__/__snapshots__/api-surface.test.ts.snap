@@ -1413,6 +1413,16 @@ interface ScopeEnforcer {
  * Implementation-specific config (dbPath, durability) stays in L2.
  */
 
+/**
+ * Lifecycle status of a persisted session.
+ *
+ * - "idle"    — default; session exists but no engine turn is active.
+ * - "running" — engine turn is in progress. A session in this state after restart
+ *               indicates a crash (SIGTERM handled cleanly; SIGKILL/OOM leaves
+ *               status="running" — recover() returns these as crash candidates).
+ * - "done"    — session has been explicitly closed and will not be resumed.
+ */
+type SessionStatus = "running" | "idle" | "done";
 interface SessionRecord {
     /** Gateway session ID. */
     readonly sessionId: SessionId;
@@ -1430,6 +1440,11 @@ interface SessionRecord {
     readonly lastPersistedAt: number;
     /** Opaque engine state for fast stateful recovery. */
     readonly lastEngineState?: EngineState | undefined;
+    /**
+     * Current lifecycle status. Defaults to "idle".
+     * Used by recover() callers to identify crash candidates (status="running").
+     */
+    readonly status: SessionStatus;
     /** Arbitrary metadata. */
     readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -1474,6 +1489,26 @@ interface SessionFilter {
     readonly processState?: ProcessState;
 }
 /**
+ * Metadata for a message whose content was replaced with a file-backed reference
+ * by @koi/context-manager during a compaction pass.
+ *
+ * On session resume, loadContentReplacements() returns these records so the
+ * context-manager can restore file-backed content into the message array before
+ * the first model call.
+ */
+interface ContentReplacement {
+    /** Session the replacement belongs to. */
+    readonly sessionId: SessionId;
+    /** ID of the InboundMessage whose content was replaced. */
+    readonly messageId: string;
+    /** Absolute path to the file holding the replaced content. */
+    readonly filePath: string;
+    /** Size in bytes of the original content (for token accounting). */
+    readonly byteCount: number;
+    /** Unix timestamp ms when the replacement was made. */
+    readonly replacedAt: number;
+}
+/**
  * Pluggable interface for durable session storage.
  *
  * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
@@ -1499,9 +1534,35 @@ interface SessionPersistence {
     /** Remove a single pending frame by ID. No-op if not found. */
     readonly removePendingFrame: (frameId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /**
+     * Update the lifecycle status of a session.
+     *
+     * Call with "running" at the start of an engine turn and "idle" on clean completion.
+     * Call with "done" when the session is permanently closed.
+     *
+     * Note: SIGKILL/OOM crashes leave status="running". On restart, recover() callers
+     * should treat sessions with status="running" as crash candidates and attempt
+     * transcript-based resume.
+     */
+    readonly setSessionStatus: (sessionId: string, status: SessionStatus) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Record that a message's content was replaced with a file-backed reference.
+     * Called by @koi/context-manager after writing replaced content to disk.
+     */
+    readonly saveContentReplacement: (record: ContentReplacement) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Load all content replacements for a session.
+     * Called at resume time to restore file-backed content before the first model call.
+     * Returns an empty array for sessions with no replacements.
+     */
+    readonly loadContentReplacements: (sessionId: string) => Result<readonly ContentReplacement[], KoiError> | Promise<Result<readonly ContentReplacement[], KoiError>>;
+    /**
      * Build a full recovery plan from all stored data.
      * Returns all session records and pending frames per session.
      * Corrupt rows are skipped and reported in the \`skipped\` field.
+     *
+     * Callers identify crash candidates by filtering sessions where status="running".
+     * Synchronous for SQLite — runs once at CLI startup before the event loop is live.
+     * See Phase 3 daemon work for async migration if throughput becomes a concern.
      */
     readonly recover: () => Result<RecoveryPlan, KoiError> | Promise<Result<RecoveryPlan, KoiError>>;
     /** Close the store and release resources. */
@@ -1867,6 +1928,17 @@ interface TranscriptLoadResult {
     readonly entries: readonly TranscriptEntry[];
     readonly skipped: readonly SkippedTranscriptEntry[];
 }
+/** Result of a compact() operation — describes what was kept and whether the boundary moved. */
+interface CompactResult {
+    /** Actual number of entries preserved (may exceed preserveLastN if boundary was extended). */
+    readonly preserved: number;
+    /**
+     * True if the boundary was extended beyond preserveLastN to avoid splitting a
+     * tool_call/tool_result pair. @koi/context-manager should use this to reconcile
+     * its own token accounting when the actual preserved count differs from requested.
+     */
+    readonly extended: boolean;
+}
 /**
  * Append-only transcript store for session crash recovery.
  *
@@ -1881,7 +1953,7 @@ interface SessionTranscript {
     readonly append: (sessionId: SessionId, entries: readonly TranscriptEntry[]) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly load: (sessionId: SessionId) => Result<TranscriptLoadResult, KoiError> | Promise<Result<TranscriptLoadResult, KoiError>>;
     readonly loadPage: (sessionId: SessionId, options: TranscriptPageOptions) => Result<TranscriptPage, KoiError> | Promise<Result<TranscriptPage, KoiError>>;
-    readonly compact: (sessionId: SessionId, summary: string, preserveLastN: number) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly compact: (sessionId: SessionId, summary: string, preserveLastN: number) => Result<CompactResult, KoiError> | Promise<Result<CompactResult, KoiError>>;
     readonly remove: (sessionId: SessionId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly close: () => void | Promise<void>;
 }
@@ -1938,7 +2010,7 @@ declare function validateSessionIdSyntax(id: string, name?: string): Result<void
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompensatingOp, ComponentProvider, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, type NexusPath, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, TaskBoardSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validateSessionIdSyntax, validation };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompactResult, type CompensatingOp, ComponentProvider, type ContentReplacement, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, type NexusPath, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, TaskBoardSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validateSessionIdSyntax, validation };
 "
 `;
 

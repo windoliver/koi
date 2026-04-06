@@ -16,6 +16,17 @@ import type { KoiError, Result } from "./errors.js";
 // Session record — lightweight session metadata for reconnection
 // ---------------------------------------------------------------------------
 
+/**
+ * Lifecycle status of a persisted session.
+ *
+ * - "idle"    — default; session exists but no engine turn is active.
+ * - "running" — engine turn is in progress. A session in this state after restart
+ *               indicates a crash (SIGTERM handled cleanly; SIGKILL/OOM leaves
+ *               status="running" — recover() returns these as crash candidates).
+ * - "done"    — session has been explicitly closed and will not be resumed.
+ */
+export type SessionStatus = "running" | "idle" | "done";
+
 export interface SessionRecord {
   /** Gateway session ID. */
   readonly sessionId: SessionId;
@@ -33,6 +44,11 @@ export interface SessionRecord {
   readonly lastPersistedAt: number;
   /** Opaque engine state for fast stateful recovery. */
   readonly lastEngineState?: EngineState | undefined;
+  /**
+   * Current lifecycle status. Defaults to "idle".
+   * Used by recover() callers to identify crash candidates (status="running").
+   */
+  readonly status: SessionStatus;
   /** Arbitrary metadata. */
   readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -98,6 +114,31 @@ export interface SessionFilter {
 }
 
 // ---------------------------------------------------------------------------
+// Content replacement record — tracks messages replaced with file-backed refs
+// ---------------------------------------------------------------------------
+
+/**
+ * Metadata for a message whose content was replaced with a file-backed reference
+ * by @koi/context-manager during a compaction pass.
+ *
+ * On session resume, loadContentReplacements() returns these records so the
+ * context-manager can restore file-backed content into the message array before
+ * the first model call.
+ */
+export interface ContentReplacement {
+  /** Session the replacement belongs to. */
+  readonly sessionId: SessionId;
+  /** ID of the InboundMessage whose content was replaced. */
+  readonly messageId: string;
+  /** Absolute path to the file holding the replaced content. */
+  readonly filePath: string;
+  /** Size in bytes of the original content (for token accounting). */
+  readonly byteCount: number;
+  /** Unix timestamp ms when the replacement was made. */
+  readonly replacedAt: number;
+}
+
+// ---------------------------------------------------------------------------
 // Session persistence interface
 // ---------------------------------------------------------------------------
 
@@ -158,12 +199,54 @@ export interface SessionPersistence {
     frameId: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
+  // -- Session status ------------------------------------------------------
+
+  /**
+   * Update the lifecycle status of a session.
+   *
+   * Call with "running" at the start of an engine turn and "idle" on clean completion.
+   * Call with "done" when the session is permanently closed.
+   *
+   * Note: SIGKILL/OOM crashes leave status="running". On restart, recover() callers
+   * should treat sessions with status="running" as crash candidates and attempt
+   * transcript-based resume.
+   */
+  readonly setSessionStatus: (
+    sessionId: string,
+    status: SessionStatus,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  // -- Content replacements ------------------------------------------------
+
+  /**
+   * Record that a message's content was replaced with a file-backed reference.
+   * Called by @koi/context-manager after writing replaced content to disk.
+   */
+  readonly saveContentReplacement: (
+    record: ContentReplacement,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  /**
+   * Load all content replacements for a session.
+   * Called at resume time to restore file-backed content before the first model call.
+   * Returns an empty array for sessions with no replacements.
+   */
+  readonly loadContentReplacements: (
+    sessionId: string,
+  ) =>
+    | Result<readonly ContentReplacement[], KoiError>
+    | Promise<Result<readonly ContentReplacement[], KoiError>>;
+
   // -- Recovery ------------------------------------------------------------
 
   /**
    * Build a full recovery plan from all stored data.
    * Returns all session records and pending frames per session.
    * Corrupt rows are skipped and reported in the `skipped` field.
+   *
+   * Callers identify crash candidates by filtering sessions where status="running".
+   * Synchronous for SQLite — runs once at CLI startup before the event loop is live.
+   * See Phase 3 daemon work for async migration if throughput becomes a concern.
    */
   readonly recover: () => Result<RecoveryPlan, KoiError> | Promise<Result<RecoveryPlan, KoiError>>;
 

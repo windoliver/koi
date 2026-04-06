@@ -5003,13 +5003,13 @@ describe("Approval trajectory capture (e2e)", () => {
 
     expect(approvalSteps.length).toBeGreaterThan(0);
 
-    const step = approvalSteps[0]!;
-    expect(step.kind).toBe("tool_call");
-    expect(step.identifier).toBe("add_numbers");
+    const step = approvalSteps[0];
+    expect(step?.kind).toBe("tool_call");
+    expect(step?.identifier).toBe("add_numbers");
     // stepIndex must be assigned (not the placeholder -1)
-    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
-    expect(step.outcome).toBe("success");
-    expect(step.metadata?.approvalDecision).toBe("allow");
+    expect(step?.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step?.outcome).toBe("success");
+    expect(step?.metadata?.approvalDecision).toBe("allow");
   });
 
   test("deny approval produces source:'user' step with failure outcome", async () => {
@@ -5075,13 +5075,13 @@ describe("Approval trajectory capture (e2e)", () => {
 
     expect(approvalSteps.length).toBeGreaterThan(0);
 
-    const step = approvalSteps[0]!;
-    expect(step.kind).toBe("tool_call");
+    const step = approvalSteps[0];
+    expect(step?.kind).toBe("tool_call");
     // stepIndex must be assigned (not the placeholder -1)
-    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
-    expect(step.outcome).toBe("failure");
-    expect(step.metadata?.approvalDecision).toBe("deny");
-    expect(step.metadata?.denyReason).toBe("test-deny");
+    expect(step?.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step?.outcome).toBe("failure");
+    expect(step?.metadata?.approvalDecision).toBe("deny");
+    expect(step?.metadata?.denyReason).toBe("test-deny");
   });
 
   test("runtime dispatch relay routes approval steps by sessionId", async () => {
@@ -5184,6 +5184,7 @@ describe("Golden: @koi/session — session-recovery", () => {
       remoteSeq: 3,
       connectedAt: now - 10000,
       lastPersistedAt: now - 1000,
+      status: "idle",
       metadata: { channel: "cli" },
     });
     store.saveSession({
@@ -5194,6 +5195,7 @@ describe("Golden: @koi/session — session-recovery", () => {
       remoteSeq: 1,
       connectedAt: now - 5000,
       lastPersistedAt: now - 500,
+      status: "idle",
       metadata: {},
     });
     store.savePendingFrame({
@@ -5301,5 +5303,373 @@ describe("Golden: @koi/session — session-transcript-compaction", () => {
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2e-2: session-resume trajectory (crash recovery end-to-end)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — session-resume trajectory", () => {
+  type Step = {
+    readonly source: string;
+    readonly tool_calls?: readonly {
+      readonly function_name: string;
+      readonly arguments?: Record<string, unknown>;
+    }[];
+    readonly observation?: {
+      readonly results?: readonly { readonly content: string }[];
+    };
+    readonly extra?: {
+      readonly type?: string;
+      readonly middlewareName?: string;
+      readonly hook?: string;
+    };
+  };
+
+  const loadTrajectory = async (): Promise<readonly Step[]> => {
+    const doc = (await Bun.file(`${FIXTURES}/session-resume.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly steps: readonly Step[];
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    return doc.steps;
+  };
+
+  test("trajectory has add_numbers tool call with a=15, b=25 (new turn after resume)", async () => {
+    const steps = await loadTrajectory();
+    const toolStep = steps.find(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "add_numbers"),
+    );
+    expect(toolStep).toBeDefined();
+    const tc = toolStep?.tool_calls?.find((c) => c.function_name === "add_numbers");
+    expect(tc?.arguments?.a).toBe(15);
+    expect(tc?.arguments?.b).toBe(25);
+  });
+
+  test("trajectory has @koi/session:transcript wrapToolCall span (transcript captured new tool call)", async () => {
+    const steps = await loadTrajectory();
+    const transcriptSpans = steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "@koi/session:transcript",
+    );
+    expect(transcriptSpans.length).toBeGreaterThanOrEqual(1);
+    const toolCallSpan = transcriptSpans.find((s) => s.extra?.hook === "wrapToolCall");
+    expect(toolCallSpan).toBeDefined();
+  });
+
+  test("trajectory final agent step reports both prior result (10) and new result (40)", async () => {
+    const steps = await loadTrajectory();
+    // Last agent step should contain the model's summary mentioning both results
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+    const lastAgentStep = agentSteps.at(-1);
+    const lastContent = lastAgentStep?.observation?.results?.[0]?.content ?? "";
+    // Model should mention 10 (prior 3+7) and 40 (new 15+25)
+    expect(lastContent).toContain("10");
+    expect(lastContent).toContain("40");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2e-2: resumeFromTranscript (crash recovery + resume)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — resume-from-transcript", () => {
+  test("tool_call/tool_result pairs are positionally matched and produce InboundMessages", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("e1"),
+        role: "user" as const,
+        content: "Run the tool",
+        timestamp: 1000,
+      },
+      {
+        id: transcriptEntryId("e2"),
+        role: "tool_call" as const,
+        content: JSON.stringify([{ id: "call-abc", toolName: "Glob", args: "{}" }]),
+        timestamp: 2000,
+      },
+      {
+        id: transcriptEntryId("e3"),
+        role: "tool_result" as const,
+        content: "src/index.ts",
+        timestamp: 3000,
+      },
+    ];
+
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { messages } = result.value;
+    // user message
+    expect(messages[0]?.senderId).toBe("user");
+    expect((messages[0]?.content[0] as { kind: string; text: string }).text).toBe("Run the tool");
+    // tool_call → assistant message with toolCalls array (request-mapper primary path).
+    // One assistant message per transcript tool_call entry (not one per call) so
+    // fixTranscriptOrdering sees a single tool_calls turn and preserves all results.
+    const toolCallMsg = messages.find(
+      (m) =>
+        m.senderId === "assistant" &&
+        Array.isArray((m.metadata as Record<string, unknown>)?.toolCalls),
+    );
+    expect(toolCallMsg).toBeDefined();
+    const toolCalls = (toolCallMsg?.metadata as Record<string, unknown>)?.toolCalls as
+      | Array<{ id: string; function: { name: string } }>
+      | undefined;
+    expect(toolCalls?.[0]?.id).toBe("call-abc");
+    expect(toolCalls?.[0]?.function?.name).toBe("Glob");
+    // tool_result → tool message with matched callId
+    const toolResultMsg = messages.find(
+      (m) =>
+        m.senderId === "tool" && (m.metadata as Record<string, unknown>)?.callId === "call-abc",
+    );
+    expect(toolResultMsg).toBeDefined();
+    expect((toolResultMsg?.content[0] as { kind: string; text: string }).text).toBe("src/index.ts");
+  });
+
+  test("dangling tool_call (crash before result) gets synthetic error result", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("e1"),
+        role: "tool_call" as const,
+        content: JSON.stringify([{ id: "call-dangling", toolName: "Read", args: "{}" }]),
+        timestamp: 1000,
+      },
+      // No tool_result — simulates crash before tool completed
+    ];
+
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { messages } = result.value;
+    // Should have a synthetic error tool result for the dangling call
+    const syntheticResult = messages.find(
+      (m) =>
+        m.senderId === "tool" &&
+        (m.metadata as Record<string, unknown>)?.callId === "call-dangling" &&
+        (m.metadata as Record<string, unknown>)?.synthetic === true &&
+        (m.metadata as Record<string, unknown>)?.isError === true,
+    );
+    expect(syntheticResult).toBeDefined();
+    expect((syntheticResult?.content[0] as { kind: string; text: string }).text).toContain(
+      "crashed",
+    );
+  });
+
+  test("compaction entry is folded into a synthetic user message with [Summary] prefix", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("e1"),
+        role: "compaction" as const,
+        content: "First 5 turns summarized",
+        timestamp: 500,
+      },
+      {
+        id: transcriptEntryId("e2"),
+        role: "user" as const,
+        content: "Continue",
+        timestamp: 1000,
+      },
+    ];
+
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { messages } = result.value;
+    const compactionMsg = messages[0];
+    expect(compactionMsg?.senderId).toBe("user");
+    expect((compactionMsg?.content[0] as { kind: string; text: string }).text).toBe(
+      "[Summary] First 5 turns summarized",
+    );
+    expect((compactionMsg?.metadata as Record<string, unknown>)?.synthetic).toBe(true);
+    expect((compactionMsg?.metadata as Record<string, unknown>)?.compacted).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2e-2: compact() boundary extension (extended=true path)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — compact-boundary-extension", () => {
+  test("compact() extends boundary backward when naive cut lands on tool_result", async () => {
+    const { createInMemoryTranscript } = await import("@koi/session");
+    const { transcriptEntryId, sessionId } = await import("@koi/core");
+
+    const store = createInMemoryTranscript();
+    const sid = sessionId("golden-boundary");
+
+    // 6 entries: user, tool_call, tool_result, user, tool_call, tool_result
+    // naive cut at preserveLastN=3 → index 3 → "user" → no extension
+    // but with preserveLastN=2 → index 4 → tool_call → scan back? No, tool_call is ok
+    // To trigger extension: preserveLastN=2 → index 4 → tool_result at index 4? No
+    // Layout: [0:user, 1:tool_call, 2:tool_result, 3:user, 4:tool_call, 5:tool_result]
+    // preserveLastN=1 → naiveCutIndex=5 → entries[5].role=tool_result → extend back to 4
+    const entries = [
+      { id: transcriptEntryId("e0"), role: "user" as const, content: "hi", timestamp: 100 },
+      {
+        id: transcriptEntryId("e1"),
+        role: "tool_call" as const,
+        content: JSON.stringify([{ id: "c1", toolName: "Glob", args: "{}" }]),
+        timestamp: 200,
+      },
+      { id: transcriptEntryId("e2"), role: "tool_result" as const, content: "ok", timestamp: 300 },
+      { id: transcriptEntryId("e3"), role: "user" as const, content: "next", timestamp: 400 },
+      {
+        id: transcriptEntryId("e4"),
+        role: "tool_call" as const,
+        content: JSON.stringify([{ id: "c2", toolName: "Read", args: "{}" }]),
+        timestamp: 500,
+      },
+      {
+        id: transcriptEntryId("e5"),
+        role: "tool_result" as const,
+        content: "content",
+        timestamp: 600,
+      },
+    ];
+    await store.append(sid, entries);
+
+    // preserveLastN=1 → naive cut at index 5 (tool_result) → should extend to index 4
+    const result = await store.compact(sid, "Summary", 1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // extended=true: boundary was moved back
+    expect(result.value.extended).toBe(true);
+    // preserved includes both tool_call(e4) and tool_result(e5)
+    expect(result.value.preserved).toBe(2);
+
+    // After compaction: [compaction, tool_call(e4), tool_result(e5)]
+    const loadResult = await store.load(sid);
+    expect(loadResult.ok).toBe(true);
+    if (!loadResult.ok) return;
+
+    expect(loadResult.value.entries.length).toBe(3);
+    expect(loadResult.value.entries[0]?.role).toBe("compaction");
+    expect(loadResult.value.entries[1]?.role).toBe("tool_call");
+    expect(loadResult.value.entries[2]?.role).toBe("tool_result");
+  });
+
+  test("compact() does NOT set extended=true when cut lands on non-tool_result", async () => {
+    const { createInMemoryTranscript } = await import("@koi/session");
+    const { transcriptEntryId, sessionId } = await import("@koi/core");
+
+    const store = createInMemoryTranscript();
+    const sid = sessionId("golden-no-extension");
+
+    const entries = [
+      { id: transcriptEntryId("e0"), role: "user" as const, content: "a", timestamp: 100 },
+      { id: transcriptEntryId("e1"), role: "assistant" as const, content: "b", timestamp: 200 },
+      { id: transcriptEntryId("e2"), role: "user" as const, content: "c", timestamp: 300 },
+    ];
+    await store.append(sid, entries);
+
+    // preserveLastN=1 → cut at index 2 → role="user" → no extension
+    const result = await store.compact(sid, "Summary", 1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.extended).toBe(false);
+    expect(result.value.preserved).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2e-2: setSessionStatus + saveContentReplacement
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — session-status-content-replacement", () => {
+  test("setSessionStatus transitions idle → running → done and recover() surfaces status", async () => {
+    const { createSqliteSessionPersistence } = await import("@koi/session");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const store = createSqliteSessionPersistence({ dbPath: ":memory:" });
+    const sid = sessionId("golden-status");
+    const now = Date.now();
+
+    store.saveSession({
+      sessionId: sid,
+      agentId: agentId("agent-x"),
+      manifestSnapshot: { name: "x", version: "1.0.0", model: { name: "gpt" } },
+      seq: 1,
+      remoteSeq: 0,
+      connectedAt: now,
+      lastPersistedAt: now,
+      status: "idle",
+      metadata: {},
+    });
+
+    // Transition to running
+    const r1 = await store.setSessionStatus(sid, "running");
+    expect(r1.ok).toBe(true);
+
+    const loaded = await store.loadSession(sid);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.value.status).toBe("running");
+
+    // Transition to done
+    const r2 = await store.setSessionStatus(sid, "done");
+    expect(r2.ok).toBe(true);
+
+    const loaded2 = await store.loadSession(sid);
+    expect(loaded2.ok).toBe(true);
+    if (loaded2.ok) expect(loaded2.value.status).toBe("done");
+
+    store.close();
+  });
+
+  test("saveContentReplacement + loadContentReplacements round-trips correctly", async () => {
+    const { createSqliteSessionPersistence } = await import("@koi/session");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const store = createSqliteSessionPersistence({ dbPath: ":memory:" });
+    const sid = sessionId("golden-content-replace");
+    const now = Date.now();
+
+    store.saveSession({
+      sessionId: sid,
+      agentId: agentId("agent-y"),
+      manifestSnapshot: { name: "y", version: "1.0.0", model: { name: "gpt" } },
+      seq: 1,
+      remoteSeq: 0,
+      connectedAt: now,
+      lastPersistedAt: now,
+      status: "idle",
+      metadata: {},
+    });
+
+    const r = await store.saveContentReplacement({
+      sessionId: sid,
+      messageId: "msg-001",
+      filePath: "/tmp/context-dump.txt",
+      byteCount: 4096,
+      replacedAt: now,
+    });
+    expect(r.ok).toBe(true);
+
+    const loaded = await store.loadContentReplacements(sid);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    expect(loaded.value.length).toBe(1);
+    expect(loaded.value[0]?.messageId).toBe("msg-001");
+    expect(loaded.value[0]?.filePath).toBe("/tmp/context-dump.txt");
+    expect(loaded.value[0]?.byteCount).toBe(4096);
+
+    store.close();
   });
 });

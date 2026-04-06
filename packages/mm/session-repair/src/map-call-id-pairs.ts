@@ -27,14 +27,30 @@ export function mapCallIdPairs(messages: readonly InboundMessage[]): CallIdPairM
   const assistantByCallId = new Map<string, number>();
   const matchedCallIds = new Set<string>();
 
-  // Pass 1: collect all assistant callIds
+  // Pass 1: collect all assistant callIds.
+  // Also reads metadata.toolCalls (array form produced by resumeFromTranscript)
+  // so multi-call resumed turns don't appear as orphaned tool results.
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg === undefined) continue;
     if (msg.senderId !== "assistant") continue;
+    // Single-call path: metadata.callId string
     const callId = readStringMeta(msg.metadata, "callId");
     if (callId !== undefined) {
       assistantByCallId.set(callId, i);
+    }
+    // Multi-call path: metadata.toolCalls array (resumeFromTranscript format)
+    const toolCalls = msg.metadata?.toolCalls;
+    if (Array.isArray(toolCalls)) {
+      for (const tc of toolCalls) {
+        const tcId =
+          typeof tc === "object" && tc !== null
+            ? readStringMeta(tc as Record<string, unknown>, "id")
+            : undefined;
+        if (tcId !== undefined) {
+          assistantByCallId.set(tcId, i);
+        }
+      }
     }
   }
 

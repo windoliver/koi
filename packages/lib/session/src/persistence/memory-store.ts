@@ -4,6 +4,7 @@
  */
 
 import type {
+  ContentReplacement,
   KoiError,
   PendingFrame,
   RecoveryPlan,
@@ -11,6 +12,7 @@ import type {
   SessionFilter,
   SessionPersistence,
   SessionRecord,
+  SessionStatus,
 } from "@koi/core";
 import { notFound, validateNonEmpty } from "@koi/core";
 
@@ -18,6 +20,8 @@ export function createInMemorySessionPersistence(): SessionPersistence {
   const sessions = new Map<string, SessionRecord>();
   // sessionId → pending frames (maintained sorted by orderIndex)
   const pendingFramesBySession = new Map<string, PendingFrame[]>();
+  // sessionId → messageId → ContentReplacement
+  const contentReplacements = new Map<string, Map<string, ContentReplacement>>();
 
   const saveSession = (record: SessionRecord): Result<void, KoiError> => {
     const idCheck = validateNonEmpty(record.sessionId, "Session ID");
@@ -49,6 +53,7 @@ export function createInMemorySessionPersistence(): SessionPersistence {
     }
     sessions.delete(sid);
     pendingFramesBySession.delete(sid);
+    contentReplacements.delete(sid);
     return { ok: true, value: undefined };
   };
 
@@ -115,6 +120,44 @@ export function createInMemorySessionPersistence(): SessionPersistence {
     return { ok: true, value: undefined };
   };
 
+  const setSessionStatus = (sid: string, status: SessionStatus): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
+    if (!idCheck.ok) return idCheck;
+
+    const record = sessions.get(sid);
+    if (record === undefined) {
+      return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
+    }
+    sessions.set(sid, { ...record, status });
+    return { ok: true, value: undefined };
+  };
+
+  const saveContentReplacement = (record: ContentReplacement): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(record.sessionId, "Session ID");
+    if (!idCheck.ok) return idCheck;
+    const msgCheck = validateNonEmpty(record.messageId, "Message ID");
+    if (!msgCheck.ok) return msgCheck;
+
+    const sessionMap =
+      contentReplacements.get(record.sessionId) ?? new Map<string, ContentReplacement>();
+    sessionMap.set(record.messageId, record);
+    contentReplacements.set(record.sessionId, sessionMap);
+    return { ok: true, value: undefined };
+  };
+
+  const loadContentReplacements = (
+    sid: string,
+  ): Result<readonly ContentReplacement[], KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
+    if (!idCheck.ok) return idCheck;
+
+    const sessionMap = contentReplacements.get(sid);
+    if (sessionMap === undefined) {
+      return { ok: true, value: [] };
+    }
+    return { ok: true, value: [...sessionMap.values()] };
+  };
+
   const recover = (): Result<RecoveryPlan, KoiError> => {
     const allSessions = [...sessions.values()];
     const pendingFrames = new Map<string, PendingFrame[]>();
@@ -129,6 +172,7 @@ export function createInMemorySessionPersistence(): SessionPersistence {
   const close = (): void => {
     sessions.clear();
     pendingFramesBySession.clear();
+    contentReplacements.clear();
   };
 
   return {
@@ -140,6 +184,9 @@ export function createInMemorySessionPersistence(): SessionPersistence {
     loadPendingFrames,
     clearPendingFrames,
     removePendingFrame,
+    setSessionStatus,
+    saveContentReplacement,
+    loadContentReplacements,
     recover,
     close,
   };

@@ -943,11 +943,13 @@ export type {
 export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER } from "./security-analyzer.js";
 // session — persistence contract for crash recovery
 export type {
+  ContentReplacement,
   PendingFrame,
   RecoveryPlan,
   SessionFilter,
   SessionPersistence,
   SessionRecord,
+  SessionStatus,
   SkippedRecoveryEntry,
 } from "./session.js";
 // skill registry — types
@@ -1085,6 +1087,7 @@ export type {
 } from "./tool-health-types.js";
 // transcript — append-only message log for crash recovery
 export type {
+  CompactResult,
   SessionTranscript,
   SkippedTranscriptEntry,
   TranscriptEntry,
