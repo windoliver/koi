@@ -387,6 +387,60 @@ describe("round-trip: Rich → ATIF → Rich", () => {
     expect(roundTripped?.request?.text).toBe(original.request?.text);
   });
 
+  test("system step with non-default kind/identifier round-trips losslessly (#1499)", () => {
+    const original = makeSystemStep({
+      kind: "tool_call",
+      identifier: "provenance:turn_summary",
+      metadata: {
+        type: "provenance_summary",
+        turnIndex: 0,
+        systemsConsulted: [{ system: "mcp", server: "crm", tools: ["get_customer"], count: 1 }],
+      },
+    });
+    const doc = mapRichTrajectoryToAtif([original], { sessionId: "s1", agentName: "a" });
+    const [roundTripped] = mapAtifToRichTrajectory(doc);
+
+    expect(roundTripped?.source).toBe("system");
+    expect(roundTripped?.kind).toBe("tool_call");
+    expect(roundTripped?.identifier).toBe("provenance:turn_summary");
+    expect(roundTripped?.outcome).toBe("success");
+    // Metadata survives without __koi transport pollution
+    const meta = roundTripped?.metadata as Record<string, unknown>;
+    expect(meta?.type).toBe("provenance_summary");
+    expect(meta?.turnIndex).toBe(0);
+    expect(meta?.__koi).toBeUndefined();
+  });
+
+  test("normal system step has no __koi key in ATIF extra (#1499)", () => {
+    const original = makeSystemStep(); // defaults: kind="model_call", identifier="system"
+    const doc = mapRichTrajectoryToAtif([original], { sessionId: "s1", agentName: "a" });
+    const atifStep = doc.steps[0];
+
+    // Normal system steps should not have __koi extension object
+    const extra = atifStep?.extra as Record<string, unknown> | undefined;
+    expect(extra?.__koi).toBeUndefined();
+  });
+
+  test("system step with error does not duplicate error into metadata (#1499)", () => {
+    const original = makeSystemStep({
+      kind: "tool_call",
+      identifier: "provenance:turn_summary",
+      error: { text: "trace capture failed" },
+      metadata: { type: "provenance_summary" },
+    });
+    const doc = mapRichTrajectoryToAtif([original], { sessionId: "s1", agentName: "a" });
+    const [roundTripped] = mapAtifToRichTrajectory(doc);
+
+    // Error is extracted to the dedicated field, not duplicated in metadata
+    expect(roundTripped?.error?.text).toBe("trace capture failed");
+    const meta = roundTripped?.metadata as Record<string, unknown> | undefined;
+    expect(meta?.error).toBeUndefined();
+    // Original metadata survives
+    expect(meta?.type).toBe("provenance_summary");
+    // Transport object stripped
+    expect(meta?.__koi).toBeUndefined();
+  });
+
   test("LOSSY: timestamp — ms precision preserved through ISO 8601", () => {
     const original = makeAgentStep({ timestamp: 1700000000123 });
     const doc = mapRichTrajectoryToAtif([original], { sessionId: "s1", agentName: "a" });

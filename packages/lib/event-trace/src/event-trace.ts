@@ -57,6 +57,59 @@ import { pickDefined, truncateContent } from "./utils.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 8192;
 
+/**
+ * Metadata keys allowed in persisted tool steps (#1499).
+ *
+ * Only these keys are copied from ToolResponse.metadata into the trajectory.
+ * All other transient metadata (correlation IDs, cache hints, etc.) is filtered
+ * to prevent trust-boundary expansion in long-lived ATIF documents.
+ */
+const PERSISTED_TOOL_METADATA_KEYS: readonly string[] = [
+  "provenance", // provenance tracking (#1464)
+  "blockedByHook", // policy denial marker
+  "hookName", // which hook blocked the call
+  "reason", // denial explanation from guards
+  "committedButRedacted", // output redacted after tool side effects committed
+] as const;
+
+/**
+ * Prune provenance to its known schema. Arbitrary nested data is stripped
+ * to prevent tools from smuggling extra fields through the provenance key.
+ */
+function pruneProvenance(
+  raw: unknown,
+): { readonly system: string; readonly server?: string } | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.system !== "string") return undefined;
+  return typeof obj.server === "string"
+    ? { system: obj.system, server: obj.server }
+    : { system: obj.system };
+}
+
+/** Pick only allowlisted own-property keys from metadata, returning undefined when empty. */
+function pickAllowedMetadata(
+  metadata: Record<string, unknown> | undefined,
+): JsonObject | undefined {
+  if (metadata === undefined) return undefined;
+  const filtered: Record<string, unknown> = {};
+  let hasKeys = false;
+  for (const key of PERSISTED_TOOL_METADATA_KEYS) {
+    if (!Object.hasOwn(metadata, key)) continue;
+    if (key === "provenance") {
+      const pruned = pruneProvenance(metadata[key]);
+      if (pruned !== undefined) {
+        filtered[key] = pruned;
+        hasKeys = true;
+      }
+    } else {
+      filtered[key] = metadata[key];
+      hasKeys = true;
+    }
+  }
+  return hasKeys ? (filtered as JsonObject) : undefined;
+}
+
 export interface EventTraceConfig {
   /** Backing store for trajectory documents. */
   readonly store: TrajectoryDocumentStore;
@@ -540,6 +593,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
           // not successful executions — trace them as failures.
           const blockedByHook =
             response?.metadata !== undefined &&
+            Object.hasOwn(response.metadata, "blockedByHook") &&
             (response.metadata as Record<string, unknown>).blockedByHook === true;
           const baseToolOutcome = response === undefined || blockedByHook ? "failure" : "success";
           const baseToolMetadata = blockedByHook
@@ -561,15 +615,14 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             response?.metadata !== undefined
               ? (response.metadata as Record<string, unknown>)
               : undefined;
-          const provenance = responseMeta?.provenance as
-            | { readonly system: string; readonly server?: string }
-            | undefined;
+          // Use pruneProvenance for both persistence and aggregation (#1499)
+          const provenance = pruneProvenance(responseMeta?.provenance);
 
-          // Persist full response metadata (preserves provenance, correlation IDs, etc.)
-          const stepMeta =
-            response?.metadata !== undefined ? (response.metadata as JsonObject) : undefined;
+          // Persist only allowlisted response metadata (#1499 — trust-boundary fix).
+          // Transient metadata (traceId, cacheHit, etc.) is filtered out.
+          const stepMeta = pickAllowedMetadata(responseMeta);
 
-          // Merge retry metadata (if any) on top of full response metadata (preserves provenance)
+          // Merge retry metadata (if any) on top of filtered response metadata
           const finalToolMetadata =
             toolRetryOverride !== undefined
               ? ({ ...(stepMeta ?? {}), ...toolRetryOverride.metadata } as JsonObject)

@@ -45,6 +45,18 @@ export function mapRichTrajectoryToAtif(
 }
 
 function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
+  // Preserve non-default kind/identifier for system steps through ATIF round-trip (#1499).
+  const hasNonDefaultSystemFields =
+    step.source === "system" && (step.kind !== "model_call" || step.identifier !== "system");
+  const koiTransport = hasNonDefaultSystemFields
+    ? {
+        ...(step.kind !== "model_call" ? { kind: step.kind } : {}),
+        ...(step.identifier !== "system" ? { identifier: step.identifier } : {}),
+      }
+    : undefined;
+  const extra =
+    koiTransport !== undefined ? { ...(step.metadata ?? {}), __koi: koiTransport } : step.metadata;
+
   return {
     step_id: step.stepIndex,
     source: step.source,
@@ -59,7 +71,7 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
     ...(step.metrics !== undefined ? { metrics: mapMetricsToAtif(step.metrics) } : {}),
     duration_ms: step.durationMs,
     outcome: step.outcome,
-    ...(step.metadata !== undefined ? { extra: step.metadata } : {}),
+    ...(extra !== undefined ? { extra } : {}),
   };
 }
 
@@ -146,13 +158,39 @@ export function mapAtifToRichTrajectory(doc: AtifDocument): readonly RichTraject
 }
 
 function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
+  // Recover non-default kind/identifier from nested __koi transport object (#1499).
+  const rawExtra = step.extra as Record<string, unknown> | undefined;
+  const koiTransport =
+    step.source === "system" && rawExtra !== undefined && Object.hasOwn(rawExtra, "__koi")
+      ? (rawExtra.__koi as Record<string, unknown>)
+      : undefined;
+
   const kind =
-    step.tool_calls !== undefined && step.tool_calls.length > 0 ? "tool_call" : "model_call";
+    koiTransport !== undefined
+      ? koiTransport.kind === "tool_call"
+        ? "tool_call"
+        : "model_call"
+      : step.tool_calls !== undefined && step.tool_calls.length > 0
+        ? "tool_call"
+        : "model_call";
   const identifier =
-    kind === "tool_call" && step.tool_calls !== undefined && step.tool_calls.length > 0
-      ? (step.tool_calls[0]?.function_name ?? "unknown")
-      : (step.model_name ?? "unknown");
+    koiTransport !== undefined
+      ? typeof koiTransport.identifier === "string"
+        ? koiTransport.identifier
+        : "system"
+      : kind === "tool_call" && step.tool_calls !== undefined && step.tool_calls.length > 0
+        ? (step.tool_calls[0]?.function_name ?? "unknown")
+        : (step.model_name ?? "unknown");
   const response = mapAtifResponse(step);
+
+  // Strip __koi transport object from metadata.
+  // When koiTransport is defined, rawExtra is guaranteed non-undefined (see guard above).
+  const cleanedExtra =
+    koiTransport !== undefined && rawExtra !== undefined
+      ? Object.fromEntries(Object.entries(rawExtra).filter(([k]) => k !== "__koi"))
+      : step.extra;
+  const metadata =
+    cleanedExtra !== undefined && Object.keys(cleanedExtra).length > 0 ? cleanedExtra : undefined;
 
   // Build request: text from message, structured data from tool_calls arguments
   const toolArgs =
@@ -179,7 +217,7 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
     ...(response !== undefined ? { response } : {}),
     ...(step.reasoning_content !== undefined ? { reasoningContent: step.reasoning_content } : {}),
     ...(step.metrics !== undefined ? { metrics: mapAtifMetricsToRich(step.metrics) } : {}),
-    ...(step.extra !== undefined ? { metadata: step.extra } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
   };
 }
 
