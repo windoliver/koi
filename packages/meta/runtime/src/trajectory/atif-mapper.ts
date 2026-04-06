@@ -3,7 +3,7 @@
  * Ported from archive/v1/packages/mm/middleware-ace/src/atif.ts.
  */
 
-import type { RichContent, RichStepMetrics, RichTrajectoryStep } from "@koi/core";
+import type { JsonObject, RichContent, RichStepMetrics, RichTrajectoryStep } from "@koi/core";
 import type {
   AtifDocument,
   AtifFinalMetrics,
@@ -45,6 +45,18 @@ export function mapRichTrajectoryToAtif(
 }
 
 function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
+  // Preserve non-default kind/identifier for system steps through ATIF round-trip (#1499).
+  const hasNonDefaultSystemFields =
+    step.source === "system" && (step.kind !== "model_call" || step.identifier !== "system");
+  const koiTransport = hasNonDefaultSystemFields
+    ? {
+        ...(step.kind !== "model_call" ? { kind: step.kind } : {}),
+        ...(step.identifier !== "system" ? { identifier: step.identifier } : {}),
+      }
+    : undefined;
+  const extra =
+    koiTransport !== undefined ? { ...(step.metadata ?? {}), __koi: koiTransport } : step.metadata;
+
   return {
     step_id: step.stepIndex,
     source: step.source,
@@ -59,7 +71,7 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
     ...(step.metrics !== undefined ? { metrics: mapMetricsToAtif(step.metrics) } : {}),
     duration_ms: step.durationMs,
     outcome: step.outcome,
-    ...(step.metadata !== undefined ? { extra: step.metadata } : {}),
+    ...buildExtra(extra, step.error),
   };
 }
 
@@ -146,13 +158,39 @@ export function mapAtifToRichTrajectory(doc: AtifDocument): readonly RichTraject
 }
 
 function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
+  // Recover non-default kind/identifier from nested __koi transport object (#1499).
+  const rawExtra = step.extra as Record<string, unknown> | undefined;
+  const koiTransport =
+    step.source === "system" && rawExtra !== undefined && Object.hasOwn(rawExtra, "__koi")
+      ? (rawExtra.__koi as Record<string, unknown>)
+      : undefined;
+
   const kind =
-    step.tool_calls !== undefined && step.tool_calls.length > 0 ? "tool_call" : "model_call";
+    koiTransport !== undefined
+      ? koiTransport.kind === "tool_call"
+        ? "tool_call"
+        : "model_call"
+      : step.tool_calls !== undefined && step.tool_calls.length > 0
+        ? "tool_call"
+        : "model_call";
   const identifier =
-    kind === "tool_call" && step.tool_calls !== undefined && step.tool_calls.length > 0
-      ? (step.tool_calls[0]?.function_name ?? "unknown")
-      : (step.model_name ?? "unknown");
+    koiTransport !== undefined
+      ? typeof koiTransport.identifier === "string"
+        ? koiTransport.identifier
+        : "system"
+      : kind === "tool_call" && step.tool_calls !== undefined && step.tool_calls.length > 0
+        ? (step.tool_calls[0]?.function_name ?? "unknown")
+        : (step.model_name ?? "unknown");
   const response = mapAtifResponse(step);
+
+  // Strip __koi transport object from metadata.
+  // When koiTransport is defined, rawExtra is guaranteed non-undefined (see guard above).
+  const cleanedExtra =
+    koiTransport !== undefined && rawExtra !== undefined
+      ? Object.fromEntries(Object.entries(rawExtra).filter(([k]) => k !== "__koi"))
+      : step.extra;
+  const metadata =
+    cleanedExtra !== undefined && Object.keys(cleanedExtra).length > 0 ? cleanedExtra : undefined;
 
   // Build request: text from message, structured data from tool_calls arguments
   const toolArgs =
@@ -179,7 +217,7 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
     ...(response !== undefined ? { response } : {}),
     ...(step.reasoning_content !== undefined ? { reasoningContent: step.reasoning_content } : {}),
     ...(step.metrics !== undefined ? { metrics: mapAtifMetricsToRich(step.metrics) } : {}),
-    ...(step.extra !== undefined ? { metadata: step.extra } : {}),
+    ...restoreErrorFromMetadata(metadata as JsonObject | undefined),
   };
 }
 
@@ -203,5 +241,66 @@ function mapAtifMetricsToRich(metrics: AtifStepMetrics): RichStepMetrics {
       : {}),
     ...(metrics.cached_tokens !== undefined ? { cachedTokens: metrics.cached_tokens } : {}),
     ...(metrics.cost_usd !== undefined ? { costUsd: metrics.cost_usd } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Error serialization helpers (#1501)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the ATIF `extra` field, folding `__rich_error` into it when a
+ * RichContent error is present. Works with the upstream `__koi` transport
+ * object that may already be merged into `extra`.
+ */
+function buildExtra(
+  extra: JsonObject | undefined,
+  error: RichContent | undefined,
+): { readonly extra?: JsonObject } {
+  if (error === undefined) {
+    return extra !== undefined ? { extra } : {};
+  }
+  const richError: JsonObject = {
+    text: error.text,
+    ...(error.data !== undefined ? { data: error.data } : {}),
+    ...(error.truncated === true ? { truncated: true } : {}),
+    ...(error.originalSize !== undefined ? { originalSize: error.originalSize } : {}),
+  } as JsonObject;
+  return { extra: { ...(extra ?? {}), __rich_error: richError } };
+}
+
+/**
+ * Extract error from metadata.__rich_error (if present) and return separate
+ * error + metadata fields for the RichTrajectoryStep. Uses a namespaced key
+ * (__rich_error) to avoid colliding with user metadata. Reverses the fold
+ * done in buildExtra. Called after __koi transport stripping.
+ */
+function restoreErrorFromMetadata(metadata: JsonObject | undefined): {
+  readonly error?: RichContent;
+  readonly metadata?: JsonObject;
+} {
+  if (metadata === undefined) return {};
+
+  const rawError = metadata.__rich_error;
+  if (rawError === undefined || typeof rawError !== "object" || rawError === null) {
+    return { metadata };
+  }
+
+  const errorObj = rawError as Record<string, unknown>;
+  const error: RichContent = {
+    ...(typeof errorObj.text === "string" ? { text: errorObj.text } : {}),
+    ...(typeof errorObj.data === "object" && errorObj.data !== null
+      ? { data: errorObj.data as JsonObject }
+      : {}),
+    ...(errorObj.truncated === true ? { truncated: true } : {}),
+    ...(typeof errorObj.originalSize === "number" ? { originalSize: errorObj.originalSize } : {}),
+  };
+
+  const { __rich_error: _, ...rest } = metadata;
+  const cleaned = Object.keys(rest).length > 0 ? (rest as JsonObject) : undefined;
+
+  return {
+    error,
+    ...(cleaned !== undefined ? { metadata: cleaned } : {}),
   };
 }

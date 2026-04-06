@@ -5,7 +5,8 @@
  * capped at MEMORY_INDEX_MAX_LINES (200). Rebuilt eagerly on every mutation.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MemoryIndex, MemoryRecord } from "@koi/core/memory";
 import {
@@ -21,6 +22,11 @@ const INDEX_FILENAME = "MEMORY.md";
  *
  * Records are sorted by createdAt descending (newest first).
  * If records exceed MEMORY_INDEX_MAX_LINES, oldest entries are dropped.
+ *
+ * The write is atomic: the new contents are written to a unique temp
+ * file and then `rename()`d over MEMORY.md. Concurrent rebuilds running
+ * outside any lock therefore cannot produce a half-written index — the
+ * file always contains some complete rebuild.
  */
 export async function rebuildIndex(dir: string, records: readonly MemoryRecord[]): Promise<void> {
   const sorted = [...records].sort((a, b) => b.createdAt - a.createdAt);
@@ -39,7 +45,22 @@ export async function rebuildIndex(dir: string, records: readonly MemoryRecord[]
   }
 
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, INDEX_FILENAME), `${lines.join("\n")}\n`, "utf-8");
+  const indexPath = join(dir, INDEX_FILENAME);
+  const tmpSuffix = randomBytes(6).toString("hex");
+  const tmpPath = `${indexPath}.${tmpSuffix}.tmp`;
+
+  try {
+    await writeFile(tmpPath, `${lines.join("\n")}\n`, { encoding: "utf-8", flag: "wx" });
+    await rename(tmpPath, indexPath);
+  } catch (e: unknown) {
+    // Clean up the temp file on any failure so we don't leave litter.
+    try {
+      await unlink(tmpPath);
+    } catch {
+      // Temp was never created or already cleaned up.
+    }
+    throw e;
+  }
 }
 
 /**

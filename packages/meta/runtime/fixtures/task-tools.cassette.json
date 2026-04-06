@@ -1,51 +1,51 @@
 {
   "name": "task-tools",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775296960078,
+  "recordedAt": 1775427632740,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF"
+      "callId": "tool_task_create_kN5ohj9GciowO8pH9PYG"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
+      "callId": "tool_task_create_kN5ohj9GciowO8pH9PYG",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
-      "delta": "{\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"}"
+      "callId": "tool_task_create_kN5ohj9GciowO8pH9PYG",
+      "delta": "{\"subject\":\"Implement login flow\",\"description\":\"Build OAuth2\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI"
+      "callId": "tool_task_create_1sF11L1WnpZSWj4dhlJj"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
+      "callId": "tool_task_create_1sF11L1WnpZSWj4dhlJj",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
-      "delta": "{\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"}"
+      "callId": "tool_task_create_1sF11L1WnpZSWj4dhlJj",
+      "delta": "{\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD"
+      "callId": "tool_task_list_a0OwpfBjGynXLwWEjG58"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+      "callId": "tool_task_list_a0OwpfBjGynXLwWEjG58",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+      "callId": "tool_task_list_a0OwpfBjGynXLwWEjG58",
       "delta": "{}"
     },
     {
@@ -55,15 +55,15 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_klaimDU7Ltvo7cO8UNeF"
+      "callId": "tool_task_create_kN5ohj9GciowO8pH9PYG"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_j7pTnkcqPsFwzYBU8GkI"
+      "callId": "tool_task_create_1sF11L1WnpZSWj4dhlJj"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_DoJDAojVYBmRzAnZisqD"
+      "callId": "tool_task_list_a0OwpfBjGynXLwWEjG58"
     },
     {
       "kind": "done",
@@ -71,29 +71,29 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775296959-eWWJPQFJ3B7LwDZSmLLP",
+        "responseId": "gen-1775427631-7M7ShUPPKbrAMsihCer4",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_klaimDU7Ltvo7cO8UNeF",
+            "id": "tool_task_create_kN5ohj9GciowO8pH9PYG",
             "name": "task_create",
             "arguments": {
-              "description": "Build OAuth2",
-              "subject": "Implement login flow"
+              "subject": "Implement login flow",
+              "description": "Build OAuth2"
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_create_j7pTnkcqPsFwzYBU8GkI",
+            "id": "tool_task_create_1sF11L1WnpZSWj4dhlJj",
             "name": "task_create",
             "arguments": {
-              "subject": "Write API tests",
-              "description": "Add integration tests"
+              "description": "Add integration tests",
+              "subject": "Write API tests"
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_DoJDAojVYBmRzAnZisqD",
+            "id": "tool_task_list_a0OwpfBjGynXLwWEjG58",
             "name": "task_list",
             "arguments": {}
           }

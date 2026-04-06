@@ -8,7 +8,6 @@
 
 import type {
   CapabilityFragment,
-  InboundMessage,
   KoiMiddleware,
   MiddlewarePhase,
   ModelChunk,
@@ -543,18 +542,10 @@ export function collectCapabilities(
   return fragments;
 }
 
-/**
- * Formats collected capability fragments into an InboundMessage.
- * Assumes fragments is non-empty — caller must check.
- */
-export function formatCapabilityMessage(fragments: readonly CapabilityFragment[]): InboundMessage {
+/** Formats collected capability fragments into a system-prompt text block. */
+function formatCapabilityBanner(fragments: readonly CapabilityFragment[]): string {
   const lines = fragments.map((f) => `- **${f.label}**: ${f.description}`);
-  const text = `[Active Capabilities]\n${lines.join("\n")}`;
-  return {
-    senderId: "system:capabilities",
-    timestamp: Date.now(),
-    content: [{ kind: "text", text }],
-  };
+  return `[Active Capabilities]\n${lines.join("\n")}`;
 }
 
 /** Heuristic token estimate using the canonical chars-per-token constant. */
@@ -563,8 +554,24 @@ function estimateTokensFromChars(charCount: number): number {
 }
 
 /**
- * Injects capability descriptions into a ModelRequest. Returns the request unchanged
- * if no middleware provides descriptions (zero-allocation fast-path).
+ * Injects capability descriptions into a ModelRequest's trusted systemPrompt
+ * channel. Prepends to any existing systemPrompt so the engine's capability
+ * banner sits before agent-supplied instructions.
+ *
+ * Rationale: `ModelRequest.systemPrompt` is documented as the trusted engine
+ * channel (adapters MUST NOT read system text from metadata). Writing here
+ * instead of prepending a conversational `InboundMessage` keeps the banner
+ * out of the model-visible transcript on retries, closing the parroting leak
+ * observed on stop-gate retries (#1493).
+ *
+ * Observability: middleware and tests detect capability injection by checking
+ * whether `request.systemPrompt` starts with the `[Active Capabilities]`
+ * marker — no separate metadata flag is needed. Crucially, we do NOT mutate
+ * `request.metadata`: that field participates in permission-backend cache
+ * keys, so flipping it per-request invalidates decision-escalation matches
+ * (prior denials cannot be linked to current filter queries).
+ *
+ * Returns the request unchanged (same reference) if no fragments to inject.
  */
 export function injectCapabilities(
   middleware: readonly KoiMiddleware[],
@@ -592,6 +599,8 @@ export function injectCapabilities(
     fragments = allFragments;
   }
 
-  const message = formatCapabilityMessage(fragments);
-  return { ...request, messages: [message, ...request.messages] };
+  const banner = formatCapabilityBanner(fragments);
+  const systemPrompt =
+    request.systemPrompt !== undefined ? `${banner}\n\n${request.systemPrompt}` : banner;
+  return { ...request, systemPrompt };
 }

@@ -38,6 +38,7 @@ import type {
   FileSystemBackend,
   JsonObject,
   KoiError,
+  KoiMiddleware,
   MemoryRecord,
   MemoryRecordInput,
   ModelChunk,
@@ -45,7 +46,7 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId } from "@koi/core";
+import { createSingleToolProvider, memoryRecordId, sessionId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -73,9 +74,11 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
+import { createInMemoryTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import { createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -320,6 +323,31 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
       records.set(id, record);
       return { ok: true as const, value: record };
     },
+    storeWithDedup: (input: MemoryRecordInput, opts: { readonly force: boolean }) => {
+      const match = [...records.values()].find(
+        (r) => r.name === input.name && r.type === input.type,
+      );
+      if (match !== undefined) {
+        if (!opts.force) {
+          return { ok: true as const, value: { action: "conflict" as const, existing: match } };
+        }
+        const updated = {
+          ...match,
+          description: input.description,
+          content: input.content,
+          updatedAt: Date.now(),
+        } as MemoryRecord;
+        records.set(match.id, updated);
+        return { ok: true as const, value: { action: "updated" as const, record: updated } };
+      }
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: { action: "created" as const, record } };
+    },
     recall: (_query, _options) => {
       return { ok: true as const, value: [...records.values()] };
     },
@@ -329,8 +357,9 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
       return { ok: true as const, value: filtered };
     },
     delete: (id) => {
+      const wasPresent = records.has(id);
       records.delete(id);
-      return { ok: true as const, value: undefined };
+      return { ok: true as const, value: { wasPresent } };
     },
     findByName: (name, type) => {
       const match = [...records.values()].find(
@@ -356,7 +385,10 @@ function createInMemoryMemoryBackend(): MemoryToolBackend {
 }
 
 const memoryBackend = createInMemoryMemoryBackend();
-const memoryProviderResult = createMemoryToolProvider({ backend: memoryBackend });
+const memoryProviderResult = createMemoryToolProvider({
+  backend: memoryBackend,
+  memoryDir: "/tmp/koi-memory",
+});
 if (!memoryProviderResult.ok) {
   console.error(`createMemoryToolProvider failed: ${memoryProviderResult.error.message}`);
   process.exit(1);
@@ -604,6 +636,12 @@ interface QueryConfig {
    * Use to set manifest.spawn ceiling on the parent agent for manifest-ceiling queries.
    */
   readonly parentManifestOverrides?: import("@koi/core").AgentManifest;
+  /**
+   * Optional extra middleware to append to the traced middleware chain.
+   * Use when a query needs to exercise a specific L2 middleware (e.g. @koi/session:transcript).
+   * These are wrapped with wrapMiddlewareWithTrace automatically.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[];
 }
 
 // ---------------------------------------------------------------------------
@@ -848,14 +886,34 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
             },
           };
         })();
-      const text = input.kind === "text" ? input.text : "";
       const maxTurns = config.maxTurns ?? 1;
       const msgs: {
         readonly senderId: string;
         readonly timestamp: number;
         readonly content: readonly { readonly kind: "text"; readonly text: string }[];
         readonly metadata?: JsonObject;
-      }[] = [{ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] }];
+      }[] = [];
+      // Seed conversation from input: text prompt → single user message;
+      // messages input (e.g., stop-gate retry with feedback) → preserve
+      // all messages so the model sees the retry context instead of an
+      // empty conversation (#1493 anomaly fix).
+      if (input.kind === "messages") {
+        for (const m of input.messages) {
+          const text = m.content
+            .filter((c): c is { readonly kind: "text"; readonly text: string } => c.kind === "text")
+            .map((c) => c.text)
+            .join("");
+          msgs.push({
+            senderId: m.senderId,
+            timestamp: m.timestamp,
+            content: [{ kind: "text", text }],
+            ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+          });
+        }
+      } else {
+        const text = input.kind === "text" ? input.text : "";
+        msgs.push({ senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] });
+      }
       return (async function* () {
         // let: mutable
         let turn = 0;
@@ -963,6 +1021,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     exfiltrationGuard,
     permMiddleware,
     semanticRetryMw,
+    ...(config.extraMiddleware ?? []),
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
 
   // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
@@ -1498,17 +1557,42 @@ const queries: readonly QueryConfig[] = [
   },
 
   // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  //
+  // Backend models a two-stage enterprise authorization: `checkBatch` is the
+  // cheap catalog-advertising stage used at tool-filter time (answers "is this
+  // tool listed in the caller's catalog?"), while `check` is the expensive
+  // per-invocation policy stage that also consults request-scoped context like
+  // args, rate limits, or session-level risk signals. Because these two stages
+  // answer different questions, they can legitimately produce different
+  // decisions for the same resource — this is how real ABAC/ReBAC backends
+  // (OPA, OpenFGA, Cedar) are commonly wired.
+  //
+  // In this fixture:
+  //   - catalog stage (checkBatch): add_numbers is in the catalog → allow
+  //   - invocation stage (check):    per-call policy denies add_numbers → deny
+  // The model therefore sees the tool, attempts to call it, and the
+  // wrapToolCall gate denies with a realistic execution-time reason. This
+  // exercises the denial-escalation path (#1493).
+  //
+  // Both paths are derived from single-arrow named functions so the
+  // asymmetry is explicit and auditable — no hidden state, no cross-stage
+  // contradiction dressed up as policy equivalence.
   {
     name: "denial-escalation",
     prompt: "Call the add_numbers tool with a=3 and b=4. Report the result.",
     permissionMode: "default",
     permissionRules: [{ pattern: "*", action: "*", effect: "allow", source: "user" }],
-    permissionDescription: "default mode — policy enforcement active",
+    permissionDescription: "tool catalog",
     permissionBackend: {
+      // Invocation stage: full per-call policy evaluation.
       check: (query) =>
         query.resource === "add_numbers"
-          ? { effect: "deny" as const, reason: "Policy denies add_numbers" }
+          ? {
+              effect: "deny" as const,
+              reason: "add_numbers invocation denied by per-call policy",
+            }
           : { effect: "allow" as const },
+      // Catalog stage: cheap visibility check, tool advertised to callers.
       checkBatch: (queries) => queries.map(() => ({ effect: "allow" as const })),
     },
     denialEscalation: { threshold: 1, windowMs: 300_000 },
@@ -2022,6 +2106,31 @@ const queries: readonly QueryConfig[] = [
       ]
     : []),
 
+  // bash-exec: @koi/tools-bash — Bash tool with security classifiers
+  {
+    name: "bash-exec",
+    prompt: 'Use the Bash tool to run the command "echo hello-from-bash" and tell me the output.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-bash-tool",
+        cmd: ["echo", "bash-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () => createBashTool({ workspaceRoot: process.cwd() }),
+      }),
+    ],
+    maxTurns: 2,
+  },
+
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.
   //     Stub SpawnFn returns immediately (no real child agent launched).
@@ -2114,6 +2223,24 @@ const queries: readonly QueryConfig[] = [
     // tool-use instructions reliably here.
     modelAdapter: sonnetAdapter,
     modelName: SONNET_MODEL,
+  },
+
+  // @koi/session — session-persist: transcript middleware exercises session transcript append
+  // during model call. wrapMiddlewareWithTrace captures it as MW:@koi/session:transcript step.
+  {
+    name: "session-persist",
+    prompt: "What is 2+2? Reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    extraMiddleware: [
+      createSessionTranscriptMiddleware({
+        transcript: createInMemoryTranscript(),
+        sessionId: sessionId("golden-session-persist"),
+      }),
+    ],
   },
 ];
 

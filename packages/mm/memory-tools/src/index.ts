@@ -11,6 +11,7 @@ export {
   DEFAULT_RECALL_LIMIT,
   DEFAULT_SEARCH_LIMIT,
   MEMORY_OPERATIONS,
+  validateMemoryDir,
 } from "./constants.js";
 // Provider
 export { createMemoryToolProvider } from "./provider.js";
@@ -24,8 +25,11 @@ export { createMemorySearchTool } from "./tools/memory-search.js";
 export { createMemoryStoreTool } from "./tools/memory-store.js";
 // Types
 export type {
+  DeleteResult,
   MemorySearchFilter,
   MemoryToolBackend,
   MemoryToolProviderConfig,
   MemoryToolRecallOptions,
+  StoreWithDedupOptions,
+  StoreWithDedupResult,
 } from "./types.js";

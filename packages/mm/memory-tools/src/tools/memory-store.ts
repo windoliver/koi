@@ -9,7 +9,7 @@
 import type { JsonObject, KoiError, MemoryRecordInput, Result, Tool } from "@koi/core";
 import { ALL_MEMORY_TYPES, validateMemoryRecordInput } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX } from "../constants.js";
+import { DEFAULT_PREFIX, validateMemoryDir } from "../constants.js";
 import { parseOptionalBoolean, parseOptionalEnum, parseString } from "../parse-args.js";
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
@@ -78,11 +78,10 @@ function parseStoreArgs(
 }
 
 /**
- * Execute handler — performs dedup check and store/update.
+ * Execute handler — delegates to the backend's atomic storeWithDedup.
  *
- * NOTE: The dedup check is best-effort (check-then-act). Concurrent calls
- * with the same name/type can both pass the check. True uniqueness must be
- * enforced by the backend's store() method (e.g. unique constraint).
+ * No check-then-act race: uniqueness is enforced by the backend in a single
+ * atomic operation. See MemoryToolBackend.storeWithDedup contract.
  */
 async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promise<unknown> {
   const parsed = parseStoreArgs(args);
@@ -91,28 +90,33 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
   const { input, force } = parsed;
 
   try {
-    const dupResult = await backend.findByName(input.name, input.type);
-    if (!dupResult.ok) return safeBackendError(dupResult.error, "Failed to check for duplicates");
+    const result = await backend.storeWithDedup(input, { force });
+    if (!result.ok) return safeBackendError(result.error, "Failed to store memory");
 
-    if (dupResult.value !== undefined) {
-      if (!force) {
+    const { value } = result;
+    switch (value.action) {
+      case "created":
+        return { stored: true, id: value.record.id, filePath: value.record.filePath };
+      case "updated":
+        return { stored: true, id: value.record.id, updated: true };
+      case "conflict": {
+        // Retry-safe: if the existing record has the exact same content and
+        // description, treat it as a successful replay (caller's prior write
+        // succeeded but the response was lost). Only surface a conflict when
+        // the payloads actually differ.
+        const exact =
+          value.existing.content === input.content &&
+          value.existing.description === input.description;
+        if (exact) {
+          return { stored: true, id: value.existing.id, replayed: true };
+        }
         return {
           stored: false,
-          duplicate: { id: dupResult.value.id, name: dupResult.value.name },
+          duplicate: { id: value.existing.id, name: value.existing.name },
           message: "A memory with this name and type already exists. Use force: true to overwrite.",
         };
       }
-      const updateResult = await backend.update(dupResult.value.id, {
-        description: input.description,
-        content: input.content,
-      });
-      if (!updateResult.ok) return safeBackendError(updateResult.error, "Failed to update memory");
-      return { stored: true, id: updateResult.value.id, updated: true };
     }
-
-    const storeResult = await backend.store(input);
-    if (!storeResult.ok) return safeBackendError(storeResult.error, "Failed to store memory");
-    return { stored: true, id: storeResult.value.id, filePath: storeResult.value.filePath };
   } catch {
     return safeCatchError("Failed to store memory");
   }
@@ -121,8 +125,12 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
 /** Create the memory_store tool. */
 export function createMemoryStoreTool(
   backend: MemoryToolBackend,
+  memoryDir: string,
   prefix: string = DEFAULT_PREFIX,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   return buildTool({
     name: `${prefix}_store`,
     description:
@@ -150,7 +158,13 @@ export function createMemoryStoreTool(
       required: ["name", "description", "type", "content"],
     },
     origin: "primordial",
-    sandbox: false,
+    sandbox: true,
+    // NOTE: buildTool unions these with DEFAULT_SANDBOXED_POLICY defaults
+    // (read: /usr,/bin,/lib,/etc,/tmp; write: /tmp/koi-sandbox-*). A future
+    // buildTool "replace" mode will restrict to memoryDir only. The backend
+    // is already scoped to its configured directory — these caps declare
+    // intent, not sole access.
+    filesystem: { read: [memoryDir], write: [memoryDir] },
     execute: async (args: JsonObject): Promise<unknown> => executeStore(args, backend),
   });
 }

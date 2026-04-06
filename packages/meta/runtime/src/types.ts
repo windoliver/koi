@@ -14,6 +14,7 @@ import type {
   FileSystemConfig,
   KoiMiddleware,
   ReportStore,
+  RetrySignalReader,
   SpawnLedger,
   ToolDescriptor,
   TrajectoryDocumentStore,
@@ -145,6 +146,33 @@ export interface RuntimeConfig {
    * Set explicitly to `["read", "write", "edit"]` to restore mutation tools.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+
+  /**
+   * Session transcript configuration. When provided, wires a JSONL-backed
+   * transcript store as an observe-phase middleware, recording turns for crash
+   * recovery. Each turn is appended as a TranscriptEntry to a per-session .jsonl
+   * file under `transcriptDir`.
+   *
+   * When omitted, no transcript middleware is added.
+   */
+  readonly session?:
+    | {
+        /** Directory for per-session JSONL transcript files. */
+        readonly transcriptDir: string;
+      }
+    | undefined;
+
+  /**
+   * Retry signal reader for cross-middleware retry coordination.
+   * When provided, event-trace middleware annotates trajectory steps with
+   * retry metadata (outcome: "retry", retryOfTurn, retryAttempt, etc.).
+   *
+   * The caller creates a RetrySignalBroker externally, passes the writer
+   * side to their semantic-retry middleware and the reader side here.
+   * This keeps L2 composition clean — the runtime doesn't need to know
+   * about the semantic-retry package.
+   */
+  readonly retrySignalReader?: RetrySignalReader | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

@@ -3692,10 +3692,12 @@ describe("createKoi stop gate", () => {
     if (!retryInput) throw new Error("unexpected streamCalls count");
     expect(retryInput.kind).toBe("messages");
     if (retryInput.kind === "messages") {
-      const firstContent = retryInput.messages[0]?.content[0];
-      expect(firstContent).toMatchObject({
+      // messages[0] = original user question, messages[1] = block feedback (#1493)
+      expect(retryInput.messages.length).toBe(2);
+      const blockContent = retryInput.messages[1]?.content[0];
+      expect(blockContent).toMatchObject({
         kind: "text",
-        text: expect.stringContaining("[Completion blocked]"),
+        text: expect.stringContaining("[Stop hook feedback]"),
       });
     }
   });
@@ -3832,15 +3834,16 @@ describe("createKoi stop gate", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "hello" }));
 
-    // First turn: empty messages (text input, not messages input)
+    // First turn: empty messages (text input — bridge builds its own conversation)
     expect(capturedMessages[0]).toEqual([]);
 
-    // Retry turn: ctx.messages contains block reason (only delivery path)
+    // Retry turn: original user message + block feedback (#1493: retry
+    // includes original question so the model can re-anchor on the task)
     const retryMessages = capturedMessages[1] as ReadonlyArray<{
       readonly content: ReadonlyArray<{ readonly text?: string }>;
     }>;
-    expect(retryMessages?.length).toBe(1);
-    expect(retryMessages?.[0]?.content[0]?.text).toContain("[Completion blocked]");
+    expect(retryMessages?.length).toBe(2);
+    expect(retryMessages?.[1]?.content[0]?.text).toContain("[Stop hook feedback]");
   });
 
   test("inject adapter retry delivers block via both inject and stream input", async () => {
@@ -3871,9 +3874,10 @@ describe("createKoi stop gate", () => {
     // inject() called as best-effort hint
     expect(injectedMessages.length).toBe(1);
 
-    // Block reason also in stream input (guaranteed delivery path)
-    expect(capturedMessages[1]?.length).toBe(1);
-    expect(JSON.stringify(capturedMessages[1])).toContain("[Completion blocked]");
+    // Block reason also in stream input (guaranteed delivery path).
+    // Original user message + block feedback (#1493).
+    expect(capturedMessages[1]?.length).toBe(2);
+    expect(JSON.stringify(capturedMessages[1])).toContain("[Stop hook feedback]");
   });
 });
 

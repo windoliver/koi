@@ -705,3 +705,152 @@ describe("hook-dispatch cancellation propagation (issue #1490)", () => {
     expect(capturedEvents[0]?.event).toBe("turn.ended");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1501: Stop-gate retries must not block on trajectory storage
+// ---------------------------------------------------------------------------
+
+describe("hook-dispatch fire-and-forget store writes (#1501)", () => {
+  test("stop-gate store write does not block onAfterTurn return", async () => {
+    // Store that never resolves — if awaited, onAfterTurn would hang forever.
+    let appendCalled = false;
+    const hangingStore = {
+      append: (_docId: string, _steps: readonly RichTrajectoryStep[]) => {
+        appendCalled = true;
+        return new Promise<void>(() => {}); // never resolves
+      },
+    };
+
+    const mw = createHookDispatchMiddleware({
+      hooks: [],
+      store: hangingStore as never,
+      docId: "test-doc",
+    });
+
+    // If fire-and-forget works, this resolves immediately despite hanging store
+    await mw.onAfterTurn?.(makeTurnCtx({ stopBlocked: true, stopGateBlockedBy: "quality-gate" }));
+
+    expect(appendCalled).toBe(true);
+  });
+
+  test("recordHookResults store write does not block turn.ended path", async () => {
+    let appendCalled = false;
+    const hangingStore = {
+      append: (_docId: string, _steps: readonly RichTrajectoryStep[]) => {
+        appendCalled = true;
+        return new Promise<void>(() => {}); // never resolves
+      },
+    };
+
+    const registry = {
+      register: () => {},
+      execute: mock(async () => [successResult("observer")]),
+      cleanup: () => {},
+    };
+
+    const mw = createHookDispatchMiddleware({
+      hooks: [],
+      store: hangingStore as never,
+      docId: "test-doc",
+      registry,
+    });
+
+    // If fire-and-forget works, this resolves immediately despite hanging store
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    expect(appendCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1501: Hook error traces must preserve actionable error detail
+// ---------------------------------------------------------------------------
+
+describe("hook-dispatch error detail in trajectory (#1501)", () => {
+  test("short hook error is preserved in full", async () => {
+    const errorMsg = "auth token expired";
+    const { config, steps } = createConfig({
+      executeResult: [failedResult("auth-check", errorMsg)],
+    });
+    const mw = createHookDispatchMiddleware(config);
+
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    const hookSteps = steps.filter((s) => (s.metadata as JsonObject)?.type === "hook_execution");
+    expect(hookSteps).toHaveLength(1);
+    expect(hookSteps[0]?.error?.text).toBe(errorMsg);
+    expect(hookSteps[0]?.error?.truncated).toBeUndefined();
+  });
+
+  test("long hook error is truncated with originalSize metadata", async () => {
+    const longError = "x".repeat(1000);
+    const { config, steps } = createConfig({
+      executeResult: [failedResult("crash-hook", longError)],
+    });
+    const mw = createHookDispatchMiddleware(config);
+
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    const hookSteps = steps.filter((s) => (s.metadata as JsonObject)?.type === "hook_execution");
+    expect(hookSteps).toHaveLength(1);
+
+    const err = hookSteps[0]?.error;
+    expect(err?.text).toHaveLength(512);
+    expect(err?.text).toBe(longError.slice(0, 512));
+    expect(err?.truncated).toBe(true);
+    expect(err?.originalSize).toBe(1000);
+  });
+
+  test("originalSize reports byte size for non-ASCII errors", async () => {
+    // "ñ" is 2 UTF-8 bytes but 1 UTF-16 code unit
+    const nonAscii = "ñ".repeat(1000); // 1000 .length, 2000 bytes
+    const { config, steps } = createConfig({
+      executeResult: [failedResult("intl-hook", nonAscii)],
+    });
+    const mw = createHookDispatchMiddleware(config);
+
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    const hookSteps = steps.filter((s) => (s.metadata as JsonObject)?.type === "hook_execution");
+    const err = hookSteps[0]?.error;
+    expect(err?.truncated).toBe(true);
+    // originalSize should be byte size (2000), not .length (1000)
+    expect(err?.originalSize).toBe(new TextEncoder().encode(nonAscii).byteLength);
+    expect(err?.originalSize).toBe(2000);
+  });
+
+  test("error at exactly max length is not truncated", async () => {
+    const exactError = "e".repeat(512);
+    const { config, steps } = createConfig({
+      executeResult: [failedResult("edge-hook", exactError)],
+    });
+    const mw = createHookDispatchMiddleware(config);
+
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    const hookSteps = steps.filter((s) => (s.metadata as JsonObject)?.type === "hook_execution");
+    expect(hookSteps[0]?.error?.text).toBe(exactError);
+    expect(hookSteps[0]?.error?.truncated).toBeUndefined();
+  });
+
+  test("truncation does not split a surrogate pair", async () => {
+    // Build a string where char at index 511 is a high surrogate
+    const prefix = "a".repeat(511);
+    const emoji = "\u{1F600}"; // surrogate pair: 2 UTF-16 code units
+    const longError = prefix + emoji + "b".repeat(500);
+    const { config, steps } = createConfig({
+      executeResult: [failedResult("surrogate-hook", longError)],
+    });
+    const mw = createHookDispatchMiddleware(config);
+
+    await mw.onAfterTurn?.(makeTurnCtx());
+
+    const hookSteps = steps.filter((s) => (s.metadata as JsonObject)?.type === "hook_execution");
+    const text = hookSteps[0]?.error?.text ?? "";
+    // Should back up to avoid splitting: 511 chars (not 512 with broken surrogate)
+    expect(text).toHaveLength(511);
+    expect(text).toBe(prefix);
+    // Verify no lone surrogate in output
+    expect(text.endsWith(prefix)).toBe(true);
+  });
+});

@@ -71,6 +71,10 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/bash-security": {
+      "name": "@koi/bash-security",
+      "version": "0.0.0",
+    },
     "packages/lib/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -227,6 +231,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/session": {
+      "name": "@koi/session",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -270,6 +282,14 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/lib/tools-bash": {
+      "name": "@koi/tools-bash",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/bash-security": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/tools-builtin": {
       "name": "@koi/tools-builtin",
       "version": "0.0.0",
@@ -304,8 +324,8 @@
       },
     },
     "packages/meta/cli": {
-      "name": "@koi/cli",
-      "version": "0.0.0",
+      "name": "@koi-agent/cli",
+      "version": "0.1.0",
       "bin": {
         "koi": "./dist/bin.js",
       },
@@ -331,6 +351,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -354,9 +375,11 @@
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/session": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
+        "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
@@ -729,13 +752,15 @@
 
     "@jscpd/tokenizer": ["@jscpd/tokenizer@4.0.4", "", { "dependencies": { "@jscpd/core": "4.0.4", "reprism": "^0.0.11", "spark-md5": "^3.0.2" } }, "sha512-xxYYY/qaLah/FlwogEbGIxx9CjDO+G9E6qawcy26WwrflzJb6wsnhjwdneN6Wb0RNCDsqvzY+bzG453jsin4UQ=="],
 
+    "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
+
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
+
+    "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
-
-    "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
@@ -805,6 +830,8 @@
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 
+    "@koi/session": ["@koi/session@workspace:packages/lib/session"],
+
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
@@ -818,6 +845,8 @@
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tools-bash": ["@koi/tools-bash@workspace:packages/lib/tools-bash"],
 
     "@koi/tools-builtin": ["@koi/tools-builtin@workspace:packages/lib/tools-builtin"],
 
