@@ -271,6 +271,101 @@ describe("createExfiltrationGuardMiddleware — wrapModelStream", () => {
     expect(onDetection).toHaveBeenCalledTimes(1);
   });
 
+  test("block mode with buffer overflow yields error and stops", async () => {
+    const mw = createExfiltrationGuardMiddleware({
+      action: "block",
+      maxStringLength: 20,
+    });
+    const ctx = createMockTurnContext();
+    const request: ModelRequest = { messages: [] };
+
+    const stream = mw.wrapModelStream?.(ctx, request, () =>
+      createMockModelStream(["a".repeat(25), "more text"]),
+    );
+    const chunks = await collectStream(stream);
+
+    const errorChunks = chunks.filter((c) => c.kind === "error");
+    expect(errorChunks).toHaveLength(1);
+    const errorChunk = errorChunks[0] as { readonly message: string };
+    expect(errorChunk.message).toContain("exceeded scan buffer");
+    // No text_delta should be emitted
+    const textChunks = chunks.filter((c) => c.kind === "text_delta");
+    expect(textChunks).toHaveLength(0);
+  });
+
+  test("warn mode with buffer overflow flushes buffer once, no duplication on done", async () => {
+    const onDetection = mock((_e: ExfiltrationEvent) => {});
+    const mw = createExfiltrationGuardMiddleware({
+      action: "warn",
+      maxStringLength: 20,
+      onDetection,
+    });
+    const ctx = createMockTurnContext();
+    const request: ModelRequest = { messages: [] };
+
+    // First chunk fills buffer past limit, second chunk arrives after overflow
+    const stream = mw.wrapModelStream?.(ctx, request, () =>
+      createMockModelStream(["a".repeat(25), "tail"]),
+    );
+    const chunks = await collectStream(stream);
+
+    const textChunks = chunks.filter((c) => c.kind === "text_delta");
+    const allText = textChunks.map((c) => (c as { readonly delta: string }).delta).join("");
+    // Total text should be the buffer content + overflow chunk + tail — exactly once
+    expect(allText).toBe("a".repeat(25) + "tail");
+    // done chunk should still be present
+    expect(chunks.filter((c) => c.kind === "done")).toHaveLength(1);
+  });
+
+  test("redact mode with buffer overflow flushes redacted buffer, suppresses remainder", async () => {
+    const mw = createExfiltrationGuardMiddleware({
+      action: "redact",
+      maxStringLength: 50,
+    });
+    const ctx = createMockTurnContext();
+    const request: ModelRequest = { messages: [] };
+
+    // Buffer accumulates a secret, then overflows
+    const secret = "AKIAIOSFODNN7EXAMPLE";
+    const padding = "x".repeat(35);
+    const stream = mw.wrapModelStream?.(ctx, request, () =>
+      createMockModelStream([`${padding}${secret}`, "after-overflow"]),
+    );
+    const chunks = await collectStream(stream);
+
+    const textChunks = chunks.filter((c) => c.kind === "text_delta");
+    const allText = textChunks.map((c) => (c as { readonly delta: string }).delta).join("");
+
+    // The raw secret should NOT appear anywhere in the output
+    expect(allText).toContain("[REDACTED");
+    expect(allText).not.toContain(secret);
+    // After-overflow content is suppressed (fail-closed: can't scan boundary-spanning secrets)
+    expect(allText).not.toContain("after-overflow");
+    // Truncation notice emitted
+    expect(allText).toContain("[TRUNCATED");
+    // done chunk present
+    expect(chunks.filter((c) => c.kind === "done")).toHaveLength(1);
+  });
+
+  test("warn mode overflow with no secrets yields original buffer and passes through remainder", async () => {
+    const mw = createExfiltrationGuardMiddleware({
+      action: "warn",
+      maxStringLength: 10,
+    });
+    const ctx = createMockTurnContext();
+    const request: ModelRequest = { messages: [] };
+
+    const stream = mw.wrapModelStream?.(ctx, request, () =>
+      createMockModelStream(["hello world!", "more"]),
+    );
+    const chunks = await collectStream(stream);
+
+    const textChunks = chunks.filter((c) => c.kind === "text_delta");
+    const allText = textChunks.map((c) => (c as { readonly delta: string }).delta).join("");
+    expect(allText).toBe("hello world!more");
+    expect(chunks.filter((c) => c.kind === "done")).toHaveLength(1);
+  });
+
   test("skips scanning when scanModelOutput is false", async () => {
     const mw = createExfiltrationGuardMiddleware({
       action: "block",

@@ -42,7 +42,9 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
+import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
 import {
   createFileSystemProvider,
   createFileSystemTools,
@@ -78,6 +80,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
   const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
+
   // Prepend session transcript middleware when transcriptDir is configured.
   // Observe-phase, priority 200 — runs after event-trace (priority 100) so
   // spans are already open when the transcript write occurs.
@@ -88,10 +91,39 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           sessionId: sessionId("runtime"),
         })
       : undefined;
-  const middleware =
+  const baseMiddleware: readonly KoiMiddleware[] =
     sessionTranscriptMw !== undefined
       ? [sessionTranscriptMw, ...resolvedMiddleware]
       : resolvedMiddleware;
+
+  // Install exfiltration guard by default when: (1) not explicitly disabled,
+  // (2) not already provided, and (3) the adapter has terminals so the intercept
+  // phase won't be silently bypassed. Stub adapters have no terminals.
+  const providedNames = new Set(baseMiddleware.map((mw) => mw.name));
+  const exfiltrationRequested =
+    config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
+  const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
+  // Fail closed when the user explicitly requested the guard but the adapter can't support it.
+  // The implicit default (config.exfiltrationGuard === undefined) on stub adapters is fine —
+  // that's the normal test/default path and silently skips installation.
+  if (
+    exfiltrationRequested &&
+    !canInstallExfiltrationGuard &&
+    config.exfiltrationGuard !== undefined
+  ) {
+    throw new Error(
+      "Exfiltration guard explicitly requested but adapter has no terminals — " +
+        "intercept-phase middleware cannot be composed. Use an adapter with terminals " +
+        "or pass exfiltrationGuard: false to disable.",
+    );
+  }
+  const middleware: readonly KoiMiddleware[] =
+    exfiltrationRequested && canInstallExfiltrationGuard
+      ? [
+          ...baseMiddleware,
+          createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
+        ]
+      : baseMiddleware;
   const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
   // Filesystem: strict host opt-in only.
   // config.filesystem === false is a kill switch; undefined means no filesystem.
@@ -111,9 +143,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     !isFileSystemBackend(config.filesystem)
       ? config.filesystem.operations
       : config.filesystemOperations;
+  // Credential path guard: enabled by default, blocks access to ~/.ssh, ~/.aws, etc.
+  // Constructed once and shared between the provider path and the dispatch path.
+  const fsToolOptions: FsToolOptions | undefined =
+    filesystemBackend !== undefined && config.credentialPathGuard !== false
+      ? { pathGuard: createCredentialPathGuard() }
+      : undefined;
+
   const filesystemProvider =
     filesystemBackend !== undefined
-      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations)
+      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
       : undefined;
 
   // Fail closed: if a real (non-stub) "permissions" middleware is installed
@@ -152,7 +191,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // (e.g., with custom sandboxing), the generated fs tool is excluded.
   const fsTools =
     filesystemBackend !== undefined
-      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations)
+      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
       : undefined;
   const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
   const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
