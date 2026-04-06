@@ -3299,13 +3299,59 @@ describe("memory-recall ATIF trajectory (golden file)", () => {
     expect(recallStep).toBeDefined();
     const content = recallStep?.observation?.results?.[0]?.content ?? "";
 
-    // Validate recall returned all 3 memories
-    expect(content).toContain('"totalScanned":3');
-    expect(content).toContain('"degraded":false');
+    // Parse tool output as JSON for structural validation
+    const parsed = JSON.parse(content) as {
+      readonly selected: number;
+      readonly totalScanned: number;
+      readonly degraded: boolean;
+      readonly candidateLimitHit: boolean;
+      readonly formatted: string;
+    };
 
-    // Validate formatted output contains trust boundary
-    expect(content).toContain("memory-data");
-    expect(content).toContain("Memory");
+    // Validate recall returned all 3 memories
+    expect(parsed.selected).toBe(3);
+    expect(parsed.totalScanned).toBe(3);
+    expect(parsed.degraded).toBe(false);
+    expect(parsed.candidateLimitHit).toBe(false);
+
+    // Validate formatted output uses static heading (not user-controlled name)
+    expect(parsed.formatted).toContain("### Memory entry");
+    expect(parsed.formatted).not.toContain("### Testing feedback (feedback)");
+    expect(parsed.formatted).not.toContain("### User role (user)");
+    expect(parsed.formatted).not.toContain("### Project goal (project)");
+
+    // Validate each memory block: JSON metadata line + --- separator + content
+    const blocks = parsed.formatted.split("### Memory entry").slice(1);
+    expect(blocks.length).toBe(3);
+    for (const block of blocks) {
+      // Each block must have <memory-data> with JSON metadata then --- then content
+      expect(block).toContain("<memory-data>");
+      expect(block).toContain("</memory-data>");
+      const inner = block.slice(
+        block.indexOf("<memory-data>\n") + "<memory-data>\n".length,
+        block.indexOf("\n</memory-data>"),
+      );
+      const [metaLine, separator, ...contentLines] = inner.split("\n");
+      // First line must be parseable JSON with name and type
+      const meta = JSON.parse(metaLine ?? "");
+      expect(typeof meta.name).toBe("string");
+      expect(typeof meta.type).toBe("string");
+      // Second line must be the --- separator
+      expect(separator).toBe("---");
+      // Content must follow
+      expect(contentLines.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("no legacy headings in any trajectory step (including truncated middleware spans)", async () => {
+    // Checks the raw fixture text so even middleware spans with truncated JSON
+    // (intentionally truncated by event-trace) are covered. Only the tool step (9)
+    // and agent message (14) carry complete JSON; middleware spans (8, 10-13) are
+    // truncated by design but must still use new-format headings in their prefix.
+    const raw = await Bun.file(`${FIXTURES}/memory-recall.trajectory.json`).text();
+    expect(raw).not.toContain("### Testing feedback (feedback)");
+    expect(raw).not.toContain("### User role (user)");
+    expect(raw).not.toContain("### Project goal (project)");
   });
 
   test("step count: MCP + MW + HOOK + MODEL + TOOL (>= 8)", async () => {

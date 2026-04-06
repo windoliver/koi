@@ -362,24 +362,75 @@ describe("scanMemoryDirectory", () => {
     expect(result.skipped[0]?.reason).toContain("outside memory directory");
   });
 
-  test("caps read attempts to prevent unbounded I/O", async () => {
-    // Create many corrupt files — with maxFiles=2, read attempts capped at 2*3=6
-    const files: MockFile[] = Array.from({ length: 20 }, (_, i) => ({
+  test("scans past corrupt files to find valid ones (default unlimited budget)", async () => {
+    // 100 corrupt files followed by 5 valid ones — default scans exhaustively
+    const corruptFiles: MockFile[] = Array.from({ length: 100 }, (_, i) => ({
+      path: `/memory/bad${i}.md`,
+      content: "corrupt",
+      size: 7,
+      modifiedAt: Date.now() - i * 1000,
+    }));
+    const validFiles = Array.from({ length: 5 }, (_, i) =>
+      makeMemoryFile(`Valid${i}`, "user", `content${i}`, 200 + i),
+    );
+    const fs = createMockFs([...corruptFiles, ...validFiles]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory", maxFiles: 5 });
+
+    // All 5 valid memories must be found despite 100 corrupt files preceding them
+    expect(result.memories.length).toBe(5);
+    expect(result.skipped.length).toBe(100);
+    expect(result.starved).toBe(false);
+    expect(result.candidateLimitHit).toBe(false);
+  });
+
+  test("caps candidate examination to bound work from poisoned directories", async () => {
+    // With explicit maxCandidates=20, 50 corrupt files should be capped
+    const files: MockFile[] = Array.from({ length: 50 }, (_, i) => ({
       path: `/memory/bad${i}.md`,
       content: "corrupt",
       size: 7,
       modifiedAt: Date.now() - i * 1000,
     }));
     const fs = createMockFs(files);
-    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory", maxFiles: 2 });
+    const result = await scanMemoryDirectory(fs, {
+      memoryDir: "/memory",
+      maxFiles: 2,
+      maxCandidates: 20,
+    });
 
-    // Should have stopped after 6 read attempts (2 * 3 multiplier), not all 20
-    expect(result.skipped.length).toBeLessThanOrEqual(6);
+    // Should have stopped after 20 examined entries, not all 50
+    expect(result.skipped.length).toBeLessThanOrEqual(20);
     expect(result.memories.length).toBe(0);
+    // candidateLimitHit distinguishes budget exhaustion from true starvation
+    expect(result.candidateLimitHit).toBe(true);
+    expect(result.starved).toBe(false);
   });
 
-  test("cap applies to valid memories, not raw entries — skips corrupt and reaches older valid", async () => {
-    // 2 newest files are corrupt, 2 older files are valid — maxFiles=2 should still find both valid
+  test("ignores invalid maxCandidates (zero/negative) and scans exhaustively", async () => {
+    const files = [
+      makeMemoryFile("Good", "user", "content", 0),
+      makeMemoryFile("Also good", "feedback", "more content", 5),
+    ];
+    const fs = createMockFs(files);
+    // maxCandidates=0 should be treated as unlimited
+    const result0 = await scanMemoryDirectory(fs, {
+      memoryDir: "/memory",
+      maxCandidates: 0,
+    });
+    expect(result0.memories.length).toBe(2);
+    expect(result0.candidateLimitHit).toBe(false);
+
+    // maxCandidates=-1 should also be treated as unlimited
+    const resultNeg = await scanMemoryDirectory(fs, {
+      memoryDir: "/memory",
+      maxCandidates: -1,
+    });
+    expect(resultNeg.memories.length).toBe(2);
+    expect(resultNeg.candidateLimitHit).toBe(false);
+  });
+
+  test("skips corrupt and reaches older valid memories", async () => {
+    // 2 newest files are corrupt, 2 older files are valid — should find both valid
     const files: MockFile[] = [
       { path: "/memory/bad1.md", content: "corrupt1", size: 8, modifiedAt: Date.now() },
       { path: "/memory/bad2.md", content: "corrupt2", size: 8, modifiedAt: Date.now() - 1000 },
@@ -393,6 +444,64 @@ describe("scanMemoryDirectory", () => {
     expect(result.skipped.length).toBe(2);
     expect(result.memories[0]?.record.name).toBe("Valid1");
     expect(result.memories[1]?.record.name).toBe("Valid2");
+    expect(result.starved).toBe(false);
+  });
+
+  test("candidateLimitHit=false when directory size equals maxCandidates (full exhaustion)", async () => {
+    // Exactly maxCandidates=5 corrupt files — loop exhausts directory, not budget
+    const files: MockFile[] = Array.from({ length: 5 }, (_, i) => ({
+      path: `/memory/bad${i}.md`,
+      content: "corrupt",
+      size: 7,
+      modifiedAt: Date.now() - i * 1000,
+    }));
+    const fs = createMockFs(files);
+    const result = await scanMemoryDirectory(fs, {
+      memoryDir: "/memory",
+      maxFiles: 2,
+      maxCandidates: 5,
+    });
+
+    // All 5 files examined — directory exhausted, not budget-limited
+    expect(result.skipped.length).toBe(5);
+    expect(result.memories.length).toBe(0);
+    expect(result.candidateLimitHit).toBe(false);
+    expect(result.starved).toBe(true);
+  });
+
+  test("sets starved=true when all files are corrupt and fully examined", async () => {
+    // 10 corrupt files with default maxFiles=200, maxCandidates=2000 — all examined
+    const files: MockFile[] = Array.from({ length: 10 }, (_, i) => ({
+      path: `/memory/bad${i}.md`,
+      content: "corrupt",
+      size: 7,
+      modifiedAt: Date.now() - i * 1000,
+    }));
+    const fs = createMockFs(files);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(0);
+    expect(result.starved).toBe(true);
+    expect(result.candidateLimitHit).toBe(false);
+    expect(result.totalFiles).toBe(10);
+  });
+
+  test("sets starved=false when valid memories are found", async () => {
+    const files = [makeMemoryFile("Good", "user", "content", 0)];
+    const fs = createMockFs(files);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.starved).toBe(false);
+  });
+
+  test("sets starved=false for empty directory", async () => {
+    const fs = createMockFs([]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(0);
+    expect(result.starved).toBe(false);
+    expect(result.totalFiles).toBe(0);
   });
 
   test("populates record fields correctly", async () => {

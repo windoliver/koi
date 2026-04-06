@@ -40,7 +40,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/hook-prompt` | Prompt injection hook for pre/post model call | standalone |
 | `@koi/hooks` | Hook dispatch middleware (command/HTTP/prompt/agent) — per-call abort propagation via extended `HookRegistry.execute(sessionId, event, abortSignal?)` + `hasMatching` introspection (#1490) | `tool-use`, `hook-blocked`, `hook-once` |
 | `@koi/mcp` | MCP transport + tool/resource resolver | `mcp-tool-use` |
-| `@koi/memory` | Memory recall, scoring, and formatting | `memory-store` |
+| `@koi/memory` | Memory recall, scoring, and formatting — static headings, JSON metadata inside `<memory-data>` trust boundary, scan resilience (`starved`, `candidateLimitHit`), opt-in `maxCandidates` I/O bound | `memory-recall` |
 | `@koi/memory-fs` | File-based memory storage backend — per-dir mutex + `.memory.lock` for write serialization, worktree-local by default (`shared: true` opt-in with policy pinning), atomic temp-rename updates, `indexError` on mutation returns, serialized MEMORY.md rebuilds | standalone |
 | `@koi/memory-tools` | Memory read/write/list tools — sandboxed with `memoryDir` filesystem caps, atomic `storeWithDedup`, idempotent delete | `memory-store` |
 | `@koi/middleware-exfiltration-guard` | Credential exfiltration detection middleware | standalone |
