@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.245Z",
+      "timestamp": "2026-04-05T22:20:39.192Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.245Z",
+      "timestamp": "2026-04-05T22:20:39.192Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-06T08:14:03.253Z",
+      "timestamp": "2026-04-05T22:20:39.658Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Answer with just the number.",
       "observation": {
@@ -55,10 +55,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 115,
+        "prompt_tokens": 119,
         "completion_tokens": 2
       },
-      "duration_ms": 455,
+      "duration_ms": 492,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -69,10 +69,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.712Z",
+      "timestamp": "2026-04-05T22:20:40.198Z",
       "model_name": "middleware:semantic-retry",
       "message": "What is 2+2? Answer with just the number.",
-      "duration_ms": 459.1122919999998,
+      "duration_ms": 542.062915999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -89,10 +89,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.712Z",
+      "timestamp": "2026-04-05T22:20:40.198Z",
       "model_name": "middleware:hooks",
       "message": "What is 2+2? Answer with just the number.",
-      "duration_ms": 459.47291700000096,
+      "duration_ms": 543.9784590000017,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -109,10 +109,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.712Z",
+      "timestamp": "2026-04-05T22:20:40.198Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2? Answer with just the number.",
-      "duration_ms": 460.19674999999916,
+      "duration_ms": 561.3470419999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -129,10 +129,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.712Z",
+      "timestamp": "2026-04-05T22:20:40.198Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2? Answer with just the number.",
-      "duration_ms": 461.0757909999993,
+      "duration_ms": 570.5292499999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -149,10 +149,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:03.713Z",
+      "timestamp": "2026-04-05T22:20:40.478Z",
       "model_name": "hook:on-model-done",
       "message": "turn.ended → on-model-done",
-      "duration_ms": 3.372417000000496,
+      "duration_ms": 270.9242919999997,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",

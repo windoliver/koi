@@ -7,7 +7,7 @@
     "tool_definitions": [
       {
         "name": "Bash",
-        "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+        "description": "Execute a bash command. Commands are validated against security classifiers before execution. Dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked. Use cwd to set the working directory."
       }
     ]
   },
@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:38.815Z",
+      "timestamp": "2026-04-05T20:34:22.268Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:38.815Z",
+      "timestamp": "2026-04-05T20:34:22.268Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-06T08:14:38.816Z",
+      "timestamp": "2026-04-05T20:34:22.276Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
       "observation": {
@@ -61,19 +61,19 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 251,
+        "prompt_tokens": 213,
         "completion_tokens": 8
       },
-      "duration_ms": 568,
+      "duration_ms": 788,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
           {
             "name": "Bash",
-            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+            "description": "Execute a bash command. Commands are validated against security classifiers before execution. Dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked. Use cwd to set the working directory."
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001"
@@ -82,10 +82,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.388Z",
+      "timestamp": "2026-04-05T20:34:23.067Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 571.9503330000007,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 791.8744999999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,10 +102,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.388Z",
+      "timestamp": "2026-04-05T20:34:23.067Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 572.0012090000018,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 792.1078340000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -122,10 +122,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.388Z",
+      "timestamp": "2026-04-05T20:34:23.067Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 572.0667499999981,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 793.0878749999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -142,10 +142,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.388Z",
+      "timestamp": "2026-04-05T20:34:23.067Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 572.0798329999961,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 793.9266250000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -156,8 +156,6 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
-<<<<<<< HEAD
-=======
         }
       }
     },
@@ -178,14 +176,10 @@
         },
         "__koi": {
           "identifier": "hook:on-bash-tool"
->>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
         }
       }
     },
     {
-<<<<<<< HEAD
-      "step_id": 7,
-=======
       "step_id": 8,
       "source": "system",
       "timestamp": "2026-04-05T20:34:23.081Z",
@@ -214,12 +208,11 @@
     },
     {
       "step_id": 9,
->>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
-      "timestamp": "2026-04-06T08:14:39.384Z",
+      "timestamp": "2026-04-05T20:34:23.065Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_Bash_7",
+          "tool_call_id": "call_Bash_9",
           "function_name": "Bash",
           "arguments": {
             "command": "echo hello-from-bash"
@@ -229,28 +222,28 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_Bash_7",
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}"
+            "source_call_id": "call_Bash_9",
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
           }
         ]
       },
-      "duration_ms": 5,
+      "duration_ms": 16,
       "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.389Z",
+      "timestamp": "2026-04-05T20:34:23.081Z",
       "model_name": "middleware:semantic-retry",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
           }
         ]
       },
-      "duration_ms": 4.828332999997656,
+      "duration_ms": 15.538624999999683,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -265,39 +258,19 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.390Z",
-      "model_name": "hook:on-bash-tool",
-      "message": "tool.succeeded → on-bash-tool",
-      "duration_ms": 1.1567090000025928,
-      "outcome": "success",
-      "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded",
-        "hookName": "on-bash-tool",
-        "decision": {
-          "kind": "continue"
-        },
-        "__koi": {
-          "identifier": "hook:on-bash-tool"
-        }
-      }
-    },
-    {
-      "step_id": 10,
-      "source": "system",
-      "timestamp": "2026-04-06T08:14:39.390Z",
+      "timestamp": "2026-04-05T20:34:23.083Z",
       "model_name": "middleware:hooks",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
           }
         ]
       },
-      "duration_ms": 6.071084000002884,
+      "duration_ms": 17.931375000000116,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -312,19 +285,19 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.390Z",
+      "timestamp": "2026-04-05T20:34:23.083Z",
       "model_name": "middleware:permissions",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
           }
         ]
       },
-      "duration_ms": 6.125625000000582,
+      "duration_ms": 18.52962499999967,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -339,19 +312,19 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.390Z",
+      "timestamp": "2026-04-05T20:34:23.083Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
           }
         ]
       },
-      "duration_ms": 6.168791999996756,
+      "duration_ms": 18.991875000000164,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -366,44 +339,44 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-06T08:14:39.390Z",
+      "timestamp": "2026-04-05T20:34:23.083Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}",
+      "message": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}",
       "observation": {
         "results": [
           {
-            "content": "The output of the bash command \"echo hello-from-bash\" is \"hello-from-bash\".\n"
+            "content": "The output of the command is \"hello-from-bash\"."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 291,
-        "completion_tokens": 23
+        "prompt_tokens": 250,
+        "completion_tokens": 13
       },
-      "duration_ms": 601,
+      "duration_ms": 543,
       "outcome": "success",
       "extra": {
-        "totalMessages": 3,
+        "totalMessages": 4,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
           {
             "name": "Bash",
-            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+            "description": "Execute a bash command. Commands are validated against security classifiers before execution. Dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked. Use cwd to set the working directory."
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001"
       }
     },
     {
-      "step_id": 14,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.991Z",
+      "timestamp": "2026-04-05T20:34:23.627Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.\n\n{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}",
-      "duration_ms": 600.8952090000021,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 543.154125,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -418,12 +391,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.991Z",
+      "timestamp": "2026-04-05T20:34:23.627Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.\n\n{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}",
-      "duration_ms": 600.9277500000026,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 543.1817499999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -438,12 +411,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.991Z",
+      "timestamp": "2026-04-05T20:34:23.627Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.\n\n{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}",
-      "duration_ms": 601.0149170000004,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 543.5002080000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -458,12 +431,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:39.991Z",
+      "timestamp": "2026-04-05T20:34:23.627Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.\n\n{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":4}",
-      "duration_ms": 601.0447920000006,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the Bash tool to run the command \"echo hello-from-bash\" and tell me the out…",
+      "duration_ms": 543.6033750000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

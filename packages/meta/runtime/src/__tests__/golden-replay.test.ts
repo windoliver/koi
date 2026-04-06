@@ -4122,6 +4122,41 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     expect((result.output as Record<string, unknown>).sum).toBe(7);
   });
 
+  test("blocks structured tool output where secret is only in String() representation", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapToolCall>>[0];
+
+    const wrapToolCall = mw.wrapToolCall;
+    if (wrapToolCall === undefined) return;
+
+    // Error objects: JSON.stringify returns {} but String() includes the message
+    const secretError = new Error("Credentials: AKIAIOSFODNN7EXAMPLE");
+    const result = await wrapToolCall(
+      mockCtx,
+      { toolId: "run_command", input: { cmd: "env" } },
+      async () => ({ output: secretError }),
+    );
+
+    const output = result.output as Record<string, unknown>;
+    expect(output.error).toBeDefined();
+    expect(String(output.error)).toContain("tool output");
+  });
+
   test("blocks tool output containing AWS key (tool-output scanning)", async () => {
     const { createExfiltrationGuardMiddleware } = await import(
       "@koi/middleware-exfiltration-guard"
@@ -4191,7 +4226,7 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     expect(result.richContent).toBeUndefined();
   });
 
-  test("exfiltration-guard-block trajectory fixture is valid ATIF v1.6", async () => {
+  test("exfiltration-guard-block trajectory shows tool call was blocked", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
@@ -4215,15 +4250,30 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
       expect(["agent", "tool", "system"]).toContain(source);
     }
 
-    // Exfiltration guard middleware span exists
-    const guardSpan = steps.find(
-      (s) =>
-        s.source === "system" &&
-        typeof s.extra === "object" &&
-        s.extra !== null &&
-        (s.extra as Record<string, unknown>).middlewareName === "exfiltration-guard",
-    );
-    expect(guardSpan).toBeDefined();
+    // Exfiltration guard wrapToolCall span: intercept phase, nextCalled === false (blocked)
+    const guardToolSpan = steps.find((s) => {
+      if (s.source !== "system") return false;
+      const extra = s.extra as Record<string, unknown> | undefined;
+      return extra?.middlewareName === "exfiltration-guard" && extra?.hook === "wrapToolCall";
+    });
+    expect(guardToolSpan).toBeDefined();
+    if (guardToolSpan !== undefined) {
+      const extra = guardToolSpan.extra as Record<string, unknown>;
+      expect(extra.phase).toBe("intercept");
+      expect(extra.nextCalled).toBe(false);
+    }
+
+    // The blocked response contains a PERMISSION error
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    const blockStep = agentSteps.find((s) => {
+      const msg = String(s.message ?? "");
+      return msg.includes("PERMISSION") && msg.includes("secret(s) detected");
+    });
+    expect(blockStep).toBeDefined();
+
+    // No successful tool execution step (tool was blocked, never executed)
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
   });
 });
 
