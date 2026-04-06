@@ -1,5 +1,7 @@
 # @koi/cli — Interactive CLI for Agent Execution
 
+**Current version: 0.1.0**
+
 Command-line interface for running Koi agents locally. Provides interactive (`start`), headless (`serve`), standalone admin (`admin`), and operator console (`tui`) flows, plus automatic Nexus backend wiring, conversation persistence, and graceful shutdown.
 
 ---
