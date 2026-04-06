@@ -314,4 +314,60 @@ describe("SessionTranscriptMiddleware — wrapToolCall", () => {
     expect(live.ok && live.value.entries.length).toBeGreaterThan(0);
     expect(config.ok && config.value.entries.length).toBe(0);
   });
+
+  test("wrapToolCall re-throws when transcript append fails", async () => {
+    const inner = createInMemoryTranscript();
+    // Wrap with a failing append
+    const brokenTranscript = {
+      ...inner,
+      append: (): ReturnType<typeof inner.append> =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "disk full", retryable: false },
+        }),
+    };
+
+    const mw = createSessionTranscriptMiddleware({ transcript: brokenTranscript, sessionId: SID });
+    if (!mw.wrapToolCall) throw new Error("wrapToolCall not defined");
+
+    await expect(
+      mw.wrapToolCall(makeTurnContext(0), { toolId: "T", input: {} }, async () => ({
+        output: "ok",
+      })),
+    ).rejects.toThrow("tool_result");
+  });
+});
+
+describe("SessionTranscriptMiddleware — retry deduplication", () => {
+  test("user entry is written once on commit, not on each retry attempt", async () => {
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+    if (!mw.wrapModelStream) throw new Error("wrapModelStream not defined");
+
+    const successChunks: ModelChunk[] = [{ kind: "done", response: { content: "ok", model: "m" } }];
+
+    // Simulate two sequential calls with the same request (like semantic-retry would do)
+    const request1 = makeModelRequest("attempt-1");
+    const request2 = makeModelRequest("attempt-2");
+
+    // First attempt: stream it through (simulates a retry attempt that completed)
+    await drainStream(
+      mw.wrapModelStream(makeTurnContext(0), request1, () => makeChunks(successChunks)),
+    );
+    // Second attempt: another stream with a different request (retry with rewritten prompt)
+    await drainStream(
+      mw.wrapModelStream(makeTurnContext(0), request2, () => makeChunks(successChunks)),
+    );
+
+    const result = await transcript.load(SID);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Each committed turn writes one user entry — two committed turns = two user entries
+      const userEntries = result.value.entries.filter((e) => e.role === "user");
+      expect(userEntries.length).toBe(2);
+      // Content matches the committed request, not an internal retry artifact
+      expect(userEntries[0]?.content).toBe("attempt-1");
+      expect(userEntries[1]?.content).toBe("attempt-2");
+    }
+  });
 });

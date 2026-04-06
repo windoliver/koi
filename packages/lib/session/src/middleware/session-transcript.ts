@@ -3,25 +3,24 @@
  *
  * Phase: observe / Priority: 200
  *
- * Uses wrapModelStream to capture incoming messages and assistant responses.
+ * Uses wrapModelStream + wrapToolCall to record turns durably.
  * Session routing always uses ctx.session.sessionId (live turn) to prevent
  * data-isolation failures when a single middleware instance is shared or when
  * session IDs change between calls.
  *
- * Durability note: assistant/tool-call writes are awaited before the
- * generator or wrapToolCall resolves — ensuring entries are durable before
- * the engine advances. Tool results are written immediately in wrapToolCall
- * to close the crash window between tool completion and the next model call.
- * The pre-stream user-message write is intentionally fire-and-forget: it is
- * not in the crash-recovery critical path and blocking stream initialization
- * for it would add latency with no recovery benefit.
+ * Commit semantics:
+ * - User + assistant entries are written together in the wrapModelStream finally
+ *   block, only on successful turn completion. This prevents duplicate user
+ *   entries when semantic-retry (resolve phase) rewrites the request and calls
+ *   next() again — recording once-per-committed-turn, not once-per-attempt.
+ * - Tool results are written immediately in wrapToolCall (awaited), closing the
+ *   crash window between tool completion and the next model call. If the write
+ *   fails, the error is re-thrown so the engine surfaces it rather than silently
+ *   risking duplicate execution of a non-idempotent tool on replay.
  *
- * Failure semantics: transcript write errors are logged but do not propagate.
- * The agent continues to function even when the transcript store is unavailable
- * (e.g. disk full). This is a deliberate best-effort design: a crash-recovery
- * store that takes the agent down on write failure would be worse than no
- * recovery at all. Operators should monitor console.error output for
- * [@koi/session:transcript] messages and alert on sustained failures.
+ * Failure semantics for model-turn writes: transcript errors are logged but do
+ * not propagate. If the transcript store is unavailable (disk full, I/O error),
+ * the agent continues. Operators should alert on [@koi/session:transcript] errors.
  *
  * This makes @koi/session observable in ATIF trajectories via
  * wrapMiddlewareWithTrace (shows as MW:@koi/session:transcript steps).
@@ -42,6 +41,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { transcriptEntryId } from "@koi/core";
+import { extractMessage } from "@koi/errors";
 
 export interface SessionTranscriptMiddlewareConfig {
   /** The transcript store to append entries to. */
@@ -78,51 +78,13 @@ export function createSessionTranscriptMiddleware(
       // config.sessionId — to prevent data-isolation failures when a single
       // middleware instance is reused across multiple sessions.
       const sid: SessionId = ctx.session.sessionId;
-
-      // Serialize all content blocks from the last incoming message:
-      // text blocks as plain text, all other block kinds as JSON strings.
-      // Map senderId to the correct transcript role so tool results and
-      // system messages are not mis-recorded as user messages.
-      const lastMsg = request.messages.at(-1);
-      if (lastMsg !== undefined) {
-        const content = lastMsg.content
-          .map((c) => (c.kind === "text" ? c.text : JSON.stringify(c)))
-          .join("\n");
-        if (content.length > 0) {
-          const role: TranscriptEntry["role"] =
-            lastMsg.senderId === "tool"
-              ? "tool_result"
-              : lastMsg.senderId === "system"
-                ? "system"
-                : lastMsg.senderId === "assistant"
-                  ? "assistant"
-                  : "user";
-          const entry: TranscriptEntry = {
-            id: transcriptEntryId(`${String(idPrefix)}-u-${ctx.turnIndex}-${Date.now()}`),
-            role,
-            content,
-            timestamp: lastMsg.timestamp,
-          };
-          // Fire-and-forget: user entry is not in the crash-recovery critical path.
-          // The generator does not start until next(request) is called below, so
-          // awaiting here would block stream initialization with no durability benefit.
-          // Failures are logged; the assistant entry (awaited in finally) is what
-          // crash recovery replays.
-          void Promise.resolve(transcript.append(sid, [entry])).catch((e: unknown) => {
-            console.error(
-              `[@koi/session:transcript] failed to append user entry for session ${String(sid)}:`,
-              e,
-            );
-          });
-        }
-      }
-
       const inner = next(request);
 
       // Wrap stream: accumulate text_delta and tool_call_* chunks, capture
       // the done chunk, then append transcript entries only on successful
-      // completion. Aborted/errored streams are not recorded to avoid
-      // replaying truncated turns during crash recovery.
+      // completion. Aborted/errored streams and retry attempts (semantic-retry
+      // rewrites the request and calls next() again) are not recorded to avoid
+      // replaying truncated or retry-internal turns during crash recovery.
       return (async function* (): AsyncIterable<ModelChunk> {
         const textParts: string[] = [];
         // Map preserves insertion order — use as ordered tool-call accumulator
@@ -163,6 +125,32 @@ export function createSessionTranscriptMiddleware(
           if (doneResponse !== undefined && successReasons.has(doneResponse.stopReason)) {
             const toAppend: TranscriptEntry[] = [];
 
+            // Persist the inbound user/tool/system message on commit (not before the
+            // stream starts) so that retry-rewritten requests from semantic-retry do
+            // not produce duplicate or synthetic user entries in the transcript.
+            const lastMsg = request.messages.at(-1);
+            if (lastMsg !== undefined) {
+              const content = lastMsg.content
+                .map((c) => (c.kind === "text" ? c.text : JSON.stringify(c)))
+                .join("\n");
+              if (content.length > 0) {
+                const role: TranscriptEntry["role"] =
+                  lastMsg.senderId === "tool"
+                    ? "tool_result"
+                    : lastMsg.senderId === "system"
+                      ? "system"
+                      : lastMsg.senderId === "assistant"
+                        ? "assistant"
+                        : "user";
+                toAppend.push({
+                  id: transcriptEntryId(`${String(idPrefix)}-u-${ctx.turnIndex}-${Date.now()}`),
+                  role,
+                  content,
+                  timestamp: lastMsg.timestamp,
+                });
+              }
+            }
+
             // Prefer accumulated text_delta parts; fall back to done.response.content
             // for adapters that emit a complete response only in the done chunk.
             const textContent = textParts.length > 0 ? textParts.join("") : doneResponse.content;
@@ -193,9 +181,18 @@ export function createSessionTranscriptMiddleware(
               // Await the write so the turn is durable before the generator completes.
               // The stream is already exhausted here — this is the commit boundary.
               try {
-                await transcript.append(sid, toAppend);
+                const appendResult = await transcript.append(sid, toAppend);
+                if (!appendResult.ok) {
+                  console.error(
+                    `[@koi/session:transcript] failed to append turn entries for session ${String(sid)}:`,
+                    appendResult.error.message,
+                  );
+                }
               } catch (e: unknown) {
-                console.error("[@koi/session:transcript] failed to append assistant entries:", e);
+                console.error(
+                  `[@koi/session:transcript] failed to append turn entries for session ${String(sid)}:`,
+                  extractMessage(e),
+                );
               }
             }
           }
@@ -208,6 +205,10 @@ export function createSessionTranscriptMiddleware(
     // be the first opportunity to record the result. Without this, a crash after
     // a non-idempotent tool runs but before the next model request causes the
     // recovery path to lose the result and potentially re-issue the tool call.
+    //
+    // Failure semantics: if the transcript write fails, the error is re-thrown.
+    // The tool already ran, so silently continuing would risk re-execution on
+    // crash recovery. Surfacing the error lets the engine handle it explicitly.
     wrapToolCall: async (
       ctx: TurnContext,
       request: ToolRequest,
@@ -221,12 +222,20 @@ export function createSessionTranscriptMiddleware(
         content: JSON.stringify({ toolId: request.toolId, output: response.output }),
         timestamp: Date.now(),
       };
+      let appendError: unknown;
       try {
-        await transcript.append(sid, [entry]);
+        const appendResult = await transcript.append(sid, [entry]);
+        if (!appendResult.ok) {
+          appendError = appendResult.error;
+        }
       } catch (e: unknown) {
-        console.error(
-          `[@koi/session:transcript] failed to append tool_result for session ${String(sid)}:`,
-          e,
+        appendError = e;
+      }
+      if (appendError !== undefined) {
+        throw new Error(
+          `[@koi/session:transcript] tool_result for "${request.toolId}" not persisted in session ${String(sid)} — ` +
+            `crashing turn to prevent duplicate tool execution on replay. Cause: ${extractMessage(appendError)}`,
+          { cause: appendError },
         );
       }
       return response;
