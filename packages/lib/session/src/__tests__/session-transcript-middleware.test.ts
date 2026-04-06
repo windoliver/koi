@@ -23,7 +23,7 @@ function makeTurnContext(turnIndex = 0): TurnContext {
   return {
     session: { agentId: "test-agent", sessionId: SID, runId: runId("r"), metadata: {} },
     turnIndex,
-    turnId: turnId("t"),
+    turnId: turnId(runId("r"), turnIndex),
     messages: [],
     metadata: {},
   };
@@ -237,7 +237,7 @@ describe("SessionTranscriptMiddleware — completion semantics", () => {
     const ctx1 = {
       session: { agentId: "a", sessionId: liveSid1, runId: runId("r"), metadata: {} },
       turnIndex: 0,
-      turnId: turnId("t"),
+      turnId: turnId(runId("r"), 0),
       messages: [],
       metadata: {},
     } satisfies TurnContext;
@@ -247,7 +247,7 @@ describe("SessionTranscriptMiddleware — completion semantics", () => {
     const ctx2 = {
       session: { agentId: "a", sessionId: liveSid2, runId: runId("r"), metadata: {} },
       turnIndex: 0,
-      turnId: turnId("t"),
+      turnId: turnId(runId("r"), 0),
       messages: [],
       metadata: {},
     } satisfies TurnContext;

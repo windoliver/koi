@@ -91,8 +91,16 @@ export function createSessionTranscriptMiddleware(
             content,
             timestamp: lastMsg.timestamp,
           };
+          // Fire-and-forget: user entry is not in the crash-recovery critical path.
+          // The generator does not start until next(request) is called below, so
+          // awaiting here would block stream initialization with no durability benefit.
+          // Failures are logged; the assistant entry (awaited in finally) is what
+          // crash recovery replays.
           void Promise.resolve(transcript.append(sid, [entry])).catch((e: unknown) => {
-            console.error("[@koi/session:transcript] failed to append user entry:", e);
+            console.error(
+              `[@koi/session:transcript] failed to append user entry for session ${String(sid)}:`,
+              e,
+            );
           });
         }
       }

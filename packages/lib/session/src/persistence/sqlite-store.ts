@@ -220,8 +220,13 @@ export function createSqliteSessionPersistence(
     VALUES
       ($frameId, $sessionId, $agentId, $frameType, $payload, $orderIndex, $createdAt, $ttl, $retryCount)
     ON CONFLICT(frameId) DO UPDATE SET
-      retryCount = excluded.retryCount,
-      payload    = excluded.payload
+      agentId    = excluded.agentId,
+      frameType  = excluded.frameType,
+      payload    = excluded.payload,
+      orderIndex = excluded.orderIndex,
+      createdAt  = excluded.createdAt,
+      ttl        = excluded.ttl,
+      retryCount = excluded.retryCount
   `);
 
   const deleteSingleFrameStmt = db.prepare("DELETE FROM pending_frames WHERE frameId = ?");
@@ -393,7 +398,7 @@ export function createSqliteSessionPersistence(
 
         // Build the set of successfully recovered session IDs so pending frames
         // can be filtered to only those whose session is known-good.
-        const recoveredIds = new Set(sessions.map((s) => s.sessionId));
+        const recoveredIds = new Set(sessions.map((s) => String(s.sessionId)));
 
         // Batch load all pending frames (one query, no N+1) — decision 13-A
         // Frames for sessions that failed to recover are moved to skipped to
