@@ -233,6 +233,32 @@ describe("validatePermissionsConfig", () => {
     if (!result.ok) expect(result.error.message).toContain("denialEscalation");
   });
 
+  // onApprovalStep callback
+  test("accepts valid onApprovalStep function", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      onApprovalStep: () => {},
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts undefined onApprovalStep", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      onApprovalStep: undefined,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-function onApprovalStep", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      onApprovalStep: "not-a-function",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("onApprovalStep");
+  });
+
   test("all validation errors are non-retryable", () => {
     const result = validatePermissionsConfig(null);
     expect(result.ok).toBe(false);

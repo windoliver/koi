@@ -42,4 +42,5 @@ export type { DenialRecord, DenialSource, DenialTracker } from "./denial-tracker
 export { createDenialTracker } from "./denial-tracker.js";
 
 // Middleware factory
+export type { PermissionsMiddlewareHandle } from "./middleware.js";
 export { createPermissionsMiddleware } from "./middleware.js";

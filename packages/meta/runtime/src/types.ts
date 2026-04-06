@@ -15,6 +15,7 @@ import type {
   KoiMiddleware,
   ReportStore,
   RetrySignalReader,
+  RichTrajectoryStep,
   SpawnLedger,
   ToolDescriptor,
   TrajectoryDocumentStore,
@@ -65,6 +66,23 @@ export interface RuntimeConfig {
    * createRuntime throws — fail closed rather than silently allowing.
    */
   readonly requestApproval?: ApprovalHandler | undefined;
+
+  /**
+   * Handle from `createPermissionsMiddleware` for wiring approval trajectory
+   * capture.  The runtime calls `setApprovalStepSink` with a dispatch relay
+   * that routes approval decisions to the correct per-stream event-trace
+   * `emitExternalStep`, so approval outcomes appear as `source:"user"` steps
+   * in the ATIF trajectory.
+   *
+   * Structural type — no L2 import required.
+   */
+  readonly approvalStepHandle?:
+    | {
+        readonly setApprovalStepSink: (
+          sink: (sessionId: string, step: RichTrajectoryStep) => void,
+        ) => () => void;
+      }
+    | undefined;
 
   /** User identity for tenant-aware middleware. */
   readonly userId?: string | undefined;

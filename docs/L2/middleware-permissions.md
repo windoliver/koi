@@ -350,13 +350,30 @@ Both entries share `sessionId`, `agentId`, `turnIndex`, `kind: "tool_call"`, and
 
 ### Approval Trajectory Steps
 
-Approval decisions are also emitted as `RichTrajectoryStep` entries with `source: "user"`
-via the optional `onApprovalStep` callback. This makes the human's judgment visible in
-ATIF trajectories alongside agent and tool steps. Each step carries:
+Approval decisions are emitted as `RichTrajectoryStep` entries with `source: "user"`
+via `onApprovalStep` (config) and/or runtime-bound sinks (via `setApprovalStepSink`).
+This makes the human's judgment visible in ATIF trajectories alongside agent and tool steps.
+
+**Every approval code path emits a step:**
+
+| Path | `approvalDecision` | `outcome` |
+|------|-------------------|-----------|
+| Explicit allow | `"allow"` | `"success"` |
+| Explicit deny | `"deny"` | `"failure"` |
+| Modify (input rewrite) | `"modify"` | `"success"` |
+| Always-allow (session bypass) | `"always-allow"` | `"success"` |
+| Approval cache hit | `"allow"` | `"success"` |
+| Timeout | `"deny"` (reason: `"timeout"`) | `"failure"` |
+| Malformed response | `"deny"` (reason: `"malformed_response"`) | `"failure"` |
+| Handler error | `"deny"` (reason: `"handler_error"`) | `"failure"` |
+| Coalesced (any of above) | same as leader | same, with `coalesced: true` |
+
+Each step carries:
 
 - `source: "user"`, `kind: "tool_call"`
 - `identifier`: the tool ID that was approved/denied
-- `outcome`: `"success"` (allow/modify/always-allow) or `"failure"` (deny)
+- `outcome`: `"success"` or `"failure"` per table above
+- `stepIndex`: assigned by `emitExternalStep` (monotonic session-local index)
 - `metadata`: same structured fields as the audit entry (decision, userId, delta)
 
 ---
@@ -504,8 +521,11 @@ Creates the middleware instance.
 | `config.circuitBreaker` | `CircuitBreakerConfig` | — | Resilience for remote backends |
 | `config.denialEscalation` | `boolean \| DenialEscalationConfig` | `false` | Auto-deny after repeated denials |
 | `config.description` | `string` | `"Permission checks enabled"` | Capability label |
+| `config.onApprovalStep` | `(sessionId: string, step: RichTrajectoryStep) => void` | — | Direct approval-step callback (unit tests) |
 
-**Returns:** `KoiMiddleware`
+**Returns:** `PermissionsMiddlewareHandle` (extends `KoiMiddleware` — backward compatible, can be passed directly into `middleware: [...]` arrays)
+
+The returned handle adds `setApprovalStepSink(sink)` for runtime wiring. The runtime calls this to register a dispatch relay that routes approval steps to per-stream `emitExternalStep`. Returns a disposer function for cleanup on `runtime.dispose()`. Multiple sinks can coexist (multi-runtime safe). Both `onApprovalStep` (config) and runtime sinks receive steps in fan-out with per-sink error isolation.
 
 #### `createPatternPermissionBackend(config)`
 
@@ -563,6 +583,7 @@ Default decision cache settings: `{ maxEntries: 1024, allowTtlMs: 300_000, denyT
 
 | Type | Description |
 |------|-------------|
+| `PermissionsMiddlewareHandle` | Return type of `createPermissionsMiddleware()` — extends `KoiMiddleware` + `setApprovalStepSink` |
 | `PermissionsMiddlewareConfig` | Full config for `createPermissionsMiddleware()` |
 | `PermissionCacheConfig` | `{ maxEntries, allowTtlMs, denyTtlMs, ttlMs }` |
 | `PatternBackendConfig` | Config for `createPatternPermissionBackend()` |

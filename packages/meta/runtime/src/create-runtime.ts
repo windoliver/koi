@@ -131,6 +131,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Create trajectory store if directory provided
   const trajectoryStore = resolveTrajectoryStore(config);
 
+  // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
+  // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
+  const approvalDispatch = new Map<string, (sessionId: string, step: RichTrajectoryStep) => void>();
+  const unsubApprovalSink =
+    config.approvalStepHandle !== undefined
+      ? config.approvalStepHandle.setApprovalStepSink(
+          (sid: string, step: RichTrajectoryStep): void => {
+            approvalDispatch.get(sid)?.(sid, step);
+          },
+        )
+      : undefined;
+
   // Create debug instrumentation when debug is enabled
   const instrumentation =
     config.debug === true ? createDebugInstrumentation({ enabled: true }) : undefined;
@@ -171,6 +183,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     middleware,
     instrumentation,
     trajectoryStore,
+    approvalDispatch,
     config.requestApproval,
     config.userId,
     config.channelId,
@@ -256,6 +269,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {
+      // Unsubscribe approval sink to prevent leak on long-lived permission handles
+      unsubApprovalSink?.();
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
@@ -619,6 +634,7 @@ function composeMiddlewareIntoAdapter(
   middleware: readonly KoiMiddleware[],
   instrumentation?: DebugInstrumentation,
   store?: TrajectoryDocumentStore,
+  approvalDispatch?: Map<string, (sessionId: string, step: RichTrajectoryStep) => void>,
   requestApproval?: ApprovalHandler,
   userId?: string,
   channelId?: string,
@@ -669,18 +685,26 @@ function composeMiddlewareIntoAdapter(
       // Per-stream event-trace: writes to the SAME store + docId as harness steps.
       // This unifies model/tool I/O (from event-trace) with middleware spans (from harness)
       // in one trajectory document.
-      const perStreamEventTrace =
+      const eventTraceHandle =
         store !== undefined
           ? createEventTraceMiddleware({
               store,
               docId,
               agentName: agentName ?? "runtime",
               ...(retrySignalReader !== undefined ? { signalReader: retrySignalReader } : {}),
-            }).middleware
+            })
           : undefined;
 
+      // Register per-stream emitter for approval trajectory capture.
+      // The dispatch relay (wired above) routes onApprovalStep by sessionId
+      // to the correct per-stream emitExternalStep.
+      const sid = ctx.session.sessionId as string;
+      if (eventTraceHandle !== undefined && approvalDispatch !== undefined) {
+        approvalDispatch.set(sid, eventTraceHandle.emitExternalStep);
+      }
+
       const perStreamMiddleware =
-        perStreamEventTrace !== undefined ? [...middleware, perStreamEventTrace] : middleware;
+        eventTraceHandle !== undefined ? [...middleware, eventTraceHandle.middleware] : middleware;
 
       // Wrap middleware with I/O capture when debug + store are both enabled
       const ioCaptures: MiddlewareIOCapture[] = [];
@@ -980,6 +1004,8 @@ function composeMiddlewareIntoAdapter(
           }
         },
         async () => {
+          // Deregister per-stream approval dispatch entry
+          approvalDispatch?.delete(sid);
           // Run lifecycle hooks on ALL middleware for session end
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
