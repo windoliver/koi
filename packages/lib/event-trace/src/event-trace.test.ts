@@ -1619,7 +1619,7 @@ describe("provenance tracking", () => {
     expect((summaries[0]?.metadata as Record<string, unknown>)?.turnIndex).toBe(0);
   });
 
-  test("tool step preserves full response metadata alongside provenance", async () => {
+  test("tool step persists only allowlisted metadata, filters transient fields (#1499)", async () => {
     const store = makeMockStore();
     const { middleware } = createEventTraceMiddleware({
       store,
@@ -1648,11 +1648,49 @@ describe("provenance tracking", () => {
 
     const step = store.steps[0]?.[0];
     const meta = step?.metadata as Record<string, unknown>;
-    // Provenance is preserved
+    // Provenance is preserved (allowlisted)
     expect((meta?.provenance as Record<string, unknown>)?.server).toBe("crm");
-    // Other metadata fields are also preserved
-    expect(meta?.traceId).toBe("abc-123");
-    expect(meta?.cacheHit).toBe(true);
+    // Transient metadata is NOT persisted (#1499 — trust-boundary fix)
+    expect(meta?.traceId).toBeUndefined();
+    expect(meta?.cacheHit).toBeUndefined();
+  });
+
+  test("arbitrary request metadata is not stored in trajectory (#1499 regression)", async () => {
+    const store = makeMockStore();
+    const { middleware } = createEventTraceMiddleware({
+      store,
+      docId: "doc-1",
+      agentName: "test",
+      clock: () => 1000,
+    });
+
+    await middleware.onSessionStart?.(makeSessionCtx());
+    await middleware.onBeforeTurn?.(makeTurnCtx(0));
+
+    const toolResponse: ToolResponse = {
+      output: "result",
+      metadata: {
+        provenance: { system: "builtin" },
+        sensitiveCtx: "internal-correlation-data",
+        requestOrigin: "middleware-x",
+        debugTag: 42,
+      },
+    };
+
+    await middleware.wrapToolCall?.(
+      makeTurnCtx(0),
+      makeToolRequest("some_tool"),
+      async () => toolResponse,
+    );
+
+    const step = store.steps[0]?.[0];
+    const meta = step?.metadata as Record<string, unknown>;
+    // Only provenance survives
+    expect(meta?.provenance).toEqual({ system: "builtin" });
+    // Everything else is filtered
+    expect(meta?.sensitiveCtx).toBeUndefined();
+    expect(meta?.requestOrigin).toBeUndefined();
+    expect(meta?.debugTag).toBeUndefined();
   });
 
   test("aggregation uses composite key to avoid collisions between different systems", async () => {

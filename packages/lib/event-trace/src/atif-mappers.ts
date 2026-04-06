@@ -122,14 +122,37 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
         message: step.request?.text ?? "",
         ...optionalBase,
       };
-    case "system":
+    case "system": {
+      // Preserve non-default kind/identifier through ATIF round-trip (#1499).
+      // Normal system steps (kind="model_call", identifier="system") need no extra fields.
+      // Uses a single nested `__koi` object to avoid flat key collisions with user metadata.
+      const hasNonDefaultKind = step.kind !== "model_call";
+      const hasNonDefaultIdentifier = step.identifier !== "system";
+      const koiTransport =
+        hasNonDefaultKind || hasNonDefaultIdentifier
+          ? {
+              ...(hasNonDefaultKind ? { kind: step.kind } : {}),
+              ...(hasNonDefaultIdentifier ? { identifier: step.identifier } : {}),
+            }
+          : undefined;
+      const systemExtra =
+        koiTransport !== undefined ? { ...(extra ?? {}), __koi: koiTransport } : extra;
+
+      const systemOptionalBase = pickDefined({
+        duration_ms: step.durationMs,
+        outcome: step.outcome,
+        metrics: step.metrics !== undefined ? mapMetricsToAtif(step.metrics) : undefined,
+        extra: systemExtra,
+      });
+
       return {
         step_id: stepId,
         source: "system",
         timestamp,
         message: step.request?.text ?? "",
-        ...optionalBase,
+        ...systemOptionalBase,
       };
+    }
   }
 }
 
@@ -199,14 +222,14 @@ export function mapAtifToRichTrajectory(doc: AtifDocument): readonly RichTraject
 function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
   // Extract error from extra (reverse of forward mapping)
   const rawExtra = step.extra as Record<string, unknown> | undefined;
-  const errorData = rawExtra?.error as
-    | { text?: string; data?: Record<string, unknown> }
-    | undefined;
+  const hasError = rawExtra !== undefined && Object.hasOwn(rawExtra, "error");
+  const errorData = hasError
+    ? (rawExtra.error as { text?: string; data?: Record<string, unknown> } | undefined)
+    : undefined;
   // Strip error from metadata so it doesn't duplicate
-  const cleanedExtra =
-    rawExtra !== undefined && "error" in rawExtra
-      ? (Object.fromEntries(Object.entries(rawExtra).filter(([k]) => k !== "error")) as JsonObject)
-      : step.extra;
+  const cleanedExtra = hasError
+    ? (Object.fromEntries(Object.entries(rawExtra).filter(([k]) => k !== "error")) as JsonObject)
+    : step.extra;
 
   const optionalBase = pickDefined({
     metrics: step.metrics !== undefined ? mapAtifMetricsToRich(step.metrics) : undefined,
@@ -267,15 +290,46 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
         outcome: step.outcome ?? "success",
         request: { text: step.message },
       };
-    case "system":
+    case "system": {
+      // Recover non-default kind/identifier from nested __koi transport object (#1499).
+      const sysExtra = step.extra as Record<string, unknown> | undefined;
+      const koiTransport =
+        sysExtra !== undefined && Object.hasOwn(sysExtra, "__koi")
+          ? (sysExtra.__koi as Record<string, unknown>)
+          : undefined;
+      const recoveredKind =
+        koiTransport?.kind === "tool_call" ? ("tool_call" as const) : ("model_call" as const);
+      const recoveredIdentifier =
+        typeof koiTransport?.identifier === "string" ? koiTransport.identifier : "system";
+
+      // Strip __koi transport object AND error (already extracted above) from metadata.
+      const strippedMeta =
+        sysExtra !== undefined
+          ? (Object.fromEntries(
+              Object.entries(sysExtra).filter(([k]) => k !== "__koi" && k !== "error"),
+            ) as JsonObject)
+          : undefined;
+      const systemBase = pickDefined({
+        metrics: step.metrics !== undefined ? mapAtifMetricsToRich(step.metrics) : undefined,
+        metadata: Object.keys(strippedMeta ?? {}).length > 0 ? strippedMeta : undefined,
+        error:
+          errorData !== undefined
+            ? ({ text: errorData.text, data: errorData.data } as RichContent)
+            : undefined,
+      });
+
       return {
-        ...common,
+        stepIndex: step.step_id,
+        timestamp: new Date(step.timestamp).getTime(),
+        durationMs: step.duration_ms ?? 0,
+        ...systemBase,
         source: "system",
-        kind: "model_call",
-        identifier: "system",
+        kind: recoveredKind,
+        identifier: recoveredIdentifier,
         outcome: step.outcome ?? "success",
         request: { text: step.message },
       };
+    }
   }
 }
 

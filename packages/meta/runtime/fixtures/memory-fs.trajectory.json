@@ -28,7 +28,10 @@
         "type": "mcp_lifecycle",
         "serverName": "test-mcp-server",
         "transportState": "connecting",
-        "attempt": 1
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
       }
     },
     {
@@ -42,7 +45,10 @@
       "extra": {
         "type": "mcp_lifecycle",
         "serverName": "test-mcp-server",
-        "transportState": "connected"
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
       }
     },
     {
@@ -95,7 +101,10 @@
         "hook": "wrapModelStream",
         "phase": "resolve",
         "priority": 400,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
@@ -112,7 +121,10 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
       }
     },
     {
@@ -126,7 +138,10 @@
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded:memory_fs_create",
-        "hookName": "on-tool-exec"
+        "hookName": "on-tool-exec",
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
       }
     },
     {
@@ -150,7 +165,10 @@
         "hook": "wrapToolCall",
         "phase": "observe",
         "priority": 950,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
       }
     },
     {
@@ -201,7 +219,10 @@
         "hook": "wrapToolCall",
         "phase": "resolve",
         "priority": 400,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
@@ -225,7 +246,10 @@
         "hook": "wrapToolCall",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
       }
     },
     {
@@ -239,7 +263,10 @@
       "extra": {
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded:memory_fs_list",
-        "hookName": "on-tool-exec"
+        "hookName": "on-tool-exec",
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
       }
     },
     {
@@ -263,7 +290,10 @@
         "hook": "wrapToolCall",
         "phase": "observe",
         "priority": 950,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
       }
     },
     {
@@ -309,7 +339,10 @@
         "hook": "wrapToolCall",
         "phase": "resolve",
         "priority": 400,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
@@ -333,7 +366,10 @@
         "hook": "wrapToolCall",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
       }
     },
     {
@@ -386,7 +422,10 @@
         "hook": "wrapModelStream",
         "phase": "resolve",
         "priority": 400,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
@@ -403,7 +442,10 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
       }
     }
   ]

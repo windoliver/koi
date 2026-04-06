@@ -34,7 +34,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 |---------|------|-------------|
 | `@koi/agent-runtime` | Agent definition registry + built-in agent resolver | `spawn-agent` |
 | `@koi/channel-cli` | CLI stdin/stdout channel adapter | standalone |
-| `@koi/event-trace` | ATIF trajectory recording middleware | all queries |
+| `@koi/event-trace` | ATIF trajectory recording middleware — tool metadata allowlisted (#1499), system step `__koi` transport for lossless round-trip | all queries |
 | `@koi/fs-local` | Local filesystem backend (read/write/edit/list) | `local-fs-read` |
 | `@koi/fs-nexus` | Nexus-backed filesystem backend | `nexus-fs-read` (optional) |
 | `@koi/hook-prompt` | Prompt injection hook for pre/post model call | standalone |
