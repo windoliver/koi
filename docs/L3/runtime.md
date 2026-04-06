@@ -48,7 +48,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/middleware-permissions` | Tool/model permission gating middleware — approval trajectory capture via `approvalStepHandle` dispatch relay (#1498) | `permission-deny`, `denial-escalation` |
 | `@koi/middleware-report` | RunReport generation middleware | `tool-use` |
 | `@koi/middleware-semantic-retry` | Semantic retry on model failures | standalone |
-| `@koi/session` | Session persistence (SQLite) + JSONL transcript middleware for crash recovery | standalone — wired via `RuntimeConfig.session.transcriptDir` |
+| `@koi/session` | Session persistence (SQLite/WAL) + JSONL transcript middleware + `resumeFromTranscript()` for crash recovery. Phase 2e-2: `SessionStatus`, `ContentReplacement`, `CompactResult` boundary extension, instance-local queue isolation | standalone — wired via `RuntimeConfig.session.transcriptDir` |
 | `@koi/model-openai-compat` | OpenAI-compatible model adapter (OpenRouter etc.) | all LLM queries |
 | `@koi/permissions` | Permission backend (bypass/default/nexus modes) | `permission-deny` |
 | `@koi/query-engine` | Model stream consumer + turn runner | all queries |
