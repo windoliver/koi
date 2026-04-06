@@ -35,10 +35,11 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Configure npm auth
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
       - name: Publish to npm
         run: bunx changeset publish
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         run: gh release create "${{ github.ref_name }}" --generate-notes
