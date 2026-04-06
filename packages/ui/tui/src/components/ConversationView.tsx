@@ -2,7 +2,7 @@
  * ConversationView — the "conversation" screen (activeView === "conversation").
  */
 
-import type { SyntaxStyle } from "@opentui/core";
+import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createSignal, Show } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
@@ -24,6 +24,7 @@ export interface ConversationViewProps {
   readonly onSlashSelect?: ((command: SlashCommand) => void) | undefined;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 export function ConversationView(props: ConversationViewProps): JSX.Element {
@@ -43,7 +44,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
 
   return (
     <box flexDirection="column" flexGrow={1}>
-      <MessageList syntaxStyle={props.syntaxStyle} />
+      <MessageList syntaxStyle={props.syntaxStyle} treeSitterClient={props.treeSitterClient} />
       <InputArea
         onSubmit={props.onSubmit}
         onSlashDetected={props.onSlashDetected}

@@ -66,22 +66,18 @@ describe("TextBlock — plain text (no syntaxStyle)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Markdown-highlighted (with syntaxStyle) — <markdown> branch
+// With syntaxStyle but no treeSitterClient — falls back to <text>
 // ---------------------------------------------------------------------------
 
-describe("TextBlock — with syntaxStyle (markdown branch)", () => {
-  // SyntaxStyle.create() produces a default style with no theme tokens.
-  // Note: <markdown> in test mode (no treeSitterClient) renders code fence
-  // content via CodeRenderable but does NOT render paragraph/heading text,
-  // which requires the tree-sitter WASM parser. Tests assert what actually
-  // renders in this constrained environment.
+describe("TextBlock — with syntaxStyle but no treeSitterClient (text fallback)", () => {
+  // TextBlock requires BOTH syntaxStyle AND treeSitterClient to activate
+  // <markdown>. With only syntaxStyle, it uses the <text> fallback so prose
+  // renders correctly without tree-sitter WASM (not loadable in unit tests).
   const syntaxStyle = SyntaxStyle.create();
 
-  test("renders without crash for plain text", async () => {
-    // Exercises the <markdown> branch — doesn't crash, returns a string.
-    // Paragraph text requires tree-sitter (not loaded in unit tests).
+  test("renders plain text content (uses <text> fallback)", async () => {
     const frame = await renderTextBlock({ text: "hello world", syntaxStyle });
-    expect(typeof frame).toBe("string");
+    expect(frame).toContain("hello world");
   });
 
   test("renders empty string without crash", async () => {
@@ -89,9 +85,7 @@ describe("TextBlock — with syntaxStyle (markdown branch)", () => {
     expect(typeof frame).toBe("string");
   });
 
-  test("streaming=true renders code fence content", async () => {
-    // Unclosed code fence — a real LLM streaming pattern.
-    // Code block content renders without tree-sitter; pre-fence paragraph text does not.
+  test("streaming=true renders full text content", async () => {
     const frame = await renderTextBlock({
       text: "Here is some code:\n```ts\nconst x =",
       syntaxStyle,
@@ -100,7 +94,7 @@ describe("TextBlock — with syntaxStyle (markdown branch)", () => {
     expect(frame).toContain("const x =");
   });
 
-  test("streaming=false renders complete code fence content", async () => {
+  test("streaming=false renders full text content", async () => {
     const frame = await renderTextBlock({
       text: "```ts\nconst x = 1;\n```",
       syntaxStyle,
@@ -110,11 +104,10 @@ describe("TextBlock — with syntaxStyle (markdown branch)", () => {
   });
 
   test("multi-line content renders without crash", async () => {
-    // Markdown headings and paragraphs require tree-sitter; just verify no crash.
     const frame = await renderTextBlock({
       text: "# Heading\n\nParagraph text here.",
       syntaxStyle,
     });
-    expect(typeof frame).toBe("string");
+    expect(frame).toContain("Paragraph text here.");
   });
 });

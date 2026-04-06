@@ -15,7 +15,7 @@
  * The MAX_MESSAGES compaction cap bounds the worst case for now.
  */
 
-import type { SyntaxStyle } from "@opentui/core";
+import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, For, onCleanup } from "solid-js";
 import { useTuiStore } from "../store-context.js";
@@ -26,6 +26,7 @@ const SPINNER_INTERVAL_MS = 80;
 
 interface MessageListProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 export function MessageList(props: MessageListProps): JSX.Element {
@@ -59,6 +60,7 @@ export function MessageList(props: MessageListProps): JSX.Element {
             <MessageRow
               message={msg}
               syntaxStyle={props.syntaxStyle}
+              treeSitterClient={props.treeSitterClient}
               spinnerFrame={spinnerFrame}
             />
           )}

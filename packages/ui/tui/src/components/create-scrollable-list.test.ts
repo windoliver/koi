@@ -170,4 +170,22 @@ describe("createScrollableList", () => {
     expect(result.visibleItems[0]).toBe("item-5");
     expect(result.visibleItems.length).toBe(4);
   });
+
+  test("moveDown on empty list does not poison rawIdx with -1", () => {
+    // Regression: empty list → moveDown → list repopulates → selectedIdx must be 0, not -1.
+    const result = createRoot((dispose) => {
+      const [items, setItems] = createSignal<readonly string[]>([]);
+      const list = createScrollableList(items, 8);
+      // Press Down while list is empty — must not write -1 into rawIdx
+      list.moveDown();
+      list.moveDown();
+      expect(list.selectedIdx()).toBe(0);
+      // Items reappear
+      setItems(["a", "b", "c"]);
+      const r = { selectedIdx: list.selectedIdx() };
+      dispose();
+      return r;
+    });
+    expect(result.selectedIdx).toBe(0);
+  });
 });

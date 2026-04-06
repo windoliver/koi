@@ -13,7 +13,7 @@
  * createTuiApp, not by TuiRoot itself).
  */
 
-import type { KeyEvent, SyntaxStyle } from "@opentui/core";
+import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { Show, Switch, Match, createEffect, createMemo, useContext } from "solid-js";
@@ -85,13 +85,18 @@ export interface TuiRootProps {
   /** Called when the user responds to a permission prompt (y/n/a). */
   readonly onPermissionRespond: (requestId: string, decision: ApprovalDecision) => void;
   /**
-   * Optional syntax highlighting style for the conversation view.
-   * When provided, text blocks use <markdown> and tool args/results use <code>
-   * with tree-sitter syntax highlighting. Omit to use plain text rendering.
-   * The caller is responsible for initializing tree-sitter and constructing
-   * the SyntaxStyle before passing it here.
+   * Optional syntax highlighting style. Required alongside treeSitterClient
+   * for full markdown rendering in TextBlock; also enables <code> syntax
+   * highlighting in tool call blocks (works without treeSitterClient).
    */
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  /**
+   * Optional tree-sitter client for rich markdown rendering in TextBlock.
+   * When provided alongside syntaxStyle, assistant text blocks use <markdown>
+   * with full prose/heading/code-fence rendering. When omitted, TextBlock
+   * falls back to <text> (prose renders correctly; see #1542 for full init).
+   */
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +258,7 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
             onSlashSelect={handleSlashSelect}
             focused={!hasModal()}
             syntaxStyle={props.syntaxStyle}
+            treeSitterClient={props.treeSitterClient}
           />
         </Match>
         <Match when={activeView() === "sessions"}>

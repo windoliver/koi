@@ -107,6 +107,10 @@ export function createScrollableList<T>(
     visibleItems,
     visibleStart,
     moveUp: () => setRawIdx((i) => Math.max(i - 1, 0)),
-    moveDown: () => setRawIdx((i) => Math.min(i + 1, items().length - 1)),
+    moveDown: () =>
+      setRawIdx((i) => {
+        const max = items().length - 1;
+        return max < 0 ? 0 : Math.min(i + 1, max);
+      }),
   };
 }
