@@ -67,6 +67,10 @@ export type BudgetEnforcementResult =
       readonly replacement?: ReplacementInfo;
       /** Messages that were dropped by micro-compaction (excludes rescued pinned messages). */
       readonly droppedMessages?: readonly InboundMessage[];
+      /** True when the onBeforeDrop callback threw — preservation may have failed. */
+      readonly preservationFailed?: boolean;
+      /** The error thrown by onBeforeDrop, for caller logging/alerting. */
+      readonly preservationError?: unknown;
     }
   | {
       readonly compaction: "full";
@@ -76,6 +80,10 @@ export type BudgetEnforcementResult =
       readonly replacement?: ReplacementInfo;
       /** Messages that will be dropped by full compaction (excludes rescued pinned messages). */
       readonly droppedMessages?: readonly InboundMessage[];
+      /** True when the onBeforeDrop callback threw — preservation may have failed. */
+      readonly preservationFailed?: boolean;
+      /** The error thrown by onBeforeDrop, for caller logging/alerting. */
+      readonly preservationError?: unknown;
     };
 
 // ---------------------------------------------------------------------------
@@ -306,12 +314,16 @@ export async function enforceBudget(
 
       // Fire onBeforeDrop callback before returning (gives caller a chance
       // to extract decision-relevant facts from the about-to-be-lost messages).
-      // Wrapped in try-catch: observer callback must not break budget enforcement.
+      // Fail-open: callback failure is surfaced via preservationFailed/Error
+      // but must not prevent compaction from completing.
+      let preservationFailed = false;
+      let preservationError: unknown;
       if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
         try {
           await Promise.resolve(config.onBeforeDrop(droppedMessages));
-        } catch {
-          // Observer callback failure must not prevent compaction from completing
+        } catch (e: unknown) {
+          preservationFailed = true;
+          preservationError = e;
         }
       }
 
@@ -323,6 +335,7 @@ export async function enforceBudget(
         strategy: result.strategy,
         ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
         ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
+        ...(preservationFailed ? { preservationFailed, preservationError } : {}),
       };
     }
     // Fall through to full compaction
@@ -342,12 +355,16 @@ export async function enforceBudget(
   const droppedMessages = computeDroppedMessages(messages, splitIdx);
 
   // Fire onBeforeDrop callback before returning.
-  // Wrapped in try-catch: observer callback must not break budget enforcement.
+  // Fail-open: callback failure is surfaced via preservationFailed/Error
+  // but must not prevent compaction from completing.
+  let preservationFailed = false;
+  let preservationError: unknown;
   if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
     try {
       await Promise.resolve(config.onBeforeDrop(droppedMessages));
-    } catch {
-      // Observer callback failure must not prevent compaction from completing
+    } catch (e: unknown) {
+      preservationFailed = true;
+      preservationError = e;
     }
   }
 
@@ -358,5 +375,6 @@ export async function enforceBudget(
     totalTokens,
     ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
     ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
+    ...(preservationFailed ? { preservationFailed, preservationError } : {}),
   };
 }
