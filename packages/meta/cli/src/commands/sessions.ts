@@ -85,9 +85,7 @@ export interface SessionSummary {
  * Handles \r\n line endings (strips trailing \r). Exported for unit testing
  * with injected chunked streams — production callers pass Bun.file().stream().
  */
-export async function* readJsonlLines(
-  stream: ReadableStream<Uint8Array>,
-): AsyncGenerator<string> {
+export async function* readJsonlLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let remainder = "";
   for await (const chunk of stream) {
@@ -122,7 +120,6 @@ export function isValidJsonlEntry(
   v: unknown,
 ): v is { readonly kind?: string; readonly text?: string; readonly timestamp?: number } {
   if (typeof v !== "object" || v === null) return false;
-  // biome-ignore lint/suspicious/noExplicitAny: type guard — single cast to access properties on unknown
   const r = v as Record<string, unknown>;
   return (
     (!Object.hasOwn(r, "kind") || typeof r.kind === "string") &&
