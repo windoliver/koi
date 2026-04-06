@@ -7,7 +7,7 @@
 import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { ALL_MEMORY_TYPES } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX, DEFAULT_SEARCH_LIMIT } from "../constants.js";
+import { DEFAULT_PREFIX, DEFAULT_SEARCH_LIMIT, validateMemoryDir } from "../constants.js";
 import {
   parseOptionalEnum,
   parseOptionalInteger,
@@ -80,6 +80,9 @@ export function createMemorySearchTool(
   prefix: string = DEFAULT_PREFIX,
   searchLimit: number = DEFAULT_SEARCH_LIMIT,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   if (!Number.isInteger(searchLimit) || searchLimit < 1) {
     return {
       ok: false,

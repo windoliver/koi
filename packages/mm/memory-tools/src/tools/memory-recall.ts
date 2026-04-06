@@ -7,7 +7,7 @@
 
 import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT } from "../constants.js";
+import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT, validateMemoryDir } from "../constants.js";
 import {
   parseOptionalBoolean,
   parseOptionalEnum,
@@ -71,6 +71,9 @@ export function createMemoryRecallTool(
   prefix: string = DEFAULT_PREFIX,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   if (!Number.isInteger(recallLimit) || recallLimit < 1) {
     return {
       ok: false,

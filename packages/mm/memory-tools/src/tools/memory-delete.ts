@@ -9,7 +9,7 @@
 import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { memoryRecordId } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX } from "../constants.js";
+import { DEFAULT_PREFIX, validateMemoryDir } from "../constants.js";
 import { parseString } from "../parse-args.js";
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
@@ -39,6 +39,9 @@ async function executeDelete(args: JsonObject, backend: MemoryToolBackend): Prom
   try {
     const deleteResult = await backend.delete(id);
     if (!deleteResult.ok) return safeBackendError(deleteResult.error, "Failed to delete memory");
+    // Idempotent: deleted is always true — the desired state (record absent)
+    // is achieved regardless of whether it was present. wasPresent is
+    // informational metadata for callers that need to distinguish.
     return {
       deleted: true,
       id: idResult.value,
@@ -55,6 +58,9 @@ export function createMemoryDeleteTool(
   memoryDir: string,
   prefix: string = DEFAULT_PREFIX,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   return buildTool({
     name: `${prefix}_delete`,
     description: "Delete a memory record by ID. Removes the file and updates the MEMORY.md index.",

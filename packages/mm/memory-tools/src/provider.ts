@@ -9,7 +9,12 @@
 import type { ComponentProvider, KoiError, Result, Tool } from "@koi/core";
 import { COMPONENT_PRIORITY } from "@koi/core";
 import { createToolComponentProvider } from "@koi/tools-core";
-import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT, DEFAULT_SEARCH_LIMIT } from "./constants.js";
+import {
+  DEFAULT_PREFIX,
+  DEFAULT_RECALL_LIMIT,
+  DEFAULT_SEARCH_LIMIT,
+  validateMemoryDir,
+} from "./constants.js";
 import { createMemoryDeleteTool } from "./tools/memory-delete.js";
 import { createMemoryRecallTool } from "./tools/memory-recall.js";
 import { createMemorySearchTool } from "./tools/memory-search.js";
@@ -34,38 +39,8 @@ export function createMemoryToolProvider(
     priority = COMPONENT_PRIORITY.BUNDLED,
   } = config;
 
-  if (typeof memoryDir !== "string" || memoryDir.length === 0) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "memoryDir is required and must be a non-empty string",
-        retryable: false,
-      },
-    };
-  }
-
-  if (!memoryDir.startsWith("/")) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "memoryDir must be an absolute path (start with /)",
-        retryable: false,
-      },
-    };
-  }
-
-  if (/(^|\/)\.\.(\/|$)/.test(memoryDir)) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "memoryDir must not contain '..' traversal segments",
-        retryable: false,
-      },
-    };
-  }
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
 
   const results: readonly Result<Tool, KoiError>[] = [
     createMemoryStoreTool(backend, memoryDir, prefix),

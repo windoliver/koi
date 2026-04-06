@@ -11,6 +11,7 @@ export {
   DEFAULT_RECALL_LIMIT,
   DEFAULT_SEARCH_LIMIT,
   MEMORY_OPERATIONS,
+  validateMemoryDir,
 } from "./constants.js";
 // Provider
 export { createMemoryToolProvider } from "./provider.js";

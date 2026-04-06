@@ -128,7 +128,7 @@ describe("memory_delete idempotency", () => {
     expect(second.wasPresent).toBe(false);
   });
 
-  test("concurrent deletes: both succeed, exactly one has wasPresent: true", async () => {
+  test("concurrent deletes: both deleted:true, exactly one wasPresent:true", async () => {
     const backend = atomicInMemoryBackend();
     const storeResult = backend.store({
       name: "concurrent-delete",
@@ -146,7 +146,9 @@ describe("memory_delete idempotency", () => {
       tool.execute({ id: stored?.id }) as Promise<Record<string, unknown>>,
     ]);
 
+    // Both report deleted:true (idempotent — desired state achieved)
     expect(results.every((r) => r.deleted === true)).toBe(true);
+    // Exactly one actually removed it
     const presentCount = results.filter((r) => r.wasPresent === true).length;
     expect(presentCount).toBe(1);
   });

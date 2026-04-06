@@ -192,7 +192,7 @@ describe("memory_store atomic dedup", () => {
     content: "Some content.",
   };
 
-  test("concurrent stores with same name+type: exactly one created, rest conflict", async () => {
+  test("concurrent stores with same name+type+payload: one created, rest replayed", async () => {
     const backend = atomicInMemoryBackend();
     const tool = unwrapTool(createMemoryStoreTool(backend, TEST_MEMORY_DIR));
 
@@ -201,20 +201,46 @@ describe("memory_store atomic dedup", () => {
       Array.from({ length: N }, () => tool.execute(validArgs) as Promise<Record<string, unknown>>),
     );
 
-    const created = results.filter((r) => r.stored === true && r.updated === undefined);
+    // All succeed (exact-payload replay is transparent)
+    expect(results.every((r) => r.stored === true)).toBe(true);
+
+    const created = results.filter((r) => r.replayed === undefined);
+    const replayed = results.filter((r) => r.replayed === true);
+
+    expect(created.length).toBe(1);
+    expect(replayed.length).toBe(N - 1);
+
+    // All reference the same record id
+    const createdId = created[0]?.id;
+    for (const r of replayed) {
+      expect(r.id).toBe(createdId);
+    }
+  });
+
+  test("concurrent stores with same name+type but different payload: one created, rest conflict", async () => {
+    const backend = atomicInMemoryBackend();
+    const tool = unwrapTool(createMemoryStoreTool(backend, TEST_MEMORY_DIR));
+
+    const N = 5;
+    const results = await Promise.all(
+      Array.from(
+        { length: N },
+        (_, i) =>
+          tool.execute({
+            ...validArgs,
+            content: `Content variant ${String(i)}`,
+          }) as Promise<Record<string, unknown>>,
+      ),
+    );
+
+    const created = results.filter((r) => r.stored === true && r.replayed === undefined);
     const conflicts = results.filter((r) => r.stored === false);
 
     expect(created.length).toBe(1);
     expect(conflicts.length).toBe(N - 1);
-
-    // All conflicts reference the same record
-    const createdId = created[0]?.id;
-    for (const c of conflicts) {
-      expect((c.duplicate as Record<string, unknown>).id).toBe(createdId);
-    }
   });
 
-  test("retry-after-timeout: second store returns conflict with same id", async () => {
+  test("retry-after-timeout: exact-payload replay returns stored+replayed with same id", async () => {
     const backend = atomicInMemoryBackend();
     const tool = unwrapTool(createMemoryStoreTool(backend, TEST_MEMORY_DIR));
 
@@ -222,7 +248,22 @@ describe("memory_store atomic dedup", () => {
     const second = (await tool.execute(validArgs)) as Record<string, unknown>;
 
     expect(first.stored).toBe(true);
+    expect(second.stored).toBe(true);
+    expect(second.replayed).toBe(true);
+    expect(second.id).toBe(first.id);
+  });
+
+  test("different-payload store returns conflict", async () => {
+    const backend = atomicInMemoryBackend();
+    const tool = unwrapTool(createMemoryStoreTool(backend, TEST_MEMORY_DIR));
+
+    await tool.execute(validArgs);
+    const second = (await tool.execute({
+      ...validArgs,
+      content: "Different content.",
+    })) as Record<string, unknown>;
+
     expect(second.stored).toBe(false);
-    expect((second.duplicate as Record<string, unknown>).id).toBe(first.id);
+    expect(second.duplicate).toBeDefined();
   });
 });

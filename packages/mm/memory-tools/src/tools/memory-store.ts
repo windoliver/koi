@@ -9,7 +9,7 @@
 import type { JsonObject, KoiError, MemoryRecordInput, Result, Tool } from "@koi/core";
 import { ALL_MEMORY_TYPES, validateMemoryRecordInput } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX } from "../constants.js";
+import { DEFAULT_PREFIX, validateMemoryDir } from "../constants.js";
 import { parseOptionalBoolean, parseOptionalEnum, parseString } from "../parse-args.js";
 import { safeBackendError, safeCatchError } from "../safe-error.js";
 import type { MemoryToolBackend } from "../types.js";
@@ -99,12 +99,23 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
         return { stored: true, id: value.record.id, filePath: value.record.filePath };
       case "updated":
         return { stored: true, id: value.record.id, updated: true };
-      case "conflict":
+      case "conflict": {
+        // Retry-safe: if the existing record has the exact same content and
+        // description, treat it as a successful replay (caller's prior write
+        // succeeded but the response was lost). Only surface a conflict when
+        // the payloads actually differ.
+        const exact =
+          value.existing.content === input.content &&
+          value.existing.description === input.description;
+        if (exact) {
+          return { stored: true, id: value.existing.id, replayed: true };
+        }
         return {
           stored: false,
           duplicate: { id: value.existing.id, name: value.existing.name },
           message: "A memory with this name and type already exists. Use force: true to overwrite.",
         };
+      }
     }
   } catch {
     return safeCatchError("Failed to store memory");
@@ -117,6 +128,9 @@ export function createMemoryStoreTool(
   memoryDir: string,
   prefix: string = DEFAULT_PREFIX,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   return buildTool({
     name: `${prefix}_store`,
     description:
@@ -145,6 +159,11 @@ export function createMemoryStoreTool(
     },
     origin: "primordial",
     sandbox: true,
+    // NOTE: buildTool unions these with DEFAULT_SANDBOXED_POLICY defaults
+    // (read: /usr,/bin,/lib,/etc,/tmp; write: /tmp/koi-sandbox-*). A future
+    // buildTool "replace" mode will restrict to memoryDir only. The backend
+    // is already scoped to its configured directory — these caps declare
+    // intent, not sole access.
     filesystem: { read: [memoryDir], write: [memoryDir] },
     execute: async (args: JsonObject): Promise<unknown> => executeStore(args, backend),
   });
