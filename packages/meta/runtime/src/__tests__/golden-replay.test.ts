@@ -627,18 +627,20 @@ describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () =>
     expect(doneEvent?.output.metrics.turns).toBe(2);
 
     // 2. Per-turn callback buffering correctness.
-    // Turn 0 ends with stopReason: "tool_use" — non-terminal, so no text is
-    // buffered and detectCompletions is not invoked for that turn.
-    // Turn 1 ends with stopReason: "stop"/"completed" — terminal, text buffered.
-    // Only one detectCompletions invocation (for the terminal turn).
-    expect(callbackPayloads.length).toBe(1);
+    // Both turns buffer text (matching wrapModelCall semantics).
+    // Turn 0 (tool-use cassette with empty text) and turn 1 (text "12").
+    expect(callbackPayloads.length).toBe(2);
 
-    // The single callback is from turn 1 (text response "12"): detects completion.
-    expect(callbackPayloads[0]?.ids).toEqual(["goal-0"]);
+    // Turn 0 (tool-use): cassette has no text_delta, so buffered text is
+    // the empty done.response.content fallback. No completion detected.
+    expect(callbackPayloads[0]?.ids).toEqual([]);
+
+    // Turn 1 (text response "12"): detects completion via ID.
+    expect(callbackPayloads[1]?.ids).toEqual(["goal-0"]);
     // Verify the callback received the actual response text "12"
-    expect(callbackPayloads[0]?.responseTexts.some((t) => t.includes("12"))).toBe(true);
-    // Verify exactly one entry (no leakage from turn 0)
-    expect(callbackPayloads[0]?.responseTexts.length).toBe(1);
+    expect(callbackPayloads[1]?.responseTexts.some((t) => t.includes("12"))).toBe(true);
+    // Verify exactly one entry per turn (no cross-turn leakage)
+    expect(callbackPayloads[1]?.responseTexts.length).toBe(1);
 
     // 3. onComplete fired exactly once at turn boundary (not mid-turn, not duplicated)
     expect(completed.length).toBe(1);
