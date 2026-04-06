@@ -23,7 +23,7 @@ async function renderMessage(
   opts = RENDER_OPTS,
 ): Promise<string> {
   const { captureCharFrame, renderOnce, renderer } = await testRender(
-    () => <MessageRow message={message} spinnerFrame={0} />,
+    () => <MessageRow message={message} spinnerFrame={() => 0} />,
     opts,
   );
   await renderOnce();
@@ -158,7 +158,7 @@ describe("MessageRow — assistant tool_call", () => {
     };
     const frame = await renderMessage(msg);
     expect(frame).toContain("bad_tool");
-    expect(frame).toContain("[unrenderable result]");
+    expect(frame).toContain("[result of bad_tool could not be serialized]");
   });
 
   test("renders pre-capped tool result from reducer", async () => {

@@ -273,7 +273,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 
 | Component | Purpose | Key behavior |
 |-----------|---------|-------------|
-| `TextBlock` | Text/markdown | `<text>` baseline, `<markdown>` when syntaxStyle provided |
+| `TextBlock` | Text/markdown | `<text>` baseline; `<markdown>` only when BOTH `syntaxStyle` AND `treeSitterClient` are provided. `<markdown>` without `treeSitterClient` blanks paragraph text — the guard prevents silent prose regression until tree-sitter is wired (#1542) |
 | `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
 | `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
 | `ErrorBlock` | Error display | Red border, code + message |
@@ -370,7 +370,15 @@ maps command ID → `TuiView | null` and is exported for testing.
 ### `createTuiApp` flow
 
 ```typescript
-const result = createTuiApp({ store, permissionBridge, onCommand, onSubmit, onInterrupt })
+const result = createTuiApp({
+  store,
+  permissionBridge,
+  onCommand,
+  onSubmit,
+  onInterrupt,
+  syntaxStyle,       // optional — enables JSON highlighting in ToolCallBlock (<code>)
+  treeSitterClient,  // optional — enables <markdown> in TextBlock (both required; see #1542)
+})
 if (!result.ok) {
   // result.error.kind === "no_tty" — not a terminal (CI, pipe, etc.)
   process.exit(1)
@@ -379,6 +387,14 @@ await result.value.start()   // mounts renderer + Solid tree, starts rendering
 // ...
 await result.value.stop()    // cleans up renderer, bridge, resize listener
 ```
+
+`syntaxStyle` enables `<code>` syntax highlighting in tool call blocks and is the theme
+object for eventual markdown rendering. `treeSitterClient` is the tree-sitter WASM client
+required by `<markdown>` for paragraph/heading/prose rendering. Both are optional and
+default to `undefined`. Pass both together to unlock rich assistant text rendering.
+The `treeSitterClient` prop is threaded through the full component chain:
+`CreateTuiAppConfig` → `TuiRoot` → `ConversationView` → `MessageList` → `MessageRow` →
+`AssistantBlock` → `TextBlock`.
 
 Solid-specific details:
 - Uses `render()` + `createComponent()` from `@opentui/solid` (not React's `createRoot`).
@@ -437,3 +453,11 @@ subscriptions.
 > **PR #1508 — App shell wiring (#1459):** Added `SessionsView`, `DoctorView`, `HelpView`. `TuiRoot` now intercepts nav commands (palette → `set_view`) and renders real view components via `<Switch><Match>`. `resolveNavCommand()` and `CommandId` exported. Resize debounce changed 50ms → 16ms. `build.ts` now clears `tsconfig.tsbuildinfo` before tsc declaration emit to prevent incremental-cache skip of subpath `.d.ts` files. `StatusBar.ModelChip` fixed: nested `<text>` inside `<text>` is invalid in OpenTUI — replaced with `<box flexDirection="row">` + three sibling `<text>` elements.
 
 > **Current branch — Slash overlay double-submit fix + InputArea guards:** Fixed a race condition where pressing Enter on the slash overlay would also submit the "/" text to the engine. Root cause: the `disabled` prop path relied on `queueMicrotask`-deferred store notifications, creating a two-hop async delay before `InputArea` saw the updated state. Fix: `InputArea`'s submit handler now calls `detectSlashPrefix(result.text)` synchronously — if the text has a slash prefix the submit is suppressed regardless of reactive state or input batching. `ConversationView` no longer sets `disabled` on `InputArea` (it was freezing the slash query at "/" and preventing filter typing). The `disabled` prop remains in the interface for other callers.
+
+> **PR #1535 — DRY scroll primitives, syntax highlighting, test coverage, overlay opacity:**
+>
+> **`createScrollableList` (select-overlay-helpers.ts):** Extracted `computeVisibleStart` as a pure function for unit testing. `selectedIdx` clamping moved from `createEffect` to `createMemo` — `createEffect` defers to the next microtask which causes `selectedIdx()` to return stale values in synchronous test assertions. `createMemo` computes inline and is always consistent. Fixed `moveDown` on an empty list: previously wrote `-1` to `rawIdx` (upper-bound-only clamp missed the lower bound); now guards `max < 0 ? 0 : Math.min(i+1, max)`.
+>
+> **`TextBlock` (text-block.tsx):** `<markdown>` is now gated on BOTH `syntaxStyle` AND `treeSitterClient`. Previously, `<markdown>` activated on `syntaxStyle` alone, but `<markdown>` without `treeSitterClient` silently renders blank paragraph/heading text (only code fences show). The dual-guard restores the prose-renders-correctly invariant: the component falls back to `<text>` when tree-sitter is absent. `treeSitterClient?: TreeSitterClient | undefined` added to `TextBlockProps` and threaded through the entire prop chain down from `CreateTuiAppConfig`. Once `treeSitterClient` is wired in the CLI (#1542), rich markdown rendering activates automatically.
+>
+> **Modal overlay opacity (theme.ts, ConversationView.tsx):** `MODAL_POSITION` constant gained `backgroundColor: "#0D1B2A"` (the `bgElevated` Deep Water color as a literal, required by `--isolatedDeclarations`). `SlashOverlay`'s wrapper box in `ConversationView` now uses `backgroundColor={COLORS.bgElevated}`. These fixes prevent modal content bleeding through transparent overlay regions.

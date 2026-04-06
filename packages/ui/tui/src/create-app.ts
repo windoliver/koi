@@ -17,7 +17,7 @@
 import type { Result } from "@koi/core/errors";
 // `createCliRenderer` uses a native Zig FFI library — lazy-import it inside
 // start() so tests with an injected renderer never load the native binary.
-import type { CliRenderer } from "@opentui/core";
+import type { CliRenderer, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
@@ -71,6 +71,18 @@ export interface CreateTuiAppConfig {
   readonly renderer?: CliRenderer | undefined;
   readonly screenMode?: "split-footer" | undefined;
   readonly footerHeight?: number | undefined;
+  /**
+   * Optional syntax style for JSON highlighting in tool call blocks and
+   * (when paired with treeSitterClient) markdown rendering in TextBlock.
+   * Created via SyntaxStyle.create() or SyntaxStyle.fromTheme() from @opentui/core.
+   */
+  readonly syntaxStyle?: SyntaxStyle | undefined;
+  /**
+   * Optional tree-sitter client for rich markdown rendering in assistant text.
+   * When provided alongside syntaxStyle, TextBlock upgrades from <text> to
+   * <markdown> with full prose/heading/code-fence support. See #1542.
+   */
+  readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +115,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     renderer: injectedRenderer,
     screenMode,
     footerHeight,
+    syntaxStyle,
+    treeSitterClient,
   } = config;
 
   let started = false;
@@ -250,6 +264,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     onSubmit,
                     onInterrupt,
                     onPermissionRespond: permissionBridge.respond,
+                    syntaxStyle,
+                    treeSitterClient,
                   });
                 },
               }),

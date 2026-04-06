@@ -2,9 +2,9 @@
  * MessageRow — renders a single conversation turn.
  */
 
-import type { SyntaxStyle } from "@opentui/core";
+import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
-import type { JSX, Accessor } from "solid-js";
+import type { Accessor, JSX } from "solid-js";
 import { For, Match, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
@@ -20,14 +20,17 @@ type ErrorBlock_ = TuiAssistantBlock & { readonly kind: "error" };
 interface MessageRowProps {
   readonly message: TuiMessage;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  readonly spinnerFrame: number;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
+  /** Accessor so only the leaf StatusIndicator subscribes — not every MessageRow. */
+  readonly spinnerFrame: Accessor<number>;
 }
 
 function AssistantBlock(props: {
   readonly block: TuiAssistantBlock;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
   readonly streaming?: boolean | undefined;
-  readonly spinnerFrame: number;
+  readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
   return (
     <Switch>
@@ -36,6 +39,7 @@ function AssistantBlock(props: {
           <TextBlock
             text={b().text}
             syntaxStyle={props.syntaxStyle}
+            treeSitterClient={props.treeSitterClient}
             streaming={props.streaming}
           />
         )}
@@ -45,7 +49,11 @@ function AssistantBlock(props: {
       </Match>
       <Match when={props.block.kind === "tool_call" ? (props.block as ToolCallBlock_) : undefined}>
         {(b: Accessor<ToolCallBlock_>) => (
-          <ToolCallBlock block={b()} spinnerFrame={props.spinnerFrame} />
+          <ToolCallBlock
+            block={b()}
+            spinnerFrame={props.spinnerFrame}
+            syntaxStyle={props.syntaxStyle}
+          />
         )}
       </Match>
       <Match when={props.block.kind === "error" ? (props.block as ErrorBlock_) : undefined}>
@@ -105,7 +113,8 @@ function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
 function AssistantMessage(props: {
   readonly message: AssistantMessage_;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  readonly spinnerFrame: number;
+  readonly treeSitterClient?: TreeSitterClient | undefined;
+  readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
   return (
     <box flexDirection="column">
@@ -114,6 +123,7 @@ function AssistantMessage(props: {
           <AssistantBlock
             block={block}
             syntaxStyle={props.syntaxStyle}
+            treeSitterClient={props.treeSitterClient}
             streaming={props.message.streaming}
             spinnerFrame={props.spinnerFrame}
           />
@@ -148,6 +158,7 @@ export function MessageRow(props: MessageRowProps): JSX.Element {
           <AssistantMessage
             message={msg()}
             syntaxStyle={props.syntaxStyle}
+            treeSitterClient={props.treeSitterClient}
             spinnerFrame={props.spinnerFrame}
           />
         )}

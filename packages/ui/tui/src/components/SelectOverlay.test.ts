@@ -25,98 +25,108 @@ function mockKey(name: string, ctrl = false): KeyEvent {
   } as KeyEvent;
 }
 
+/**
+ * Counter-based callbacks — each returns a count accessor so tests can assert
+ * exactly how many times each handler fired.
+ */
+function mockCallbacks(): {
+  readonly onClose: () => void;
+  readonly onSelect: () => void;
+  readonly onMoveUp: () => void;
+  readonly onMoveDown: () => void;
+  readonly closeCount: () => number;
+  readonly selectCount: () => number;
+  readonly upCount: () => number;
+  readonly downCount: () => number;
+} {
+  let closeCalls = 0;
+  let selectCalls = 0;
+  let upCalls = 0;
+  let downCalls = 0;
+  return {
+    onClose: () => {
+      closeCalls++;
+    },
+    onSelect: () => {
+      selectCalls++;
+    },
+    onMoveUp: () => {
+      upCalls++;
+    },
+    onMoveDown: () => {
+      downCalls++;
+    },
+    closeCount: () => closeCalls,
+    selectCount: () => selectCalls,
+    upCount: () => upCalls,
+    downCount: () => downCalls,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // handleSelectOverlayKey
 // ---------------------------------------------------------------------------
 
 describe("handleSelectOverlayKey", () => {
   test("escape calls onClose and returns true", () => {
-    let closed = 0;
-    const consumed = handleSelectOverlayKey(mockKey("escape"), {
-      onClose: () => {
-        closed++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("escape"), cb);
     expect(consumed).toBe(true);
-    expect(closed).toBe(1);
+    expect(cb.closeCount()).toBe(1);
+    expect(cb.selectCount()).toBe(0);
   });
 
   test("enter calls onSelect and returns true", () => {
-    let selected = 0;
-    const consumed = handleSelectOverlayKey(mockKey("return"), {
-      onClose: () => {},
-      onSelect: () => {
-        selected++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("return"), cb);
     expect(consumed).toBe(true);
-    expect(selected).toBe(1);
+    expect(cb.selectCount()).toBe(1);
+    expect(cb.closeCount()).toBe(0);
   });
 
   test("tab calls onSelect and returns true", () => {
-    let selected = 0;
-    const consumed = handleSelectOverlayKey(mockKey("tab"), {
-      onClose: () => {},
-      onSelect: () => {
-        selected++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("tab"), cb);
     expect(consumed).toBe(true);
-    expect(selected).toBe(1);
+    expect(cb.selectCount()).toBe(1);
   });
 
   test("up navigates and returns true", () => {
-    let moved = 0;
-    const consumed = handleSelectOverlayKey(mockKey("up"), {
-      onClose: () => {},
-      onMoveUp: () => {
-        moved++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("up"), cb);
     expect(consumed).toBe(true);
-    expect(moved).toBe(1);
+    expect(cb.upCount()).toBe(1);
+    expect(cb.selectCount()).toBe(0);
   });
 
   test("down navigates and returns true", () => {
-    let moved = 0;
-    const consumed = handleSelectOverlayKey(mockKey("down"), {
-      onClose: () => {},
-      onMoveDown: () => {
-        moved++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("down"), cb);
     expect(consumed).toBe(true);
-    expect(moved).toBe(1);
+    expect(cb.downCount()).toBe(1);
+    expect(cb.selectCount()).toBe(0);
   });
 
   test("Ctrl+P navigates up and returns true", () => {
-    let moved = 0;
-    const consumed = handleSelectOverlayKey(mockKey("p", true), {
-      onClose: () => {},
-      onMoveUp: () => {
-        moved++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("p", true), cb);
     expect(consumed).toBe(true);
-    expect(moved).toBe(1);
+    expect(cb.upCount()).toBe(1);
   });
 
   test("Ctrl+N navigates down and returns true", () => {
-    let moved = 0;
-    const consumed = handleSelectOverlayKey(mockKey("n", true), {
-      onClose: () => {},
-      onMoveDown: () => {
-        moved++;
-      },
-    });
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("n", true), cb);
     expect(consumed).toBe(true);
-    expect(moved).toBe(1);
+    expect(cb.downCount()).toBe(1);
   });
 
   test("printable characters are not consumed", () => {
-    const cb = { onClose: () => {} };
+    const cb = mockCallbacks();
     expect(handleSelectOverlayKey(mockKey("a"), cb)).toBe(false);
     expect(handleSelectOverlayKey(mockKey("1"), cb)).toBe(false);
+    expect(cb.closeCount()).toBe(0);
+    expect(cb.selectCount()).toBe(0);
   });
 
   test("optional handlers can be omitted without throwing", () => {
@@ -127,12 +137,18 @@ describe("handleSelectOverlayKey", () => {
   });
 
   test("escape does not fire multiple times for a single call", () => {
-    let closed = 0;
-    handleSelectOverlayKey(mockKey("escape"), {
-      onClose: () => {
-        closed++;
-      },
-    });
-    expect(closed).toBe(1);
+    const cb = mockCallbacks();
+    handleSelectOverlayKey(mockKey("escape"), cb);
+    expect(cb.closeCount()).toBe(1);
+  });
+
+  test("unknown key returns false (not consumed)", () => {
+    const cb = mockCallbacks();
+    const consumed = handleSelectOverlayKey(mockKey("a"), cb);
+    expect(consumed).toBe(false);
+    expect(cb.closeCount()).toBe(0);
+    expect(cb.selectCount()).toBe(0);
+    expect(cb.upCount()).toBe(0);
+    expect(cb.downCount()).toBe(0);
   });
 });

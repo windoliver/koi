@@ -6,15 +6,15 @@
  * Used by both CommandPalette and SessionPicker.
  *
  * Uses a <For> loop (not OpenTUI <select>) for reliable rendering without
- * frameBuffer height management. Keyboard navigation is handled manually.
+ * frameBuffer height management. Scroll state is managed by createScrollableList.
  */
 
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { COLORS } from "../theme.js";
-import { handleSelectOverlayKey } from "./select-overlay-helpers.js";
+import { createScrollableList, handleSelectOverlayKey } from "./select-overlay-helpers.js";
 
 export { handleSelectOverlayKey };
 
@@ -50,39 +50,18 @@ export interface SelectOverlayProps<T> {
 // ---------------------------------------------------------------------------
 
 export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
-  const [selectedIdx, setSelectedIdx] = createSignal(0);
-
-  // Clamp selection to valid range when items change
-  createEffect((): void => {
-    const count = props.items.length;
-    setSelectedIdx((prev) => (count === 0 ? 0 : Math.min(prev, count - 1)));
-  });
-
-  const visibleStart = createMemo((): number => {
-    const idx = selectedIdx();
-    const count = props.items.length;
-    if (count <= MAX_VISIBLE) return 0;
-    return Math.max(0, Math.min(idx - Math.floor(MAX_VISIBLE / 2), count - MAX_VISIBLE));
-  });
-
-  const visibleItems = createMemo((): readonly T[] =>
-    props.items.slice(visibleStart(), visibleStart() + MAX_VISIBLE),
-  );
+  const list = createScrollableList(() => props.items, MAX_VISIBLE);
 
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
     handleSelectOverlayKey(key, {
       onClose: props.onClose,
       onSelect: (): void => {
-        const item = props.items[selectedIdx()];
+        const item = props.items[list.selectedIdx()];
         if (item !== undefined) props.onSelect(item);
       },
-      onMoveUp: (): void => {
-        setSelectedIdx((i) => Math.max(i - 1, 0));
-      },
-      onMoveDown: (): void => {
-        setSelectedIdx((i) => Math.min(i + 1, props.items.length - 1));
-      },
+      onMoveUp: list.moveUp,
+      onMoveDown: list.moveDown,
     });
   });
 
@@ -95,18 +74,22 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
         </box>
       }
     >
-      <For each={visibleItems()}>
+      <For each={list.visibleItems()}>
         {(item, localIdx) => {
-          const isSelected = (): boolean => visibleStart() + localIdx() === selectedIdx();
+          const isSelected = (): boolean =>
+            list.visibleStart() + localIdx() === list.selectedIdx();
+          const description = (): string | undefined => props.getDescription?.(item);
           return (
             <box paddingLeft={1}>
               <text fg={isSelected() ? COLORS.yellow : COLORS.white}>
                 {(isSelected() ? "▶ " : "  ") + props.getLabel(item)}
               </text>
-              <Show when={props.getDescription !== undefined}>
-                <text fg={isSelected() ? COLORS.textSecondary : COLORS.textMuted}>
-                  {"  " + props.getDescription!(item)}
-                </text>
+              <Show when={description()}>
+                {(d: () => string) => (
+                  <text fg={isSelected() ? COLORS.textSecondary : COLORS.textMuted}>
+                    {"  " + d()}
+                  </text>
+                )}
               </Show>
             </box>
           );
