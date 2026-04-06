@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../args.js";
@@ -246,12 +246,25 @@ describe("listSessionSummaries", () => {
     await writeSession(chatDir, "old-session", [makeLine("user", "first", 1000)]);
     await writeSession(chatDir, "new-session", [makeLine("user", "latest", 9000)]);
 
+    // listSessionSummaries sorts by filesystem mtime, not by JSONL timestamps.
+    // On CI (Linux, ext4), both files written in rapid succession can get the
+    // same mtime — making the sort non-deterministic. Set mtimes explicitly so
+    // the expected order is always enforced.
+    const oldPath = join(chatDir, "old-session.jsonl");
+    const newPath = join(chatDir, "new-session.jsonl");
+    const oldMtime = new Date(1_000_000);
+    const newMtime = new Date(2_000_000);
+    await utimes(oldPath, oldMtime, oldMtime);
+    await utimes(newPath, newMtime, newMtime);
+
     const result = await listSessionSummaries(tmpDir, 20);
     expect(result).toHaveLength(2);
     const first = result[0];
     const second = result[1];
     if (first === undefined || second === undefined) throw new Error("expected 2 sessions");
-    expect(first.lastActiveAt).toBeGreaterThanOrEqual(second.lastActiveAt);
+    // new-session has the higher mtime → must sort first
+    expect(first.sessionId).toBe("new-session");
+    expect(second.sessionId).toBe("old-session");
   });
 
   test("respects limit — returns at most limit sessions", async () => {
