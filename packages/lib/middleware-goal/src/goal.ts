@@ -770,10 +770,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
         } else if (chunk.kind === "done" && !sawToolCall) {
           const stopReason = chunk.response.stopReason;
           // Skip non-final stop reasons: tool_use (legacy adapters may set
-          // this even without tool_call_start), length (truncated), and
-          // hook_blocked (provider-level denial).
+          // this even without tool_call_start), length (truncated),
+          // hook_blocked (provider-level denial), and error (failed terminal).
           const isNonFinal =
-            stopReason === "tool_use" || stopReason === "length" || stopReason === "hook_blocked";
+            stopReason === "tool_use" ||
+            stopReason === "length" ||
+            stopReason === "hook_blocked" ||
+            stopReason === "error";
           if (!isNonFinal) {
             if (bufferedText.length === 0) {
               bufferedText = chunk.response.content;
