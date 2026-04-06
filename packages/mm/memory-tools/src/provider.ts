@@ -20,24 +20,58 @@ import type { MemoryToolProviderConfig } from "./types.js";
  * Create a ComponentProvider that attaches all 4 memory tools to agents.
  *
  * Returns `Result<ComponentProvider, KoiError>` — fails if any tool fails
- * to build (e.g. invalid definition).
+ * to build (e.g. invalid definition or invalid memoryDir).
  */
 export function createMemoryToolProvider(
   config: MemoryToolProviderConfig,
 ): Result<ComponentProvider, KoiError> {
   const {
     backend,
+    memoryDir,
     prefix = DEFAULT_PREFIX,
     recallLimit = DEFAULT_RECALL_LIMIT,
     searchLimit = DEFAULT_SEARCH_LIMIT,
     priority = COMPONENT_PRIORITY.BUNDLED,
   } = config;
 
+  if (typeof memoryDir !== "string" || memoryDir.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "memoryDir is required and must be a non-empty string",
+        retryable: false,
+      },
+    };
+  }
+
+  if (!memoryDir.startsWith("/")) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "memoryDir must be an absolute path (start with /)",
+        retryable: false,
+      },
+    };
+  }
+
+  if (/(^|\/)\.\.(\/|$)/.test(memoryDir)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "memoryDir must not contain '..' traversal segments",
+        retryable: false,
+      },
+    };
+  }
+
   const results: readonly Result<Tool, KoiError>[] = [
-    createMemoryStoreTool(backend, prefix),
-    createMemoryRecallTool(backend, prefix, recallLimit),
-    createMemorySearchTool(backend, prefix, searchLimit),
-    createMemoryDeleteTool(backend, prefix),
+    createMemoryStoreTool(backend, memoryDir, prefix),
+    createMemoryRecallTool(backend, memoryDir, prefix, recallLimit),
+    createMemorySearchTool(backend, memoryDir, prefix, searchLimit),
+    createMemoryDeleteTool(backend, memoryDir, prefix),
   ];
 
   const firstError = results.find((r) => !r.ok);

@@ -67,6 +67,7 @@ async function executeRecall(
 /** Create the memory_recall tool. */
 export function createMemoryRecallTool(
   backend: MemoryToolBackend,
+  memoryDir: string,
   prefix: string = DEFAULT_PREFIX,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Result<Tool, KoiError> {
@@ -108,7 +109,8 @@ export function createMemoryRecallTool(
       required: ["query"],
     },
     origin: "primordial",
-    sandbox: false,
+    sandbox: true,
+    filesystem: { read: [memoryDir] },
     execute: async (args: JsonObject): Promise<unknown> =>
       executeRecall(args, backend, recallLimit),
   });

@@ -24,8 +24,11 @@ export { createMemorySearchTool } from "./tools/memory-search.js";
 export { createMemoryStoreTool } from "./tools/memory-store.js";
 // Types
 export type {
+  DeleteResult,
   MemorySearchFilter,
   MemoryToolBackend,
   MemoryToolProviderConfig,
   MemoryToolRecallOptions,
+  StoreWithDedupOptions,
+  StoreWithDedupResult,
 } from "./types.js";

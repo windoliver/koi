@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mockBackend, mockError, mockRecord, unwrapTool } from "./__test-utils.js";
+import { mockBackend, mockError, mockRecord, TEST_MEMORY_DIR, unwrapTool } from "./__test-utils.js";
 import { createMemoryRecallTool } from "./memory-recall.js";
 
 describe("createMemoryRecallTool", () => {
   test("builds successfully", () => {
-    const result = createMemoryRecallTool(mockBackend());
+    const result = createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR);
     expect(result.ok).toBe(true);
   });
 
   test("tool has correct name with default prefix", () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     expect(tool.descriptor.name).toBe("memory_recall");
   });
 });
@@ -20,7 +20,7 @@ describe("memory_recall execute", () => {
     const backend = mockBackend({
       recall: async () => ({ ok: true, value: records }),
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     const result = (await tool.execute({ query: "test" })) as Record<string, unknown>;
     expect(result.count).toBe(2);
@@ -28,7 +28,7 @@ describe("memory_recall execute", () => {
   });
 
   test("returns empty results for no matches", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({ query: "nothing" })) as Record<string, unknown>;
     expect(result.count).toBe(0);
     expect(result.results).toEqual([]);
@@ -42,7 +42,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend, "memory", 5));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR, "memory", 5));
 
     await tool.execute({ query: "test", limit: 100 });
     expect(capturedLimit).toBe(5);
@@ -56,7 +56,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     await tool.execute({ query: "test", limit: -5 });
     expect(capturedLimit).toBe(1);
@@ -70,7 +70,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     await tool.execute({ query: "test", tier: "hot" });
     expect(capturedTier).toBe("hot");
@@ -84,7 +84,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     await tool.execute({ query: "test" });
     expect(capturedOptions?.tierFilter).toBe("all");
@@ -100,7 +100,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     await tool.execute({ query: "test", graph_expand: true });
     expect(capturedOptions?.graphExpand).toBe(true);
@@ -117,7 +117,7 @@ describe("memory_recall execute", () => {
         return { ok: true, value: [] };
       },
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     await tool.execute({ query: "test", graph_expand: true, max_hops: 3 });
     expect(capturedExpand).toBe(true);
@@ -125,13 +125,13 @@ describe("memory_recall execute", () => {
   });
 
   test("returns validation error for missing query", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({})) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");
   });
 
   test("returns validation error for invalid tier", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({
       query: "test",
       tier: "invalid",
@@ -140,13 +140,13 @@ describe("memory_recall execute", () => {
   });
 
   test("rejects negative max_hops", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({ query: "test", max_hops: -1 })) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");
   });
 
   test("rejects fractional max_hops", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({ query: "test", max_hops: 1.7 })) as Record<
       string,
       unknown
@@ -155,13 +155,13 @@ describe("memory_recall execute", () => {
   });
 
   test("rejects fractional limit", async () => {
-    const tool = unwrapTool(createMemoryRecallTool(mockBackend()));
+    const tool = unwrapTool(createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR));
     const result = (await tool.execute({ query: "test", limit: 5.5 })) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");
   });
 
   test("rejects negative recallLimit at construction", () => {
-    const result = createMemoryRecallTool(mockBackend(), "memory", -5);
+    const result = createMemoryRecallTool(mockBackend(), TEST_MEMORY_DIR, "memory", -5);
     expect(result.ok).toBe(false);
   });
 
@@ -169,7 +169,7 @@ describe("memory_recall execute", () => {
     const backend = mockBackend({
       recall: async () => ({ ok: false, error: mockError("/var/data: read error") }),
     });
-    const tool = unwrapTool(createMemoryRecallTool(backend));
+    const tool = unwrapTool(createMemoryRecallTool(backend, TEST_MEMORY_DIR));
 
     const result = (await tool.execute({ query: "test" })) as Record<string, unknown>;
     expect(result.code).toBe("INTERNAL");
