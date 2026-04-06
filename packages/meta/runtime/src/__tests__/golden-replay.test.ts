@@ -5003,13 +5003,13 @@ describe("Approval trajectory capture (e2e)", () => {
 
     expect(approvalSteps.length).toBeGreaterThan(0);
 
-    const step = approvalSteps[0]!;
-    expect(step.kind).toBe("tool_call");
-    expect(step.identifier).toBe("add_numbers");
+    const step = approvalSteps[0];
+    expect(step?.kind).toBe("tool_call");
+    expect(step?.identifier).toBe("add_numbers");
     // stepIndex must be assigned (not the placeholder -1)
-    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
-    expect(step.outcome).toBe("success");
-    expect(step.metadata?.approvalDecision).toBe("allow");
+    expect(step?.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step?.outcome).toBe("success");
+    expect(step?.metadata?.approvalDecision).toBe("allow");
   });
 
   test("deny approval produces source:'user' step with failure outcome", async () => {
@@ -5075,13 +5075,13 @@ describe("Approval trajectory capture (e2e)", () => {
 
     expect(approvalSteps.length).toBeGreaterThan(0);
 
-    const step = approvalSteps[0]!;
-    expect(step.kind).toBe("tool_call");
+    const step = approvalSteps[0];
+    expect(step?.kind).toBe("tool_call");
     // stepIndex must be assigned (not the placeholder -1)
-    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
-    expect(step.outcome).toBe("failure");
-    expect(step.metadata?.approvalDecision).toBe("deny");
-    expect(step.metadata?.denyReason).toBe("test-deny");
+    expect(step?.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step?.outcome).toBe("failure");
+    expect(step?.metadata?.approvalDecision).toBe("deny");
+    expect(step?.metadata?.denyReason).toBe("test-deny");
   });
 
   test("runtime dispatch relay routes approval steps by sessionId", async () => {
@@ -5410,14 +5410,20 @@ describe("Golden: @koi/session — resume-from-transcript", () => {
     // user message
     expect(messages[0]?.senderId).toBe("user");
     expect((messages[0]?.content[0] as { kind: string; text: string }).text).toBe("Run the tool");
-    // tool_call → assistant message with callId metadata
+    // tool_call → assistant message with toolCalls array (request-mapper primary path).
+    // One assistant message per transcript tool_call entry (not one per call) so
+    // fixTranscriptOrdering sees a single tool_calls turn and preserves all results.
     const toolCallMsg = messages.find(
       (m) =>
         m.senderId === "assistant" &&
-        (m.metadata as Record<string, unknown>)?.callId === "call-abc",
+        Array.isArray((m.metadata as Record<string, unknown>)?.toolCalls),
     );
     expect(toolCallMsg).toBeDefined();
-    expect((toolCallMsg?.metadata as Record<string, unknown>)?.toolName).toBe("Glob");
+    const toolCalls = (toolCallMsg?.metadata as Record<string, unknown>)?.toolCalls as
+      | Array<{ id: string; function: { name: string } }>
+      | undefined;
+    expect(toolCalls?.[0]?.id).toBe("call-abc");
+    expect(toolCalls?.[0]?.function?.name).toBe("Glob");
     // tool_result → tool message with matched callId
     const toolResultMsg = messages.find(
       (m) =>

@@ -134,12 +134,15 @@ describe("resumeFromTranscript - case 3: user/assistant turns", () => {
     }
   });
 
-  test("system entries use senderId='system'", () => {
+  test("system entries use senderId='system:resume' for request-mapper authority", () => {
     const entries = [entry("system", "You are a helpful assistant.")];
     const result = resumeFromTranscript(entries);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.messages[0]?.senderId).toBe("system");
+      // "system:resume" matches the "system:*" prefix check in resolveRole(),
+      // preserving system authority through the OpenAI-compat request mapper.
+      // Plain "system" would fall through to "user" role (no startsWith match).
+      expect(result.value.messages[0]?.senderId).toBe("system:resume");
     }
   });
 });
@@ -160,15 +163,17 @@ describe("resumeFromTranscript - case 4: tool_call/tool_result pairs", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const { messages } = result.value;
-      // Find the tool-call message (senderId="assistant" with callId) and tool-result (senderId="tool")
+      // Assistant tool-call message carries metadata.toolCalls (array form for the
+      // request-mapper's primary path). Tool-result carries metadata.callId for linkage.
       const toolCallMsg = messages.find(
-        (m) => m.senderId === "assistant" && m.metadata?.callId !== undefined,
+        (m) => m.senderId === "assistant" && Array.isArray(m.metadata?.toolCalls),
       );
       const toolResultMsg = messages.find((m) => m.senderId === "tool");
       expect(toolCallMsg).toBeDefined();
       expect(toolResultMsg).toBeDefined();
-      // They must share the same callId
-      expect(toolCallMsg?.metadata?.callId).toBe(toolResultMsg?.metadata?.callId);
+      // toolCalls[0].id must match the result's callId
+      const toolCalls = toolCallMsg?.metadata?.toolCalls as Array<{ id: string }> | undefined;
+      expect(toolCalls?.[0]?.id).toBe(toolResultMsg?.metadata?.callId);
     }
   });
 
@@ -214,11 +219,14 @@ describe("resumeFromTranscript - case 5: dangling tool_use at end", () => {
       // Must be marked as synthetic error
       expect(toolResultMsg?.metadata?.synthetic).toBe(true);
       expect(toolResultMsg?.metadata?.isError).toBe(true);
-      // Must share the callId of the dangling tool_call
+      // Must share the callId of the dangling tool_call.
+      // Assistant tool-call messages use metadata.toolCalls (array) for the
+      // request-mapper; callId is on the individual tool_call object.
       const toolCallMsg = result.value.messages.find(
-        (m) => m.senderId === "assistant" && m.metadata?.callId !== undefined,
+        (m) => m.senderId === "assistant" && Array.isArray(m.metadata?.toolCalls),
       );
-      expect(toolResultMsg?.metadata?.callId).toBe(toolCallMsg?.metadata?.callId);
+      const toolCalls = toolCallMsg?.metadata?.toolCalls as Array<{ id: string }> | undefined;
+      expect(toolResultMsg?.metadata?.callId).toBe(toolCalls?.[0]?.id);
     }
   });
 });

@@ -5,6 +5,9 @@
  *
  * Handles:
  * - compaction folding: compaction entries → synthetic "user" messages with summary
+ * - system entries → "system:resume" senderId so the request-mapper grants system authority
+ * - tool_call entries → ONE assistant message per turn (metadata.toolCalls array) so
+ *   fixTranscriptOrdering sees a single tool_calls turn and preserves all result linkages
  * - tool_call/tool_result positional pairing: nth result matches nth call in the array
  * - dangling crash recovery: tool_calls with no result → synthetic error tool_results
  * - final repair pass via repairSession(): orphan pairs, dedup, merge
@@ -68,10 +71,21 @@ export function resumeFromTranscript(
       }
 
       case "user":
-      case "assistant":
-      case "system": {
+      case "assistant": {
         messages.push({
           senderId: transcriptEntry.role,
+          content: [{ kind: "text", text: transcriptEntry.content }],
+          timestamp: transcriptEntry.timestamp,
+        });
+        break;
+      }
+
+      case "system": {
+        // Use "system:resume" prefix so resolveRole() in the request-mapper
+        // grants system authority. Plain senderId "system" doesn't match the
+        // "system:*" startsWith check and falls back to "user" role.
+        messages.push({
+          senderId: "system:resume",
           content: [{ kind: "text", text: transcriptEntry.content }],
           timestamp: transcriptEntry.timestamp,
         });
@@ -91,27 +105,32 @@ export function resumeFromTranscript(
           // Corrupt tool_call entry — skip to avoid crashing resume
           break;
         }
-        // Each call becomes one assistant message. Emit the same metadata shape
-        // that live turns produce (callId, callName, callArgs, toolName) so the
-        // request-mapper can reconstruct the original tool_call block faithfully
-        // and provider-side validation doesn't see unknown({}) placeholders.
+        // Emit ONE assistant message per tool_call transcript entry (i.e., per
+        // model turn). This is critical: fixTranscriptOrdering() in the request-
+        // mapper replaces pendingCallIds on each new assistant tool_calls message,
+        // so splitting a multi-call turn into N separate messages would cause
+        // results 1..N-1 to be dropped as stale (their call IDs are no longer
+        // in pendingCallIds when the results arrive).
+        //
+        // Use metadata.toolCalls (the request-mapper primary path) to store the
+        // full ChatCompletionToolCall array for faithful reconstruction. The
+        // single-call callId/callName/callArgs fallback path in the mapper is
+        // NOT used here — it only handles one call per message.
+        const toolCalls = calls.map((call) => ({
+          id: call.id,
+          type: "function" as const,
+          function: { name: call.toolName, arguments: call.args },
+        }));
+        // Use first call.id as content text — UUIDs are unique across turns so
+        // repairSession()'s dedup phase (content-hash only) won't collapse them.
+        messages.push({
+          senderId: "assistant",
+          content: [{ kind: "text", text: calls[0]?.id ?? transcriptEntry.id }],
+          timestamp: transcriptEntry.timestamp,
+          metadata: { toolCalls },
+        });
+        // Track each call for positional result matching below.
         for (const call of calls) {
-          // Use call.id as content text — each callId is unique, so consecutive
-          // assistant messages in a multi-tool turn get distinct content hashes
-          // and survive repairSession()'s dedup phase (which hashes content only,
-          // not metadata). The request-mapper reconstructs the tool_call block
-          // from callId/callName/callArgs metadata and ignores the text content.
-          messages.push({
-            senderId: "assistant",
-            content: [{ kind: "text", text: call.id }],
-            timestamp: transcriptEntry.timestamp,
-            metadata: {
-              callId: call.id,
-              callName: call.toolName,
-              callArgs: call.args,
-              toolName: call.toolName,
-            },
-          });
           pendingCalls.push({ id: call.id, toolName: call.toolName });
         }
         break;
