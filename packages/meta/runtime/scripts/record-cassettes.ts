@@ -2008,6 +2008,95 @@ const queries: readonly QueryConfig[] = [
     },
   },
 
+  // spawn-fork: fork mode — child inherits all parent tools except agent_spawn (recursion guard).
+  //   Parent has Glob + Grep + ToolSearch (builtin search) + Spawn. LLM calls Spawn with fork=true.
+  //   Child model step in ATIF shows tools WITHOUT agent_spawn, proving the recursion guard works.
+  //   maxTurns defaults to DEFAULT_FORK_MAX_TURNS (200) since fork=true and no explicit maxTurns.
+  //   Uses Sonnet 4.6 — Gemini Flash drops the function name token on multi-step spawn sequences.
+  {
+    name: "spawn-fork",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='researcher' and fork=true to delegate: " +
+      "'List your available tools by name. Do you have an agent_spawn tool? Answer yes or no.' " +
+      "Then report the researcher's answer verbatim.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    maxTurns: 2,
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "researcher",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
+  // spawn-coordinator: coordinator allowlist ceiling — when coordinator is spawned as a child,
+  //   its manifest-declared spawn.tools.policy=allowlist restricts its children.
+  //   Parent spawns the built-in coordinator. Coordinator only receives delegation tools
+  //   (agent_spawn, task_create, task_list, task_output, task_delegate, task_stop, send_message).
+  //   Proves the coordinator's COORDINATOR_TOOL_ALLOWLIST ceiling is enforced via manifest.
+  //   Uses Sonnet 4.6 — Gemini Flash drops function name tokens on multi-step spawn sequences.
+  {
+    name: "spawn-coordinator",
+    prompt:
+      "You have Glob, Grep, ToolSearch, and Spawn tools. " +
+      "Use the Spawn tool with agentName='coordinator' to delegate: " +
+      "'List your available tools by name.' " +
+      "Then report which tools the coordinator listed.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    maxTurns: 2,
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    providerFactory: (store, docId) => {
+      const { middleware: childEventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "coordinator",
+      });
+      return [
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        createSpawnToolProvider({
+          resolver: spawnResolver,
+          spawnLedger: createInMemorySpawnLedger(5),
+          adapter: createChildBridge(),
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: MODEL },
+          },
+          inheritedMiddleware: [childEventTrace],
+        }),
+      ];
+    },
+  },
+
   // task-tools: @koi/task-tools — full 6-tool surface via createTaskTools()
   //     Exercises create → list → update(in_progress) → update(completed) flow.
   {

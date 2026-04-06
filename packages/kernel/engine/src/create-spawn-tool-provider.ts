@@ -116,6 +116,12 @@ const SPAWN_TOOL_INPUT_SCHEMA: JsonObject = {
       description:
         "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
     },
+    fork: {
+      type: "boolean",
+      description:
+        "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
+        "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+    },
     timeoutMs: {
       type: "number",
       description:
@@ -175,6 +181,7 @@ export function createSpawnExecutor(
       ...(Array.isArray(args.toolAllowlist)
         ? { toolAllowlist: args.toolAllowlist as string[] }
         : {}),
+      ...(args.fork === true ? { fork: true as const } : {}),
     });
 
     if (!result.ok) {

@@ -8,6 +8,11 @@ export type {
   RegistryConflictWarning,
 } from "./agent-definition-registry.js";
 export { createAgentDefinitionRegistry } from "./agent-definition-registry.js";
+// coordinator constants — exported for L3 assemblers and golden query assertions
+export {
+  COORDINATOR_MANIFEST,
+  COORDINATOR_TOOL_ALLOWLIST,
+} from "./built-in/coordinator.js";
 // built-in agents
 export { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./built-in/index.js";
 // top-level bootstrap helper

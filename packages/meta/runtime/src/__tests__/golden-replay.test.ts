@@ -3737,6 +3737,81 @@ describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// spawn-fork ATIF trajectory (golden file) — #1241
+// Validates fork=true is exposed in the Spawn tool schema and the parent
+// trajectory wires up Spawn with fork support.
+// Note: child agent tool verification is in unit tests (spawn-fork.test.ts)
+// since the full-stack trajectory requires reliable multi-turn tool execution.
+// ---------------------------------------------------------------------------
+
+describe("spawn-fork ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-fork.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn tool descriptor including fork field", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-fork.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("parent model call includes Spawn tool in its tool surface", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const parentStep = agentSteps.find((s) => s.extra?.tools?.some((t) => t.name === "Spawn"));
+    expect(parentStep).toBeDefined();
+    // Spawn tool is available — fork=true is an LLM-callable parameter (#1241)
+    expect(parentStep?.extra?.tools?.map((t) => t.name)).toContain("Spawn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn-coordinator ATIF trajectory (golden file) — #1241
+// Validates the coordinator agent is resolvable and the parent trajectory
+// includes Spawn for coordinator delegation.
+// Note: coordinator child tool verification is via unit tests since reliable
+// multi-turn tool execution requires stable LLM behavior across recordings.
+// ---------------------------------------------------------------------------
+
+describe("spawn-coordinator ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-coordinator.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn available for coordinator delegation", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-coordinator.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("parent model call includes Spawn tool for coordinator delegation", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const parentStep = agentSteps.find((s) => s.extra?.tools?.some((t) => t.name === "Spawn"));
+    expect(parentStep).toBeDefined();
+    expect(parentStep?.extra?.tools?.map((t) => t.name)).toContain("Spawn");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Standalone L2 golden: @koi/memory recall functions (no LLM needed)
 // ---------------------------------------------------------------------------
 
@@ -5137,6 +5212,38 @@ describe("Approval trajectory capture (e2e)", () => {
     expect(step.step_id).toBeGreaterThanOrEqual(0);
     expect(step.outcome).toBe("success");
     expect((step.extra as Record<string, unknown>)?.approvalDecision).toBe("allow");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone L2 golden: fork mode and coordinator allowlist (#1241)
+// ---------------------------------------------------------------------------
+
+describe("Golden: fork mode + coordinator allowlist (#1241)", () => {
+  test("COORDINATOR_TOOL_ALLOWLIST contains delegation tools and agent_spawn (fork recursion guard)", async () => {
+    const { COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
+    // agent_spawn in allowlist: coordinator can spawn children but fork recursion guard
+    // strips agent_spawn from fork children, preventing recursive forks (#1241)
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("agent_spawn");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_create");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_delegate");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("send_message");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_stop");
+    // File/shell tools must not be present
+    expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Glob");
+    expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Grep");
+  });
+
+  test("coordinator manifest spawn.tools.policy is allowlist with correct list", async () => {
+    const { COORDINATOR_MANIFEST, COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
+    // The manifest's spawn config matches the declared allowlist (single source of truth)
+    expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
+    const manifestList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list ?? [];
+    expect([...manifestList].sort()).toEqual([...COORDINATOR_TOOL_ALLOWLIST].sort());
+    // File/shell tools must never be in the coordinator's allowlist
+    expect(manifestList).not.toContain("Glob");
+    expect(manifestList).not.toContain("Grep");
+    expect(manifestList).not.toContain("ToolSearch");
   });
 });
 
