@@ -182,6 +182,7 @@ export interface TaskPatch {
 export type TaskBoardEvent =
   | { readonly kind: "task:added"; readonly task: Task }
   | { readonly kind: "task:assigned"; readonly taskId: TaskItemId; readonly agentId: AgentId }
+  | { readonly kind: "task:unassigned"; readonly taskId: TaskItemId }
   | { readonly kind: "task:completed"; readonly taskId: TaskItemId; readonly result: TaskResult }
   | { readonly kind: "task:failed"; readonly taskId: TaskItemId; readonly error: KoiError }
   | { readonly kind: "task:retried"; readonly taskId: TaskItemId; readonly retries: number }
@@ -246,6 +247,15 @@ export interface TaskBoard {
   readonly add: (input: TaskInput) => Result<TaskBoard, KoiError>;
   readonly addAll: (inputs: readonly TaskInput[]) => Result<TaskBoard, KoiError>;
   readonly assign: (taskId: TaskItemId, agentId: AgentId) => Result<TaskBoard, KoiError>;
+  /**
+   * Atomically unassign an in_progress task, resetting it to pending.
+   *
+   * Preserves the task ID (unlike kill+add recovery patterns).
+   * Fails if the task is not currently in_progress.
+   * Use this for crash-safe coordinator restart: unassign each orphaned task
+   * so it becomes schedulable again without creating duplicate live tasks.
+   */
+  readonly unassign: (taskId: TaskItemId) => Result<TaskBoard, KoiError>;
   readonly complete: (taskId: TaskItemId, result: TaskResult) => Result<TaskBoard, KoiError>;
   readonly fail: (taskId: TaskItemId, error: KoiError) => Result<TaskBoard, KoiError>;
   readonly kill: (taskId: TaskItemId) => Result<TaskBoard, KoiError>;
@@ -345,6 +355,13 @@ export interface ManagedTaskBoard extends AsyncDisposable {
   readonly addAll: (inputs: readonly TaskInput[]) => Promise<Result<TaskBoard, KoiError>>;
   /** Assign a task to an agent — validates via board, persists to store. */
   readonly assign: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<TaskBoard, KoiError>>;
+  /**
+   * Unassign an in_progress task, atomically resetting it to pending.
+   *
+   * Preserves the task ID. Use during coordinator restart to reset orphaned
+   * child tasks to schedulable without killing/duplicating them.
+   */
+  readonly unassign: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
   /**
    * Atomically check that no task is already `in_progress` and assign `taskId`
    * to `agentId` — all within the single-writer lock.

@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ToolConfig } from "@koi/core";
+import { COORDINATOR_MANIFEST, COORDINATOR_TOOL_ALLOWLIST } from "./coordinator.js";
 import { BUILT_IN_AGENT_COUNT, getBuiltInAgents } from "./index.js";
 
 describe("getBuiltInAgents", () => {
@@ -75,5 +76,61 @@ describe("getBuiltInAgents", () => {
       expect(agent.systemPrompt).toBeDefined();
       expect((agent.systemPrompt ?? "").length).toBeGreaterThan(100);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinator tool surface (Decision 2-A / 8-A / 11-A)
+// ---------------------------------------------------------------------------
+
+describe("COORDINATOR_TOOL_ALLOWLIST", () => {
+  test("coordinator manifest spawn.tools.list is the explicit worker ceiling", () => {
+    // Worker ceiling is defined EXPLICITLY (not derived from coordinator allowlist)
+    // because the roles differ: coordinator orchestrates, workers execute.
+    const spawnToolsList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list;
+    expect(spawnToolsList).toBeDefined();
+    // Workers must NOT have:
+    expect(spawnToolsList).not.toContain("Spawn"); // no recursive delegation
+    expect(spawnToolsList).not.toContain("task_delegate"); // no task reassignment
+    expect(spawnToolsList).not.toContain("task_create"); // no new board entries
+    expect(spawnToolsList).not.toContain("task_stop"); // workers cannot kill others
+    // Workers MUST have:
+    expect(spawnToolsList).toContain("task_update"); // claim + complete/fail own task
+    expect(spawnToolsList).toContain("task_list"); // read board state
+    expect(spawnToolsList).toContain("task_output"); // read other task results
+    expect(spawnToolsList).toContain("send_message"); // report status
+  });
+
+  test("coordinator manifest spawn.tools.policy is allowlist", () => {
+    expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
+  });
+
+  test("COORDINATOR_TOOL_ALLOWLIST contains Spawn and the core delegation tools (assembler-facing)", () => {
+    const allowlist = [...COORDINATOR_TOOL_ALLOWLIST];
+    expect(allowlist).toContain("Spawn"); // runtime tool name — was incorrectly "agent_spawn"
+    expect(allowlist).toContain("task_create");
+    expect(allowlist).toContain("task_list");
+    expect(allowlist).toContain("task_output");
+    expect(allowlist).toContain("task_delegate");
+    expect(allowlist).toContain("task_stop");
+    expect(allowlist).toContain("send_message");
+  });
+
+  test("COORDINATOR_TOOL_ALLOWLIST snapshot — adding tools requires deliberate update", () => {
+    expect([...COORDINATOR_TOOL_ALLOWLIST]).toMatchSnapshot();
+  });
+
+  test("coordinator manifest selfCeiling matches COORDINATOR_TOOL_ALLOWLIST (self-enforcement)", () => {
+    // selfCeiling.tools is enforced by the spawn engine — coordinator receives only these tools
+    // regardless of what the parent passes. Prevents privilege escalation via a privileged parent.
+    const selfCeilingTools = COORDINATOR_MANIFEST.manifest.selfCeiling?.tools ?? [];
+    expect([...selfCeilingTools].sort()).toEqual([...COORDINATOR_TOOL_ALLOWLIST].sort());
+  });
+
+  test("COORDINATOR_MANIFEST is the pre-parsed coordinator used by getBuiltInAgents", () => {
+    const agents = getBuiltInAgents();
+    const coordinator = agents.find((a) => a.agentType === "coordinator");
+    // Reference equality: getBuiltInAgents() pushes COORDINATOR_MANIFEST directly
+    expect(coordinator).toBe(COORDINATOR_MANIFEST);
   });
 });

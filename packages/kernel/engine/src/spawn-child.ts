@@ -29,10 +29,12 @@ import type {
 } from "@koi/core";
 import {
   channelToken,
+  DEFAULT_FORK_MAX_TURNS,
   DEFAULT_SPAWN_CHANNEL_POLICY,
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,
   ENV,
+  isAttachResult,
 } from "@koi/core";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
@@ -109,14 +111,23 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // Always exclude Spawn (and nonInteractive tools when applicable) from inheritance.
   // Spawn carries a parent-bound closure; inheriting it would mis-attribute nested
   // spawns to the ancestor. Each child that needs Spawn must get a fresh provider.
+  const isFork = options.fork === true;
   const baseDenylist = expandDenylistWithAlwaysExcluded(
     options.toolDenylist !== undefined ? new Set(options.toolDenylist) : undefined,
   );
+  // Apply fork recursion guard: strip Spawn from fork children (Decision 3-A).
+  // Defense-in-depth alongside the !isFork check in create-agent-spawn-fn.ts which
+  // prevents attaching a fresh Spawn provider. Together they ensure fork children cannot
+  // delegate further — independent of system prompt or manifest configuration.
+  const forkGuardedDenylist = applyForkDenylist(baseDenylist, isFork);
   // let justified: modified below when applying manifest ceiling
   let toolDenylist: ReadonlySet<string> =
-    options.nonInteractive === true ? expandDenylistForNonInteractive(baseDenylist) : baseDenylist;
+    options.nonInteractive === true
+      ? expandDenylistForNonInteractive(forkGuardedDenylist)
+      : forkGuardedDenylist;
+  // Fork inherits all parent tools (no allowlist). Regular spawns may have an allowlist.
   const baseAllowlist =
-    options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
+    !isFork && options.toolAllowlist !== undefined ? new Set(options.toolAllowlist) : undefined;
   // let justified: modified below when applying manifest ceiling
   let toolAllowlist: ReadonlySet<string> | undefined =
     options.nonInteractive === true && baseAllowlist !== undefined
@@ -141,6 +152,24 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     }
   }
 
+  // Apply the child manifest's selfCeiling — the child's own declared maximum tool surface.
+  // This is intersected with the effective allowlist regardless of what the caller requests.
+  // Built-in agents (e.g. coordinator) use this to enforce delegation-only surfaces
+  // automatically, even when spawned by a privileged parent without an explicit toolAllowlist.
+  // selfCeilingSet is kept in scope to filter additionalTools below (injected tools must also
+  // respect the ceiling — they bypass the inherited-tool path but not the manifest constraint).
+  const selfCeilingTools = options.manifest.selfCeiling?.tools;
+  // An empty array is authoritative (zero tools allowed) — treat it the same as a populated
+  // list. Only `undefined` (field absent) means "no ceiling declared; inherit freely."
+  const selfCeilingSet: ReadonlySet<string> | undefined =
+    selfCeilingTools !== undefined ? new Set(selfCeilingTools) : undefined;
+  if (selfCeilingSet !== undefined) {
+    toolAllowlist =
+      toolAllowlist !== undefined
+        ? intersectSets(toolAllowlist, selfCeilingSet) // intersect with existing ceiling
+        : selfCeilingSet; // no prior allowlist: self-ceiling becomes the effective ceiling
+  }
+
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
     ...(scopeChecker !== undefined ? { scopeChecker } : {}),
@@ -151,21 +180,29 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // 4. Build additional providers from inheritance config
   const inheritanceProviders: ComponentProvider[] = [];
 
-  // 4.0 Additional tool descriptors (e.g., HookVerdict for agent hooks)
+  // 4.0 Additional tool descriptors (e.g., HookVerdict for agent hooks).
+  // Apply selfCeiling filter: injected tools must respect the child manifest's ceiling just as
+  // inherited tools do — a privileged parent cannot bypass selfCeiling via additionalTools.
   if (options.additionalTools !== undefined && options.additionalTools.length > 0) {
-    const toolEntries = options.additionalTools.map((desc) => {
-      const tool: Tool = {
-        descriptor: desc,
-        origin: "operator",
-        policy: DEFAULT_UNSANDBOXED_POLICY,
-        execute: async (input) => ({ result: input }),
-      };
-      return [`tool:${desc.name}`, tool] as const;
-    });
-    inheritanceProviders.push({
-      name: "additional-tools",
-      attach: async () => new Map(toolEntries),
-    });
+    const allowedAdditionalTools =
+      selfCeilingSet !== undefined
+        ? options.additionalTools.filter((d) => selfCeilingSet.has(d.name))
+        : options.additionalTools;
+    if (allowedAdditionalTools.length > 0) {
+      const toolEntries = allowedAdditionalTools.map((desc) => {
+        const tool: Tool = {
+          descriptor: desc,
+          origin: "operator",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
+          execute: async (input) => ({ result: input }),
+        };
+        return [`tool:${desc.name}`, tool] as const;
+      });
+      inheritanceProviders.push({
+        name: "additional-tools",
+        attach: async () => new Map(toolEntries),
+      });
+    }
   }
 
   // 4a. Env inheritance — apply manifest ceiling (spawn.env.exclude) before runtime overrides.
@@ -247,15 +284,48 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     );
   }
 
-  // 8. Delegate to createKoi with child-specific options
-  //    Manifest lifecycle drives agentType — no explicit agentType override needed.
+  // 8. Delegate to createKoi with child-specific options.
+  //    Apply selfCeiling filter to raw providers: any tool:* component whose name is not
+  //    in the selfCeiling must be stripped, otherwise a privileged caller could bypass the
+  //    ceiling by passing an extra provider instead of going through additionalTools.
+  const rawProviders = options.providers ?? [];
+  const selfCeilingFilteredProviders: readonly ComponentProvider[] =
+    selfCeilingSet !== undefined
+      ? rawProviders.map(
+          (p): ComponentProvider => ({
+            name: p.name,
+            ...(p.priority !== undefined ? { priority: p.priority } : {}),
+            attach: async (agent) => {
+              const result = await p.attach(agent);
+              // AttachResult and ReadonlyMap both expose iteration via entries.
+              // Strip tool:* keys that exceed the selfCeiling — same filter as
+              // additionalTools above, but applied to provider-injected components.
+              const raw: ReadonlyMap<string, unknown> = isAttachResult(result)
+                ? result.components
+                : result;
+              const filtered = new Map<string, unknown>();
+              for (const [key, val] of raw) {
+                if (key.startsWith("tool:") && !selfCeilingSet.has(key.slice(5))) {
+                  continue; // drop tool not in selfCeiling
+                }
+                filtered.set(key, val);
+              }
+              if (isAttachResult(result)) {
+                return { components: filtered, skipped: result.skipped };
+              }
+              return filtered;
+            },
+            ...(p.detach !== undefined ? { detach: p.detach } : {}),
+          }),
+        )
+      : rawProviders;
   let childRuntime: KoiRuntime;
   try {
     childRuntime = await createKoi({
       manifest: options.manifest,
       adapter: options.adapter,
       parentPid: options.parentAgent.pid,
-      providers: [inheritedProvider, ...inheritanceProviders, ...(options.providers ?? [])],
+      providers: [inheritedProvider, ...inheritanceProviders, ...selfCeilingFilteredProviders],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
@@ -437,6 +507,45 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Fork helpers (Decision 1-A / 3-A / 14-A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool name unconditionally stripped from fork children.
+ * Prevents recursive forks — a fork child should never itself fork.
+ * Stripping at the denylist level is a type-level guarantee independent of
+ * system prompt instructions or manifest configuration.
+ */
+const FORK_RECURSION_GUARD_TOOL = "Spawn";
+
+/**
+ * Strips `agent_spawn` from the denylist when `isFork` is true.
+ * Pure function — safe to call in parallel child assembly.
+ *
+ * @internal exported for unit testing
+ */
+export function applyForkDenylist(base: ReadonlySet<string>, isFork: boolean): ReadonlySet<string> {
+  if (!isFork) return base;
+  const extended = new Set(base);
+  extended.add(FORK_RECURSION_GUARD_TOOL);
+  return extended;
+}
+
+/**
+ * Applies the default fork `maxTurns` cap when `isFork` is true and `maxTurns` is
+ * not explicitly set. Prevents runaway fork children from holding ledger slots.
+ *
+ * @internal exported for unit testing
+ */
+export function applyForkMaxTurns(
+  maxTurns: number | undefined,
+  isFork: boolean,
+): number | undefined {
+  if (!isFork) return maxTurns;
+  return maxTurns ?? DEFAULT_FORK_MAX_TURNS;
+}
 
 /** Tool names stripped from nonInteractive agents to prevent user-facing prompts. */
 const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([

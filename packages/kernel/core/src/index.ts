@@ -768,6 +768,12 @@ export type {
   PermissionDecision,
   PermissionQuery,
 } from "./permission-backend.js";
+// permission escalation — coordinator→worker runtime permission escalation contract
+export type {
+  PermissionDecision as EscalationDecision,
+  PermissionEscalation,
+  PermissionRequest as EscalationRequest,
+} from "./permission-escalation.js";
 // process descriptor — read-only snapshot of an agent's process state
 export type { ProcessDescriptor } from "./process-descriptor.js";
 export { mapRegistryEntryToDescriptor } from "./process-descriptor.js";
@@ -1004,6 +1010,7 @@ export type {
   ToolFilterSpec,
 } from "./spawn.js";
 export {
+  DEFAULT_FORK_MAX_TURNS,
   toolFilterFromManifest,
   toolFilterFromSpawnRequest,
   validateSpawnRequest,

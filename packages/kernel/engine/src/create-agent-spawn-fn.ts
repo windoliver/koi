@@ -29,7 +29,7 @@ import { runWithAgentContext } from "@koi/execution-context";
 import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
 import { createTextCollector } from "./output-collector.js";
 import { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
-import { spawnChildAgent } from "./spawn-child.js";
+import { applyForkMaxTurns, spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -141,9 +141,21 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       //    definition.manifest overrides with agent-specific controls (permissions, delegation,
       //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
       //    dropped security and isolation fields defined on the resolved agent.
+      //
+      //    The `spawn` field is deep-merged so that template-level env/channel ceilings
+      //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
+      //    resolved definition specifies spawn.tools without its own spawn.env or channels.
+      const mergedSpawn =
+        manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
+          ? {
+              ...manifestTemplate?.spawn,
+              ...definition.manifest.spawn,
+            }
+          : undefined;
       manifest = {
         ...manifestTemplate,
         ...definition.manifest,
+        ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
       };
 
       // 3. Use definition's systemPrompt if request didn't provide one
@@ -200,17 +212,26 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
-    //    Attach a fresh Spawn provider for the child only when the effective tool ceiling
-    //    allows it. If the parent manifest denylists "Spawn" or uses an allowlist that
-    //    does not include "Spawn", do not attach a fresh provider — the child cannot
-    //    delegate further. This closes the recursive-spawn bypass.
+    //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
+    //      a) The parent manifest's spawn ceiling allows Spawn for children
+    //      b) The child is not a fork (fork recursion guard — forks never delegate further)
+    //      c) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
+    //    The selfCeiling check ensures built-ins like coordinator can't receive Spawn from a
+    //    privileged parent even if (a) and (b) would otherwise allow it.
+    const isFork = request.fork === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
       request.toolAllowlist,
     );
+    const childSelfCeilingTools = manifest.selfCeiling?.tools;
+    const selfCeilingAllowsSpawn =
+      childSelfCeilingTools === undefined || childSelfCeilingTools.includes("Spawn");
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined && spawnAllowedByManifest
+      options.spawnProviderFactory !== undefined &&
+      spawnAllowedByManifest &&
+      !isFork &&
+      selfCeilingAllowsSpawn
         ? [options.spawnProviderFactory()]
         : [];
 
@@ -219,12 +240,15 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     if (!validation.ok) {
       return { ok: false, error: validation.error };
     }
+    // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
+    const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
 
     const spawnOptions: SpawnChildOptions = {
       ...base,
       manifest,
       adapter,
       signal: request.signal,
+      ...(isFork ? { fork: true as const } : {}),
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
       ...(request.toolAllowlist !== undefined ? { toolAllowlist: request.toolAllowlist } : {}),
@@ -234,7 +258,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       ...(request.nonInteractive !== undefined ? { nonInteractive: request.nonInteractive } : {}),
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
       limits: {
-        ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
+        ...(effectiveMaxTurns !== undefined ? { maxTurns: effectiveMaxTurns } : {}),
         ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
       },
     };

@@ -232,6 +232,8 @@ export async function createManagedTaskBoard(
 
     assign: (taskId, agentId) => applyMutation((b) => b.assign(taskId, agentId)),
 
+    unassign: (taskId) => applyMutation((b) => b.unassign(taskId)),
+
     startTask: (taskId, agentId) =>
       applyMutation((b) => {
         const inProgress = b.inProgress();

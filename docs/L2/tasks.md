@@ -23,6 +23,26 @@ Both backends share the same behavioral contract (verified by a shared test suit
 implement the same `TaskBoardStore` interface, so consumers can swap backends without
 code changes.
 
+## `ManagedTaskBoard.unassign()` (#1241)
+
+`unassign(taskId)` is an atomic `in_progress → pending` transition that resets an
+assigned task back to pending without killing it. This preserves the task ID, description,
+and metadata — unlike kill + re-add which creates a new task with a new ID.
+
+```typescript
+interface ManagedTaskBoard {
+  // ... existing methods ...
+  readonly unassign: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
+}
+```
+
+The `unassign` method is intended for coordinator crash recovery: when a coordinator
+restarts and finds orphaned `in_progress` tasks from the previous session, it calls
+`unassign` on each to make them available for re-delegation.
+
+A corresponding `task:unassigned` event is emitted on the board's event bus when
+`unassign` succeeds.
+
 ## L0 Interface
 
 The `TaskBoardStore` interface lives in `@koi/core` (`task-board.ts`) alongside the
