@@ -7,7 +7,7 @@
 
 import type { JsonObject, KoiError, Result, Tool } from "@koi/core";
 import { buildTool } from "@koi/tools-core";
-import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT } from "../constants.js";
+import { DEFAULT_PREFIX, DEFAULT_RECALL_LIMIT, validateMemoryDir } from "../constants.js";
 import {
   parseOptionalBoolean,
   parseOptionalEnum,
@@ -67,9 +67,13 @@ async function executeRecall(
 /** Create the memory_recall tool. */
 export function createMemoryRecallTool(
   backend: MemoryToolBackend,
+  memoryDir: string,
   prefix: string = DEFAULT_PREFIX,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Result<Tool, KoiError> {
+  const dirValidation = validateMemoryDir(memoryDir);
+  if (!dirValidation.ok) return dirValidation;
+
   if (!Number.isInteger(recallLimit) || recallLimit < 1) {
     return {
       ok: false,
@@ -108,7 +112,8 @@ export function createMemoryRecallTool(
       required: ["query"],
     },
     origin: "primordial",
-    sandbox: false,
+    sandbox: true,
+    filesystem: { read: [memoryDir] },
     execute: async (args: JsonObject): Promise<unknown> =>
       executeRecall(args, backend, recallLimit),
   });

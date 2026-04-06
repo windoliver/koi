@@ -2372,9 +2372,19 @@ describe("Golden: @koi/memory-tools", () => {
         };
         return { ok: true as const, value: record };
       },
+      storeWithDedup: (input: MInput, _opts: { readonly force: boolean }) => {
+        const record: MRecord = {
+          id: mkId("mock-1"),
+          ...input,
+          filePath: "test.md",
+          createdAt: 0,
+          updatedAt: 0,
+        };
+        return { ok: true as const, value: { action: "created" as const, record } };
+      },
       recall: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
       search: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
-      delete: () => ({ ok: true as const, value: undefined }),
+      delete: () => ({ ok: true as const, value: { wasPresent: true } }),
       findByName: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
       get: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
       update: (
@@ -2395,7 +2405,7 @@ describe("Golden: @koi/memory-tools", () => {
       },
     };
 
-    const result = createMemoryToolProvider({ backend: mockBackend });
+    const result = createMemoryToolProvider({ backend: mockBackend, memoryDir: "/tmp/koi-memory" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -2428,15 +2438,19 @@ describe("Golden: @koi/memory-tools", () => {
     };
     const backend = {
       store: () => ({ ok: true as const, value: stored }),
+      storeWithDedup: () => ({
+        ok: true as const,
+        value: { action: "created" as const, record: stored },
+      }),
       recall: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
       search: () => ({ ok: true as const, value: [] as readonly MRecord[] }),
-      delete: () => ({ ok: true as const, value: undefined }),
+      delete: () => ({ ok: true as const, value: { wasPresent: true } }),
       findByName: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
       get: () => ({ ok: true as const, value: undefined as MRecord | undefined }),
       update: () => ({ ok: true as const, value: stored }),
     };
 
-    const result = createMemoryStoreTool(backend);
+    const result = createMemoryStoreTool(backend, "/tmp/koi-memory");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -2604,11 +2618,37 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
         records.set(id, record);
         return { ok: true as const, value: record };
       },
+      storeWithDedup: (input: MInput, opts: { readonly force: boolean }) => {
+        const match = [...records.values()].find(
+          (r) => r.name === input.name && r.type === input.type,
+        );
+        if (match !== undefined) {
+          if (!opts.force) {
+            return { ok: true as const, value: { action: "conflict" as const, existing: match } };
+          }
+          const updated = {
+            ...match,
+            description: input.description,
+            content: input.content,
+            updatedAt: Date.now(),
+          } as MRecord;
+          records.set(match.id, updated);
+          return { ok: true as const, value: { action: "updated" as const, record: updated } };
+        }
+        counter += 1;
+        const id = mkId(`mem-${counter}`);
+        const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+        const now = Date.now();
+        const record: MRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+        records.set(id, record);
+        return { ok: true as const, value: { action: "created" as const, record } };
+      },
       recall: () => ({ ok: true as const, value: [...records.values()] }),
       search: () => ({ ok: true as const, value: [...records.values()] }),
       delete: (id: import("@koi/core").MemoryRecordId) => {
+        const wasPresent = records.has(id);
         records.delete(id);
-        return { ok: true as const, value: undefined };
+        return { ok: true as const, value: { wasPresent } };
       },
       findByName: (name: string) => ({
         ok: true as const,
@@ -2634,7 +2674,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       },
     };
 
-    const providerResult = createProvider({ backend });
+    const providerResult = createProvider({ backend, memoryDir: "/tmp/koi-memory" });
     if (!providerResult.ok)
       throw new Error(`createMemoryToolProvider failed: ${providerResult.error.message}`);
     const memProvider = providerResult.value;
