@@ -9,8 +9,13 @@
  * only), sort by mtime desc, then read only the first `limit` file contents.
  * This is O(n) for stats + O(limit) for content reads, vs v1's O(n) for both.
  *
+ * Content streaming (Issue #1504): loadSessionSummary streams JSONL via
+ * readJsonlLines — peak memory is O(chunk_size) instead of O(file_size × 3).
+ *
  * TODO(Phase 2i-3): replace directory scanning with @koi/session once that
  * package lands in v2.
+ * TODO(Phase 2i-3): add MAX_SUMMARY_BYTES cap to loadSessionSummary to
+ * address stall on very large session files (currently reads to EOF).
  */
 
 import { readdir, stat } from "node:fs/promises";
@@ -71,66 +76,124 @@ export interface SessionSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Stream helpers (exported for testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Async generator that yields complete JSONL lines from a byte stream.
+ *
+ * Handles \r\n line endings (strips trailing \r). Exported for unit testing
+ * with injected chunked streams — production callers pass Bun.file().stream().
+ */
+export async function* readJsonlLines(
+  stream: ReadableStream<Uint8Array>,
+): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let remainder = "";
+  for await (const chunk of stream) {
+    // TextDecoder handles byte-level multi-byte boundaries ({ stream: true }
+    // preserves decoder state across chunks). `remainder` handles string-level
+    // newline boundaries. These compose correctly: bytes → string first, then split.
+    const text = remainder + decoder.decode(chunk, { stream: true });
+    const parts = text.split("\n");
+    remainder = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.endsWith("\r") ? part.slice(0, -1) : part;
+      if (line.length > 0) yield line;
+    }
+  }
+  // Flush remaining decoder state and any final line without a trailing \n
+  const tail = remainder + decoder.decode();
+  const flushed = tail.endsWith("\r") ? tail.slice(0, -1) : tail;
+  if (flushed.length > 0) yield flushed;
+}
+
+/**
+ * Type guard for JSONL session entry objects. All fields are optional — a
+ * session line may omit any of them.
+ *
+ * The single `as Record<string, unknown>` cast is intentional: this is the
+ * canonical TypeScript idiom inside type guard functions that narrow `unknown`.
+ * All field types are validated at runtime before the function returns true.
+ *
+ * Exported for unit testing.
+ */
+export function isValidJsonlEntry(
+  v: unknown,
+): v is { readonly kind?: string; readonly text?: string; readonly timestamp?: number } {
+  if (typeof v !== "object" || v === null) return false;
+  // biome-ignore lint/suspicious/noExplicitAny: type guard — single cast to access properties on unknown
+  const r = v as Record<string, unknown>;
+  return (
+    (!Object.hasOwn(r, "kind") || typeof r.kind === "string") &&
+    (!Object.hasOwn(r, "text") || typeof r.text === "string") &&
+    (!Object.hasOwn(r, "timestamp") || typeof r.timestamp === "number")
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Core logic (exported for testing)
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a single JSONL session file into a summary.
- * Returns undefined for empty or missing files — callers filter these out.
+ * Parse a single JSONL session file into a summary by streaming its content.
+ * Returns undefined for empty, missing, or entirely malformed files.
+ *
+ * @param mtimeMs - File modification time from stat(). Used as fallback for
+ *   createdAt/lastActiveAt when the file contains no valid timestamps.
+ *   Avoids a second stat() call since listSessionSummaries already has this.
  */
 export async function loadSessionSummary(
   filePath: string,
   agentName: string,
+  mtimeMs?: number,
 ): Promise<SessionSummary | undefined> {
-  let text: string;
-  try {
-    text = await Bun.file(filePath).text();
-  } catch {
-    return undefined;
-  }
-
-  const lines = text.trim().split("\n").filter(Boolean);
-  if (lines.length === 0) return undefined;
-
   const sessionId = basename(filePath, ".jsonl");
 
   let createdAt = 0;
   let lastActiveAt = 0;
   let firstUserMessage: string | undefined;
   let messageCount = 0;
+  let isFirstLine = true;
 
-  for (let i = 0; i < lines.length; i++) {
-    try {
-      const entry = JSON.parse(lines[i] as string) as {
-        readonly kind?: string;
-        readonly text?: string;
-        readonly timestamp?: number;
-      };
+  try {
+    for await (const line of readJsonlLines(Bun.file(filePath).stream())) {
+      const isFirst = isFirstLine;
+      isFirstLine = false;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        // Skip malformed lines without incrementing messageCount
+        continue;
+      }
+
+      if (!isValidJsonlEntry(parsed)) continue;
       messageCount++;
 
       // Only accept finite numbers — non-numeric, null, or NaN timestamps would
       // cause new Date(value).toISOString() to throw during rendering.
       const ts =
-        typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
-          ? entry.timestamp
+        typeof parsed.timestamp === "number" && Number.isFinite(parsed.timestamp)
+          ? parsed.timestamp
           : undefined;
 
-      if (i === 0 && ts !== undefined) {
-        createdAt = ts;
+      if (isFirst && ts !== undefined) createdAt = ts;
+      if (ts !== undefined) lastActiveAt = ts;
+
+      if (firstUserMessage === undefined && parsed.kind === "user" && parsed.text !== undefined) {
+        firstUserMessage = parsed.text.length > 80 ? `${parsed.text.slice(0, 77)}...` : parsed.text;
       }
-      if (ts !== undefined) {
-        lastActiveAt = ts;
-      }
-      if (firstUserMessage === undefined && entry.kind === "user" && entry.text !== undefined) {
-        firstUserMessage = entry.text.length > 80 ? `${entry.text.slice(0, 77)}...` : entry.text;
-      }
-    } catch {
-      // Skip malformed lines without incrementing messageCount
     }
+  } catch {
+    // I/O error or corrupt stream — return what we have, or nothing.
+    if (messageCount === 0) return undefined;
+    // Fall through to return a partial summary.
   }
 
   if (messageCount === 0) return undefined;
-  if (createdAt === 0) createdAt = Date.now();
+  if (createdAt === 0) createdAt = mtimeMs ?? Date.now();
   if (lastActiveAt === 0) lastActiveAt = createdAt;
 
   return { sessionId, agentName, createdAt, lastActiveAt, messageCount, firstUserMessage };
@@ -203,9 +266,9 @@ export async function listSessionSummaries(
   // written, malformed, or empty — do not slice before validation or malformed
   // files in the top-N will silently reduce the result count.
   const summaries: SessionSummary[] = [];
-  for (const { path, agentName } of stats) {
+  for (const { path, agentName, mtime } of stats) {
     if (summaries.length >= limit) break;
-    const summary = await loadSessionSummary(path, agentName);
+    const summary = await loadSessionSummary(path, agentName, mtime);
     if (summary !== undefined) summaries.push(summary);
   }
 
