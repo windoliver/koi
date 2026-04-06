@@ -35,11 +35,12 @@ describe.skipIf(!distExists)("build output", () => {
     }
   });
 
-  test("index bundle is under 22KB", async () => {
-    // Threshold updated: ToolFilterSpec + helpers (toolFilterFromManifest,
-    // toolFilterFromSpawnRequest) + AgentResolverQuery added to L0 for Issue #1240.
+  test("index bundle is under 23KB", async () => {
+    // Threshold updated: DEFAULT_FORK_MAX_TURNS constant + fork validation branch in
+    // validateSpawnRequest added for fork mode + recursion guard (Issue #1241).
+    // Previous threshold (22528) was set for ToolFilterSpec + AgentResolverQuery (#1240).
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(22528);
+    expect(size).toBeLessThan(23552);
   });
 });

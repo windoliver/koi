@@ -74,6 +74,17 @@ The spawn path has three golden trajectories proving narrowing at the `ModelRequ
 | `spawn-allowlist` | Runtime `toolAllowlist=["Grep"]` — child sees only Grep |
 | `spawn-manifest-ceiling` | `manifest.spawn.tools.policy=allowlist` — engine enforces ceiling without any per-call list |
 
+### Fork Mode + Coordinator Allowlist Coverage (#1241)
+
+Two standalone golden queries (no LLM required) prove the coordinator tool surface:
+
+| Query | What it proves |
+|-------|----------------|
+| `COORDINATOR_TOOL_ALLOWLIST` shape | `agent_spawn` present; `Glob`/`Grep`/`ToolSearch` absent; allowlist matches manifest spawn config (single source of truth) |
+| Coordinator manifest spawn policy | `spawn.tools.policy === "allowlist"`; manifest list equals `COORDINATOR_TOOL_ALLOWLIST` |
+
+The `spawn-fork` and `spawn-coordinator` trajectory fixtures record fork mode spawning and coordinator-ceiling enforcement end-to-end.
+
 ---
 
 ## Adding a New L2 Package

@@ -38,7 +38,10 @@ interface HarnessRuntime {
 | `tool_call_start` | null | rendered as `[tool: name]` |
 | `tool_call_end` | null | rendered with result summary |
 | `done` | trailing newline | trailing newline |
+| `permission_attempt` | null (silent) | null (silent) |
 | all others | null | null |
+
+`permission_attempt` events (emitted when middleware-permissions intercepts a tool call for approval) are always silent in the harness — the permission flow is handled by the runtime, not surfaced to the user as raw output.
 
 ## REPL Loop
 
