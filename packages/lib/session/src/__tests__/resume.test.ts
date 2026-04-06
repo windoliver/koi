@@ -134,15 +134,19 @@ describe("resumeFromTranscript - case 3: user/assistant turns", () => {
     }
   });
 
-  test("system entries use senderId='system:resume' for request-mapper authority", () => {
+  test("system transcript entries are replayed as senderId='user' (no trust escalation)", () => {
     const entries = [entry("system", "You are a helpful assistant.")];
     const result = resumeFromTranscript(entries);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // "system:resume" matches the "system:*" prefix check in resolveRole(),
-      // preserving system authority through the OpenAI-compat request mapper.
-      // Plain "system" would fall through to "user" role (no startsWith match).
-      expect(result.value.messages[0]?.senderId).toBe("system:resume");
+      // The transcript middleware stores role "system" only for messages with
+      // senderId === "system" (exact match). In the request mapper, plain "system"
+      // does NOT match the "system:*" startsWith check — it already maps to "user".
+      // Replaying as "user" preserves the original trust level. Using "system:resume"
+      // would escalate caller-controlled text into privileged context.
+      expect(result.value.messages[0]?.senderId).toBe("user");
+      // The resumedSystemRole flag marks the origin for diagnostic purposes.
+      expect(result.value.messages[0]?.metadata?.resumedSystemRole).toBe(true);
     }
   });
 });
