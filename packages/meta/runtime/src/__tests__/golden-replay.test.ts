@@ -4121,6 +4121,110 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
 
     expect((result.output as Record<string, unknown>).sum).toBe(7);
   });
+
+  test("blocks tool output containing AWS key (tool-output scanning)", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapToolCall>>[0];
+
+    const wrapToolCall = mw.wrapToolCall;
+    if (wrapToolCall === undefined) return;
+
+    // Tool input is clean, but output contains a secret
+    const result = await wrapToolCall(
+      mockCtx,
+      { toolId: "fs_read", input: { path: "/etc/passwd" } },
+      async () => ({ output: "AWS_KEY=AKIAIOSFODNN7EXAMPLE" }),
+    );
+
+    const output = result.output as Record<string, unknown>;
+    expect(output.error).toBeDefined();
+    expect(String(output.error)).toContain("tool output");
+    expect(output.code).toBe("PERMISSION");
+  });
+
+  test("blocks non-streaming model response containing secrets (wrapModelCall)", async () => {
+    const { createExfiltrationGuardMiddleware } = await import(
+      "@koi/middleware-exfiltration-guard"
+    );
+
+    const mw = createExfiltrationGuardMiddleware({ action: "block" });
+    const mockCtx = {
+      session: {
+        agentId: "test",
+        sessionId: "test-session",
+        runId: "test-run",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "test-turn",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof mw.wrapModelCall>>[0];
+
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) return;
+
+    const result = await wrapModelCall(mockCtx, { messages: [] }, async () => ({
+      content: "Here is your key: AKIAIOSFODNN7EXAMPLE",
+      model: "test",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }));
+
+    expect(result.content).toContain("[BLOCKED");
+    expect(result.content).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(result.stopReason).toBe("hook_blocked");
+    expect(result.richContent).toBeUndefined();
+  });
+
+  test("exfiltration-guard-block trajectory fixture is valid ATIF v1.6", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+
+    const fixturePath = path.resolve(
+      import.meta.dir,
+      "../../fixtures/exfiltration-guard-block.trajectory.json",
+    );
+    const raw = fs.readFileSync(fixturePath, "utf-8");
+    const trajectory = JSON.parse(raw) as Record<string, unknown>;
+
+    // Valid ATIF schema
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+
+    // Non-empty steps
+    const steps = trajectory.steps as readonly Record<string, unknown>[];
+    expect(steps.length).toBeGreaterThan(0);
+
+    // All steps have valid source
+    for (const step of steps) {
+      const source = String(step.source);
+      expect(["agent", "tool", "system"]).toContain(source);
+    }
+
+    // Exfiltration guard middleware span exists
+    const guardSpan = steps.find(
+      (s) =>
+        s.source === "system" &&
+        typeof s.extra === "object" &&
+        s.extra !== null &&
+        (s.extra as Record<string, unknown>).middlewareName === "exfiltration-guard",
+    );
+    expect(guardSpan).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
