@@ -35,6 +35,7 @@ import type {
   HookExecutionResult,
   JsonObject,
   KoiMiddleware,
+  RichContent,
   RichTrajectoryStep,
   ToolHandler,
   ToolRequest,
@@ -233,10 +234,26 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
     return executeHooks(hooks, event, abortSignal);
   }
 
-  async function recordHookResults(
-    results: readonly HookExecutionResult[],
-    triggerEvent: string,
-  ): Promise<void> {
+  const MAX_ERROR_LENGTH = 512;
+
+  function truncateError(error: string): RichContent {
+    if (error.length <= MAX_ERROR_LENGTH) {
+      return { text: error };
+    }
+    // Avoid splitting a UTF-16 surrogate pair at the boundary
+    let end = MAX_ERROR_LENGTH;
+    const code = error.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      end -= 1; // high surrogate at boundary — back up one
+    }
+    return {
+      text: error.slice(0, end),
+      truncated: true,
+      originalSize: new TextEncoder().encode(error).byteLength,
+    };
+  }
+
+  function recordHookResults(results: readonly HookExecutionResult[], triggerEvent: string): void {
     if (store === undefined || docId === undefined || results.length === 0) return;
 
     const steps: RichTrajectoryStep[] = results.map((result, index) => ({
@@ -248,7 +265,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       outcome: result.ok ? ("success" as const) : ("failure" as const),
       durationMs: result.durationMs,
       request: { text: `${triggerEvent} → ${result.hookName}` },
-      ...(!result.ok ? { error: { text: `hook error (${result.error.length} chars)` } } : {}),
+      ...(!result.ok ? { error: truncateError(result.error) } : {}),
       metadata: {
         type: "hook_execution",
         triggerEvent,
@@ -257,7 +274,7 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
       } as JsonObject,
     }));
 
-    await store.append(docId, steps).catch(() => {
+    void store.append(docId, steps).catch(() => {
       // Best-effort — don't break the chain for trajectory failures
     });
   }
@@ -344,10 +361,8 @@ export function createHookDispatchMiddleware(config: HookDispatchConfig): KoiMid
               turnIndex: ctx.turnIndex,
             } as JsonObject,
           };
-          // Await with error swallowing — same pattern as recordHookResults.
-          // Ensures ordering (veto step indexed before retry) without stalling
-          // on store errors (catch swallows).
-          await store.append(docId, [step]).catch(() => {});
+          // Fire-and-forget — store latency must not block the retry path.
+          void store.append(docId, [step]).catch(() => {});
         }
         return;
       }

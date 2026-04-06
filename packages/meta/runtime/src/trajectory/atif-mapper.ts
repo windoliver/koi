@@ -3,7 +3,7 @@
  * Ported from archive/v1/packages/mm/middleware-ace/src/atif.ts.
  */
 
-import type { RichContent, RichStepMetrics, RichTrajectoryStep } from "@koi/core";
+import type { JsonObject, RichContent, RichStepMetrics, RichTrajectoryStep } from "@koi/core";
 import type {
   AtifDocument,
   AtifFinalMetrics,
@@ -71,7 +71,7 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
     ...(step.metrics !== undefined ? { metrics: mapMetricsToAtif(step.metrics) } : {}),
     duration_ms: step.durationMs,
     outcome: step.outcome,
-    ...(extra !== undefined ? { extra } : {}),
+    ...buildExtra(extra, step.error),
   };
 }
 
@@ -217,7 +217,7 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
     ...(response !== undefined ? { response } : {}),
     ...(step.reasoning_content !== undefined ? { reasoningContent: step.reasoning_content } : {}),
     ...(step.metrics !== undefined ? { metrics: mapAtifMetricsToRich(step.metrics) } : {}),
-    ...(metadata !== undefined ? { metadata } : {}),
+    ...restoreErrorFromMetadata(metadata as JsonObject | undefined),
   };
 }
 
@@ -241,5 +241,66 @@ function mapAtifMetricsToRich(metrics: AtifStepMetrics): RichStepMetrics {
       : {}),
     ...(metrics.cached_tokens !== undefined ? { cachedTokens: metrics.cached_tokens } : {}),
     ...(metrics.cost_usd !== undefined ? { costUsd: metrics.cost_usd } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Error serialization helpers (#1501)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the ATIF `extra` field, folding `__rich_error` into it when a
+ * RichContent error is present. Works with the upstream `__koi` transport
+ * object that may already be merged into `extra`.
+ */
+function buildExtra(
+  extra: JsonObject | undefined,
+  error: RichContent | undefined,
+): { readonly extra?: JsonObject } {
+  if (error === undefined) {
+    return extra !== undefined ? { extra } : {};
+  }
+  const richError: JsonObject = {
+    text: error.text,
+    ...(error.data !== undefined ? { data: error.data } : {}),
+    ...(error.truncated === true ? { truncated: true } : {}),
+    ...(error.originalSize !== undefined ? { originalSize: error.originalSize } : {}),
+  } as JsonObject;
+  return { extra: { ...(extra ?? {}), __rich_error: richError } };
+}
+
+/**
+ * Extract error from metadata.__rich_error (if present) and return separate
+ * error + metadata fields for the RichTrajectoryStep. Uses a namespaced key
+ * (__rich_error) to avoid colliding with user metadata. Reverses the fold
+ * done in buildExtra. Called after __koi transport stripping.
+ */
+function restoreErrorFromMetadata(metadata: JsonObject | undefined): {
+  readonly error?: RichContent;
+  readonly metadata?: JsonObject;
+} {
+  if (metadata === undefined) return {};
+
+  const rawError = metadata.__rich_error;
+  if (rawError === undefined || typeof rawError !== "object" || rawError === null) {
+    return { metadata };
+  }
+
+  const errorObj = rawError as Record<string, unknown>;
+  const error: RichContent = {
+    ...(typeof errorObj.text === "string" ? { text: errorObj.text } : {}),
+    ...(typeof errorObj.data === "object" && errorObj.data !== null
+      ? { data: errorObj.data as JsonObject }
+      : {}),
+    ...(errorObj.truncated === true ? { truncated: true } : {}),
+    ...(typeof errorObj.originalSize === "number" ? { originalSize: errorObj.originalSize } : {}),
+  };
+
+  const { __rich_error: _, ...rest } = metadata;
+  const cleaned = Object.keys(rest).length > 0 ? (rest as JsonObject) : undefined;
+
+  return {
+    error,
+    ...(cleaned !== undefined ? { metadata: cleaned } : {}),
   };
 }
