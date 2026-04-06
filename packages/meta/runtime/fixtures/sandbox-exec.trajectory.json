@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:17.901Z",
+      "timestamp": "2026-04-06T08:14:37.461Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:17.901Z",
+      "timestamp": "2026-04-06T08:14:37.461Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-05T05:50:17.902Z",
+      "timestamp": "2026-04-06T08:14:37.461Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
       "observation": {
@@ -61,13 +61,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 210,
+        "prompt_tokens": 206,
         "completion_tokens": 9
       },
-      "duration_ms": 452,
+      "duration_ms": 560,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -82,10 +82,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.356Z",
+      "timestamp": "2026-04-06T08:14:38.023Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 453.724000000002,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+      "duration_ms": 561.78125,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,10 +102,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.356Z",
+      "timestamp": "2026-04-06T08:14:38.023Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 453.7610829999976,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+      "duration_ms": 561.8294170000008,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -122,10 +122,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.356Z",
+      "timestamp": "2026-04-06T08:14:38.023Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 453.8188339999979,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+      "duration_ms": 561.8899170000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -142,10 +142,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.356Z",
+      "timestamp": "2026-04-06T08:14:38.023Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 453.83724999999686,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+      "duration_ms": 561.9013750000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -161,58 +161,11 @@
     },
     {
       "step_id": 7,
-      "source": "system",
-      "timestamp": "2026-04-05T05:50:18.381Z",
-      "model_name": "hook:on-sandbox-tool",
-      "message": "tool.succeeded:run_sandboxed → on-sandbox-tool",
-      "duration_ms": 1.9474170000030426,
-      "outcome": "success",
-      "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded:run_sandboxed",
-        "hookName": "on-sandbox-tool",
-        "decision": {
-          "kind": "continue"
-        },
-        "__koi": {
-          "identifier": "hook:on-sandbox-tool"
-        }
-      }
-    },
-    {
-      "step_id": 8,
-      "source": "system",
-      "timestamp": "2026-04-05T05:50:18.386Z",
-      "model_name": "middleware:hook-dispatch",
-      "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
-          }
-        ]
-      },
-      "duration_ms": 31.862417000003916,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hook-dispatch",
-        "hook": "wrapToolCall",
-        "phase": "observe",
-        "priority": 950,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hook-dispatch"
-        }
-      }
-    },
-    {
-      "step_id": 9,
       "source": "tool",
-      "timestamp": "2026-04-05T05:50:18.354Z",
+      "timestamp": "2026-04-06T08:14:38.021Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_run_sandboxed_9",
+          "tool_call_id": "call_run_sandboxed_7",
           "function_name": "run_sandboxed",
           "arguments": {
             "path": "/usr/bin"
@@ -222,28 +175,28 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_run_sandboxed_9",
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.34\\ncorelist\\ncorelist5.34\\ncpan\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsfdiagnose\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.34\\ndc\\ndddiagnose\\ndebinhex.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nDeRez\\nderq\\ndesdp\\ndevicectl\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.34\\nencguess\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\neyapp\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfping\\nfs_usage\\nfunzip\\nfuser\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\nGetFileInfo\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.34\\nh2xs\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.34\\nibtool\\nibv_devices\\nibv_devinfo\\nibv_uc_pingpong\\niconutil\\niconv\\nictool\\nid\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.34\\nIOAccelMemory\\niofile.d\\niofileb.d\\nIOMFB_FDR_Loader\\niopattern\\niopending\\nIOSDebug\\niosnoop\\niotop\\nip2cc\\nip2cc5.34\\nipcount\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavap\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njobs\\njoin\\njot\\njpackage\\njps\\njq\\njrunscript\\njshell\\njson_pp\\njson_pp5.34\\njson_xs\\njson_xs5.34\\njstack\\njstat\\njstatd\\nkcc\\nkdestroy\\nkextutil\\nkeychain-access\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlesskey\\nlex\\nlibnetcfg\\nlibnetcfg5.34\\nlibtool\\nlipo\\nlldb\\nllvm-g++\\nllvm-gcc\\nloads.d\\nlocale\\nlocaledef\\nlocate\\nlockf\\nlockstat\\nlog\\nlogger\\nlogin\\nlogname\\nlook\\nlorder\\nlp\\nlpoptions\\nlpq\\nlpr\\nlprm\\nlpstat\\nlsappinfo\\nlsbom\\nlskq\\nlsm\\nlsmp\\nlsvfs\\nlwp-download\\nlwp-download5.34\\nlwp-dump\\nlwp-dump5.34\\nlwp-mirror\\nlwp-mirror\n...[truncated]...\ndate\\nobjdump\\nocspcheck\\nod\\nodutil\\nopen\\nopendiff\\nopensnoop\\nopenssl\\norbd\\nosacompile\\nosadecompile\\nosalang\\nosascript\\notool\\npack200\\npackage-stash-conflicts\\npackage-stash-conflicts5.34\\npagesize\\npagestuff\\npar.pl\\npar5.34.pl\\nparl\\nparl5.34\\nparldyn\\nparldyn5.34\\npasswd\\npaste\\npatch\\npathchk\\npathopens.d\\npbcopy\\npbpaste\\npcap-config\\npcsctest\\nperl\\nperl5.34\\nperlbug\\nperlbug5.34\\nperldoc\\nperldoc5.34\\nperlivp\\nperlivp5.34\\nperlthanks\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.34\\npod2man\\npod2man5.34\\npod2readme\\npod2readme5.34\\npod2text\\npod2text5.34\\npod2usage\\npod2usage5.34\\npodchecker\\npodchecker5.34\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.34\\npsm\\nptar\\nptar5.34\\nptardiff\\nptardiff5.34\\nptargrep\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdma_ctl\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nResMerger\\nresolveLinks\\nrev\\nRez\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nSafeEjectGPU\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.34.pl\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nSetFile\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.34\\nspfquery\\nspfquery5.34\\nsplain\\nsplain5.34\\nsplit\\nSplitForks\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstreamzip5.34\\nstringdups\\nstrings\\nstrip\\nstz\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntrash\\ntreereg\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusdcat\\nusdchecker\\nusdcrush\\nusdextract\\nusdrecord\\nusdtree\\nusdzip\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.34.pl\\nxip\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.34\\nxprotect\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.34\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":921,\"platform\":\"seatbelt\"}"
+            "source_call_id": "call_run_sandboxed_7",
+            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.30.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolldef\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.30\\nconfig_data5.34\\ncorelist\\ncorelist5.30\\ncorelist5.34\\ncpan\\ncpan5.30\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.30\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.30\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.30\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.30\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.30\\ndbiproxy5.34\\ndc\\ndebinhex.pl\\ndebinhex5.30.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nderq\\ndesdp\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.30\\nenc2xs5.34\\nencguess\\nencguess5.30\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\nextcheck\\neyapp\\neyapp5.30\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.30\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfs_usage\\nfunzip\\nfuser\\nfwkdp\\nfwkpfv\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.30\\nh2ph5.34\\nh2xs\\nh2xs5.30\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.30\\nhtmltree5.34\\nibtool\\niconutil\\niconv\\nictool\\nid\\nidlj\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.30\\ninstmodsh5.34\\niofile.d\\niofileb.d\\niopattern\\niopending\\niosnoop\\niotop\\nip2cc\\nip2cc5.30\\nip2cc5.34\\nipcount\\nipcount5.30\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.30\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavah\\njavap\\njavapackager\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhat\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njmc\\njobs\\njoin\\njot\\njpackage\\njps\\njrunscript\\njsadebugd\\njshell\\njson_pp\\njson_pp5.30\\njson_pp5.34\\njson_xs\\njson_xs5.30\\njson_xs5.34\\njstack\\njstat\\njstatd\\njvisualvm\\nkcc\\nkdestroy\\nkextutil\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlex\\nlibnetcfg\\nlibne\n...[truncated]...\n5.30\\nperlbug5.34\\nperldoc\\nperldoc5.30\\nperldoc5.34\\nperlivp\\nperlivp5.30\\nperlivp5.34\\nperlthanks\\nperlthanks5.30\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.30\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.30\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.30\\npod2html5.34\\npod2man\\npod2man5.30\\npod2man5.34\\npod2readme\\npod2readme5.30\\npod2readme5.34\\npod2text\\npod2text5.30\\npod2text5.34\\npod2usage\\npod2usage5.30\\npod2usage5.34\\npodchecker\\npodchecker5.30\\npodchecker5.34\\npodselect\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.30\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.30\\nprove5.34\\npsm\\nptar\\nptar5.30\\nptar5.34\\nptardiff\\nptardiff5.30\\nptardiff5.34\\nptargrep\\nptargrep5.30\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nresolveLinks\\nrev\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.30.pl\\nscandeps5.34.pl\\nschemagen\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.30\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.30\\nspfd5.34\\nspfquery\\nspfquery5.30\\nspfquery5.34\\nsplain\\nsplain5.30\\nsplain5.34\\nsplit\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstringdups\\nstrings\\nstrip\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.30\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.30\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.30\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntreereg\\ntreereg5.30\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nwsgen\\nwsimport\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.30.pl\\nxgettext5.34.pl\\nxip\\nxjc\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.30\\nxpath5.34\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.30\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.30\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.30\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.30\\nyamlpp-load-dump5.34\\nyamlpp-load5.30\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.30\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.30\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.30\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":982,\"platform\":\"seatbelt\"}"
           }
         ]
       },
-      "duration_ms": 32,
+      "duration_ms": 24,
       "outcome": "success"
     },
     {
-      "step_id": 10,
+      "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.388Z",
+      "timestamp": "2026-04-06T08:14:38.047Z",
       "model_name": "middleware:semantic-retry",
       "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
+            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
           }
         ]
       },
-      "duration_ms": 34.08625000000029,
+      "duration_ms": 26.461833000001207,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -258,19 +211,39 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.390Z",
+      "timestamp": "2026-04-06T08:14:38.049Z",
+      "model_name": "hook:on-sandbox-tool",
+      "message": "tool.succeeded → on-sandbox-tool",
+      "duration_ms": 1.0671670000010636,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-sandbox-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-sandbox-tool"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-06T08:14:38.049Z",
       "model_name": "middleware:hooks",
       "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
+            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
           }
         ]
       },
-      "duration_ms": 36.143332999999984,
+      "duration_ms": 27.663290999997116,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -285,19 +258,19 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.390Z",
+      "timestamp": "2026-04-06T08:14:38.049Z",
       "model_name": "middleware:permissions",
       "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
+            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
           }
         ]
       },
-      "duration_ms": 36.22095800000534,
+      "duration_ms": 27.7532910000009,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -312,19 +285,19 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.390Z",
+      "timestamp": "2026-04-06T08:14:38.049Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
+            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
           }
         ]
       },
-      "duration_ms": 36.273458999996365,
+      "duration_ms": 27.838125000002037,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -339,26 +312,26 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-05T05:50:18.390Z",
+      "timestamp": "2026-04-06T08:14:38.049Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.34\\ncorelist\\ncorelist5.34\\ncpan\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsfdiagnose\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.34\\ndc\\ndddiagnose\\ndebinhex.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nDeRez\\nderq\\ndesdp\\ndevicectl\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.34\\nencguess\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\neyapp\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfping\\nfs_usage\\nfunzip\\nfuser\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\nGetFileInfo\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.34\\nh2xs\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.34\\nibtool\\nibv_devices\\nibv_devinfo\\nibv_uc_pingpong\\niconutil\\niconv\\nictool\\nid\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.34\\nIOAccelMemory\\niofile.d\\niofileb.d\\nIOMFB_FDR_Loader\\niopattern\\niopending\\nIOSDebug\\niosnoop\\niotop\\nip2cc\\nip2cc5.34\\nipcount\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavap\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njobs\\njoin\\njot\\njpackage\\njps\\njq\\njrunscript\\njshell\\njson_pp\\njson_pp5.34\\njson_xs\\njson_xs5.34\\njstack\\njstat\\njstatd\\nkcc\\nkdestroy\\nkextutil\\nkeychain-access\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlesskey\\nlex\\nlibnetcfg\\nlibnetcfg5.34\\nlibtool\\nlipo\\nlldb\\nllvm-g++\\nllvm-gcc\\nloads.d\\nlocale\\nlocaledef\\nlocate\\nlockf\\nlockstat\\nlog\\nlogger\\nlogin\\nlogname\\nlook\\nlorder\\nlp\\nlpoptions\\nlpq\\nlpr\\nlprm\\nlpstat\\nlsappinfo\\nlsbom\\nlskq\\nlsm\\nlsmp\\nlsvfs\\nlwp-download\\nlwp-download5.34\\nlwp-dump\\nlwp-dump5.34\\nlwp-mirror\\nlwp-mirror5.34\\nlwp-request\\nlwp-request5.34\\nm4\\nmacbinary\\nmacerror\\nmacerror5.34\\nmachine\\nmacoserror\\nmail\\nmailq\\nmailx\\nmake\\nmalloc_history\\nman\\nmandoc\\nmandoc_soelim\\nmanpath\\nmcxquery\\nmcxrefresh\\nmddiagnose\\nmdfind\\nmdimport\\nmdls\\nmdutil\\nmemacct\\nmemory_pressure\\nmesg\\nmg\\nmib2c\\nmib2c-update\\nmig\\nmkbom\\nmkfifo\\nmktemp\\nmnthome\\nmodelcatalogdump\\nmodelmanagerdump\\nmoose-outdated\\nmoose-outdated5.34\\nmore\\nmp2bug\\nmpsgraphtool\\nnano\\nnbdst\\nnc\\nncal\\nncctl\\nncdestroy\\nncinit\\nnclist\\nncurses5.4-config\\nnet-server\\nnet-server5.34\\nnet-snmp-cert\\nnet-snmp-config\\nnet-snmp-create-v3-user\\nnettop\\nnetworkQuality\\nnewaliases\\nnewgrp\\nnewproc.d\\nnfsstat\\nnice\\nnl\\nnm\\nnmedit\\nnohup\\nnotifyutil\\nnscurl\\nnslookup\\nnsupdate\\nobjdump\\nocspcheck\\nod\\nodutil\\nopen\\nopendiff\\nopensnoop\\nopenssl\\norbd\\nosacompile\\nosadecompile\\nosalang\\nosascript\\notool\\npack200\\npackage-stash-conflicts\\npackage-stash-conflicts5.34\\npagesize\\npagestuff\\npar.pl\\npar5.34.pl\\nparl\\nparl5.34\\nparldyn\\nparldyn5.34\\npasswd\\npaste\\npatch\\npathchk\\npathopens.d\\npbcopy\\npbpaste\\npcap-config\\npcsctest\\nperl\\nperl5.34\\nperlbug\\nperlbug5.34\\nperldoc\\nperldoc5.34\\nperlivp\\nperlivp5.34\\nperlthanks\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.34\\npod2man\\npod2man5.34\\npod2readme\\npod2readme5.34\\npod2text\\npod2text5.34\\npod2usage\\npod2usage5.34\\npodchecker\\npodchecker5.34\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.34\\npsm\\nptar\\nptar5.34\\nptardiff\\nptardiff5.34\\nptargrep\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdma_ctl\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nResMerger\\nresolveLinks\\nrev\\nRez\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nSafeEjectGPU\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.34.pl\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nSetFile\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.34\\nspfquery\\nspfquery5.34\\nsplain\\nsplain5.34\\nsplit\\nSplitForks\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstreamzip5.34\\nstringdups\\nstrings\\nstrip\\nstz\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntrash\\ntreereg\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusdcat\\nusdchecker\\nusdcrush\\nusdextract\\nusdrecord\\nusdtree\\nusdzip\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.34.pl\\nxip\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.34\\nxprotect\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.34\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":921,\"platform\":\"seatbelt\"}",
+      "message": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.30.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolldef\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.30\\nconfig_data5.34\\ncorelist\\ncorelist5.30\\ncorelist5.34\\ncpan\\ncpan5.30\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.30\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.30\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.30\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.30\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.30\\ndbiproxy5.34\\ndc\\ndebinhex.pl\\ndebinhex5.30.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nderq\\ndesdp\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.30\\nenc2xs5.34\\nencguess\\nencguess5.30\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\nextcheck\\neyapp\\neyapp5.30\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.30\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfs_usage\\nfunzip\\nfuser\\nfwkdp\\nfwkpfv\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.30\\nh2ph5.34\\nh2xs\\nh2xs5.30\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.30\\nhtmltree5.34\\nibtool\\niconutil\\niconv\\nictool\\nid\\nidlj\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.30\\ninstmodsh5.34\\niofile.d\\niofileb.d\\niopattern\\niopending\\niosnoop\\niotop\\nip2cc\\nip2cc5.30\\nip2cc5.34\\nipcount\\nipcount5.30\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.30\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavah\\njavap\\njavapackager\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhat\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njmc\\njobs\\njoin\\njot\\njpackage\\njps\\njrunscript\\njsadebugd\\njshell\\njson_pp\\njson_pp5.30\\njson_pp5.34\\njson_xs\\njson_xs5.30\\njson_xs5.34\\njstack\\njstat\\njstatd\\njvisualvm\\nkcc\\nkdestroy\\nkextutil\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlex\\nlibnetcfg\\nlibnetcfg5.30\\nlibnetcfg5.34\\nlibtool\\nlipo\\nlldb\\nllvm-g++\\nllvm-gcc\\nloads.d\\nlocale\\nlocaledef\\nlocate\\nlockstat\\nlog\\nlogger\\nlogin\\nlogname\\nlook\\nlorder\\nlp\\nlpoptions\\nlpq\\nlpr\\nlprm\\nlpstat\\nlsappinfo\\nlsbom\\nlskq\\nlsm\\nlsmp\\nlsvfs\\nlwp-download\\nlwp-download5.30\\nlwp-download5.34\\nlwp-dump\\nlwp-dump5.30\\nlwp-dump5.34\\nlwp-mirror\\nlwp-mirror5.30\\nlwp-mirror5.34\\nlwp-request\\nlwp-request5.30\\nlwp-request5.34\\nm4\\nmacbinary\\nmacerror\\nmacerror5.30\\nmacerror5.34\\nmachine\\nmail\\nmailq\\nmailx\\nmake\\nmalloc_history\\nman\\nmandoc\\nmandoc_soelim\\nmanpath\\nmcxquery\\nmcxrefresh\\nmddiagnose\\nmdfind\\nmdimport\\nmdls\\nmdutil\\nmemory_pressure\\nmesg\\nmg\\nmib2c\\nmib2c-update\\nmig\\nmkbom\\nmkfifo\\nmklocale\\nmktemp\\nmnthome\\nmoose-outdated\\nmoose-outdated5.30\\nmoose-outdated5.34\\nmore\\nmp2bug\\nmpsgraphtool\\nnano\\nnative2ascii\\nnbdst\\nnc\\nncal\\nncctl\\nncdestroy\\nncinit\\nnclist\\nncurses5.4-config\\nnet-server\\nnet-server5.30\\nnet-server5.34\\nnet-snmp-cert\\nnet-snmp-config\\nnet-snmp-create-v3-user\\nnettop\\nnetworkQuality\\nnewaliases\\nnewgrp\\nnewproc.d\\nnfsstat\\nnice\\nnl\\nnm\\nnmedit\\nnohup\\nnotifyutil\\nnscurl\\nnslookup\\nnsupdate\\nobjdump\\nocspcheck\\nod\\nodutil\\nopen\\nopendiff\\nopensnoop\\nopenssl\\norbd\\nosacompile\\nosadecompile\\nosalang\\nosascript\\notool\\npack200\\npackage-stash-conflicts\\npackage-stash-conflicts5.30\\npackage-stash-conflicts5.34\\npagesize\\npagestuff\\npar.pl\\npar5.30.pl\\npar5.34.pl\\nparl\\nparl5.30\\nparl5.34\\nparldyn\\nparldyn5.30\\nparldyn5.34\\npasswd\\npaste\\npatch\\npathchk\\npathopens.d\\npbcopy\\npbpaste\\npcap-config\\npcsctest\\nperl\\nperl5.30\\nperl5.34\\nperlbug\\nperlbug5.30\\nperlbug5.34\\nperldoc\\nperldoc5.30\\nperldoc5.34\\nperlivp\\nperlivp5.30\\nperlivp5.34\\nperlthanks\\nperlthanks5.30\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.30\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.30\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.30\\npod2html5.34\\npod2man\\npod2man5.30\\npod2man5.34\\npod2readme\\npod2readme5.30\\npod2readme5.34\\npod2text\\npod2text5.30\\npod2text5.34\\npod2usage\\npod2usage5.30\\npod2usage5.34\\npodchecker\\npodchecker5.30\\npodchecker5.34\\npodselect\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.30\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.30\\nprove5.34\\npsm\\nptar\\nptar5.30\\nptar5.34\\nptardiff\\nptardiff5.30\\nptardiff5.34\\nptargrep\\nptargrep5.30\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nresolveLinks\\nrev\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.30.pl\\nscandeps5.34.pl\\nschemagen\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.30\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.30\\nspfd5.34\\nspfquery\\nspfquery5.30\\nspfquery5.34\\nsplain\\nsplain5.30\\nsplain5.34\\nsplit\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstringdups\\nstrings\\nstrip\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.30\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.30\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.30\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntreereg\\ntreereg5.30\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nwsgen\\nwsimport\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.30.pl\\nxgettext5.34.pl\\nxip\\nxjc\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.30\\nxpath5.34\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.30\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.30\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.30\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.30\\nyamlpp-load-dump5.34\\nyamlpp-load5.30\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.30\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.30\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.30\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":982,\"platform\":\"seatbelt\"}",
       "observation": {
         "results": [
           {
-            "content": "I listed the files in `/usr/bin`. There were 921 executables found."
+            "content": "I listed the files in `/usr/bin`. There were 982 executables found."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 3723,
+        "prompt_tokens": 4239,
         "completion_tokens": 20
       },
-      "duration_ms": 473,
+      "duration_ms": 661,
       "outcome": "success",
       "extra": {
-        "totalMessages": 4,
+        "totalMessages": 3,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -371,12 +344,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.863Z",
+      "timestamp": "2026-04-06T08:14:38.711Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 472.5651660000003,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
+      "duration_ms": 661.799957999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -391,12 +364,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.863Z",
+      "timestamp": "2026-04-06T08:14:38.711Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 472.5905830000047,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
+      "duration_ms": 661.8807500000039,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -411,12 +384,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.863Z",
+      "timestamp": "2026-04-06T08:14:38.711Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 472.6856659999976,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
+      "duration_ms": 661.9807499999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -431,12 +404,12 @@
       }
     },
     {
-      "step_id": 18,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-05T05:50:18.863Z",
+      "timestamp": "2026-04-06T08:14:38.711Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-sandbox-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the run_sandboxed tool to list the files in /usr/bin. Report the path yo…",
-      "duration_ms": 472.71454200000153,
+      "message": "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
+      "duration_ms": 662.0175830000007,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

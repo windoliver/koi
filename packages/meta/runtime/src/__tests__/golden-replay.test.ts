@@ -27,7 +27,7 @@ import type {
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware } from "@koi/event-trace";
-import { loadHooks } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -37,7 +37,7 @@ import { consumeModelStream } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { loadCassette } from "../cassette/load-cassette.js";
-import { createHookDispatchMiddleware } from "../middleware/hook-dispatch.js";
+import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
@@ -293,11 +293,9 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
         filter: { events: ["tool.succeeded"] },
       },
     ]);
-    const hookMw = createHookDispatchMiddleware({
-      hooks: hookResult.ok ? hookResult.value : [],
-      store,
-      docId,
-    });
+    const loadedHooks = hookResult.ok ? hookResult.value : [];
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
 
     // @koi/permissions + @koi/middleware-permissions
     const permBackend = createPermissionBackend({
@@ -326,7 +324,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     const runtime = await createKoi({
       manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permHandle].map((mw) =>
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -380,12 +378,12 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     expect(hookSteps.length).toBeGreaterThan(0);
     expect(hookSteps[0]?.metadata?.hookName).toBe("on-tool-exec");
 
-    // MW spans — permissions + hook-dispatch
+    // MW spans — permissions + hooks
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     expect(mwSpans.length).toBeGreaterThan(0);
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   }, 15000);
 });
 
@@ -597,13 +595,13 @@ describe("tool-use ATIF trajectory (golden file)", () => {
     }
   });
 
-  test("MW:hook-dispatch spans (@koi/hooks middleware)", async () => {
+  test("MW:hooks spans (@koi/hooks middleware)", async () => {
     const doc = (await Bun.file(`${FIXTURES}/tool-use.trajectory.json`).json()) as {
       readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
     };
 
     const hookDispatchSpans = doc.steps.filter(
-      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hook-dispatch",
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
     );
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
@@ -732,7 +730,7 @@ describe("glob-use ATIF trajectory (golden file)", () => {
     expect(content).toContain("package.json");
   });
 
-  test("has MW:permissions + MW:hook-dispatch spans", async () => {
+  test("has MW:permissions + MW:hooks spans", async () => {
     const doc = (await Bun.file(`${FIXTURES}/glob-use.trajectory.json`).json()) as {
       readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
     };
@@ -743,7 +741,7 @@ describe("glob-use ATIF trajectory (golden file)", () => {
         .map((s) => s.extra?.middlewareName),
     );
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   });
 
   test("step count >= 10 (MCP + MW + MODEL + TOOL)", async () => {
@@ -2506,7 +2504,7 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     expect(permSpans.length).toBeGreaterThan(0);
 
     const hookDispatchSpans = doc.steps.filter(
-      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hook-dispatch",
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "hooks",
     );
     expect(hookDispatchSpans.length).toBeGreaterThan(0);
   });
@@ -2718,11 +2716,12 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
         filter: { events: ["tool.succeeded"] },
       },
     ]);
-    const hookMw = createHookDispatchMiddleware({
-      hooks: hookResult.ok ? hookResult.value : [],
+    const loadedHooks2 = hookResult.ok ? hookResult.value : [];
+    const { onExecuted: onExecuted2, middleware: hookObserverMw2 } = createHookObserver({
       store,
       docId,
     });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks2, onExecuted: onExecuted2 });
 
     const permBackend = createPermissionBackend({
       mode: "bypass",
@@ -2893,7 +2892,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const runtime = await createKoi({
       manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permHandle].map((mw) =>
+      middleware: [eventTrace, hookMw, hookObserverMw2, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [memProvider],
@@ -2952,7 +2951,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
   }, 15000);
 });
 

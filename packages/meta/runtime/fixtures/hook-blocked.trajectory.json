@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:46.324Z",
+      "timestamp": "2026-04-06T08:14:08.495Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:46.324Z",
+      "timestamp": "2026-04-06T08:14:08.495Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,10 +43,31 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:46.454Z",
+      "timestamp": "2026-04-06T08:14:08.498Z",
+      "model_name": "hook:budget-guard",
+      "message": "compact.before → budget-guard",
+      "duration_ms": 2.5525829999987764,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "compact.before",
+        "hookName": "budget-guard",
+        "decision": {
+          "kind": "block",
+          "reasonLength": 15
+        },
+        "__koi": {
+          "identifier": "hook:budget-guard"
+        }
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-06T08:14:08.498Z",
       "model_name": "middleware:hooks",
       "message": "What is 2+2?",
-      "duration_ms": 114.8813749999972,
+      "duration_ms": 2.7590000000000146,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -61,12 +82,12 @@
       }
     },
     {
-      "step_id": 3,
+      "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:46.454Z",
+      "timestamp": "2026-04-06T08:14:08.498Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2?",
-      "duration_ms": 115.24775000000227,
+      "duration_ms": 2.809583999998722,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -81,12 +102,12 @@
       }
     },
     {
-      "step_id": 4,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:46.454Z",
+      "timestamp": "2026-04-06T08:14:08.498Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2?",
-      "duration_ms": 115.35733299999993,
+      "duration_ms": 2.82799999999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

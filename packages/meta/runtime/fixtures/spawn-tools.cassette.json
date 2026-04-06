@@ -1,166 +1,159 @@
 {
   "name": "spawn-tools",
   "model": "anthropic/claude-sonnet-4-6",
-  "recordedAt": 1775427635160,
+  "recordedAt": 1775463239737,
   "chunks": [
     {
       "kind": "text_delta",
-      "delta": "I'll execute"
+      "delta": "I'll follow"
     },
     {
       "kind": "text_delta",
-      "delta": " these three"
+      "delta": " these"
     },
     {
       "kind": "text_delta",
-      "delta": " steps in order"
+      "delta": " steps in order."
     },
     {
       "kind": "text_delta",
-      "delta": "."
+      "delta": " Let me start with"
     },
     {
       "kind": "text_delta",
-      "delta": " Let's"
+      "delta": " **"
     },
     {
       "kind": "text_delta",
-      "delta": " start with"
+      "delta": "Step"
     },
     {
       "kind": "text_delta",
-      "delta": " step"
+      "delta": " 1**: creating"
     },
     {
       "kind": "text_delta",
-      "delta": " 1 —"
-    },
-    {
-      "kind": "text_delta",
-      "delta": " creating the task.\n\n**"
-    },
-    {
-      "kind": "text_delta",
-      "delta": "Step 1: Creating"
-    },
-    {
-      "kind": "text_delta",
-      "delta": " the task**"
+      "delta": " the task."
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
       "delta": "{\"s"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
       "delta": "ub"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "ject\": \""
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "je"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "Research c"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "ct\": \"R"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "aching"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "esearch ca"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": " stra"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "ching strat"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "tegies\""
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "egies"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": ", \"desc"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "\""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "riptio"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": ", \"descr"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "n\": \"Invest"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "iption"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "igate "
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "\": \"Investi"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "Redis vs "
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "gate Redi"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "Memc"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "s v"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
-      "delta": "ached\"}"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "s Memcach"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
+      "delta": "ed\"}"
     },
     {
       "kind": "usage",
       "inputTokens": 1420,
-      "outputTokens": 113
+      "outputTokens": 102
     },
     {
       "kind": "tool_call_end",
-      "callId": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj"
+      "callId": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J"
     },
     {
       "kind": "done",
       "response": {
-        "content": "I'll execute these three steps in order. Let's start with step 1 — creating the task.\n\n**Step 1: Creating the task**",
+        "content": "I'll follow these steps in order. Let me start with **Step 1**: creating the task.",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775427632-SdW3gbsqH3KGzDh0qVqI",
+        "responseId": "gen-1775463237-3qNm4940S1jhdKQfpfWK",
         "richContent": [
           {
             "kind": "text",
-            "text": "I'll execute these three steps in order. Let's start with step 1 — creating the task.\n\n**Step 1: Creating the task**"
+            "text": "I'll follow these steps in order. Let me start with **Step 1**: creating the task."
           },
           {
             "kind": "tool_call",
-            "id": "toolu_vrtx_01L2TQZe1k1ZkH8npLWpPSUj",
+            "id": "toolu_vrtx_01EQ9FQVFHejYiiJht9tj46J",
             "name": "task_create",
             "arguments": {
               "subject": "Research caching strategies",
@@ -170,7 +163,7 @@
         ],
         "usage": {
           "inputTokens": 1420,
-          "outputTokens": 113
+          "outputTokens": 102
         }
       }
     }

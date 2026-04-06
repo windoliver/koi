@@ -14,9 +14,9 @@ export {
 export { createRuntime } from "./create-runtime.js";
 // Debug
 export { collectDebugInfo, formatDebugInfo } from "./debug/collect-debug-info.js";
-export type { HookDispatchConfig } from "./middleware/hook-dispatch.js";
-// Middleware (hook dispatch, MCP lifecycle)
-export { createHookDispatchMiddleware } from "./middleware/hook-dispatch.js";
+export type { HookObserverConfig } from "./middleware/hook-dispatch.js";
+// Middleware (hook observer, MCP lifecycle)
+export { createHookObserver } from "./middleware/hook-dispatch.js";
 export type { McpLifecycleConfig } from "./middleware/mcp-lifecycle.js";
 export { recordMcpLifecycle } from "./middleware/mcp-lifecycle.js";
 export type { TraceWrapperConfig } from "./middleware/trace-wrapper.js";

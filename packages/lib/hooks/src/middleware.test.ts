@@ -146,8 +146,20 @@ describe("aggregateDecisions", () => {
     expect(result.decision).toEqual({ kind: "modify", patch: { x: 99 } });
   });
 
-  it("ignores failed hooks (fail-open)", () => {
+  it("blocks on fail-closed hook failure (default)", () => {
     const result = aggregateDecisions([failureResult("broken", "timeout"), successResult("ok")]);
+    expect(result.decision.kind).toBe("block");
+  });
+
+  it("ignores fail-open hook failures (failClosed: false)", () => {
+    const failOpen: HookExecutionResult = {
+      ok: false,
+      hookName: "telemetry",
+      error: "timeout",
+      durationMs: 1,
+      failClosed: false,
+    };
+    const result = aggregateDecisions([failOpen, successResult("ok")]);
     expect(result.decision).toEqual({ kind: "continue" });
   });
 
@@ -247,8 +259,38 @@ describe("aggregatePostDecisions", () => {
     expect(result).toEqual({ kind: "continue" });
   });
 
-  it("returns block when any hook fails (signals taint to middleware)", () => {
+  it("returns block when a fail-closed hook fails (signals taint to middleware)", () => {
     const result = aggregatePostDecisions([successResult("a"), failureResult("broken", "timeout")]);
+    expect(result.kind).toBe("block");
+  });
+
+  it("returns continue when only fail-open hooks fail (failClosed: false)", () => {
+    const failOpen: HookExecutionResult = {
+      ok: false,
+      hookName: "telemetry",
+      error: "connection refused",
+      durationMs: 1,
+      failClosed: false,
+    };
+    const result = aggregatePostDecisions([successResult("a"), failOpen]);
+    expect(result.kind).toBe("continue");
+  });
+
+  it("returns block when fail-closed hook fails alongside fail-open hook", () => {
+    const failOpen: HookExecutionResult = {
+      ok: false,
+      hookName: "telemetry",
+      error: "connection refused",
+      durationMs: 1,
+      failClosed: false,
+    };
+    const failClosed: HookExecutionResult = {
+      ok: false,
+      hookName: "redactor",
+      error: "timeout",
+      durationMs: 1,
+    };
+    const result = aggregatePostDecisions([failOpen, failClosed]);
     expect(result.kind).toBe("block");
   });
 
@@ -513,13 +555,20 @@ describe("wrapToolCall", () => {
     expect(result.output).toEqual({ error: "Hook blocked tool_call: denied" });
   });
 
-  it("pre-call hooks fail-open (failed hooks = no opinion)", async () => {
+  it("pre-call fail-open hooks do not block (failClosed: false)", async () => {
+    const failOpenResult: HookExecutionResult = {
+      ok: false,
+      hookName: "telemetry",
+      error: "timeout",
+      durationMs: 1,
+      failClosed: false,
+    };
     let callIndex = 0;
     executeSpy.mockImplementation(async () => {
       callIndex++;
       if (callIndex <= 2) {
-        // session start + pre-call: return failure
-        return [failureResult("broken-hook", "timeout")];
+        // session start + pre-call: return fail-open failure
+        return [failOpenResult];
       }
       // post-call: return success (no transforms)
       return [];
@@ -538,6 +587,35 @@ describe("wrapToolCall", () => {
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("success despite hook failure");
+  });
+
+  it("pre-call fail-closed hook blocks tool execution", async () => {
+    let callIndex = 0;
+    executeSpy.mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) return []; // session start: success
+      if (callIndex === 2) {
+        // pre-call: return fail-closed failure (default)
+        return [failureResult("security-gate", "connection refused")];
+      }
+      return [];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
+      output: "should not run",
+    });
+
+    const request: ToolRequest = { toolId: "bash", input: {} };
+    const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
+
+    expect(nextFn).not.toHaveBeenCalled();
+    expect(result.output).toEqual({
+      error: expect.stringContaining("security-gate failed"),
+    });
   });
 
   it("post-call hook failure redacts output (fail-closed)", async () => {

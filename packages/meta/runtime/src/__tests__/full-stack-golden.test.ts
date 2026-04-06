@@ -32,7 +32,7 @@ import { createKoi } from "@koi/engine";
 // @koi/event-trace: trajectory recording middleware
 import { createEventTraceMiddleware } from "@koi/event-trace";
 // @koi/hooks: hook dispatch
-import { loadHooks } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
 // @koi/mcp: transport state machine
 import { createTransportStateMachine } from "@koi/mcp";
 // @koi/middleware-permissions: permission gating middleware
@@ -48,7 +48,7 @@ import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 // @koi/tools-core: tool building
 import { buildTool } from "@koi/tools-core";
 
-import { createHookDispatchMiddleware } from "../middleware/hook-dispatch.js";
+import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
@@ -136,11 +136,8 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     expect(hookResult.ok).toBe(true);
     const hookConfigs = hookResult.ok ? hookResult.value : [];
 
-    const hookMiddleware = createHookDispatchMiddleware({
-      hooks: hookConfigs,
-      store,
-      docId,
-    });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const hookMiddleware = createHookMiddleware({ hooks: hookConfigs, onExecuted });
 
     // --- @koi/permissions + @koi/middleware-permissions: permission gating ---
     const permBackend = createPermissionBackend({
@@ -292,7 +289,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     const runtime = await createKoi({
       manifest: { name: "full-stack-agent", version: "0.1.0", model: { name: MODEL } },
       adapter: bridgeAdapter,
-      middleware: [eventTrace, hookMiddleware, permHandle].map((mw) =>
+      middleware: [eventTrace, hookMiddleware, hookObserverMw, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -366,10 +363,10 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     // --- Middleware span steps (source: system, type: middleware_span) ---
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     expect(mwSpans.length).toBeGreaterThan(0);
-    // Should have spans for hook-dispatch and permissions middleware
+    // Should have spans for hooks and permissions middleware
     // (event-trace is excluded from trace wrapper — see TRACE_EXCLUDED)
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
-    expect(mwNames.has("hook-dispatch")).toBe(true);
+    expect(mwNames.has("hooks")).toBe(true);
     // @koi/middleware-permissions: permission checks show up as MW spans
     expect(mwNames.has("permissions")).toBe(true);
     // Each span should have hook, phase, priority, nextCalled
