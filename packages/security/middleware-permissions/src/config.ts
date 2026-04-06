@@ -204,5 +204,10 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     }
   }
 
+  // onApprovalStep — must be a function if set
+  if (config.onApprovalStep !== undefined && typeof config.onApprovalStep !== "function") {
+    return fail("config.onApprovalStep must be a function");
+  }
+
   return { ok: true, value: config as unknown as PermissionsMiddlewareConfig };
 }

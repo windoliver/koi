@@ -147,7 +147,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "test permissions (bypass mode)",
     });
@@ -292,7 +292,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     const runtime = await createKoi({
       manifest: { name: "full-stack-agent", version: "0.1.0", model: { name: MODEL } },
       adapter: bridgeAdapter,
-      middleware: [eventTrace, hookMiddleware, permMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMiddleware, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [

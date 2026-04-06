@@ -304,7 +304,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -326,7 +326,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
     const runtime = await createKoi({
       manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMw, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -415,7 +415,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "bypass",
     });
@@ -437,7 +437,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const runtime = await createKoi({
       manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, goalMw, reportHandle.middleware, permMiddleware].map((mw) =>
+      middleware: [eventTrace, goalMw, reportHandle.middleware, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -2728,7 +2728,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -2893,7 +2893,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const runtime = await createKoi({
       manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, hookMw, permMiddleware].map((mw) =>
+      middleware: [eventTrace, hookMw, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [memProvider],
@@ -3835,7 +3835,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       mode: "bypass",
       rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" as const }],
     });
-    const permMiddleware = createPermissionsMiddleware({
+    const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "replay test (bypass)",
     });
@@ -3865,7 +3865,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
     const runtime = await createKoi({
       manifest: { name: "replay-spawn-tools", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, permMiddleware].map((mw) =>
+      middleware: [eventTrace, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [
@@ -4482,6 +4482,215 @@ describe("Golden: @koi/agent-runtime", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval trajectory capture: ask-mode permissions → source:"user" steps
+// ---------------------------------------------------------------------------
+
+describe("Approval trajectory capture (e2e)", () => {
+  test("ask-mode approval produces source:'user' trajectory step with valid stepIndex", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-approval-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-approval";
+
+    const store = createAtifDocumentStore(
+      { agentName: "approval-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    // Event-trace: retain full handle for emitExternalStep
+    const eventTraceHandle = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "approval-test",
+    });
+
+    // Permissions in "ask" mode — every tool call triggers approval flow
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "ask-mode test",
+    });
+
+    // Wire the approval step sink — this is the connection being tested
+    permHandle.setApprovalStepSink(eventTraceHandle.emitExternalStep);
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "approval-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      // Auto-approve all tool calls
+      approvalHandler: async () => ({ kind: "allow" as const }),
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate: trajectory must contain a source:"user" approval step
+    const steps = await store.getDocument(docId);
+    const approvalSteps = steps.filter((s) => s.source === "user");
+
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0]!;
+    expect(step.kind).toBe("tool_call");
+    expect(step.identifier).toBe("add_numbers");
+    // stepIndex must be assigned (not the placeholder -1)
+    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("success");
+    expect(step.metadata?.approvalDecision).toBe("allow");
+  });
+
+  test("deny approval produces source:'user' step with failure outcome", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-denial-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-denial";
+
+    const store = createAtifDocumentStore(
+      { agentName: "denial-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    const eventTraceHandle = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "denial-test",
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "deny-test",
+    });
+
+    permHandle.setApprovalStepSink(eventTraceHandle.emitExternalStep);
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "denial-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      // Deny all tool calls
+      approvalHandler: async () => ({ kind: "deny" as const, reason: "test-deny" }),
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const approvalSteps = steps.filter((s) => s.source === "user");
+
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0]!;
+    expect(step.kind).toBe("tool_call");
+    // stepIndex must be assigned (not the placeholder -1)
+    expect(step.stepIndex).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("failure");
+    expect(step.metadata?.approvalDecision).toBe("deny");
+    expect(step.metadata?.denyReason).toBe("test-deny");
+  });
+
+  test("runtime dispatch relay routes approval steps by sessionId", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-replay-dispatch-${Date.now()}`;
+    trajDirs.push(trajDir);
+
+    // Permissions in "ask" mode with auto-allow
+    const permBackend = createPermissionBackend({
+      mode: "default",
+      rules: [{ pattern: "*", action: "*", effect: "ask", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "dispatch-relay-test",
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    // Use createRuntime which wires the dispatch relay internally
+    const runtime = createRuntime({
+      adapter,
+      middleware: [permHandle],
+      trajectoryDir: trajDir,
+      requestApproval: async () => ({ kind: "allow" as const }),
+      approvalStepHandle: permHandle,
+    });
+
+    for await (const _e of runtime.adapter.stream({ kind: "text", text: "go" })) {
+      /* drain */
+    }
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Read trajectory from the store — createRuntime uses a per-stream docId
+    // like "stream-<uuid>", so we need to find it
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(trajDir).filter((f: string) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThan(0);
+
+    const { readFileSync } = await import("node:fs");
+    const raw = readFileSync(`${trajDir}/${files[0]}`, "utf-8");
+    const doc = JSON.parse(raw) as { readonly steps?: readonly Record<string, unknown>[] };
+    const steps = doc.steps ?? [];
+
+    // ATIF JSON uses different keys: step_id (stepIndex), source, outcome, extra (metadata)
+    const approvalSteps = steps.filter((s) => s.source === "user");
+    expect(approvalSteps.length).toBeGreaterThan(0);
+
+    const step = approvalSteps[0] as Record<string, unknown>;
+    // step_id must be assigned (not the placeholder -1)
+    expect(step.step_id).toBeGreaterThanOrEqual(0);
+    expect(step.outcome).toBe("success");
+    expect((step.extra as Record<string, unknown>)?.approvalDecision).toBe("allow");
   });
 });
 

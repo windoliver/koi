@@ -849,7 +849,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       mode: config.permissionMode,
       rules: [...config.permissionRules],
     });
-  const permMiddleware = createPermissionsMiddleware({
+  const permHandle = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionDescription,
     ...(config.denialEscalation !== undefined ? { denialEscalation: config.denialEscalation } : {}),
@@ -1020,7 +1020,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     coreHookMw,
     hookMw,
     exfiltrationGuard,
-    permMiddleware,
+    permHandle,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
