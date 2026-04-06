@@ -109,6 +109,23 @@ const registry = createAgentDefinitionRegistry(builtIn, custom);
 const resolver = createDefinitionResolver(registry);
 ```
 
+## Coordinator Tool Surface (#1241)
+
+Two constants govern coordinator tool access:
+
+**`COORDINATOR_TOOL_ALLOWLIST`** — the set of tools provisioned to the coordinator itself when spawning one:
+```typescript
+export const COORDINATOR_TOOL_ALLOWLIST = [
+  "agent_spawn", "task_create", "task_list", "task_output",
+  "task_delegate", "task_stop", "send_message",
+] as const;
+```
+Coordinators use only delegation and task-board tools — no file system, shell, or search.
+
+**Worker ceiling** — the `spawn.tools` ceiling embedded in the coordinator manifest, restricting what tools workers spawned by a coordinator can receive. Workers get `task_update`, `task_list`, `task_output`, and `send_message`. `task_delegate` is intentionally excluded: workers cannot re-delegate tasks (prevents stale workers from reclaiming recovered tasks after a coordinator crash).
+
+The fork recursion guard (`FORK_RECURSION_GUARD_TOOL = "Spawn"`) is enforced at the engine level in `@koi/engine`, not here.
+
 ## Layer
 
 L2 — depends on `@koi/core` (L0) and `@koi/errors` (L0u) only.

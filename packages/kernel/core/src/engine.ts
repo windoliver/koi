@@ -142,6 +142,23 @@ export type EngineEvent =
       readonly agentName: string;
       readonly status: ProcessState;
       readonly previousStatus?: ProcessState | undefined;
+    }
+  | {
+      /**
+       * Emitted by the permission escalation layer whenever a PermissionRequest
+       * is resolved. Observable by middleware for audit/telemetry — no separate
+       * audit side-channel needed.
+       *
+       * "approved" includes the granted (possibly narrowed) set.
+       * "rejected" and "expired" include a reason for structured failure handling.
+       */
+      readonly kind: "permission_attempt";
+      readonly agentId: AgentId;
+      readonly requestId: string;
+      readonly requestedGrants: readonly string[];
+      readonly decision: "approved" | "rejected" | "expired";
+      readonly grantedGrants?: readonly string[] | undefined;
+      readonly reason?: string | undefined;
     };
 
 // ---------------------------------------------------------------------------

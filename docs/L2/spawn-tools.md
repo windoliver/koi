@@ -48,17 +48,25 @@ Uses `topologicalSort` and `detectCycle` from `@koi/task-board` — O(V+E), no r
 ### `recoverOrphanedTasks(board, coordinatorAgentId): Promise<OrphanRecoveryResult>`
 
 Coordinator crash recovery. Finds `in_progress` tasks assigned to a different agent
-(orphaned from a previous session), kills them, and re-queues equivalent pending tasks.
+(orphaned from a previous session) and atomically unassigns them back to `pending` state,
+preserving task IDs. Uses `board.unassign()` — an atomic `in_progress → pending`
+transition added to `ManagedTaskBoard` in `@koi/tasks`.
 
 ```typescript
 interface OrphanRecoveryResult {
-  readonly killed: readonly TaskItemId[];   // terminal — these IDs are gone
-  readonly requeued: readonly TaskItemId[]; // new pending tasks with same descriptions
+  readonly killed: readonly TaskItemId[];   // always empty (unassign preserves IDs)
+  readonly requeued: readonly TaskItemId[]; // same IDs, now pending — ready for re-delegation
+  readonly failed: readonly TaskItemId[];   // IDs where unassign failed with a store error
 }
 ```
 
-**Limitation:** Re-queued tasks get new IDs (kill + re-add pattern). A proper
-`unassign(taskId)` on `ManagedTaskBoard` (L0) would preserve IDs — deferred.
+**Error handling:** Per-task races (`NOT_FOUND`, `VALIDATION`) are skipped — the task
+was completed or vanished mid-recovery, which is benign. Store-layer errors (`EXTERNAL`,
+`INTERNAL`, `CONFLICT`) stop the recovery pass and populate `failed`.
+
+**Known limitation:** Stale workers holding stale task IDs can still call `task_update`
+on recovered pending tasks. A future PR will add generation tokens to `TaskItem` to fence
+owned mutations atomically (#1241 follow-up).
 
 ## Tool Description
 
@@ -80,12 +88,16 @@ free of L1 engine dependencies.
 `snapshotToItemsMap` already exported from `@koi/task-board` (L0u). No duplicate
 dependency graph logic.
 
-### Recovery uses kill + re-add, not unassign
+### Recovery uses `board.unassign()` for atomic ID-preserving reset
 
-`recoverOrphanedTasks` cannot transition `in_progress → pending` because the task
-board's state machine doesn't include that edge (valid transitions from `in_progress`
-are `completed`, `failed`, `killed` only). The kill + re-add pattern is correct for
-MVP; a future `ManagedTaskBoard.unassign()` method would be the cleaner long-term fix.
+`recoverOrphanedTasks` uses `board.unassign(taskId)` — an `in_progress → pending`
+transition that bypasses the normal state machine and preserves the task ID. This is
+safer than kill + re-add: no data-loss window, no duplicate ID allocation, no risk
+of leaving a killed task visible in board snapshots while the replacement is being added.
+
+The `unassign()` method lives on `ManagedTaskBoard` (L0 interface in `@koi/core`,
+implemented in `@koi/tasks`). It is the preferred recovery primitive for coordinator
+restarts.
 
 ## Coordinator Workflow (with @koi/task-tools)
 

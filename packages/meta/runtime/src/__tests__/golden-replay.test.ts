@@ -3737,6 +3737,152 @@ describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// spawn-fork ATIF trajectory (golden file) — #1241
+// Validates fork=true is passed to Spawn and the child agent runs to completion.
+// Note: fork children do NOT get a fresh Spawn provider — the recursion guard in
+// create-agent-spawn-fn suppresses spawnProviderFactory when fork=true.
+// ---------------------------------------------------------------------------
+
+describe("spawn-fork ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-fork.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn(fork=true) tool call", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-fork.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("Spawn tool called with fork=true and child confirmed no Spawn tool", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const spawnStep = doc.steps
+      .filter((s) => s.source === "tool")
+      .find((s) => s.tool_calls?.some((tc) => tc.function_name === "Spawn"));
+
+    expect(spawnStep).toBeDefined();
+    const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
+    expect(spawnCall?.arguments?.agentName).toBe("researcher");
+    expect(spawnCall?.arguments?.fork).toBe(true);
+
+    // The child was asked "Do you have a Spawn tool? Answer yes or no."
+    // The fork recursion guard ensures the child does NOT receive Spawn.
+    // Verify the child's answer is "no" in the recorded output.
+    const rawContent = spawnStep?.observation?.results?.[0]?.content ?? "";
+    const childOutput =
+      typeof rawContent === "string"
+        ? (() => {
+            try {
+              return (JSON.parse(rawContent) as { output?: string }).output ?? rawContent;
+            } catch {
+              return rawContent;
+            }
+          })()
+        : String(rawContent);
+    expect(childOutput.length).toBeGreaterThan(0);
+    // Child should report NOT having Spawn — if this fails, the recursion guard regressed.
+    expect(childOutput.toLowerCase()).toContain("no");
+  });
+
+  test("fork recursion guard: exactly one Spawn call in trajectory (child cannot re-delegate)", async () => {
+    // This test pins the recursion guard contract: a forked child must NOT have access to Spawn.
+    // If the guard breaks, the child would call Spawn again and the trajectory would contain a
+    // second Spawn tool_call with a different agentId — this assertion catches that regression.
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+
+    const spawnCalls = doc.steps
+      .filter((s) => s.source === "tool")
+      .flatMap((s) => s.tool_calls ?? [])
+      .filter((tc) => tc.function_name === "Spawn");
+
+    // Exactly one Spawn call: the parent's initial delegation.
+    // A forked child receiving Spawn would produce a second entry here.
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0]?.arguments?.fork).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn-coordinator ATIF trajectory (golden file) — #1241
+// Validates coordinator agent is resolvable and its manifest allowlist ceiling
+// restricts the child's tool surface to delegation-only tools.
+// ---------------------------------------------------------------------------
+
+describe("spawn-coordinator ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-coordinator.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn to coordinator agent", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-coordinator.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("Spawn tool called with agentName='coordinator' and coordinator was invoked", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const spawnStep = doc.steps
+      .filter((s) => s.source === "tool")
+      .find((s) => s.tool_calls?.some((tc) => tc.function_name === "Spawn"));
+
+    expect(spawnStep).toBeDefined();
+    const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
+    expect(spawnCall?.arguments?.agentName).toBe("coordinator");
+  });
+
+  test("coordinator ceiling: no Glob, Grep, or ToolSearch calls in trajectory", async () => {
+    // The coordinator's selfCeiling restricts it to delegation-only tools.
+    // Glob, Grep, and ToolSearch must NOT appear in any tool call — they are parent tools
+    // that the selfCeiling enforcement should have stripped from the coordinator's surface.
+    // If this test fails, the coordinator received parent capabilities it shouldn't have.
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+
+    const parentOnlyTools = new Set(["Glob", "Grep", "ToolSearch", "Read", "Bash"]);
+    const leakedCalls = doc.steps
+      .flatMap((s) => s.tool_calls ?? [])
+      .filter((tc) => parentOnlyTools.has(tc.function_name ?? ""));
+
+    // No parent-only tools should appear — coordinator ceiling is enforced.
+    expect(leakedCalls).toHaveLength(0);
+    if (leakedCalls.length > 0) {
+      const names = leakedCalls.map((tc) => tc.function_name).join(", ");
+      throw new Error(
+        `Coordinator received parent tools that bypass selfCeiling: ${names}. ` +
+          "Re-check selfCeiling enforcement in spawn-child.ts and create-agent-spawn-fn.ts.",
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Standalone L2 golden: @koi/memory recall functions (no LLM needed)
 // ---------------------------------------------------------------------------
 
@@ -5137,6 +5283,47 @@ describe("Approval trajectory capture (e2e)", () => {
     expect(step.step_id).toBeGreaterThanOrEqual(0);
     expect(step.outcome).toBe("success");
     expect((step.extra as Record<string, unknown>)?.approvalDecision).toBe("allow");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone L2 golden: fork mode and coordinator allowlist (#1241)
+// ---------------------------------------------------------------------------
+
+describe("Golden: fork mode + coordinator allowlist (#1241)", () => {
+  test("COORDINATOR_TOOL_ALLOWLIST contains Spawn and delegation tools (assembler-facing)", async () => {
+    const { COORDINATOR_TOOL_ALLOWLIST } = await import("@koi/agent-runtime");
+    // "Spawn" (runtime name) must be in the assembler allowlist so the coordinator
+    // can delegate to workers. "agent_spawn" was the wrong name — runtime tool is "Spawn".
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("Spawn");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_create");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_delegate");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("send_message");
+    expect(COORDINATOR_TOOL_ALLOWLIST).toContain("task_stop");
+    // File/shell tools must not be present
+    expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Glob");
+    expect(COORDINATOR_TOOL_ALLOWLIST).not.toContain("Grep");
+  });
+
+  test("coordinator manifest spawn ceiling is the explicit worker ceiling (not coordinator allowlist)", async () => {
+    const { COORDINATOR_MANIFEST } = await import("@koi/agent-runtime");
+    // The manifest's spawn.tools.list is COORDINATOR_WORKER_CEILING — an explicit list for
+    // workers, NOT derived from COORDINATOR_TOOL_ALLOWLIST. Workers have a different role:
+    // they execute tasks (task_update), not orchestrate (task_create, task_delegate, Spawn).
+    expect(COORDINATOR_MANIFEST.manifest.spawn?.tools?.policy).toBe("allowlist");
+    const manifestList = COORDINATOR_MANIFEST.manifest.spawn?.tools?.list ?? [];
+    // Workers must NOT have these — only the coordinator orchestrator needs them
+    expect(manifestList).not.toContain("Spawn"); // workers do not spawn further agents
+    expect(manifestList).not.toContain("task_delegate"); // workers cannot reassign tasks
+    expect(manifestList).not.toContain("task_create"); // workers don't create new board entries
+    expect(manifestList).not.toContain("task_stop"); // workers don't kill other tasks
+    // Workers MUST have these — they execute and report
+    expect(manifestList).toContain("task_update"); // workers complete/fail their own task
+    expect(manifestList).toContain("send_message"); // workers may send status messages
+    // File/shell tools must never be in the worker ceiling
+    expect(manifestList).not.toContain("Glob");
+    expect(manifestList).not.toContain("Grep");
+    expect(manifestList).not.toContain("ToolSearch");
   });
 });
 

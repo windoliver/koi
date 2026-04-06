@@ -101,7 +101,33 @@ export interface SpawnRequest {
    * guard and verdict collector. Avoids brittle inference from additionalTools.
    */
   readonly requiredOutputToolName?: string | undefined;
+  /**
+   * When true, this spawn is a fork — the child inherits all parent tools with no
+   * filtering (equivalent to `toolAllowlist: ['*']`), and `agent_spawn` is
+   * automatically stripped from the child's tool set to prevent recursive forks.
+   *
+   * Mutually exclusive with `toolAllowlist` (fork already implies full inheritance).
+   * Compatible with `toolDenylist` (further restriction on top of fork defaults).
+   *
+   * If `maxTurns` is not set, `DEFAULT_FORK_MAX_TURNS` is applied automatically.
+   *
+   * Design rationale: fork has distinct semantics from a regular spawn with a
+   * wildcard allowlist — it carries the recursion guard and the default turn cap,
+   * enabling the engine to enforce both without relying on caller conventions.
+   */
+  readonly fork?: true | undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Fork defaults
+// ---------------------------------------------------------------------------
+
+/**
+ * Default maximum turns applied to forked children when `maxTurns` is not set.
+ * Prevents runaway fork children from holding ledger slots indefinitely.
+ * Aligns with the 200-turn cap used by CC's fork sub-agent implementation.
+ */
+export const DEFAULT_FORK_MAX_TURNS = 200;
 
 // ---------------------------------------------------------------------------
 // Spawn result
@@ -222,8 +248,9 @@ export function toolFilterFromSpawnRequest(request: SpawnRequest): ToolFilterSpe
  * Catches configuration errors early (at request-construction time) rather
  * than at spawn time, with clear actionable error messages.
  *
- * Currently checks:
+ * Checks:
  * - `toolAllowlist` and `toolDenylist` are mutually exclusive
+ * - `fork: true` and `toolAllowlist` are mutually exclusive (fork implies full inheritance)
  */
 export function validateSpawnRequest(request: SpawnRequest): Result<SpawnRequest, KoiError> {
   if (request.toolAllowlist !== undefined && request.toolDenylist !== undefined) {
@@ -236,6 +263,20 @@ export function validateSpawnRequest(request: SpawnRequest): Result<SpawnRequest
           "they are mutually exclusive. Use toolAllowlist to restrict the child to a specific " +
           "set of tools, or toolDenylist to exclude specific tools from all inherited tools. " +
           "Remove one of the two fields.",
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+  if (request.fork === true && request.toolAllowlist !== undefined) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "SpawnRequest cannot set both fork and toolAllowlist — they are mutually exclusive. " +
+          "fork inherits all parent tools (equivalent to a wildcard allowlist); setting " +
+          "toolAllowlist would restrict that inheritance, defeating the purpose of fork. " +
+          "Use toolDenylist instead to further narrow the fork's tool set.",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

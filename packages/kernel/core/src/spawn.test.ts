@@ -86,4 +86,48 @@ describe("validateSpawnRequest", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  // ---------------------------------------------------------------------------
+  // fork validation (Decision 1-A / 6-A)
+  // ---------------------------------------------------------------------------
+
+  test("returns ok for fork=true with no tool lists", () => {
+    const result = validateSpawnRequest({ ...baseRequest, fork: true });
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns ok for fork=true with toolDenylist (further restriction is valid)", () => {
+    const result = validateSpawnRequest({
+      ...baseRequest,
+      fork: true,
+      toolDenylist: ["shell_exec"],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns VALIDATION error for fork=true with toolAllowlist (contradictory)", () => {
+    const result = validateSpawnRequest({
+      ...baseRequest,
+      fork: true,
+      toolAllowlist: ["task_list"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.retryable).toBe(false);
+      expect(result.error.message).toContain("fork");
+      expect(result.error.message).toContain("toolAllowlist");
+    }
+  });
+
+  test("fork+toolAllowlist error message explains the fix", () => {
+    const result = validateSpawnRequest({
+      ...baseRequest,
+      fork: true,
+      toolAllowlist: ["task_list"],
+    });
+    if (!result.ok) {
+      expect(result.error.message).toContain("toolDenylist");
+    }
+  });
 });

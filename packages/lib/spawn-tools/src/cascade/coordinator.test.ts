@@ -123,7 +123,7 @@ describe("Coordinator: concurrent completion idempotency", () => {
 // ---------------------------------------------------------------------------
 
 describe("Coordinator: crash recovery end-to-end", () => {
-  test("coordinator restart: orphaned tasks killed and re-queued as pending", async () => {
+  test("coordinator restart: orphaned tasks unassigned and re-queued as pending (same IDs)", async () => {
     const board = await freshBoard();
     const newCoord = agentId("new-coordinator");
 
@@ -137,8 +137,10 @@ describe("Coordinator: crash recovery end-to-end", () => {
 
     const result = await recoverOrphanedTasks(board, newCoord);
 
-    expect(result.killed.length).toBe(2);
+    // unassign() preserves task IDs — killed is always empty
+    expect(result.killed.length).toBe(0);
     expect(result.requeued.length).toBe(2);
+    expect(result.failed.length).toBe(0);
 
     const cascade = createTaskCascade(board);
     // Re-queued tasks are pending and ready for re-delegation

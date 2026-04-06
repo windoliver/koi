@@ -1,8 +1,95 @@
-/** Built-in coordinator agent definition (Markdown with YAML frontmatter). */
-export const COORDINATOR_MD = `---
+/**
+ * Built-in coordinator agent definition.
+ *
+ * `COORDINATOR_TOOL_ALLOWLIST` is the single source of truth for coordinator tool
+ * surface. It is embedded into the manifest's `spawn.tools.list` (ceiling for children)
+ * and exported for assemblers that need to apply it as a `SpawnRequest.toolAllowlist`
+ * when spawning a coordinator agent.
+ *
+ * `COORDINATOR_MANIFEST` is the pre-parsed, frozen AgentDefinition — use it directly
+ * instead of re-parsing the markdown string at runtime.
+ */
+
+import type { AgentDefinition } from "@koi/core";
+import { deepFreezeDefinition } from "../freeze.js";
+import { parseAgentDefinition } from "../parse-agent-definition.js";
+
+/**
+ * The canonical tool surface for a coordinator agent (assembler-facing).
+ *
+ * Coordinators may ONLY use delegation and task-board tools — no file system,
+ * shell, or search tools. This matches CC's `COORDINATOR_MODE_ALLOWED_TOOLS`.
+ *
+ * Pass as `SpawnRequest.toolAllowlist` when spawning a coordinator to ensure
+ * it only receives these tools. Includes `"Spawn"` so the coordinator can
+ * delegate to workers.
+ *
+ * **Provisioning vs. restriction**: `self_ceiling` (and this allowlist) is a
+ * restriction ceiling — it limits which tools the coordinator may receive, but
+ * does not provision tools that the parent does not already have. Board tools
+ * (`task_create`, `task_list`, etc.) reach the coordinator only when the parent
+ * agent's provider chain includes a board tool provider. If the parent lacks
+ * board tools, the coordinator will only inherit whatever tools the parent has
+ * that fall within this allowlist (typically just `"Spawn"`).
+ *
+ * Note: the coordinator's manifest `spawn.tools.list` (ceiling for ITS children)
+ * excludes both `"Spawn"` and `"task_delegate"` — workers do actual work and
+ * must not spawn further agents or re-delegate tasks. See `COORDINATOR_WORKER_CEILING`.
+ */
+export const COORDINATOR_TOOL_ALLOWLIST: readonly [
+  "Spawn",
+  "task_create",
+  "task_list",
+  "task_output",
+  "task_delegate",
+  "task_stop",
+  "send_message",
+] = [
+  "Spawn",
+  "task_create",
+  "task_list",
+  "task_output",
+  "task_delegate",
+  "task_stop",
+  "send_message",
+] as const;
+
+/**
+ * Tool ceiling for workers spawned BY the coordinator.
+ *
+ * Defined EXPLICITLY rather than derived from COORDINATOR_TOOL_ALLOWLIST because
+ * the coordinator's and workers' tool surfaces serve different roles:
+ * - Coordinator orchestrates: Spawn, task_create, task_delegate, task_list, task_output, task_stop
+ * - Workers execute: task_update (claim + complete/fail), task_list (read-only check), send_message
+ *
+ * Notably EXCLUDED from workers:
+ * - "Spawn"       — workers do actual work, not recursive delegation
+ * - "task_delegate" — workers cannot reassign tasks to other agents; this also
+ *                     prevents stale workers from hijacking recovered tasks after
+ *                     a coordinator crash (board.unassign returns tasks to pending)
+ * - "task_create" — workers execute existing tasks, not create new board entries
+ * - "task_stop"   — workers cannot kill other tasks; use task_update to self-fail
+ *
+ * Embedded into the coordinator manifest's `spawn.tools.list`.
+ * @internal — not exported; consumers use COORDINATOR_TOOL_ALLOWLIST.
+ */
+const COORDINATOR_WORKER_CEILING = [
+  "task_update", // workers claim (→in_progress) and complete/fail their own task
+  "task_list", // read-only: workers may poll board state for context
+  "task_output", // read-only: workers may read other task results for context
+  "send_message", // workers may send status messages
+] as const satisfies readonly string[];
+
+export const COORDINATOR_MD: string = `---
 name: coordinator
-description: Multi-agent coordinator that decomposes a goal into parallel tasks, delegates each to a specialist child agent via agent_spawn, monitors progress via task_list and task_output, and synthesizes a coherent result once all tasks complete. Use when a goal is too broad for a single agent or would benefit from parallel specialist execution.
+description: Multi-agent coordinator that decomposes a goal into parallel tasks, delegates each to a specialist child agent via Spawn, monitors progress via task_list and task_output, and synthesizes a coherent result once all tasks complete. Use when a goal is too broad for a single agent or would benefit from parallel specialist execution.
 model: opus
+spawn:
+  tools:
+    policy: allowlist
+    list: [${COORDINATOR_WORKER_CEILING.join(", ")}]
+self_ceiling:
+  tools: [${COORDINATOR_TOOL_ALLOWLIST.join(", ")}]
 ---
 
 You are a coordinator agent. Your role is to decompose complex goals into focused parallel tasks, delegate each to the right specialist agent, monitor progress, and synthesize a coherent final result.
@@ -11,13 +98,22 @@ You are a coordinator agent. Your role is to decompose complex goals into focuse
 
 1. **Decompose** — Use \`task_create\` to add all subtasks to the board. Set \`metadata.kind\` on each task to enable result schema validation (e.g. \`{ kind: "research" }\`).
 
-2. **Fan-out** — For each pending task, call \`task_delegate\` to assign it, then immediately call \`agent_spawn\` to dispatch a child agent. Do NOT use \`task_update\` for delegation — \`task_delegate\` allows multiple simultaneous assignments.
+2. **Fan-out** — For each pending task, call \`task_delegate\` to assign it, then immediately call \`Spawn\` to dispatch a child agent. Do NOT use \`task_update\` for delegation — \`task_delegate\` allows multiple simultaneous assignments.
 
 3. **Poll** — Call \`task_list({ updated_since: <lastPollMs> })\` to see only changed tasks since your last check. Store the timestamp after each poll to avoid re-reading unchanged tasks.
 
 4. **Retrieve** — For each changed task, call \`task_output\` to get the result. Process ONE result at a time: read, summarize the key findings, then proceed to the next.
 
 5. **Synthesize** — Once all tasks are completed or permanently failed, combine your per-task summaries into a coherent final answer.
+
+## Polling strategy
+
+After fanning out, use exponential backoff when polling for completions:
+- Start: wait 2 s after the last status change before the next \`task_list\` call
+- Double the wait on each empty poll (no status changes), capping at 30 s
+- Reset to 2 s immediately whenever any task status changes
+
+This prevents wasted turns on empty polls during long-running delegate tasks.
 
 ## Partial success
 
@@ -31,3 +127,14 @@ On startup, always call \`task_list()\` to check if any tasks are already \`in_p
 
 Keep summaries short (1-3 sentences per task result). Aggregate information across tasks rather than quoting full outputs — the goal is synthesis, not transcription.
 `;
+
+const _result = parseAgentDefinition(COORDINATOR_MD, "built-in");
+if (!_result.ok) {
+  throw new Error(`Built-in coordinator agent failed to parse: ${_result.error.message}`);
+}
+
+/**
+ * Pre-parsed, frozen coordinator AgentDefinition.
+ * Use this instead of parsing COORDINATOR_MD at runtime.
+ */
+export const COORDINATOR_MANIFEST: AgentDefinition = deepFreezeDefinition(_result.value);
