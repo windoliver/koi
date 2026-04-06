@@ -88,6 +88,17 @@ Agent call fails
 Agent receives modified prompt → adapts strategy → succeeds
 ```
 
+### Hook-Blocked Tool Response Detection
+
+When hook middleware blocks a tool call, it returns a normal `ToolResponse` with `metadata: { blockedByHook: true }` instead of throwing. The `wrapToolCall` path detects this and treats it as a **deliberate no-op** on all retry state:
+
+- **No records appended** — prevents retry numbering pollution (hook denials are not retryable failures)
+- **No budget consumed** — policy denials are permanent, not transient
+- **No `pendingAction` set or cleared** — preserves any legitimate prior retry/abort state
+- **No retry signal set or cleared** — preserves prior signal for event-trace to consume on the actual retry step
+
+Event-trace independently classifies `blockedByHook` responses as `outcome: "failure"` without requiring any signal from semantic-retry. The blocked response flows to the model naturally so it can see the denial message and adapt (e.g., choose a different tool).
+
 ### Middleware Position (Onion)
 
 ```

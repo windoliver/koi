@@ -630,5 +630,87 @@ describe("enforceBudget", () => {
 
       expect(asyncCalled).toBe(true);
     });
+
+    it("surfaces preservationFailed when sync callback throws during micro compaction", async () => {
+      const testError = new Error("persistence unavailable");
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+        onBeforeDrop: () => {
+          throw testError;
+        },
+      });
+      const messages = [
+        textMsg("a".repeat(30)),
+        textMsg("b".repeat(30)),
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      const result = await enforceBudget(messages, undefined, config);
+
+      // Compaction still completes (fail-open)
+      expect(result.compaction).not.toBe("noop");
+      if (result.compaction === "micro" || result.compaction === "full") {
+        expect(result.preservationFailed).toBe(true);
+        expect(result.preservationError).toBe(testError);
+        expect(result.droppedMessages?.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("surfaces preservationFailed when async callback rejects during full compaction", async () => {
+      const testError = new Error("network timeout");
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.3,
+        hardTriggerFraction: 0.5,
+        microTargetFraction: 0.1,
+        preserveRecent: 1,
+        onBeforeDrop: async () => {
+          throw testError;
+        },
+      });
+      const messages = [
+        textMsg("a".repeat(40)),
+        textMsg("b".repeat(40)),
+        textMsg("c".repeat(40)),
+        textMsg("d".repeat(40)),
+        textMsg("e".repeat(40)),
+      ];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).not.toBe("noop");
+      if (result.compaction === "micro" || result.compaction === "full") {
+        expect(result.preservationFailed).toBe(true);
+        expect(result.preservationError).toBe(testError);
+      }
+    });
+
+    it("does not set preservationFailed when callback succeeds", async () => {
+      const config = testConfig({
+        contextWindowSize: 200,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.2,
+        preserveRecent: 1,
+        onBeforeDrop: () => {
+          // Success — no error
+        },
+      });
+      const messages = [
+        textMsg("a".repeat(30)),
+        textMsg("b".repeat(30)),
+        textMsg("c".repeat(30)),
+        textMsg("d".repeat(30)),
+      ];
+      const result = await enforceBudget(messages, undefined, config);
+
+      if (result.compaction === "micro" || result.compaction === "full") {
+        expect(result.preservationFailed).toBeUndefined();
+        expect(result.preservationError).toBeUndefined();
+      }
+    });
   });
 });

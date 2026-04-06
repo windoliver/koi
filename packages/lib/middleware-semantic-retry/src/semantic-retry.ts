@@ -192,6 +192,17 @@ function isFailedResponse(response: ModelResponse): boolean {
   return response.stopReason !== undefined && NON_SUCCESS_STOP_REASONS.has(response.stopReason);
 }
 
+/**
+ * Check if a ToolResponse was blocked by a hook policy (pre-call block).
+ * Hook middleware returns blocked tool calls as normal responses with
+ * `metadata: { blockedByHook: true }` instead of throwing, so they must
+ * be detected explicitly for retry classification.
+ */
+function isBlockedToolResponse(response: ToolResponse): boolean {
+  if (response.metadata === undefined) return false;
+  return (response.metadata as Record<string, unknown>).blockedByHook === true;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -516,7 +527,22 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       const sessionId = ctx.session.sessionId as string;
       const state = getSession(sessionId);
       try {
-        return await next(request);
+        const response = await next(request);
+        // Hook-blocked tool calls are policy denials — permanent, not transient.
+        // Record for observability (event-trace annotation) but do NOT consume
+        // retry budget or set pendingAction, since retrying a forbidden tool
+        // would just repeat the denial and waste budget.
+        if (isBlockedToolResponse(response)) {
+          // Hook-blocked tool calls are policy denials — permanent, not transient.
+          // This path is a deliberate no-op on semantic-retry state:
+          //  - No records appended (prevents retry numbering pollution)
+          //  - No budget consumed (denials are permanent, not retryable)
+          //  - No pendingAction set or cleared (preserves prior retry state)
+          //  - No retry signal set or cleared (preserves prior signal for
+          //    event-trace to consume on the actual retry model step)
+          // Event-trace independently classifies blockedByHook as failure.
+        }
+        return response;
       } catch (e: unknown) {
         if (state !== undefined) {
           const toolFailure: ToolFailureRequest = {
