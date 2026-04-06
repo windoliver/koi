@@ -111,6 +111,24 @@ ATIF v1.6 is a JSON schema spec from the
 Koi extensions to ATIF v1.6 (stored as top-level fields per spec's extensibility):
 - `duration_ms`: Step duration in milliseconds
 - `outcome`: `"success" | "failure" | "retry"`
+- `extra.__koi`: Nested transport object for system steps with non-default `kind`/`identifier`
+  (e.g., `provenance:turn_summary` steps). Stripped on import; only present in serialized ATIF.
+
+### Tool metadata allowlist (#1499)
+
+Tool step metadata is **not** copied wholesale from `ToolResponse.metadata`. Only these
+keys are persisted in the trajectory to prevent trust-boundary expansion:
+
+| Key | Purpose |
+|-----|---------|
+| `provenance` | Schema-pruned to `{ system, server }` — provenance tracking (#1464) |
+| `blockedByHook` | Policy denial marker |
+| `hookName` | Which hook blocked the call |
+| `reason` | Denial explanation from guards |
+| `committedButRedacted` | Output redacted after tool side effects committed |
+
+All other transient metadata (correlation IDs, cache hints, etc.) is filtered out.
+Property checks use `Object.hasOwn` for prototype-pollution safety.
 
 ## API
 
@@ -212,3 +230,5 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
 - `packages/kernel/core/src/snapshot-time-travel.ts` — v2 per-event trace types
 
 > **Maintenance note (PR #1506):** Renamed unused `hasMetadata` variable to `_hasMetadata` in `event-trace.ts` to satisfy Biome `noUnusedVariables`. No functional changes.
+
+> **Trust-boundary fix (PR #1541, issue #1499):** Tool step metadata is now allowlisted instead of copied wholesale. System steps with non-default `kind`/`identifier` (e.g., `provenance:turn_summary`) use a nested `extra.__koi` transport object for lossless ATIF round-trip. Both library and runtime mappers updated consistently.
