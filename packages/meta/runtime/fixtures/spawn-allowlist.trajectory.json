@@ -216,6 +216,36 @@
     },
     {
       "step_id": 8,
+<<<<<<< HEAD
+=======
+      "source": "system",
+      "timestamp": "2026-04-04T10:54:03.215Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "Spawn({\"agentName\":\"researcher\",\"toolAllowlist\":[\"Grep\"],\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"My available tools are:\\n\\n*   `default_api.Grep`\\n\\n2 + 2 = 4\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 966.1716250000027,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:29.599Z",
       "tool_calls": [

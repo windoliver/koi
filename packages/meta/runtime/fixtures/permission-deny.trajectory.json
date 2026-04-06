@@ -233,6 +233,7 @@
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
+<<<<<<< HEAD
       }
     },
     {
@@ -458,6 +459,8 @@
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
+=======
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       }
     }
   ]

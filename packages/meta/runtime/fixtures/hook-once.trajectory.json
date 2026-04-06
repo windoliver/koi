@@ -181,6 +181,56 @@
     },
     {
       "step_id": 8,
+<<<<<<< HEAD
+=======
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:52.312Z",
+      "model_name": "hook:always-hook",
+      "message": "tool.succeeded:add_numbers → always-hook",
+      "duration_ms": 25.585124999997788,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "always-hook",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:always-hook"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:52.323Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "add_numbers({\"a\":3,\"b\":4})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":7}"
+          }
+        ]
+      },
+      "duration_ms": 139.33524999999645,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:14.005Z",
       "tool_calls": [
@@ -373,6 +423,7 @@
       "duration_ms": 0.06300000000192085,
       "outcome": "success",
       "extra": {
+<<<<<<< HEAD
         "type": "middleware_span",
         "middlewareName": "semantic-retry",
         "hook": "wrapToolCall",
@@ -381,6 +432,16 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:semantic-retry"
+=======
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:add_numbers",
+        "hookName": "always-hook",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:always-hook"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
         }
       }
     },
@@ -393,6 +454,7 @@
       "duration_ms": 2.0500410000022384,
       "outcome": "success",
       "extra": {
+<<<<<<< HEAD
         "type": "hook_execution",
         "triggerEvent": "tool.succeeded",
         "hookName": "always-hook",
@@ -401,13 +463,54 @@
         },
         "__koi": {
           "identifier": "hook:always-hook"
+=======
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
         }
       }
     },
     {
       "step_id": 17,
       "source": "system",
+<<<<<<< HEAD
       "timestamp": "2026-04-06T08:14:14.012Z",
+=======
+      "timestamp": "2026-04-05T22:20:52.465Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":30}"
+          }
+        ]
+      },
+      "duration_ms": 37.301665999999386,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:52.589Z",
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "model_name": "middleware:hooks",
       "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {

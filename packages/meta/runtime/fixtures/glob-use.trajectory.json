@@ -172,11 +172,65 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+<<<<<<< HEAD
+=======
         }
       }
     },
     {
       "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:43.408Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded:Glob → on-tool-exec",
+      "duration_ms": 20.038249999997788,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:Glob",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
+        }
+      }
+    },
+    {
+<<<<<<< HEAD
+      "step_id": 7,
+=======
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:43.514Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "Glob({\"pattern\":\"package.json\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 199.5300410000018,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:05.570Z",
       "tool_calls": [

@@ -89,6 +89,136 @@
     },
     {
       "step_id": 3,
+<<<<<<< HEAD
+=======
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.266Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 613.7310409999991,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.266Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 613.8345420000041,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.266Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 614.0551669999986,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.266Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the task_create tool to create a task with description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 614.1044580000016,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.271Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded:task_create → on-tool-exec",
+      "duration_ms": 6.948416999999608,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:task_create",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.272Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_create({\"description\":\"Review the README for typos\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"created\":{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}}"
+          }
+        ]
+      },
+      "duration_ms": 8.944457999998122,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:16.426Z",
       "tool_calls": [
@@ -316,11 +446,65 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+<<<<<<< HEAD
+=======
         }
       }
     },
     {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.316Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded:task_list → on-tool-exec",
+      "duration_ms": 18.921166000000085,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:task_list",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
+        }
+      }
+    },
+    {
+<<<<<<< HEAD
       "step_id": 13,
+=======
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:56.352Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"tasks\":[{\"id\":\"task_1\",\"description\":\"Review the README for typos\",\"status\":\"pending\"}]}"
+          }
+        ]
+      },
+      "duration_ms": 56.590791000002355,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:16.469Z",
       "tool_calls": [

@@ -156,11 +156,65 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+<<<<<<< HEAD
+=======
         }
       }
     },
     {
       "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-05T20:34:23.074Z",
+      "model_name": "hook:on-bash-tool",
+      "message": "tool.succeeded:Bash → on-bash-tool",
+      "duration_ms": 2.5578749999999673,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:Bash",
+        "hookName": "on-bash-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-bash-tool"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
+        }
+      }
+    },
+    {
+<<<<<<< HEAD
+      "step_id": 7,
+=======
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T20:34:23.081Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "Bash({\"command\":\"echo hello-from-bash\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":5}"
+          }
+        ]
+      },
+      "duration_ms": 15.119834000000083,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:39.384Z",
       "tool_calls": [

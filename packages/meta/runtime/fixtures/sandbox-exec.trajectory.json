@@ -156,11 +156,65 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+<<<<<<< HEAD
+=======
         }
       }
     },
     {
       "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-05T05:50:18.381Z",
+      "model_name": "hook:on-sandbox-tool",
+      "message": "tool.succeeded:run_sandboxed → on-sandbox-tool",
+      "duration_ms": 1.9474170000030426,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:run_sandboxed",
+        "hookName": "on-sandbox-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-sandbox-tool"
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
+        }
+      }
+    },
+    {
+<<<<<<< HEAD
+      "step_id": 7,
+=======
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T05:50:18.386Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "run_sandboxed({\"path\":\"/usr/bin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"aa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\napply\\napropos\\nar\\narch\\nas\\nasa\\nAssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbanalyse\\navbcapture\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nb64decode\\nb64encode\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch"
+          }
+        ]
+      },
+      "duration_ms": 31.862417000003916,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:38.021Z",
       "tool_calls": [

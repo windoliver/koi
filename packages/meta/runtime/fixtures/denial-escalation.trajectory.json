@@ -120,9 +120,12 @@
         "nextCalled": false,
         "__koi": {
           "identifier": "middleware:permissions"
+<<<<<<< HEAD
         },
         "__rich_error": {
           "text": "add_numbers invocation denied by per-call policy"
+=======
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
         }
       }
     },
@@ -143,9 +146,12 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+<<<<<<< HEAD
         },
         "__rich_error": {
           "text": "add_numbers invocation denied by per-call policy"
+=======
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
         }
       }
     },

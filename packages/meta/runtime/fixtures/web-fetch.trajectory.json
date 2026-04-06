@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:14.697Z",
+      "timestamp": "2026-04-05T22:20:53.271Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -37,7 +37,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:14.697Z",
+      "timestamp": "2026-04-05T22:20:53.271Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -54,7 +54,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-06T08:14:14.704Z",
+      "timestamp": "2026-04-05T22:20:53.277Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
       "observation": {
@@ -65,10 +65,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 315,
+        "prompt_tokens": 319,
         "completion_tokens": 11
       },
-      "duration_ms": 514,
+      "duration_ms": 605,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -90,10 +90,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.220Z",
+      "timestamp": "2026-04-05T22:20:53.929Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 516.0055830000019,
+      "duration_ms": 651.8136249999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.220Z",
+      "timestamp": "2026-04-05T22:20:53.930Z",
       "model_name": "middleware:hooks",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 516.1383750000023,
+      "duration_ms": 652.806958000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -130,10 +130,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.220Z",
+      "timestamp": "2026-04-05T22:20:53.930Z",
       "model_name": "middleware:permissions",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 516.953290999998,
+      "duration_ms": 652.9824580000059,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -150,10 +150,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.220Z",
+      "timestamp": "2026-04-05T22:20:53.930Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 516.9827499999992,
+      "duration_ms": 653.007792000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -169,35 +169,30 @@
     },
     {
       "step_id": 7,
-      "source": "tool",
-      "timestamp": "2026-04-06T08:14:15.219Z",
-      "tool_calls": [
-        {
-          "tool_call_id": "call_web_fetch_7",
-          "function_name": "web_fetch",
-          "arguments": {
-            "format": "html",
-            "url": "http://example.com"
-          }
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:54.686Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded:web_fetch → on-tool-exec",
+      "duration_ms": 48.51729100000375,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:web_fetch",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
         }
-      ],
-      "observation": {
-        "results": [
-          {
-            "source_call_id": "call_web_fetch_7",
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
-          }
-        ]
-      },
-      "duration_ms": 37,
-      "outcome": "success"
+      }
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.256Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "timestamp": "2026-04-05T22:20:54.728Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -205,7 +200,59 @@
           }
         ]
       },
-      "duration_ms": 37.32474999999977,
+      "duration_ms": 842.5005000000019,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "tool",
+      "timestamp": "2026-04-05T22:20:53.888Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_web_fetch_9",
+          "function_name": "web_fetch",
+          "arguments": {
+            "url": "http://example.com",
+            "format": "html"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_web_fetch_9",
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+          }
+        ]
+      },
+      "duration_ms": 843,
+      "outcome": "success"
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:54.731Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
+          }
+        ]
+      },
+      "duration_ms": 843.5454169999939,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,31 +267,11 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.259Z",
-      "model_name": "hook:on-tool-exec",
-      "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 2.5269159999988915,
-      "outcome": "success",
-      "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded",
-        "hookName": "on-tool-exec",
-        "decision": {
-          "kind": "continue"
-        },
-        "__koi": {
-          "identifier": "hook:on-tool-exec"
-        }
-      }
-    },
-    {
-      "step_id": 10,
-      "source": "system",
-      "timestamp": "2026-04-06T08:14:15.259Z",
+      "timestamp": "2026-04-05T22:20:54.779Z",
       "model_name": "middleware:hooks",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -252,7 +279,7 @@
           }
         ]
       },
-      "duration_ms": 40.206749999997555,
+      "duration_ms": 894.7367079999967,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -267,11 +294,11 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.259Z",
+      "timestamp": "2026-04-05T22:20:54.783Z",
       "model_name": "middleware:permissions",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -279,7 +306,7 @@
           }
         ]
       },
-      "duration_ms": 40.319541999997455,
+      "duration_ms": 899.606792000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -294,11 +321,11 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.259Z",
+      "timestamp": "2026-04-05T22:20:54.783Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -306,7 +333,7 @@
           }
         ]
       },
-      "duration_ms": 40.39233400000012,
+      "duration_ms": 899.7612090000039,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -321,23 +348,23 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-06T08:14:15.259Z",
+      "timestamp": "2026-04-05T22:20:54.793Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
       "observation": {
         "results": [
           {
-            "content": "The page title is \"Example Domain\".\n"
+            "content": "The page title is \"Example Domain\"."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 527,
-        "completion_tokens": 9
+        "prompt_tokens": 532,
+        "completion_tokens": 8
       },
-      "duration_ms": 448,
+      "duration_ms": 554,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -357,12 +384,12 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.707Z",
+      "timestamp": "2026-04-05T22:20:55.353Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 448.0770420000008,
+      "duration_ms": 560.1385420000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -377,12 +404,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.708Z",
+      "timestamp": "2026-04-05T22:20:55.353Z",
       "model_name": "middleware:hooks",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 448.15399999999863,
+      "duration_ms": 560.239499999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -397,12 +424,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.708Z",
+      "timestamp": "2026-04-05T22:20:55.354Z",
       "model_name": "middleware:permissions",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 448.4726249999985,
+      "duration_ms": 560.9414590000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -417,12 +444,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-06T08:14:15.708Z",
+      "timestamp": "2026-04-05T22:20:55.354Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 448.5396660000006,
+      "duration_ms": 561.1387079999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

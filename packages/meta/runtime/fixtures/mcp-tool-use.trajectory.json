@@ -81,6 +81,136 @@
     },
     {
       "step_id": 3,
+<<<<<<< HEAD
+=======
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.537Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1423.8343339999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.554Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1440.846166999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.554Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1441.222041000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.554Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
+      "duration_ms": 1441.5790409999972,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.623Z",
+      "model_name": "hook:on-mcp-tool",
+      "message": "tool.succeeded:golden-mcp__weather → on-mcp-tool",
+      "duration_ms": 80.08066600000166,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded:golden-mcp__weather",
+        "hookName": "on-mcp-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-mcp-tool"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T22:20:58.791Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]"
+          }
+        ]
+      },
+      "duration_ms": 469.1604159999988,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:17.757Z",
       "tool_calls": [

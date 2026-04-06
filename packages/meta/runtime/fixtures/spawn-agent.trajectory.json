@@ -161,6 +161,36 @@
     },
     {
       "step_id": 7,
+<<<<<<< HEAD
+=======
+      "source": "system",
+      "timestamp": "2026-04-04T10:54:00.715Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 529.1632499999978,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+>>>>>>> 7a96d363 (chore: re-record golden trajectories after exfiltration guard changes)
       "source": "tool",
       "timestamp": "2026-04-06T08:14:27.590Z",
       "tool_calls": [
