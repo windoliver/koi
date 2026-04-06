@@ -2012,7 +2012,7 @@ const queries: readonly QueryConfig[] = [
   //   Parent has Glob + Grep + ToolSearch (builtin search) + Spawn. LLM calls Spawn with fork=true.
   //   Child model step in ATIF shows tools WITHOUT agent_spawn, proving the recursion guard works.
   //   maxTurns defaults to DEFAULT_FORK_MAX_TURNS (200) since fork=true and no explicit maxTurns.
-  //   Uses Sonnet 4.6 — Gemini Flash drops the function name token on multi-step spawn sequences.
+  //   Uses Gemini Flash — only one Spawn tool call needed, not a 3+ chain, so Flash is reliable.
   {
     name: "spawn-fork",
     prompt:
@@ -2026,8 +2026,6 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [],
     maxTurns: 2,
-    modelAdapter: sonnetAdapter,
-    modelName: SONNET_MODEL,
     providerFactory: (store, docId) => {
       const { middleware: childEventTrace } = createEventTraceMiddleware({
         store,
@@ -2057,7 +2055,7 @@ const queries: readonly QueryConfig[] = [
   //   Parent spawns the built-in coordinator. Coordinator only receives delegation tools
   //   (agent_spawn, task_create, task_list, task_output, task_delegate, task_stop, send_message).
   //   Proves the coordinator's COORDINATOR_TOOL_ALLOWLIST ceiling is enforced via manifest.
-  //   Uses Sonnet 4.6 — Gemini Flash drops function name tokens on multi-step spawn sequences.
+  //   Uses Gemini Flash — only one Spawn tool call needed, so Flash is reliable here.
   {
     name: "spawn-coordinator",
     prompt:
@@ -2071,8 +2069,6 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [],
     maxTurns: 2,
-    modelAdapter: sonnetAdapter,
-    modelName: SONNET_MODEL,
     providerFactory: (store, docId) => {
       const { middleware: childEventTrace } = createEventTraceMiddleware({
         store,

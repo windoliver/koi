@@ -3737,6 +3737,92 @@ describe("spawn-manifest-ceiling ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// spawn-fork ATIF trajectory (golden file) — #1241
+// Validates fork=true is passed to Spawn and the child agent runs without
+// the agent_spawn recursion guard. Child tool list does NOT contain Spawn
+// (fork children strip the agent_spawn provider to prevent recursive forks).
+// ---------------------------------------------------------------------------
+
+describe("spawn-fork ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-fork.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn(fork=true) tool call", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-fork.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("Spawn tool called with fork=true and child returned output", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const spawnStep = doc.steps
+      .filter((s) => s.source === "tool")
+      .find((s) => s.tool_calls?.some((tc) => tc.function_name === "Spawn"));
+
+    expect(spawnStep).toBeDefined();
+    const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
+    expect(spawnCall?.arguments?.agentName).toBe("researcher");
+    expect(spawnCall?.arguments?.fork).toBe(true);
+
+    const result = spawnStep?.observation?.results?.[0]?.content;
+    expect(result).toBeDefined();
+    expect(result?.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn-coordinator ATIF trajectory (golden file) — #1241
+// Validates coordinator agent is resolvable and its manifest allowlist ceiling
+// restricts the child's tool surface to delegation-only tools.
+// ---------------------------------------------------------------------------
+
+describe("spawn-coordinator ATIF trajectory (golden file)", () => {
+  const path = `${FIXTURES}/spawn-coordinator.trajectory.json`;
+
+  test("valid ATIF v1.6 with Spawn to coordinator agent", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) {
+      throw new Error(
+        "spawn-coordinator.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun scripts/record-cassettes.ts",
+      );
+    }
+    const doc = (await Bun.file(path).json()) as Record<string, unknown>;
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("Spawn tool called with agentName='coordinator' and child returned output", async () => {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(path)) return;
+
+    const doc = (await Bun.file(path).json()) as {
+      readonly steps: readonly SpawnInheritanceStep[];
+    };
+    const spawnStep = doc.steps
+      .filter((s) => s.source === "tool")
+      .find((s) => s.tool_calls?.some((tc) => tc.function_name === "Spawn"));
+
+    expect(spawnStep).toBeDefined();
+    const spawnCall = spawnStep?.tool_calls?.find((tc) => tc.function_name === "Spawn");
+    expect(spawnCall?.arguments?.agentName).toBe("coordinator");
+
+    const result = spawnStep?.observation?.results?.[0]?.content;
+    expect(result).toBeDefined();
+    expect(result?.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Standalone L2 golden: @koi/memory recall functions (no LLM needed)
 // ---------------------------------------------------------------------------
 
