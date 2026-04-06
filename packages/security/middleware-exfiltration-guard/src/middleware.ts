@@ -203,6 +203,24 @@ export function createExfiltrationGuardMiddleware(
       const outputToScan = safeSerializeForScan(response.output) ?? String(response.output);
       const outputResult = redactor.redactString(outputToScan);
 
+      // Fail-closed: redaction engine failure on tool output
+      if (outputResult.matchCount === -1) {
+        fireDetection({
+          location: "tool-output",
+          toolId: request.toolId,
+          matchCount: 0,
+          kinds: ["redaction_failure"],
+          action: "block",
+        });
+        return {
+          output: {
+            error:
+              "Exfiltration guard: redaction engine failure on tool output — blocked (fail-closed)",
+            code: "INTERNAL",
+          },
+        };
+      }
+
       if (outputResult.matchCount > 0) {
         fireDetection({
           location: "tool-output",
@@ -249,8 +267,10 @@ export function createExfiltrationGuardMiddleware(
         return;
       }
 
-      // let justified: accumulates text deltas for scanning
+      // let justified: accumulates ALL content for scanning (text + thinking + tool args)
       let buffer = "";
+      // let justified: accumulates ONLY user-visible text_delta content for redacted output
+      let textOnlyBuffer = "";
       // let justified: tracks whether we've already scanned and acted
       let scanned = false;
       // let justified: tracks whether overflow triggered (buffer flushed, pass-through mode)
@@ -260,12 +280,14 @@ export function createExfiltrationGuardMiddleware(
       const heldChunks: ModelChunk[] = [];
 
       for await (const chunk of next(request)) {
-        // Buffer all content-bearing chunk kinds for scanning
+        // Buffer all content-bearing and tool-call lifecycle chunk kinds for scanning.
+        // tool_call_end MUST be buffered alongside start/delta to preserve ordering.
         const isContentChunk =
           chunk.kind === "text_delta" ||
           chunk.kind === "thinking_delta" ||
           chunk.kind === "tool_call_delta" ||
-          chunk.kind === "tool_call_start";
+          chunk.kind === "tool_call_start" ||
+          chunk.kind === "tool_call_end";
 
         if (isContentChunk) {
           // After overflow in redact mode: suppress remaining content (fail-closed).
@@ -286,6 +308,10 @@ export function createExfiltrationGuardMiddleware(
                 ? chunk.args
                 : "";
           buffer += chunkText;
+          // Track user-visible text separately for redacted output
+          if (chunk.kind === "text_delta" && "delta" in chunk) {
+            textOnlyBuffer += chunk.delta;
+          }
 
           // Cap buffer to prevent memory pressure
           if (buffer.length > config.maxStringLength) {
@@ -323,11 +349,12 @@ export function createExfiltrationGuardMiddleware(
               });
             }
             if (config.action === "redact") {
-              // Yield scanned buffer (redacted if secrets found) + truncation notice
-              yield {
-                kind: "text_delta",
-                delta: overflowResult.matchCount > 0 ? overflowResult.text : buffer,
-              };
+              // Only emit user-visible text (redacted). Never emit the full buffer as
+              // text_delta — it contains thinking/tool_call content that must stay hidden.
+              if (textOnlyBuffer.length > 0) {
+                const textOverflowResult = redactor.redactString(textOnlyBuffer);
+                yield { kind: "text_delta", delta: textOverflowResult.text };
+              }
               yield {
                 kind: "text_delta",
                 delta:
@@ -391,10 +418,15 @@ export function createExfiltrationGuardMiddleware(
               }
 
               if (config.action === "redact") {
-                // Emit only redacted text, suppress all held chunks (may contain secrets in tool_call/thinking)
-                yield { kind: "text_delta", delta: result.text };
-                // Sanitize done chunk: clear richContent which may retain secret-bearing tool_call args
-                yield sanitizeDoneChunk(chunk);
+                // Only emit user-visible text (redacted). Thinking/tool_call chunks are
+                // suppressed entirely to avoid leaking hidden content as visible text.
+                const redactedText =
+                  textOnlyBuffer.length > 0 ? redactor.redactString(textOnlyBuffer).text : "";
+                if (redactedText.length > 0) {
+                  yield { kind: "text_delta", delta: redactedText };
+                }
+                // Sanitize done chunk: clear content + richContent to prevent bypasses
+                yield sanitizeDoneChunk(chunk, redactedText);
                 continue;
               }
 
@@ -404,6 +436,38 @@ export function createExfiltrationGuardMiddleware(
               }
               yield chunk;
               continue;
+            }
+
+            // Buffer scan found no secrets — also check done.response payload
+            // in case the adapter placed final content only in the terminal chunk.
+            const donePayload = buildDonePayloadForScan(chunk);
+            if (donePayload !== undefined) {
+              const doneResult = redactor.redactString(donePayload);
+              if (doneResult.matchCount > 0) {
+                fireDetection({
+                  location: "model-output",
+                  matchCount: doneResult.matchCount,
+                  kinds: [],
+                  action: config.action,
+                });
+                if (config.action === "block") {
+                  yield {
+                    kind: "error",
+                    message: `Exfiltration guard: ${String(doneResult.matchCount)} secret(s) detected in terminal model response — blocked`,
+                    code: "PERMISSION",
+                    retryable: false,
+                  };
+                  return;
+                }
+                if (config.action === "redact") {
+                  if (textOnlyBuffer.length > 0) {
+                    yield { kind: "text_delta", delta: textOnlyBuffer };
+                  }
+                  yield sanitizeDoneChunk(chunk);
+                  continue;
+                }
+                // "warn" — fall through to replay
+              }
             }
 
             // No secrets found — replay all held chunks
@@ -454,17 +518,37 @@ function sanitizeModelResponse(response: ModelResponse, content: string): ModelR
 }
 
 /**
- * Sanitize a streaming "done" chunk: clear richContent from the response to prevent
- * secret-bearing tool_call args or thinking blocks from leaking through the terminal chunk.
+ * Build a scannable string from a done chunk's response payload (content + richContent).
+ * Returns undefined if there's nothing to scan.
  */
-function sanitizeDoneChunk(chunk: ModelChunk): ModelChunk {
+function buildDonePayloadForScan(chunk: ModelChunk): string | undefined {
+  if (chunk.kind !== "done") return undefined;
+  const resp = chunk.response;
+  const parts: string[] = [];
+  if (resp.content.length > 0) parts.push(resp.content);
+  if (resp.richContent !== undefined) {
+    const rich = safeSerializeForScan(resp.richContent);
+    if (rich !== undefined) parts.push(rich);
+  }
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+/**
+ * Sanitize a streaming "done" chunk: clear richContent AND content from the response
+ * to prevent secret-bearing data from leaking through the terminal chunk.
+ * Downstream consumers prefer done.response.content over accumulated deltas,
+ * so leaving content intact would bypass the redaction.
+ *
+ * @param replacementContent - sanitized text to use as response.content (default: empty)
+ */
+function sanitizeDoneChunk(chunk: ModelChunk, replacementContent = ""): ModelChunk {
   if (chunk.kind !== "done") return chunk;
   const resp = chunk.response;
   return {
     ...chunk,
     response: {
       ...resp,
-      content: resp.content,
+      content: replacementContent,
       richContent: undefined,
       stopReason: resp.stopReason === "tool_use" ? "hook_blocked" : resp.stopReason,
     },
@@ -488,8 +572,55 @@ function safeSerializeForScan(value: unknown): string | undefined {
   try {
     return JSON.stringify(value);
   } catch {
-    return undefined;
+    // JSON.stringify failed (cyclic, BigInt in nested field, etc.)
+    // Recursively walk object properties to extract scannable string values.
+    // Cycle-safe via WeakSet, depth-bounded to prevent unbounded scan time.
+    return deepExtractStrings(value);
   }
+}
+
+/** Max depth for recursive string extraction to bound scan time. */
+const EXTRACT_MAX_DEPTH = 5;
+
+/**
+ * Recursively extract string and string-coercible values from an object's
+ * enumerable properties. Uses a visited set for cycle safety and a depth
+ * limit to bound scan time. Returns concatenated string for scanning,
+ * or undefined if no scannable content is found.
+ */
+function deepExtractStrings(
+  value: unknown,
+  visited: WeakSet<object> = new WeakSet(),
+  depth = 0,
+): string | undefined {
+  if (depth > EXTRACT_MAX_DEPTH) return undefined;
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value !== "object") return undefined;
+
+  const obj = value as Record<string, unknown>;
+  if (visited.has(obj)) return undefined; // cycle detected
+  visited.add(obj);
+
+  // Handle Map: extract values
+  if (value instanceof Map) {
+    const parts: string[] = [];
+    for (const v of (value as Map<unknown, unknown>).values()) {
+      const extracted = deepExtractStrings(v, visited, depth + 1);
+      if (extracted !== undefined) parts.push(extracted);
+    }
+    return parts.length > 0 ? parts.join(" ") : undefined;
+  }
+
+  // Handle arrays and plain objects
+  const parts: string[] = [];
+  const keys = Array.isArray(obj) ? obj.map((_, i) => String(i)) : Object.keys(obj);
+  for (const key of keys) {
+    const extracted = deepExtractStrings(obj[key], visited, depth + 1);
+    if (extracted !== undefined) parts.push(extracted);
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 /**
