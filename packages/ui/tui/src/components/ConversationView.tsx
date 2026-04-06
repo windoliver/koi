@@ -8,6 +8,7 @@ import { createSignal, Show } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import type { SlashCommand } from "../commands/slash-detection.js";
 import { useTuiStore } from "../store-context.js";
+import { COLORS } from "../theme.js";
 import { InputArea } from "./InputArea.js";
 import { MessageList } from "./message-list.js";
 import { SlashOverlay } from "./SlashOverlay.js";
@@ -58,7 +59,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
           floats just above the input without affecting the flex layout.
           bottom={3} matches the 3-row InputArea height. */}
       <Show when={slashQuery() !== null}>
-        <box position="absolute" bottom={3} left={0} zIndex={10}>
+        <box position="absolute" bottom={3} left={0} zIndex={10} backgroundColor={COLORS.bgElevated} >
           <SlashOverlay
             query={slashQuery() ?? ""}
             commands={SLASH_COMMANDS}

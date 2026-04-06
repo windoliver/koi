@@ -76,6 +76,7 @@ export const MODAL_POSITION = {
   top: 1,
   left: 2,
   zIndex: 20,
+  backgroundColor: "#0D1B2A",
 } as const;
 
 // ---------------------------------------------------------------------------
