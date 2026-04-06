@@ -289,12 +289,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //    in the selfCeiling must be stripped, otherwise a privileged caller could bypass the
   //    ceiling by passing an extra provider instead of going through additionalTools.
   const rawProviders = options.providers ?? [];
-  const selfCeilingFilteredProviders: ComponentProvider[] =
+  const selfCeilingFilteredProviders: readonly ComponentProvider[] =
     selfCeilingSet !== undefined
       ? rawProviders.map(
           (p): ComponentProvider => ({
             name: p.name,
-            priority: p.priority,
+            ...(p.priority !== undefined ? { priority: p.priority } : {}),
             attach: async (agent) => {
               const result = await p.attach(agent);
               // AttachResult and ReadonlyMap both expose iteration via entries.
