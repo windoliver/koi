@@ -44,10 +44,18 @@ function mockCallbacks(): {
   let upCalls = 0;
   let downCalls = 0;
   return {
-    onClose: () => { closeCalls++; },
-    onSelect: () => { selectCalls++; },
-    onMoveUp: () => { upCalls++; },
-    onMoveDown: () => { downCalls++; },
+    onClose: () => {
+      closeCalls++;
+    },
+    onSelect: () => {
+      selectCalls++;
+    },
+    onMoveUp: () => {
+      upCalls++;
+    },
+    onMoveDown: () => {
+      downCalls++;
+    },
     closeCount: () => closeCalls,
     selectCount: () => selectCalls,
     upCount: () => upCalls,

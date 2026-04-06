@@ -17,7 +17,7 @@
 import type { Result } from "@koi/core/errors";
 // `createCliRenderer` uses a native Zig FFI library — lazy-import it inside
 // start() so tests with an injected renderer never load the native binary.
-import type { CliRenderer } from "@opentui/core";
+import type { CliRenderer, SyntaxStyle } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
@@ -71,6 +71,12 @@ export interface CreateTuiAppConfig {
   readonly renderer?: CliRenderer | undefined;
   readonly screenMode?: "split-footer" | undefined;
   readonly footerHeight?: number | undefined;
+  /**
+   * Optional syntax style for JSON/markdown highlighting in tool call blocks.
+   * Created via SyntaxStyle.create() or SyntaxStyle.fromTheme() from @opentui/core.
+   * When omitted, tool call args/results render as plain text.
+   */
+  readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +109,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     renderer: injectedRenderer,
     screenMode,
     footerHeight,
+    syntaxStyle,
   } = config;
 
   let started = false;
@@ -250,6 +257,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     onSubmit,
                     onInterrupt,
                     onPermissionRespond: permissionBridge.respond,
+                    syntaxStyle,
                   });
                 },
               }),

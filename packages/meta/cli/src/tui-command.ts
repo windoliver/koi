@@ -26,6 +26,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
+import { SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 
 // ---------------------------------------------------------------------------
@@ -372,6 +373,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
         message: "Session resume is not yet available. Starting a new conversation.",
       });
     },
+    syntaxStyle: SyntaxStyle.create(),
     onSubmit: async (text: string): Promise<void> => {
       // Guard against overlapping submits: reject while a stream is in flight.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.

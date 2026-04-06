@@ -6,9 +6,9 @@
  * keyboard-navigable lists with a centered scrolling window.
  */
 
-import type { Accessor } from "solid-js";
-import { createEffect, createMemo, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
+import type { Accessor } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 
 // ---------------------------------------------------------------------------
 // Keyboard handler
@@ -51,11 +51,7 @@ export function handleSelectOverlayKey(
  * Compute the start index of the visible window so it stays centered on the
  * selected item. Exported as a pure function for unit testing.
  */
-export function computeVisibleStart(
-  idx: number,
-  count: number,
-  pageSize: number,
-): number {
+export function computeVisibleStart(idx: number, count: number, pageSize: number): number {
   if (count <= pageSize) return 0;
   return Math.max(0, Math.min(idx - Math.floor(pageSize / 2), count - pageSize));
 }
@@ -90,12 +86,12 @@ export function createScrollableList<T>(
   items: Accessor<readonly T[]>,
   pageSize: number,
 ): ScrollableList<T> {
-  const [selectedIdx, setSelectedIdx] = createSignal(0);
+  const [rawIdx, setRawIdx] = createSignal(0);
 
-  // Clamp selection to valid range when the item list changes length.
-  createEffect((): void => {
+  // Clamp selection synchronously via memo — avoids deferred createEffect flush.
+  const selectedIdx = createMemo((): number => {
     const count = items().length;
-    setSelectedIdx((prev) => (count === 0 ? 0 : Math.min(prev, count - 1)));
+    return count === 0 ? 0 : Math.min(rawIdx(), count - 1);
   });
 
   const visibleStart = createMemo((): number =>
@@ -110,7 +106,7 @@ export function createScrollableList<T>(
     selectedIdx,
     visibleItems,
     visibleStart,
-    moveUp: () => setSelectedIdx((i) => Math.max(i - 1, 0)),
-    moveDown: () => setSelectedIdx((i) => Math.min(i + 1, items().length - 1)),
+    moveUp: () => setRawIdx((i) => Math.max(i - 1, 0)),
+    moveDown: () => setRawIdx((i) => Math.min(i + 1, items().length - 1)),
   };
 }
