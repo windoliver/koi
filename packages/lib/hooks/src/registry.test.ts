@@ -963,4 +963,84 @@ describe("createHookRegistry", () => {
       spy.mockRestore();
     });
   });
+
+  describe("onExecuted tap", () => {
+    it("fires with results and event after successful execute", async () => {
+      const tapCalls: { results: readonly HookExecutionResult[]; event: HookEvent }[] = [];
+      const tapRegistry = createHookRegistry({
+        onExecuted: (results, event) => {
+          tapCalls.push({ results, event });
+        },
+      });
+
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "test-cmd", durationMs: 1, decision: { kind: "continue" } },
+      ] as readonly HookExecutionResult[]);
+
+      tapRegistry.register("s1", "agent-1", [commandHook]);
+      await tapRegistry.execute("s1", baseEvent);
+
+      expect(tapCalls).toHaveLength(1);
+      expect(tapCalls[0]?.results).toHaveLength(1);
+      expect(tapCalls[0]?.results[0]?.hookName).toBe("test-cmd");
+      expect(tapCalls[0]?.event.event).toBe("session.started");
+
+      spy.mockRestore();
+    });
+
+    it("does not fire for empty results", async () => {
+      const tapCalls: unknown[] = [];
+      const tapRegistry = createHookRegistry({
+        onExecuted: (results) => {
+          tapCalls.push(results);
+        },
+      });
+
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([]);
+
+      tapRegistry.register("s1", "agent-1", [commandHook]);
+      await tapRegistry.execute("s1", baseEvent);
+
+      expect(tapCalls).toHaveLength(0);
+
+      spy.mockRestore();
+    });
+
+    it("does not fire for cancelled calls (returns empty array)", async () => {
+      const tapCalls: unknown[] = [];
+      const tapRegistry = createHookRegistry({
+        onExecuted: () => {
+          tapCalls.push(true);
+        },
+      });
+
+      tapRegistry.register("s1", "agent-1", [commandHook]);
+      const controller = new AbortController();
+      controller.abort();
+      const result = await tapRegistry.execute("s1", baseEvent, controller.signal);
+
+      expect(result).toHaveLength(0);
+      expect(tapCalls).toHaveLength(0);
+    });
+
+    it("swallows observer errors without breaking dispatch", async () => {
+      const tapRegistry = createHookRegistry({
+        onExecuted: () => {
+          throw new Error("observer boom");
+        },
+      });
+
+      const spy = spyOn(executorModule, "executeHooks").mockResolvedValue([
+        { ok: true, hookName: "test-cmd", durationMs: 1, decision: { kind: "continue" } },
+      ] as readonly HookExecutionResult[]);
+
+      tapRegistry.register("s1", "agent-1", [commandHook]);
+
+      // Should not throw despite observer error
+      const results = await tapRegistry.execute("s1", baseEvent);
+      expect(results).toHaveLength(1);
+
+      spy.mockRestore();
+    });
+  });
 });

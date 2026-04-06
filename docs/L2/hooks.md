@@ -172,7 +172,12 @@ When no filter is specified, the hook fires on all events.
 3. **Introspection** — `HookRegistry.has(sessionId)` reports registration;
    `HookRegistry.hasMatching(sessionId, event)` reports whether any registered
    hook's filter matches the event (for per-event fail-closed gating).
-4. **Cleanup** — `HookRegistry.cleanup(sessionId)` aborts in-flight hooks and
+4. **Observer tap** — `CreateHookRegistryOptions.onExecuted` accepts an
+   optional synchronous callback `(results, event) => void` that fires after
+   every non-empty `execute()` (including exhausted once-hook synthetic blocks).
+   Used by `@koi/runtime`'s ATIF trajectory recorder. Must not throw (wrapped
+   in try/catch internally).
+5. **Cleanup** — `HookRegistry.cleanup(sessionId)` aborts in-flight hooks and
    removes registration. Idempotent — double-cleanup is a no-op.
 
 ### Cancellation Semantics
@@ -226,7 +231,8 @@ during the engine lifecycle.
 | `onBeforeTurn` | `turn.started` | Yes — `block` throws (turn fails) |
 | `onAfterTurn` | `turn.ended` | No (fire-and-forget) |
 | `wrapToolCall` (pre) | `tool.before` | Yes — `block`/`modify` enforced |
-| `wrapToolCall` (post) | `tool.succeeded` | No (fire-and-forget) |
+| `wrapToolCall` (post-success) | `tool.succeeded` | Bounded-await for `transform` decisions |
+| `wrapToolCall` (post-failure) | `tool.failed` | No (fire-and-forget) |
 | `wrapModelCall` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
 | `wrapModelCall` (post) | `compact.after` | No (fire-and-forget) |
 | `wrapModelStream` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
@@ -256,6 +262,10 @@ decisions.
 Pre-call hooks are aggregated with **most-restrictive-wins** precedence:
 `block > modify > continue`. First `block` wins immediately. Multiple
 `modify` patches are merged (later overrides earlier keys on conflict).
+Failed hooks with `failClosed !== false` produce a `block` decision in
+pre-call aggregation. Failed hooks with `failClosed: false` are skipped
+(fail-open — observational/telemetry hooks). Post-call aggregation
+(`aggregatePostDecisions`) follows the same `failClosed` semantics.
 
 ### Model Patch Safety
 
@@ -264,6 +274,13 @@ safe fields: `model`, `temperature`, `maxTokens`, `metadata`. Core
 control fields (`messages`, `tools`, `systemPrompt`, `signal`) are
 immutable — patches targeting them are silently dropped to prevent
 hook bugs from corrupting request shape or disabling safeguards.
+
+### Abort Guards
+
+`wrapToolCall` fails closed on caller cancellation:
+- **Pre-dispatch guard** — if `ctx.signal` is already aborted, throws `AbortError` without dispatching hooks or running the tool
+- **Mid-dispatch guard** — if `ctx.signal` aborts during pre-hook dispatch (registry returns `[]`), throws `AbortError` before `next()`
+- **Post-hook cancel-redaction** — if `ctx.signal` aborts during post-hook dispatch AND a fail-closed hook matches the event, output is redacted to prevent leaking unredacted data past a skipped security hook
 
 ### Phase & Priority
 
@@ -278,7 +295,8 @@ if (!result.ok) throw new Error(result.error.message);
 
 const middleware = createHookMiddleware({
   hooks: result.value,
-  spawnFn, // Required when any hook has kind: "agent" — provided by L1 engine
+  spawnFn,       // Required when any hook has kind: "agent" — provided by L1 engine
+  onExecuted,    // Optional observer tap — e.g., from @koi/runtime's createHookObserver
 });
 // Wire into engine: createKoi({ middleware: [permissions, middleware, ...] })
 ```

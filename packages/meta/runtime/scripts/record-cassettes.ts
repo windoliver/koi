@@ -51,7 +51,7 @@ import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@
 import { createEventTraceMiddleware } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
-import { createHookMiddleware, createHookRegistry, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -87,7 +87,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Cassette } from "../src/cassette/types.js";
-import { createHookDispatchMiddleware } from "../src/middleware/hook-dispatch.js";
+import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../src/middleware/trace-wrapper.js";
 import { createAtifDocumentStore } from "../src/trajectory/atif-store.js";
@@ -612,8 +612,6 @@ interface QueryConfig {
   readonly providers: readonly ComponentProvider[];
   /** Max model→tool turns. Default 1. Set to 0 for text-only (no tool loop). */
   readonly maxTurns?: number;
-  /** When true, wire hooks through HookRegistry for once-hook lifecycle tracking. */
-  readonly useRegistry?: boolean;
   /** Custom permission backend — overrides permissionMode/permissionRules when provided. */
   readonly permissionBackend?: PermissionBackend;
   /** Denial escalation config for permissions middleware. */
@@ -678,25 +676,12 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalReader: retryBroker,
   });
 
-  // @koi/hooks — core hook middleware for model pre/post hooks (compact.before/after/blocked)
-  // Also fires tool.before/tool.succeeded with payload data via its internal registry;
-  // agent hooks on tool events dispatch here, not through @koi/runtime's hook-dispatch.
-  // TODO(hook-dispatch-unification): consolidate with hook-dispatch.ts per Claude Code's
-  // single-dispatcher + observer-tap pattern. Tracked as a follow-up to #1491.
+  // @koi/hooks — sole hook dispatcher for all lifecycle events (tool, model, session, turn).
+  // Fires tool.before/tool.succeeded/tool.failed with full payload data via its internal
+  // registry. The hook observer (below) subscribes to the registry's onExecuted tap for
+  // ATIF trajectory recording — no separate dispatch path.
   const hookResult = loadHooks([...config.hooks]);
   const loadedHooks = hookResult.ok ? hookResult.value : [];
-
-  // createHookMiddleware's wrapToolCall dispatches tool.succeeded via its own
-  // internal registry AND includes the full {input, output} data payload in
-  // the event — that richer payload is what redactEventData needs to strip
-  // secrets from. createHookDispatchMiddleware (wired below) ALSO dispatches
-  // tool.succeeded for trajectory recording, but its event carries only
-  // toolName (no data). For idempotent command hooks, double-dispatch is
-  // wasteful but harmless (pre-existing). For agent hooks it would double
-  // real LLM calls and break once:true + any hook with side effects — so
-  // we keep agent hooks only on the coreHookMw path (with data) and leave
-  // hook-dispatch with command hooks only for its trajectory step recording.
-  const dispatchHookConfigs = loadedHooks.filter((h) => h.kind !== "agent");
 
   // Captures the userInput each agent hook receives — i.e. the already-redacted
   // payload the sub-agent actually sees. Written to a sidecar file so the
@@ -814,32 +799,20 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       }
     : undefined;
 
+  // Hook observer — subscribes to @koi/hooks registry's onExecuted tap for
+  // ATIF trajectory recording. Does not dispatch hooks itself.
+  const { onExecuted: hookObserverTap, middleware: hookObserverMw } = createHookObserver({
+    store,
+    docId,
+  });
+
   // coreHookMw owns all hooks (including agent hooks). spawnFn is required
-  // by createHookMiddleware whenever agent hooks are present.
+  // by createHookMiddleware whenever agent hooks are present. The onExecuted
+  // tap wires ATIF recording via the hook observer above.
   const coreHookMw = createHookMiddleware({
     hooks: loadedHooks,
     ...(hookSpawnFn !== undefined ? { spawnFn: hookSpawnFn } : {}),
-  });
-
-  // Optional registry for once-hook lifecycle tracking (command hooks only).
-  // Registration is deferred until after createKoi() so we can key on the
-  // live runtime session id — the middleware dispatches per
-  // ctx.session.sessionId. Agent hooks are dispatched exclusively via
-  // coreHookMw (above), so the registry never needs an agentExecutor here.
-  // let justified: mutable — created conditionally
-  let hookRegistry: ReturnType<typeof createHookRegistry> | undefined;
-  if (config.useRegistry === true) {
-    hookRegistry = createHookRegistry();
-  }
-
-  // Runtime hook dispatch — command tool hooks + trajectory recording.
-  // Agent hooks are filtered out here (they already fire via coreHookMw with
-  // the full {input, output} payload that redaction needs to act on).
-  const hookMw = createHookDispatchMiddleware({
-    hooks: dispatchHookConfigs,
-    store,
-    docId,
-    ...(hookRegistry !== undefined ? { registry: hookRegistry } : {}),
+    onExecuted: hookObserverTap,
   });
 
   // @koi/permissions + @koi/middleware-permissions
@@ -1018,7 +991,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const tracedMiddleware = [
     eventTrace,
     coreHookMw,
-    hookMw,
+    hookObserverMw,
     exfiltrationGuard,
     permHandle,
     semanticRetryMw,
@@ -1044,17 +1017,8 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     loopDetection: false,
   });
 
-  // Register hooks for the live runtime session, now that its id exists.
-  // The middleware dispatches via registry.execute(ctx.session.sessionId, ...),
-  // so the key here must match runtime.sessionId exactly. We also register
-  // with the runtime's real agent id (runtime.agent.pid.id — same value the
-  // engine puts on ctx.session.agentId), because the registry overwrites any
-  // mismatched event.agentId with the registered id for trust enforcement.
-  // Registering with the manifest alias would make hooks see a synthetic
-  // agentId during recording that never matches real runtime replay.
-  if (hookRegistry !== undefined) {
-    hookRegistry.register(runtime.sessionId, runtime.agent.pid.id, dispatchHookConfigs);
-  }
+  // Hook registration is handled internally by createHookMiddleware — hooks are
+  // registered per session in onSessionStart and cleaned up in onSessionEnd.
 
   for await (const _e of runtime.run({ kind: "text", text: prompt })) {
     /* drain */
@@ -1062,7 +1026,6 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
 
   unsubMcp();
   mcpSm.transition({ kind: "closed" });
-  hookRegistry?.cleanup(runtime.sessionId);
   await runtime.dispose();
 
   // Wait for async trajectory writes (onSessionEnd flush, hook dispatch, MCP).
@@ -1666,7 +1629,6 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 3,
-    useRegistry: true,
   },
 
   // 8. web-fetch: @koi/tools-web exercised with real HTTP fetch

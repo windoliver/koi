@@ -43,6 +43,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAgentExecutor } from "./agent-executor.js";
+import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
 import { createHookRegistry } from "./registry.js";
 
@@ -66,6 +67,14 @@ export interface CreateHookMiddlewareOptions {
    * Defaults to `POST_TOOL_HOOK_DEADLINE_MS` (5000ms).
    */
   readonly postToolHookDeadlineMs?: number | undefined;
+  /**
+   * Observer tap — called synchronously after every non-empty hook dispatch
+   * with the execution results and trigger event. Threaded through to the
+   * internal HookRegistry. Used for ATIF trajectory recording.
+   */
+  readonly onExecuted?:
+    | ((results: readonly HookExecutionResult[], event: HookEvent) => void)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +95,8 @@ export interface AggregatedDecision {
  * - First `block` wins immediately (short-circuits).
  * - Multiple `modify` patches are merged (later patches override earlier keys).
  * - `transform` decisions are ignored — they are post-call only.
- * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ * - Failed hooks with failClosed !== false → block (deny on failure).
+ * - Failed hooks with failClosed: false → skip (fail-open).
  *
  * Returns the decision plus the winning hook's name (for block decisions).
  */
@@ -95,7 +105,21 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Agg
   let mergedPatch: JsonObject = {};
 
   for (const result of results) {
-    if (!result.ok) continue;
+    if (!result.ok) {
+      // Fail-closed hooks (failClosed !== false) block on execution failure.
+      // Fail-open hooks (failClosed: false) are skipped — their failure is
+      // no opinion (e.g., telemetry/observational hooks).
+      if (result.failClosed !== false) {
+        return {
+          decision: {
+            kind: "block",
+            reason: `Hook ${result.hookName} failed: ${result.error}`,
+          },
+          hookName: result.hookName,
+        };
+      }
+      continue;
+    }
 
     switch (result.decision.kind) {
       case "block":
@@ -143,7 +167,10 @@ function formatBlockMessage(context: string, reason: string): string {
  * Only `transform`, `continue`, and failure-`block` are meaningful after execution.
  */
 export function aggregatePostDecisions(results: readonly HookExecutionResult[]): HookDecision {
-  const failedHooks = results.filter((r) => !r.ok).map((r) => r.hookName);
+  // Only fail-closed hooks (failClosed !== false) drive redaction. Fail-open
+  // hooks (failClosed: false) explicitly opt out — their failure should NOT
+  // suppress output (e.g., observational/telemetry hooks).
+  const failedHooks = results.filter((r) => !r.ok && r.failClosed !== false).map((r) => r.hookName);
 
   let hasTransform = false;
   let mergedOutputPatch: JsonObject = {};
@@ -254,7 +281,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
   const agentExecutor: HookExecutor | undefined =
     spawnFn !== undefined ? createAgentExecutor({ spawnFn }) : undefined;
-  const registry = createHookRegistry({ agentExecutor });
+  const registry = createHookRegistry({ agentExecutor, onExecuted: options.onExecuted });
 
   /**
    * Per-session set of pending post-hook promises. Drained in onSessionEnd
@@ -281,9 +308,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
    * Fire hooks without blocking the caller. The promise is tracked per-session
    * and drained before cleanup so last-turn hooks aren't silently aborted.
    */
-  function fireAndForget(sessionId: string, event: HookEvent): void {
+  function fireAndForget(sessionId: string, event: HookEvent, signal?: AbortSignal): void {
     const promise = registry
-      .execute(sessionId, event)
+      .execute(sessionId, event, signal)
       .catch(() => {
         /* post-call hooks are observational — errors silently swallowed */
       })
@@ -439,12 +466,22 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     ): Promise<ToolResponse> {
       const sessionId = ctx.session.sessionId as string;
 
+      // Fail closed on cancellation: if the caller has already aborted,
+      // don't dispatch hooks or run the tool. Throw AbortError so the
+      // engine stack handles it with abort semantics (not as tool output).
+      if (ctx.signal?.aborted === true) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted before hook dispatch`,
+          "AbortError",
+        );
+      }
+
       // Pre-call: blocking dispatch with decision aggregation
       const preEvent = buildEvent(ctx.session, "tool.before", {
         toolName: request.toolId,
         data: { input: request.input } as JsonObject,
       });
-      const preResults = await registry.execute(sessionId, preEvent);
+      const preResults = await registry.execute(sessionId, preEvent, ctx.signal);
       const aggregated = aggregateDecisions(preResults);
 
       if (aggregated.decision.kind === "block") {
@@ -454,12 +491,36 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         };
       }
 
+      // Fail closed on mid-dispatch cancellation: if the signal aborted while
+      // pre-hooks were running, registry returned [] and aggregating that as
+      // "continue" would let the tool run under cancellation.
+      // biome-ignore lint/complexity/useOptionalChain: narrowing workaround — signal can flip during await
+      if (ctx.signal !== undefined && ctx.signal.aborted) {
+        throw new DOMException(
+          `Tool call ${request.toolId} aborted during pre-hook dispatch`,
+          "AbortError",
+        );
+      }
+
       const effectiveRequest: ToolRequest =
         aggregated.decision.kind === "modify"
           ? { ...request, input: { ...request.input, ...aggregated.decision.patch } }
           : request;
 
-      const response = await next(effectiveRequest);
+      // let: mutable — set inside try, used in post-hook logic below
+      let response: ToolResponse;
+      try {
+        response = await next(effectiveRequest);
+      } catch (toolError: unknown) {
+        // Fire tool.failed as fire-and-forget so hook observers (ATIF) see the
+        // failure event. Re-throw to preserve original error propagation.
+        const failEvent = buildEvent(ctx.session, "tool.failed", {
+          toolName: request.toolId,
+          data: { input: effectiveRequest.input, error: String(toolError) } as JsonObject,
+        });
+        fireAndForget(sessionId, failEvent, ctx.signal);
+        throw toolError;
+      }
 
       // Post-call: bounded-await for output mutation via transform decisions.
       // Uses effective input (not original) for audit consistency.
@@ -472,7 +533,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
       const DEADLINE_SENTINEL = Symbol("deadline");
       const postResultsOrTimeout = await Promise.race([
-        registry.execute(sessionId, postEvent),
+        registry.execute(sessionId, postEvent, ctx.signal),
         new Promise<typeof DEADLINE_SENTINEL>((resolve) =>
           setTimeout(() => resolve(DEADLINE_SENTINEL), postToolHookDeadlineMs),
         ),
@@ -484,6 +545,28 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       if (postResultsOrTimeout === DEADLINE_SENTINEL) {
         return {
           output: "[output redacted: post-tool hooks timed out]",
+          metadata: { ...(response.metadata ?? {}), committedButRedacted: true },
+        };
+      }
+
+      // Cancel-redaction: if the caller's signal aborted during post-hook
+      // dispatch AND registry returned [] (hooks short-circuited on cancel)
+      // AND a fail-closed hook could have matched this event, redact to
+      // prevent leaking unredacted data past a skipped security hook.
+      // Only fail-closed hooks (failClosed !== false) justify redaction —
+      // fail-open hooks explicitly opt out of output suppression.
+      // Re-read signal fresh — it can flip to aborted during the post-hook
+      // await even though the pre-dispatch guard narrowed it earlier.
+      // biome-ignore lint/complexity/useOptionalChain: narrowing workaround — signal can flip during await
+      const postAborted = ctx.signal !== undefined && ctx.signal.aborted;
+      if (
+        Array.isArray(postResultsOrTimeout) &&
+        postResultsOrTimeout.length === 0 &&
+        postAborted &&
+        hooks.some((h) => h.failClosed !== false && matchesHookFilter(h.filter, postEvent))
+      ) {
+        return {
+          output: "[output redacted: post-hooks skipped due to cancellation]",
           metadata: { ...(response.metadata ?? {}), committedButRedacted: true },
         };
       }

@@ -1,6 +1,6 @@
 {
   "name": "hook-redaction",
-  "capturedAt": 1775377137499,
+  "capturedAt": 1775463309459,
   "inputs": [
     {
       "hookName": "hook-agent:secret-scanner",
