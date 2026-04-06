@@ -219,7 +219,7 @@ describe("recoverOrphanedTasks", () => {
     expect(realBoard.snapshot().get(id1)?.status).toBe("in_progress");
   });
 
-  test("continues past first CONFLICT race: recovers remaining orphans", async () => {
+  test("stops on CONFLICT (store version conflict) — not a benign per-task race", async () => {
     const board = await freshBoard();
     const newAgent = agentId("new-coordinator");
 
@@ -230,7 +230,7 @@ describe("recoverOrphanedTasks", () => {
     await board.assign(id2, agentId("child-2"));
     await board.assign(id3, agentId("child-3"));
 
-    // id2 has a CONFLICT race (version conflict) — should be skipped, not aborted
+    // id2 has a CONFLICT (store version conflict) — should STOP recovery, not skip
     const conflictOnId2: ManagedTaskBoard = {
       ...board,
       unassign: async (taskId) => {
@@ -239,7 +239,7 @@ describe("recoverOrphanedTasks", () => {
             ok: false as const,
             error: {
               code: "CONFLICT" as const,
-              message: "version conflict",
+              message: "version conflict — possible concurrent write",
               retryable: true,
             },
           };
@@ -250,14 +250,16 @@ describe("recoverOrphanedTasks", () => {
 
     const result = await recoverOrphanedTasks(conflictOnId2, newAgent);
 
-    // id2 skipped (CONFLICT), id1 and id3 recovered
+    // id1 recovered, id2 stopped recovery (CONFLICT is a store error), id3 not reached
     expect(result.killed.length).toBe(0);
-    expect(result.requeued.length).toBe(2);
-    expect(result.failed.length).toBe(0);
+    expect(result.requeued.length).toBe(1); // only id1 (processed before id2)
+    expect(result.failed.length).toBe(1); // id2 reported as failed
+    expect(result.failed[0]).toBe(id2);
 
+    // id3 was not processed (recovery stopped at id2)
     const requeuedSet = new Set<TaskItemId>(result.requeued);
     expect(requeuedSet.has(id1)).toBe(true);
-    expect(requeuedSet.has(id3)).toBe(true);
+    expect(requeuedSet.has(id3)).toBe(false);
   });
 
   // ---------------------------------------------------------------------------

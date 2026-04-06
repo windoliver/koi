@@ -30,8 +30,17 @@
 
 import type { AgentId, KoiError, ManagedTaskBoard, TaskItemId } from "@koi/core";
 
-/** Error codes that indicate a per-task race rather than store degradation. */
-const TASK_RACE_CODES = new Set<KoiError["code"]>(["NOT_FOUND", "VALIDATION", "CONFLICT"]);
+/**
+ * Error codes that indicate a per-task state change rather than store degradation.
+ *
+ * NOT_FOUND  — task was deleted (task was removed, a clean end state)
+ * VALIDATION — task is no longer in_progress (it completed/failed during recovery)
+ *
+ * CONFLICT is intentionally NOT included here: a CONFLICT from ManagedTaskBoard
+ * means the board's persistence layer saw a version conflict — this is a real store
+ * error, not a benign race, and should stop recovery.
+ */
+const TASK_RACE_CODES = new Set<KoiError["code"]>(["NOT_FOUND", "VALIDATION"]);
 
 export interface OrphanRecoveryResult {
   /**

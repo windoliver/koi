@@ -141,9 +141,21 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       //    definition.manifest overrides with agent-specific controls (permissions, delegation,
       //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
       //    dropped security and isolation fields defined on the resolved agent.
+      //
+      //    The `spawn` field is deep-merged so that template-level env/channel ceilings
+      //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
+      //    resolved definition specifies spawn.tools without its own spawn.env or channels.
+      const mergedSpawn =
+        manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
+          ? {
+              ...manifestTemplate?.spawn,
+              ...definition.manifest.spawn,
+            }
+          : undefined;
       manifest = {
         ...manifestTemplate,
         ...definition.manifest,
+        ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
       };
 
       // 3. Use definition's systemPrompt if request didn't provide one
