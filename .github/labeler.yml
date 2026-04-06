@@ -40,6 +40,7 @@
 "layer:L3":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/agent/cli/**"
       - "packages/**/cli/**"
       - "packages/**/runtime/**"
 
@@ -49,6 +50,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**"
+      - "!packages/**/agent/cli/**"
       - "!packages/**/bash-security/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/cli/**"
