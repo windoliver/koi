@@ -145,6 +145,21 @@ export interface RuntimeConfig {
    * Set explicitly to `["read", "write", "edit"]` to restore mutation tools.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+
+  /**
+   * Session transcript configuration. When provided, wires a JSONL-backed
+   * transcript store as an observe-phase middleware, recording turns for crash
+   * recovery. Each turn is appended as a TranscriptEntry to a per-session .jsonl
+   * file under `transcriptDir`.
+   *
+   * When omitted, no transcript middleware is added.
+   */
+  readonly session?:
+    | {
+        /** Directory for per-session JSONL transcript files. */
+        readonly transcriptDir: string;
+      }
+    | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
