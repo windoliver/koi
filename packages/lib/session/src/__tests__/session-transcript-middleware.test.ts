@@ -264,3 +264,54 @@ describe("SessionTranscriptMiddleware — completion semantics", () => {
     expect(rConfig.ok && rConfig.value.entries.length).toBe(0);
   });
 });
+
+describe("SessionTranscriptMiddleware — wrapToolCall", () => {
+  test("tool result is persisted immediately after tool execution", async () => {
+    const transcript = createInMemoryTranscript();
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: SID });
+
+    if (!mw.wrapToolCall) throw new Error("wrapToolCall not defined");
+    const ctx = makeTurnContext(0);
+    const result = await mw.wrapToolCall(
+      ctx,
+      { toolId: "Glob", input: { pattern: "**/*.ts" } },
+      async (req) => ({ output: ["src/foo.ts", "src/bar.ts"], metadata: { req } }),
+    );
+
+    expect(result.output).toEqual(["src/foo.ts", "src/bar.ts"]);
+
+    const loaded = await transcript.load(SID);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      const toolResultEntry = loaded.value.entries.find((e) => e.role === "tool_result");
+      expect(toolResultEntry).toBeDefined();
+      if (toolResultEntry !== undefined) {
+        const parsed = JSON.parse(toolResultEntry.content) as { toolId: string; output: unknown };
+        expect(parsed.toolId).toBe("Glob");
+        expect(parsed.output).toEqual(["src/foo.ts", "src/bar.ts"]);
+      }
+    }
+  });
+
+  test("tool result routing uses ctx.session.sessionId, not config sessionId", async () => {
+    const transcript = createInMemoryTranscript();
+    const configSid = sessionId("config-sid");
+    const liveSid = sessionId("live-sid");
+    const mw = createSessionTranscriptMiddleware({ transcript, sessionId: configSid });
+
+    if (!mw.wrapToolCall) throw new Error("wrapToolCall not defined");
+    const ctx = {
+      session: { agentId: "a", sessionId: liveSid, runId: runId("r"), metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(runId("r"), 0),
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+    await mw.wrapToolCall(ctx, { toolId: "T", input: {} }, async () => ({ output: "ok" }));
+
+    const live = await transcript.load(liveSid);
+    const config = await transcript.load(configSid);
+    expect(live.ok && live.value.entries.length).toBeGreaterThan(0);
+    expect(config.ok && config.value.entries.length).toBe(0);
+  });
+});

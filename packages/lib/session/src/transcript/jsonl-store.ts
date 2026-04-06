@@ -61,17 +61,20 @@ function serialized<T>(sid: string, fn: () => Promise<T>): Promise<T> {
     () => fn(),
   );
   // Store a void-typed tail so the next operation can chain on it
-  queues.set(
-    sid,
-    result.then(
-      () => {
-        /* next op may proceed */
-      },
-      () => {
-        /* error — next op still proceeds */
-      },
-    ),
+  const tail = result.then(
+    () => {
+      /* next op may proceed */
+    },
+    () => {
+      /* error — next op still proceeds */
+    },
   );
+  queues.set(sid, tail);
+  // GC: once this tail settles with no subsequent op queued, remove the entry.
+  // Prevents unbounded Map growth in long-lived processes with many transient sessions.
+  void tail.then(() => {
+    if (queues.get(sid) === tail) queues.delete(sid);
+  });
   return result;
 }
 

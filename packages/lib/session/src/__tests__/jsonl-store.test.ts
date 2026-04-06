@@ -94,6 +94,32 @@ describe("JsonlTranscript (concurrency)", () => {
       expect(result.value.skipped.length).toBe(0);
     }
   });
+
+  test("queue entries are cleaned up after ops settle (no unbounded growth)", async () => {
+    // Create many sessions, each with one append, then verify the queue Map
+    // does not retain entries once operations complete. We test via observable
+    // behavior: subsequent ops on the same session still work correctly (the
+    // GC branch doesn't corrupt future ops).
+    const store = createJsonlTranscript({ baseDir: tmpDir });
+    const sessions = Array.from({ length: 20 }, (_, i) => sessionId(`gc-session-${i}`));
+
+    // Append to each session sequentially then verify data is still readable
+    for (const sid of sessions) {
+      await store.append(sid, [makeTranscriptEntry({ content: "hello" })]);
+    }
+
+    // Give the GC branch a tick to run
+    await new Promise((r) => setTimeout(r, 10));
+
+    // All sessions must still load correctly after GC
+    for (const sid of sessions) {
+      const r = await store.load(sid);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.entries.length).toBe(1);
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

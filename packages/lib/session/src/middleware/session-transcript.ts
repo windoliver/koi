@@ -8,10 +8,20 @@
  * data-isolation failures when a single middleware instance is shared or when
  * session IDs change between calls.
  *
- * Durability note: the assistant/tool-call write is awaited in the generator's
- * finally block — the generator does NOT complete until the transcript entry is
- * durable. This is intentional for crash recovery but does add per-turn I/O
- * latency. The pre-stream user-message write is fire-and-forget.
+ * Durability note: assistant/tool-call writes are awaited before the
+ * generator or wrapToolCall resolves — ensuring entries are durable before
+ * the engine advances. Tool results are written immediately in wrapToolCall
+ * to close the crash window between tool completion and the next model call.
+ * The pre-stream user-message write is intentionally fire-and-forget: it is
+ * not in the crash-recovery critical path and blocking stream initialization
+ * for it would add latency with no recovery benefit.
+ *
+ * Failure semantics: transcript write errors are logged but do not propagate.
+ * The agent continues to function even when the transcript store is unavailable
+ * (e.g. disk full). This is a deliberate best-effort design: a crash-recovery
+ * store that takes the agent down on write failure would be worse than no
+ * recovery at all. Operators should monitor console.error output for
+ * [@koi/session:transcript] messages and alert on sustained failures.
  *
  * This makes @koi/session observable in ATIF trajectories via
  * wrapMiddlewareWithTrace (shows as MW:@koi/session:transcript steps).
@@ -26,6 +36,8 @@ import type {
   ModelStreamHandler,
   SessionId,
   SessionTranscript,
+  ToolRequest,
+  ToolResponse,
   TranscriptEntry,
   TurnContext,
 } from "@koi/core";
@@ -189,6 +201,35 @@ export function createSessionTranscriptMiddleware(
           }
         }
       })();
+    },
+
+    // Persist tool results immediately after the tool executes — closes the crash
+    // window between tool completion and the next model call that would otherwise
+    // be the first opportunity to record the result. Without this, a crash after
+    // a non-idempotent tool runs but before the next model request causes the
+    // recovery path to lose the result and potentially re-issue the tool call.
+    wrapToolCall: async (
+      ctx: TurnContext,
+      request: ToolRequest,
+      next: (request: ToolRequest) => Promise<ToolResponse>,
+    ): Promise<ToolResponse> => {
+      const sid: SessionId = ctx.session.sessionId;
+      const response = await next(request);
+      const entry: TranscriptEntry = {
+        id: transcriptEntryId(`${String(idPrefix)}-tr-${ctx.turnIndex}-${Date.now()}`),
+        role: "tool_result",
+        content: JSON.stringify({ toolId: request.toolId, output: response.output }),
+        timestamp: Date.now(),
+      };
+      try {
+        await transcript.append(sid, [entry]);
+      } catch (e: unknown) {
+        console.error(
+          `[@koi/session:transcript] failed to append tool_result for session ${String(sid)}:`,
+          e,
+        );
+      }
+      return response;
     },
   };
 }
