@@ -1,7 +1,8 @@
 # @koi/middleware-exfiltration-guard — Secret Exfiltration Prevention
 
-Scans tool inputs and model outputs for secret exfiltration attempts (base64-encoded,
-URL-encoded, or raw secrets). Blocks, redacts, or warns before secrets leave the system.
+Scans tool inputs, tool outputs, and model outputs (streaming + non-streaming) for
+secret exfiltration attempts (base64-encoded, URL-encoded, or raw secrets). Blocks,
+redacts, or warns before secrets leave the system.
 
 ---
 
@@ -14,9 +15,10 @@ URL-encoded, or raw secrets). Blocks, redacts, or warns before secrets leave the
 - URL-encoding credentials in fetch targets
 - Prompt injection tricking the model into leaking secrets via tool outputs
 - Reading credential files and passing contents to external tools
+- Returning secrets in tool response output (e.g., `fs_read` of `.env`)
 
-This middleware closes the gap by scanning tool I/O and model output for secret patterns,
-including encoded variants.
+This middleware closes the gap by scanning tool I/O (input + output) and model output
+for secret patterns, including encoded variants.
 
 ---
 
@@ -25,7 +27,7 @@ including encoded variants.
 ### Layer position
 
 ```
-L0  @koi/core           KoiMiddleware, ToolRequest, ModelChunk
+L0  @koi/core           KoiMiddleware, ToolRequest, ModelChunk, ModelResponse
 L0u @koi/redaction       createRedactor(), SecretPattern, decoding detectors
 L0u @koi/errors          KoiRuntimeError
 L2  @koi/middleware-exfiltration-guard  ← this package
@@ -42,7 +44,7 @@ src/
 
 ### Dependencies
 
-- `@koi/core` (L0) — `KoiMiddleware`, `ToolRequest`, `ToolResponse`, `ModelChunk`, `TurnContext`
+- `@koi/core` (L0) — `KoiMiddleware`, `ToolRequest`, `ToolResponse`, `ModelChunk`, `ModelResponse`, `TurnContext`
 - `@koi/redaction` (L0u) — `createRedactor`, `createAllSecretPatterns`, `createDecodingDetectors`
 - `@koi/errors` (L0u) — `KoiRuntimeError`
 
@@ -57,37 +59,66 @@ No L2 peer dependencies. No external dependencies.
 - **Priority: 50** — runs before permissions middleware (100), before any tool authorization
 - **Phase: "intercept"** — mutates or blocks requests
 
-### Two interception points
+### Default runtime installation
 
-#### 1. `wrapToolCall` — scan tool arguments
+`createRuntime()` installs this middleware **by default** when the adapter has terminals.
+Configurable via `RuntimeConfig.exfiltrationGuard` (`false` to disable, partial config
+to customize). Explicit config on terminal-less adapters throws (fail-closed).
 
-Before tool execution, scans `request.input` (JSON object) for secrets:
+### Three interception points
 
+#### 1. `wrapToolCall` — scan tool arguments (input) and tool responses (output)
+
+**Input scanning** (gated by `scanToolInput`):
 - Runs `redactor.redactObject(request.input)` with all 13 built-in detectors plus
   base64-decoding and URL-decoding decorator detectors
 - If secrets detected: action determines behavior (block/redact/warn)
 - If redaction fails (secretCount === -1): fail-closed, treated as block
 
-#### 2. `wrapModelStream` — scan model output
+**Output scanning** (always-on, independent of `scanToolInput`):
+- After tool execution, scans `response.output` via both `JSON.stringify` and `String()`
+  representations to catch secrets hidden by `toJSON()` or non-enumerable properties
+- Non-serializable outputs use `deepExtractStrings()` (cycle-safe recursive walk, depth 5)
+- If redaction fails: fail-closed
+- `ExfiltrationEvent.location` is `"tool-output"` for response-side detections
 
-Buffers `text_delta` chunks and scans accumulated text for secret patterns:
+#### 2. `wrapModelCall` — scan non-streaming model responses
 
-- On `done` chunk: scan buffer via `redactor.redactString(buffer)`
-- If secrets found: action determines behavior
-- Buffer capped at `maxStringLength` to prevent memory pressure
+Scans both `response.content` and `response.richContent` (tool_call args, thinking):
+- If secrets found in block mode: returns `sanitizeModelResponse()` with `hook_blocked`
+  stopReason, cleared `richContent`
+- Redact mode: redacts content text, clears `richContent`
+
+#### 3. `wrapModelStream` — scan streaming model output
+
+Buffers all content-bearing chunk kinds for scanning:
+- `text_delta`, `thinking_delta`, `tool_call_start`, `tool_call_delta`, `tool_call_end`
+- Tracks `textOnlyBuffer` separately for redact-safe output (never leaks hidden content)
+- On `done` chunk: scans buffer, also scans `done.response` payload for secrets not in deltas
+- Sanitizes `done` chunk in redact/block mode (clears `response.content` and `richContent`)
+
+**Buffer overflow handling:**
+- Block mode: yield error, return (fail-closed)
+- Redact mode: emit redacted `textOnlyBuffer` + truncation notice, suppress remainder
+- Warn mode: replay held chunks (preserves tool_call structure), pass-through remainder
+
+**Truncated streams** (no `done` chunk): block/redact/warn per normal semantics
 
 ### Action modes
 
-| Action | `wrapToolCall` | `wrapModelStream` |
-|--------|---------------|-------------------|
-| `block` | Return error response, skip tool | Yield error chunk |
-| `redact` | Call tool with redacted input | Yield redacted text |
-| `warn` | Call tool unchanged, fire event | Yield unchanged, fire event |
+| Action | `wrapToolCall` input | `wrapToolCall` output | `wrapModelCall` | `wrapModelStream` |
+|--------|---------------------|----------------------|-----------------|-------------------|
+| `block` | Return error, skip tool | Return error after exec | Replace content, `hook_blocked` | Yield error chunk |
+| `redact` | Call tool with redacted input | Block (can't safely redact structured output) | Redact content, clear `richContent` | Yield redacted `textOnlyBuffer` |
+| `warn` | Call tool unchanged, fire event | Return unchanged, fire event | Return unchanged, fire event | Replay held chunks, fire event |
 
 ### Fail-closed semantics
 
 - Redaction engine failure → block (never allow unscanned content through)
-- Buffer overflow → block if action is block, warn otherwise
+- Buffer overflow in block mode → yield error
+- Buffer overflow in redact mode → emit scanned text + truncation, suppress remainder
+- Truncated stream → same block/redact/warn semantics as done path
+- Non-serializable tool output → `deepExtractStrings()` fallback, never hard-block on shape alone
 
 ---
 
@@ -108,7 +139,7 @@ interface ExfiltrationGuardConfig {
 }
 
 interface ExfiltrationEvent {
-  readonly location: "tool-input" | "model-output";
+  readonly location: "tool-input" | "tool-output" | "model-output";
   readonly toolId?: string;
   readonly matchCount: number;
   readonly kinds: readonly string[];
@@ -130,7 +161,7 @@ interface ExfiltrationEvent {
 ```typescript
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 
-// Default: block on detection
+// Default: block on detection (installed automatically by createRuntime)
 const guard = createExfiltrationGuardMiddleware();
 
 // Warn-only with custom callback
@@ -144,6 +175,9 @@ const guard = createExfiltrationGuardMiddleware({
   action: "redact",
   customPatterns: [myInternalTokenDetector],
 });
+
+// Disable via RuntimeConfig
+const runtime = createRuntime({ exfiltrationGuard: false });
 ```
 
 ---
@@ -151,10 +185,13 @@ const guard = createExfiltrationGuardMiddleware({
 ## Tests
 
 - Tool call with base64-encoded AWS key in URL argument is blocked
-- Tool call with URL-encoded bearer token in fetch target is blocked
-- Model response containing raw API key triggers warning
-- Legitimate base64 content (images, data) is not false-positive blocked
-- Configurable action (block/redact/warn) works for each interception point
-- Fail-closed: redaction engine failure triggers block
-- `onDetection` callback fires with correct event shape
-- Clean inputs pass through unchanged
+- Tool output containing AWS key is blocked (tool-output scanning)
+- Structured tool output with secret only in `String()` representation (Error object) is blocked
+- Non-streaming model response containing secrets is blocked (`wrapModelCall`)
+- Model response `richContent` is cleared and `stopReason` set to `hook_blocked`
+- Streaming model output with secrets in buffer is blocked/redacted
+- Buffer overflow: block yields error, redact emits `textOnlyBuffer`, warn replays held chunks
+- Truncated streams fail-closed in block mode
+- `onDetection` callback fires with correct event shape and `"tool-output"` location
+- Clean inputs/outputs pass through unchanged
+- Trajectory fixture validates ATIF v1.6 with blocking semantics (nextCalled=false, no tool steps)
