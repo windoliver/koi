@@ -28,9 +28,10 @@ EngineEvent (from @koi/core)
            │
            ▼
 ┌──────────────────────┐
-│  TuiStore            │  ← thin wrapper (~50 LOC)
+│  TuiStore            │  ← thin wrapper (~70 LOC)
 │  - getState()        │     always returns latest state
 │  - dispatch(action)  │     applies reducer + microtask-batched notify
+│  - dispatchBatch()   │     reduces N actions in one pass, single notify
 │  - subscribe(fn)     │     returns unsubscribe function
 └──────────────────────┘
            │
@@ -85,7 +86,7 @@ type TuiAssistantBlock =
   | { kind: "tool_call"; callId: string; toolName: string;
       status: "running" | "complete" | "error";
       args?: string;    // streamed argument JSON fragments
-      result?: unknown } // tool execution result from tool_call_end
+      result?: string }  // tool execution result (stringified by capResult())
   | { kind: "error"; code: string; message: string }
 ```
 
@@ -153,10 +154,13 @@ Minimal API matching the `subscribe`/`getState` contract:
 
 - `getState()` — always returns latest state (never stale, even during batched notify)
 - `dispatch(action)` — applies reducer synchronously, coalesces notifications via `queueMicrotask`
+- `dispatchBatch(actions)` — reduces N actions in one pass, notifies once synchronously. Used by EventBatcher flush to avoid N state updates + N signal invalidations per 16ms window.
 - `subscribe(listener)` — returns unsubscribe function
 
 **Microtask batching:** State updates are immediate; subscriber notifications are
 coalesced. 50-100 text_delta dispatches/sec collapse into 1-3 notifications.
+`dispatchBatch` is even more efficient — the EventBatcher flush callback maps all
+events to actions and reduces them in a single loop before notifying.
 
 **No-op guard:** If `reduce()` returns the same reference (`next === state`),
 dispatch skips notification entirely.
@@ -282,7 +286,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 |-----------|---------|-------------|
 | `TextBlock` | Text/markdown | `<text>` baseline; `<markdown>` only when BOTH `syntaxStyle` AND `treeSitterClient` are provided. `<markdown>` without `treeSitterClient` blanks paragraph text — the guard prevents silent prose regression until tree-sitter is wired (#1542) |
 | `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
-| `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
+| `ToolCallBlock` | Tool lifecycle | Structured title/subtitle/chips display on completion; raw toolName during streaming. Result chips extracted from JSON results. `HighlightedText` helper for syntax-highlighted fallback |
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
 | `MessageList` | Conversation | `<scrollbox stickyScroll stickyStart="bottom">` — new messages always scroll into view; `stickyStart="bottom"` sets `_stickyScrollBottom=true` on init so the scrollbox follows the bottom rather than the top |
