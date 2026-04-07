@@ -6585,23 +6585,29 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/skill-scanner", () => {
-  test("createScanner detects bracket-notation dangerous API calls", async () => {
+  test("createScanner detects bracket-notation and template-literal dangerous API calls", async () => {
     const { createScanner } = await import("@koi/skill-scanner");
     const scanner = createScanner();
 
-    // Bracket-notation forms that previously bypassed detection (issue #1572)
-    const bracketCases = [
+    // Bracket-notation and template-literal forms that previously bypassed detection (#1572)
+    const bypassCases = [
       { code: 'globalThis["eval"]("code")', rule: "dangerous-api:global-eval" },
       { code: 'child_process["execSync"]("cmd")', rule: "dangerous-api:child_process.execSync" },
       { code: 'process["binding"]("natives")', rule: "dangerous-api:process.binding" },
+      { code: "process[`binding`]('natives')", rule: "dangerous-api:process.binding" },
     ] as const;
 
-    for (const { code, rule } of bracketCases) {
+    for (const { code, rule } of bypassCases) {
       const report = scanner.scan(`${code};`);
       const match = report.findings.find((f) => f.rule === rule);
       expect(match).toBeDefined();
       expect(match?.severity).toBe("CRITICAL");
+      expect(match?.confidence).toBeGreaterThanOrEqual(0.85);
     }
+
+    // Negative: benign bracket access must NOT trigger dangerous-api findings
+    const benign = scanner.scan('const obj = {}; obj["safeMethod"]();');
+    expect(benign.findings.filter((f) => f.category === "DANGEROUS_API")).toHaveLength(0);
   });
 
   test("scanSkill detects bracket-notation bypass in SKILL.md code blocks", async () => {
@@ -6623,6 +6629,9 @@ describe("Golden: @koi/skill-scanner", () => {
     ].join("\n");
 
     const report = scanner.scanSkill(maliciousSkill);
+
+    // Exactly 2 CRITICAL findings: static import + bracket-notation execSync
+    expect(report.findings).toHaveLength(2);
 
     // Must detect the bracket-notation execSync call
     expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
