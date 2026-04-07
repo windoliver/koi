@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import type {
+  Agent,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -22,6 +23,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  SkillComponent,
   ToolCallId,
   ToolRequest,
   ToolResponse,
@@ -36,7 +38,11 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
-import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
+import {
+  createSkillInjectorMiddleware,
+  createSkillProvider,
+  createSkillsRuntime,
+} from "@koi/skills-runtime";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { loadCassette } from "../cassette/load-cassette.js";
@@ -6196,6 +6202,15 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     const skillRuntime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
     const provider = createSkillProvider(skillRuntime);
 
+    // Lazy agent ref: middleware created before createKoi, agent set after assembly.
+    const agentRef: { current?: Agent } = {};
+    const injector = createSkillInjectorMiddleware({
+      agent: (): Agent => {
+        if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+        return agentRef.current;
+      },
+    });
+
     // Simple text adapter (skills attach at ECS level, no tool calls needed)
     // let: mutable call counter
     let callCount = 0;
@@ -6265,12 +6280,15 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     const koiRuntime = await createKoi({
       manifest: { name: "skills-replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter: skillAdapter,
-      middleware: [eventTrace, permHandle].map((mw) =>
+      middleware: [eventTrace, permHandle, injector].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId }),
       ),
       providers: [provider],
       loopDetection: false,
     });
+
+    // Wire the lazy agent ref now that assembly is complete.
+    agentRef.current = koiRuntime.agent;
 
     for await (const _e of koiRuntime.run({
       kind: "text",
@@ -6292,10 +6310,20 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
     expect(modelSteps[0]?.outcome).toBe("success");
 
-    // Middleware spans: permissions wired correctly alongside skill provider
+    // Middleware spans: permissions + skill-injector wired correctly
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
     expect(mwNames.has("permissions")).toBe(true);
+    expect(mwNames.has("skill-injector")).toBe(true);
+
+    // Skill component was attached to the agent entity
+    const skillComponents = koiRuntime.agent.query<SkillComponent>("skill:");
+    expect(skillComponents.size).toBe(1);
+    const firstEntry = [...skillComponents.entries()][0];
+    expect(firstEntry).toBeDefined();
+    const [, bulletSkill] = firstEntry ?? [undefined, undefined];
+    expect(bulletSkill?.name).toBe("bullet-points");
+    expect(bulletSkill?.content).toContain("bullet point");
   }, 15000);
 });
 
