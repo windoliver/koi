@@ -90,6 +90,41 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     void registry.get(task.kind)?.stop(task).catch(() => {});
   }
 
+  /**
+   * Inject an onExit callback into task configs that support it.
+   * When a process-based task exits naturally, the runner transitions the
+   * board to completed (exit 0) or failed (non-zero).
+   */
+  function enrichConfigWithExitHandler(taskId: TaskItemId, taskConfig: unknown): unknown {
+    if (typeof taskConfig !== "object" || taskConfig === null) return taskConfig;
+    const cfg = taskConfig as Readonly<Record<string, unknown>>;
+    // Only inject if the config doesn't already have an onExit
+    if (cfg.onExit !== undefined) return taskConfig;
+    return {
+      ...cfg,
+      onExit: (code: number) => {
+        // Remove from active tasks first to prevent duplicate stop from watcher
+        const task = activeTasks.get(taskId);
+        if (task === undefined) return;
+        activeTasks.delete(taskId);
+
+        if (code === 0) {
+          void board.completeOwnedTask(taskId, agentId, {
+            taskId,
+            output: `Process exited with code ${String(code)}`,
+            durationMs: Date.now() - task.startedAt,
+          });
+        } else {
+          void board.failOwnedTask(taskId, agentId, {
+            code: "EXTERNAL",
+            message: `Process exited with code ${String(code)}`,
+            retryable: false,
+          });
+        }
+      },
+    };
+  }
+
   const start = async (
     taskId: TaskItemId,
     kind: TaskKindName,
@@ -115,8 +150,13 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     // Wrap in try/catch: if lifecycle.start() rejects, fail the task on the board
     // so it doesn't remain stuck in_progress with no runtime handle.
     const output = createOutputStream(outputStreamConfig);
+
+    // Inject an onExit callback so the runner can transition the board when
+    // a process-based task exits naturally (without explicit stop()).
+    const enrichedConfig = enrichConfigWithExitHandler(taskId, taskConfig);
+
     try {
-      const state = await lifecycle.start(taskId, output, taskConfig);
+      const state = await lifecycle.start(taskId, output, enrichedConfig);
       activeTasks.set(taskId, state);
       return { ok: true, value: state };
     } catch (err: unknown) {
@@ -153,18 +193,21 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
       };
     }
 
-    // Transition board first — if this fails (e.g. ownership changed),
-    // we keep the runtime state so the caller can retry or read output.
-    const boardResult = await board.killOwnedTask(taskId, agentId);
-    if (!boardResult.ok) return boardResult;
+    // Remove from activeTasks BEFORE board transition to prevent the store
+    // watcher from triggering a duplicate lifecycle.stop() call.
+    activeTasks.delete(taskId);
 
-    // Board succeeded — now clean up runtime state
+    // Transition board — if this fails, the task is already removed from
+    // active tracking (watcher won't double-stop) but we report the error.
+    const boardResult = await board.killOwnedTask(taskId, agentId);
+
+    // Clean up runtime state regardless of board result
     const lifecycle = registry.get(task.kind);
     if (lifecycle !== undefined) {
       await lifecycle.stop(task);
     }
-    activeTasks.delete(taskId);
 
+    if (!boardResult.ok) return boardResult;
     return { ok: true, value: undefined };
   };
 
