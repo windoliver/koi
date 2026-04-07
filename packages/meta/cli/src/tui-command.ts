@@ -36,7 +36,6 @@ import type {
   EngineInput,
   InboundMessage,
   SessionTranscript,
-  SpawnResult,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
@@ -302,15 +301,60 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const taskBoard = await createManagedTaskBoard({ store: taskBoardStore });
   const coordinatorId = agentId("tui-coordinator");
   const taskTools = createTaskTools({ board: taskBoard, agentId: coordinatorId });
-  const spawnTools = createSpawnTools({
-    spawnFn: async (request): Promise<SpawnResult> => ({
-      ok: false,
-      error: {
-        code: "INTERNAL",
-        message: `agent_spawn is not yet supported in the TUI. Requested: ${request.agentName}`,
-        retryable: false,
+  // Real spawn: runs a child agent via runTurn with the same model adapter.
+  // The child gets the coordinator's tools and produces output as a string.
+  // This is a lightweight in-process spawn — no process registry or lifecycle,
+  // just a nested model→tool→model loop (same pattern as CC's Agent tool).
+  // let: mutable — populated after allTools is built (circular ref: spawn needs tools, tools include spawn)
+  let toolRegistryRef: ReadonlyMap<string, Tool> = new Map();
+  let toolDescriptorsRef: readonly ToolDescriptor[] = [];
+  const realSpawnFn: import("@koi/core").SpawnFn = async (request) => {
+    const childTools = toolRegistryRef;
+    const childToolDescriptors = toolDescriptorsRef;
+    const childCallHandlers: import("@koi/core").ComposedCallHandlers = {
+      modelCall: modelAdapter.complete,
+      modelStream: modelAdapter.stream,
+      toolCall: async (toolReq) => {
+        const tool = childTools.get(toolReq.toolId);
+        if (tool === undefined) {
+          return { output: { error: `Tool not found: ${toolReq.toolId}` } };
+        }
+        const result = await tool.execute(toolReq.input);
+        return { output: result };
       },
-    }),
+      tools: childToolDescriptors,
+    };
+    let output = "";
+    try {
+      for await (const event of runTurn({
+        callHandlers: childCallHandlers,
+        messages: [
+          {
+            senderId: "user",
+            timestamp: Date.now(),
+            content: [{ kind: "text" as const, text: request.description }],
+          },
+        ],
+        maxTurns: 5,
+      })) {
+        if (event.kind === "text_delta") {
+          output += event.delta;
+        }
+      }
+      return { ok: true as const, output: output || "(child produced no text output)" };
+    } catch (err: unknown) {
+      return {
+        ok: false as const,
+        error: {
+          code: "INTERNAL" as const,
+          message: err instanceof Error ? err.message : String(err),
+          retryable: false,
+        },
+      };
+    }
+  };
+  const spawnTools = createSpawnTools({
+    spawnFn: realSpawnFn,
     board: taskBoard,
     agentId: coordinatorId,
     signal: AbortSignal.timeout(300_000),
@@ -336,6 +380,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   );
 
   const localToolDescriptors: readonly ToolDescriptor[] = allTools.map((t) => t.descriptor);
+
+  // Wire spawn's tool refs now that allTools is built (breaks the circular ref).
+  toolRegistryRef = localTools;
+  toolDescriptorsRef = localToolDescriptors;
 
   const rawEngineAdapter: EngineAdapter = {
     engineId: "koi-tui",
