@@ -108,17 +108,25 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
         if (task === undefined) return;
         activeTasks.delete(taskId);
 
+        // Snapshot buffered output before transitioning so it's preserved
+        // in the terminal result (task_output reads TaskResult.output, not the stream)
+        const bufferedChunks = task.output.read(0);
+        const capturedOutput = bufferedChunks.map((c) => c.content).join("");
+        const durationMs = Date.now() - task.startedAt;
+
         if (code === 0) {
           void board.completeOwnedTask(taskId, agentId, {
             taskId,
-            output: `Process exited with code ${String(code)}`,
-            durationMs: Date.now() - task.startedAt,
+            output: capturedOutput || `Process exited with code 0`,
+            durationMs,
+            metadata: { exitCode: code },
           });
         } else {
           void board.failOwnedTask(taskId, agentId, {
             code: "EXTERNAL",
-            message: `Process exited with code ${String(code)}`,
+            message: capturedOutput || `Process exited with code ${String(code)}`,
             retryable: false,
+            context: { exitCode: code },
           });
         }
       },

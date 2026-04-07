@@ -128,14 +128,18 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
 
     // Split oversized writes into bounded chunks so eviction can reclaim memory.
     // Without this, a single write larger than maxBytes would bypass the cap.
+    // Split by UTF-8 byte length, not char indices, to respect the byte cap.
     if (contentByteLength > maxBytes) {
-      // let justified: index advances through the oversized content
-      let pos = 0;
-      while (pos < content.length) {
-        // Approximate char-level split; actual byte accounting is per-chunk
-        const slice = content.slice(pos, pos + maxBytes);
-        writeChunk(slice, now);
-        pos += maxBytes;
+      const encoded = encoder.encode(content);
+      const decoder = new TextDecoder();
+      // let justified: bytePos advances through the encoded byte array
+      let bytePos = 0;
+      while (bytePos < encoded.byteLength) {
+        const sliceEnd = Math.min(bytePos + maxBytes, encoded.byteLength);
+        const sliceBytes = encoded.slice(bytePos, sliceEnd);
+        const sliceContent = decoder.decode(sliceBytes, { stream: bytePos + maxBytes < encoded.byteLength });
+        writeChunk(sliceContent, now);
+        bytePos = sliceEnd;
       }
     } else {
       writeChunk(content, now);
