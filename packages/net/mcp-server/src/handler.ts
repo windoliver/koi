@@ -123,6 +123,13 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
         TOOL_TIMEOUT_MS,
         controller,
       );
+      // Fail fast for oversized string results before serialization
+      if (typeof result === "string" && result.length > MAX_RESPONSE_CHARS) {
+        return {
+          content: [{ type: "text" as const, text: `Tool "${name}" response exceeds size limit` }],
+          isError: true,
+        };
+      }
       const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "");
       if (text.length > MAX_RESPONSE_CHARS) {
         return {

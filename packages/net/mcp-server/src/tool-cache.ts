@@ -88,11 +88,11 @@ export function createToolCache(config: ToolCacheConfig): ToolCache {
       }
     }
 
-    // Agent tools are added only if they don't collide with reserved koi_* names
+    // Agent tools cannot use the reserved koi_* namespace at all
     for (const [, tool] of agentTools) {
       const name = tool.descriptor.name;
-      if (name.startsWith(PLATFORM_PREFIX) && byName.has(name)) {
-        // Agent tool with reserved koi_* name — skip to prevent shadow bypass
+      if (name.startsWith(PLATFORM_PREFIX)) {
+        // Entire koi_* namespace is reserved — skip agent tools with this prefix
         continue;
       }
       byName.set(name, toolToEntry(tool));
