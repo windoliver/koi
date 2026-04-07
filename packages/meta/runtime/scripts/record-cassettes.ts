@@ -2270,27 +2270,31 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 8,
   },
 
-  // interaction-full: ALL interaction tools + spawn in one realistic coordinator flow
+  // interaction-full: ALL interaction tools + task_delegate + agent_spawn in one coordinator flow
   //   AskUserQuestion → EnterPlanMode → TodoWrite(3 tasks) → Glob → TodoWrite(update)
-  //   → TodoWrite(write-plan done) → ExitPlanMode → agent_spawn(worker) → TodoWrite(auto-clear)
+  //   → TodoWrite(write-plan done) → ExitPlanMode
+  //   → task_create → task_delegate → agent_spawn(task_id) → TodoWrite(auto-clear)
   //   Uses Sonnet 4.6: Gemini drops function name tokens after 3+ sequential tool calls.
+  //   task_create/task_delegate/agent_spawn all share taskToolsBoard — auto-wired.
   {
     name: "interaction-full",
     prompt:
-      "You are a coordinator helping refactor a codebase. Follow these steps exactly:\n" +
-      "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' with options " +
-      "'Targeted — one module only' and 'Full — all modules'.\n" +
+      "You are a coordinator. Execute ALL 11 steps below in order. Do not skip any step.\n" +
+      "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' options: " +
+      "'Targeted — one module only', 'Full — all modules'.\n" +
       "2. Call EnterPlanMode.\n" +
-      "3. Call TodoWrite with THREE tasks: id='explore' content='Explore repo' status='in_progress', " +
-      "id='write-plan' content='Write plan' status='pending', " +
-      "id='dispatch' content='Spawn refactor worker' status='pending'.\n" +
-      "4. Call Glob with pattern='*.json' to explore.\n" +
-      "5. Call TodoWrite: 'explore' completed, 'write-plan' in_progress, 'dispatch' pending.\n" +
-      "6. Call TodoWrite: 'write-plan' completed, 'dispatch' in_progress.\n" +
+      "3. Call TodoWrite: [{id:'explore',content:'Explore repo',status:'in_progress'}, " +
+      "{id:'write-plan',content:'Write plan',status:'pending'}, " +
+      "{id:'dispatch',content:'Spawn refactor worker',status:'pending'}].\n" +
+      "4. Call Glob pattern='*.json'.\n" +
+      "5. Call TodoWrite: explore=completed, write-plan=in_progress, dispatch=pending.\n" +
+      "6. Call TodoWrite: explore=completed, write-plan=completed, dispatch=in_progress.\n" +
       "7. Call ExitPlanMode.\n" +
-      "8. Call agent_spawn with agentName='refactor-worker' and description='Refactor the targeted module based on the approved plan'.\n" +
-      "9. Call TodoWrite: 'dispatch' completed (auto-clear fires — all done).\n" +
-      "Report what the user chose, the worker's output, and confirm the list was cleared.",
+      "8. Call task_create: subject='Refactor targeted module', description='Apply approved plan'. NOTE the returned task_id.\n" +
+      "9. Call task_delegate: task_id=<from step 8>, agent_id='refactor-worker'. THIS STEP IS MANDATORY before agent_spawn.\n" +
+      "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module', task_id=<from step 8>.\n" +
+      "11. Call TodoWrite: dispatch=completed (this clears the list).\n" +
+      "Report: user choice, worker output, list cleared confirmation.",
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
@@ -2308,12 +2312,22 @@ const queries: readonly QueryConfig[] = [
       }),
       createBuiltinSearchProvider({ cwd: process.cwd() }),
       createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+      createSingleToolProvider({
         name: "agent-spawn",
         toolName: "agent_spawn",
         createTool: () => stAgentSpawn,
       }),
     ],
-    maxTurns: 12,
+    maxTurns: 14,
     modelAdapter: sonnetAdapter,
     modelName: SONNET_MODEL,
   },
@@ -2912,20 +2926,22 @@ await recordCassette(
             {
               kind: "text",
               text:
-                "You are a coordinator helping refactor a codebase. Follow these steps exactly:\n" +
-                "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' with options " +
-                "'Targeted — one module only' and 'Full — all modules'.\n" +
+                "You are a coordinator. Execute ALL 11 steps below in order. Do not skip any step.\n" +
+                "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' options: " +
+                "'Targeted — one module only', 'Full — all modules'.\n" +
                 "2. Call EnterPlanMode.\n" +
-                "3. Call TodoWrite with THREE tasks: id='explore' content='Explore repo' status='in_progress', " +
-                "id='write-plan' content='Write plan' status='pending', " +
-                "id='dispatch' content='Spawn refactor worker' status='pending'.\n" +
-                "4. Call Glob with pattern='*.json' to explore.\n" +
-                "5. Call TodoWrite: 'explore' completed, 'write-plan' in_progress, 'dispatch' pending.\n" +
-                "6. Call TodoWrite: 'write-plan' completed, 'dispatch' in_progress.\n" +
+                "3. Call TodoWrite: [{id:'explore',content:'Explore repo',status:'in_progress'}, " +
+                "{id:'write-plan',content:'Write plan',status:'pending'}, " +
+                "{id:'dispatch',content:'Spawn refactor worker',status:'pending'}].\n" +
+                "4. Call Glob pattern='*.json'.\n" +
+                "5. Call TodoWrite: explore=completed, write-plan=in_progress, dispatch=pending.\n" +
+                "6. Call TodoWrite: explore=completed, write-plan=completed, dispatch=in_progress.\n" +
                 "7. Call ExitPlanMode.\n" +
-                "8. Call agent_spawn with agentName='refactor-worker' and description='Refactor the targeted module based on the approved plan'.\n" +
-                "9. Call TodoWrite: 'dispatch' completed (auto-clear fires — all done).\n" +
-                "Report what the user chose, the worker's output, and confirm the list was cleared.",
+                "8. Call task_create: subject='Refactor targeted module', description='Apply approved plan'. NOTE the returned task_id.\n" +
+                "9. Call task_delegate: task_id=<from step 8>, agent_id='refactor-worker'. THIS STEP IS MANDATORY before agent_spawn.\n" +
+                "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module', task_id=<from step 8>.\n" +
+                "11. Call TodoWrite: dispatch=completed (this clears the list).\n" +
+                "Report: user choice, worker output, list cleared confirmation.",
             },
           ],
         },
@@ -2936,6 +2952,8 @@ await recordCassette(
         todoToolForCassette.descriptor,
         exitPlanModeToolForCassette.descriptor,
         createGlobTool({ cwd: process.cwd() }).descriptor,
+        ttCreate.descriptor,
+        ttDelegate.descriptor,
         stAgentSpawn.descriptor,
       ],
     }),

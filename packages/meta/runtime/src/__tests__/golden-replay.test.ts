@@ -4426,7 +4426,8 @@ describe("ask-user ATIF trajectory (golden file)", () => {
 
 // ---------------------------------------------------------------------------
 // interaction-full ATIF trajectory — ALL interaction tools in one E2E flow
-// AskUserQuestion → EnterPlanMode → TodoWrite → Glob → TodoWrite → TodoWrite → ExitPlanMode
+// AskUserQuestion → EnterPlanMode → TodoWrite → Glob → TodoWrite × 2 → ExitPlanMode
+// → task_create → task_delegate → agent_spawn(task_id) → TodoWrite(clear)
 // ---------------------------------------------------------------------------
 
 describe("interaction-full ATIF trajectory (golden file)", () => {
@@ -4453,7 +4454,7 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
     return step?.observation?.results?.[0]?.content ?? "";
   }
 
-  test("valid ATIF v1.6 with all 5 interaction tool definitions", async () => {
+  test("valid ATIF v1.6 with all 7 tool definitions (interaction + task + spawn)", async () => {
     const doc = await loadDoc();
     if (!doc) {
       console.warn("interaction-full.trajectory.json not recorded yet — skipping");
@@ -4466,6 +4467,9 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
     expect(names).toContain("TodoWrite");
     expect(names).toContain("Glob");
     expect(names).toContain("ExitPlanMode");
+    expect(names).toContain("task_create");
+    expect(names).toContain("task_delegate");
+    expect(names).toContain("agent_spawn");
   });
 
   test("step 1 — AskUserQuestion: mock elicit returns 'Targeted' answer", async () => {
@@ -4550,20 +4554,49 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
     expect(toolContent(step)).toContain('"approved":true');
   });
 
-  test("step 8 — agent_spawn: worker dispatched, stub returns output", async () => {
+  test("step 8 — task_create: creates board task, returns task_id", async () => {
     const doc = await loadDoc();
     if (!doc) {
       console.warn("interaction-full.trajectory.json not recorded yet — skipping");
       return;
     }
     const step = toolSteps(doc.steps).find((s) =>
-      s.tool_calls?.some((tc) => tc.function_name === "agent_spawn"),
+      s.tool_calls?.some((tc) => tc.function_name === "task_create"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain('"id"');
+  });
+
+  test("step 9 — task_delegate: delegates board task before spawn", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "task_delegate"),
     );
     expect(step).toBeDefined();
     expect(toolContent(step)).toContain("refactor-worker");
   });
 
-  test("step 9 — final TodoWrite: dispatch completed → cleared=true (all done)", async () => {
+  test("step 10 — agent_spawn: spawns with task_id, stub returns output", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const spawnIdx = doc.steps.findIndex((s: Step) =>
+      s.tool_calls?.some((tc) => tc.function_name === "agent_spawn"),
+    );
+    const delegateIdx = doc.steps.findIndex((s: Step) =>
+      s.tool_calls?.some((tc) => tc.function_name === "task_delegate"),
+    );
+    expect(spawnIdx).toBeGreaterThan(delegateIdx);
+    expect(toolContent(doc.steps[spawnIdx])).toContain("refactor-worker");
+  });
+
+  test("step 11 — final TodoWrite: dispatch completed → cleared=true (all done)", async () => {
     const doc = await loadDoc();
     if (!doc) {
       console.warn("interaction-full.trajectory.json not recorded yet — skipping");
