@@ -308,16 +308,19 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // let: mutable — populated after allTools is built (circular ref: spawn needs tools, tools include spawn)
   let toolRegistryRef: ReadonlyMap<string, Tool> = new Map();
   let toolDescriptorsRef: readonly ToolDescriptor[] = [];
+  // Worker tool set: only execution tools, not coordination tools.
+  // Workers should act (Bash, Glob, Grep, fs, web) — not re-enter plan mode or spawn.
+  const workerToolNames = new Set(["Bash", "Glob", "Grep", "web_fetch"]);
   const realSpawnFn: import("@koi/core").SpawnFn = async (request) => {
-    const childTools = toolRegistryRef;
-    const childToolDescriptors = toolDescriptorsRef;
+    // Filter to worker-appropriate tools (exclude TodoWrite, PlanMode, spawn, task tools)
+    const childToolDescriptors = toolDescriptorsRef.filter((t) => workerToolNames.has(t.name));
     const childCallHandlers: import("@koi/core").ComposedCallHandlers = {
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
       toolCall: async (toolReq) => {
-        const tool = childTools.get(toolReq.toolId);
-        if (tool === undefined) {
-          return { output: { error: `Tool not found: ${toolReq.toolId}` } };
+        const tool = toolRegistryRef.get(toolReq.toolId);
+        if (tool === undefined || !workerToolNames.has(toolReq.toolId)) {
+          return { output: { error: `Tool not available for worker: ${toolReq.toolId}` } };
         }
         const result = await tool.execute(toolReq.input);
         return { output: result };
@@ -352,6 +355,9 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       })) {
         if (event.kind === "text_delta") {
           output += event.delta;
+        }
+        if (event.kind === "tool_call_start") {
+          process.stderr.write(`[spawn] child tool: ${event.toolName}\n`);
         }
       }
       return { ok: true as const, output: output || "(child produced no text output)" };
