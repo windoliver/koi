@@ -400,10 +400,13 @@ describe("Golden: @koi/skills-runtime", () => {
     expect(discoverResult.ok).toBe(true);
     if (!discoverResult.ok) return;
 
-    expect(discoverResult.value.get("shared-skill")).toBe("project");
-    expect(discoverResult.value.get("bundled-only")).toBe("bundled");
+    expect(discoverResult.value.get("shared-skill")?.source).toBe("project");
+    expect(discoverResult.value.get("bundled-only")?.source).toBe("bundled");
     expect(discoverResult.value.size).toBe(2);
     expect(shadowed).toContain("shared-skill");
+
+    // Metadata available from discover (progressive loading)
+    expect(discoverResult.value.get("shared-skill")?.description).toBe("Project version.");
 
     // Load: project version wins
     const loaded = await runtime.load("shared-skill");
