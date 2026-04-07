@@ -4567,7 +4567,7 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
     expect(toolContent(step)).toContain('"id"');
   });
 
-  test("step 9 — task_delegate: delegates board task before spawn", async () => {
+  test("step 9 — task_delegate: records soft delegation (delegatedTo in result)", async () => {
     const doc = await loadDoc();
     if (!doc) {
       console.warn("interaction-full.trajectory.json not recorded yet — skipping");
@@ -4577,6 +4577,7 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
       s.tool_calls?.some((tc) => tc.function_name === "task_delegate"),
     );
     expect(step).toBeDefined();
+    // Soft delegation: result includes delegatedTo, not assignedTo (#1416).
     expect(toolContent(step)).toContain("refactor-worker");
   });
 

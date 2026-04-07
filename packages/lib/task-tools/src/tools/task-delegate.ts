@@ -1,5 +1,5 @@
-import type { AgentId, JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, agentId as mkAgentId, taskItemId } from "@koi/core";
+import type { JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
 import { toTaskSummary } from "../project.js";
@@ -10,25 +10,30 @@ const schema = z.object({
 });
 
 /**
- * task_delegate — coordinator delegation tool.
+ * task_delegate — coordinator soft-delegation tool.
  *
- * Assigns a pending task to a child agent without triggering the
- * single-in-progress guard enforced by task_update. Coordinators use this
- * to fan-out N tasks simultaneously; workers use task_update for claiming
- * their own single in-progress task.
+ * Records which child agent should handle a task by writing
+ * `metadata.delegatedTo = agent_id`. The coordinator retains board
+ * ownership (assignedTo is NOT changed), so it can still complete,
+ * fail, or stop the task after agent_spawn returns.
  *
- * Only pending tasks may be delegated. In-progress (already delegated),
- * completed, failed, and killed tasks are rejected.
+ * Board ownership handoff to the spawned child's runtime AgentId
+ * requires engine-level identity resolution — deferred to #1416.
+ * Until then, the coordinator is responsible for closing the task.
+ *
+ * Only pending tasks may be delegated. Already-delegated (metadata.delegatedTo
+ * set), completed, failed, and killed tasks are rejected.
  */
 export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
   return {
     descriptor: {
       name: "task_delegate",
       description:
-        "Delegate a pending task to a child agent for execution. " +
-        "Unlike task_update, this allows multiple tasks to be delegated simultaneously — " +
-        "use it when coordinating parallel work across multiple agents. " +
-        "The child agent's ID is recorded as assignedTo on the task.",
+        "Record which child agent should handle a pending task. " +
+        "Stores the agent ID in task metadata (delegatedTo) so the coordinator " +
+        "can track intent. The coordinator retains ownership and must complete or " +
+        "fail the task after agent_spawn returns — child agents cannot update it " +
+        "directly until #1416 is resolved.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -42,7 +47,6 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
 
       const { task_id, agent_id } = parsed.data;
       const id = taskItemId(task_id);
-      const childAgentId: AgentId = mkAgentId(agent_id);
       const snapshot = board.snapshot();
       const task = snapshot.get(id);
 
@@ -57,12 +61,22 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
             "Only pending tasks may be delegated.",
         };
       }
+      // Prevent re-delegation of an already-delegated task.
+      if (task.metadata?.["delegatedTo"] !== undefined) {
+        return {
+          ok: false,
+          error:
+            `Task '${task_id}' is already delegated to '${String(task.metadata["delegatedTo"])}'. ` +
+            "Undelegate first or create a new task.",
+        };
+      }
 
-      // board.assign() — direct state transition, no single-in-progress guard.
-      // Coordinators fan-out N tasks; the guard lives only in task_update.
-      const assignResult = await board.assign(id, childAgentId);
-      if (!assignResult.ok) {
-        return { ok: false, error: assignResult.error.message };
+      // Soft delegation: record intent in metadata, coordinator keeps ownership.
+      // No board.assign() — avoids creating an ownership state that no spawned
+      // child can satisfy (their runtime AgentId won't match #1416).
+      const updateResult = await board.update(id, { metadata: { delegatedTo: agent_id } });
+      if (!updateResult.ok) {
+        return { ok: false, error: updateResult.error.message };
       }
 
       const updatedTask = board.snapshot().get(id);
@@ -72,14 +86,7 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
           updatedTask !== undefined
             ? toTaskSummary(updatedTask, board.snapshot())
             : ({ id } satisfies { id: TaskItemId }),
-        // NOTE: agent_spawn does not pass task identity to the child's runtime.
-        // The spawned child's AgentId will not match assignedTo, so the child
-        // cannot call task_update/task_output on this task (#1416).
-        // Use agent_spawn independently; track task completion out-of-band.
-        warning:
-          "Delegation recorded. Until #1416 is resolved the spawned child's runtime " +
-          "identity will not match assignedTo — the child cannot update or complete " +
-          "this task via task_update.",
+        delegatedTo: agent_id,
       };
     },
   };
