@@ -23,10 +23,15 @@ export interface CodeBlock {
 // spaces as allowed by CommonMark), optionally followed by a lang/info-string.
 // We capture the fence char (group 1) and the first word of the info-string (group 2).
 const OPENING_FENCE_RE = /^ {0,3}([`~]{3,})\s*(\S*)/;
-// Closing fence: same char repeated at least as many times, no trailing content.
-// We store the opening fence char/length to validate the closing fence in extractCodeBlocks.
-const CLOSING_FENCE_BACKTICK_RE = /^ {0,3}`{3,}\s*$/;
-const CLOSING_FENCE_TILDE_RE = /^ {0,3}~{3,}\s*$/;
+// Closing fence helper: same char repeated at least `openLen` times, no trailing content.
+// Per CommonMark §6.1, the closing fence must use the same character with length ≥ opener.
+function isClosingFence(line: string, fenceChar: string, openLen: number): boolean {
+  const match = CLOSING_FENCE_RE.exec(line);
+  if (match === null) return false;
+  const fence = match[1] ?? "";
+  return fence[0] === fenceChar && fence.length >= openLen;
+}
+const CLOSING_FENCE_RE = /^ {0,3}([`~]{3,})\s*$/;
 
 const LANG_TO_EXT: Readonly<Record<string, string>> = {
   js: ".js",
@@ -98,8 +103,9 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
   let blockLang = "";
   let blockStartLine = 0;
   let blockLines: string[] = [];
-  // let: the closing fence regex chosen to match the opening fence character (` or ~)
-  let closingFenceRe: RegExp = CLOSING_FENCE_BACKTICK_RE;
+  // let: opening fence character and length for CommonMark-compliant closing fence matching
+  let openFenceChar = "`";
+  let openFenceLen = 3;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -108,7 +114,7 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
     if (!inBlock) {
       const openMatch = OPENING_FENCE_RE.exec(line);
       if (openMatch !== null) {
-        const fenceChar = (openMatch[1] ?? "")[0];
+        const fence = openMatch[1] ?? "```";
         const lang = (openMatch[2] ?? "").toLowerCase();
         // Fail-closed: scan everything EXCEPT unambiguously non-executable langs.
         // Unknown or empty lang tags are treated as JS/TS and scanned.
@@ -117,10 +123,11 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
           blockLang = lang;
           blockStartLine = i + 1; // 1-based line number of the opening fence
           blockLines = [];
-          closingFenceRe = fenceChar === "~" ? CLOSING_FENCE_TILDE_RE : CLOSING_FENCE_BACKTICK_RE;
+          openFenceChar = fence[0] ?? "`";
+          openFenceLen = fence.length;
         }
       }
-    } else if (closingFenceRe.test(line)) {
+    } else if (isClosingFence(line, openFenceChar, openFenceLen)) {
       // Closing fence found
       const code = blockLines.join("\n");
       if (code.trim().length > 0) {
