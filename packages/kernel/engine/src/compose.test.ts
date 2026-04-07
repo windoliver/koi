@@ -23,6 +23,7 @@ import {
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
+  computeCapabilityBanner,
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,
@@ -1586,6 +1587,62 @@ describe("collectCapabilities", () => {
     const result = collectCapabilities([mw], mockTurnContext());
     expect(result).toHaveLength(1);
     expect(result[0]?.description).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeCapabilityBanner
+// ---------------------------------------------------------------------------
+
+describe("computeCapabilityBanner", () => {
+  test("returns undefined when no middleware has capabilities", () => {
+    const mw: KoiMiddleware = { name: "plain", describeCapabilities: () => undefined };
+    const result = computeCapabilityBanner([mw], mockTurnContext());
+    expect(result).toBeUndefined();
+  });
+
+  test("returns formatted banner text", () => {
+    const mw: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "permissions", description: "All tools allowed" }),
+    };
+    const result = computeCapabilityBanner([mw], mockTurnContext());
+    expect(result).toBe("[Active Capabilities]\n- **permissions**: All tools allowed");
+  });
+
+  test("respects maxCapabilityTokens truncation", () => {
+    const mw1: KoiMiddleware = {
+      name: "long",
+      describeCapabilities: () => ({
+        label: "very-long-capability",
+        description: "A".repeat(500),
+      }),
+    };
+    const mw2: KoiMiddleware = {
+      name: "short",
+      describeCapabilities: () => ({ label: "short", description: "brief" }),
+    };
+    // Budget of 20 tokens should exclude the second middleware
+    const result = computeCapabilityBanner([mw2, mw1], mockTurnContext(), {
+      maxCapabilityTokens: 20,
+    });
+    expect(result).toBeDefined();
+    expect(result).toContain("short");
+    expect(result).not.toContain("very-long-capability");
+  });
+
+  test("returns undefined when all fragments exceed maxCapabilityTokens", () => {
+    const mw: KoiMiddleware = {
+      name: "huge",
+      describeCapabilities: () => ({
+        label: "huge-capability",
+        description: "A".repeat(2000),
+      }),
+    };
+    const result = computeCapabilityBanner([mw], mockTurnContext(), {
+      maxCapabilityTokens: 1,
+    });
+    expect(result).toBeUndefined();
   });
 });
 

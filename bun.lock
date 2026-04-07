@@ -419,6 +419,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/mm/session-repair": {

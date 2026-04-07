@@ -37,9 +37,9 @@ import { DEFAULT_MAX_STOP_RETRIES, INBOX, runId, sessionId, toolToken } from "@k
 import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
 import {
   composeExtensions,
+  computeCapabilityBanner,
   createDebugInstrumentation,
   createDefaultGuardExtension,
-  injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
@@ -381,15 +381,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         });
       }
 
-      // Ref tracking whether capability injection should be suppressed on this
-      // model call. Re-injecting the `[Active Capabilities]` banner on every
-      // retry gave chatty models a fresh surface to parrot (#1493); the model
-      // has already seen capabilities on the initial call, so subsequent
-      // stop-gate retries skip injection. Declared in the outer streamEvents
-      // scope so the stop-gate block handler (below, outside adapter-terminals
-      // block) can flip it.
-      // let justified: mutable flag coordinated between prepareRequest and stop-gate retry
-      let skipCapabilityInjection = false;
+      // Cached capability banner for prompt-cache stability (#1554). Computed
+      // once on the first model call of an answer attempt and reused on
+      // stop-gate retries. This replaces the previous skipCapabilityInjection
+      // flag: instead of removing the banner on retries (which broke the
+      // system-prompt prefix cache), we reuse the identical cached banner.
+      // The stop-gate feedback message (below) already instructs the model
+      // to not parrot capabilities, which prevents the #1493 regression.
+      // let justified: mutable cache coordinated between prepareRequest and stop-gate retry
+      let cachedCapabilityBanner: string | undefined;
+      // let justified: mutable flag — false until first prepareRequest call computes the banner
+      let bannerCached = false;
 
       // Wire terminals → middleware → callHandlers if adapter is cooperating
       // let justified: effectiveInput may be replaced with callHandlers-augmented input
@@ -557,8 +559,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Inject tool descriptors if not already present
           const withTools: ModelRequest =
             request.tools !== undefined ? request : { ...request, tools: callHandlers.tools };
-          if (skipCapabilityInjection) return withTools;
-          return injectCapabilities(allMiddleware, getTurnContext(), withTools);
+          // Compute capability banner once per answer attempt and cache it.
+          // Reused on stop-gate retries for prompt-cache stability (#1554).
+          if (!bannerCached) {
+            cachedCapabilityBanner = computeCapabilityBanner(allMiddleware, getTurnContext());
+            bannerCached = true;
+          }
+          if (cachedCapabilityBanner === undefined) return withTools;
+          const systemPrompt =
+            withTools.systemPrompt !== undefined
+              ? `${cachedCapabilityBanner}\n\n${withTools.systemPrompt}`
+              : cachedCapabilityBanner;
+          return { ...withTools, systemPrompt };
         };
 
         const streamChainProxy = (request: ModelRequest) =>
@@ -813,9 +825,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 const gateResult = await runStopGate(allMiddleware, stopCtx);
                 if (gateResult.kind === "block") {
                   stopRetryCount++;
-                  // Suppress capability banner on retry calls — chatty models
-                  // fixate on the banner and echo it back as output (#1493).
-                  skipCapabilityInjection = true;
                   // Re-anchor the retry on the user's original request. Vague feedback
                   // like "address this" lets the model drift onto nearby context —
                   // in particular, the system-prompt capability banner — and parrot
@@ -919,7 +928,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // re-enable capability injection for the next completion's first
                 // call.
                 stopRetryCount = 0;
-                skipCapabilityInjection = false;
+                bannerCached = false;
+                cachedCapabilityBanner = undefined;
                 yield normalizedDone;
                 break turnLoop;
               }

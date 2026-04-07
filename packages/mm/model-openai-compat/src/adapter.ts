@@ -9,6 +9,7 @@
  */
 
 import type { ModelAdapter, ModelChunk, ModelRequest, ModelResponse } from "@koi/core";
+import { computeStringHash } from "@koi/hash";
 import { mapProviderError } from "./error-mapper.js";
 import { buildRequestBody } from "./request-mapper.js";
 import { buildModelResponse, createEmptyAccumulator } from "./response-mapper.js";
@@ -196,6 +197,20 @@ async function* streamWithRetry(
 }
 
 // ---------------------------------------------------------------------------
+// Cache fingerprint — deterministic hash of system prompt + tool names for
+// prompt-cache diagnostics. Attached to ModelResponse.metadata so trajectory
+// and TUI can detect cache hit/miss across turns (#1554).
+// ---------------------------------------------------------------------------
+
+function computeCacheFingerprint(
+  systemPrompt: string | undefined,
+  toolNames: readonly string[] | undefined,
+): string {
+  const input = (systemPrompt ?? "") + "\0" + (toolNames ?? []).join("\0");
+  return computeStringHash(input);
+}
+
+// ---------------------------------------------------------------------------
 // Single stream attempt (no retry)
 // ---------------------------------------------------------------------------
 
@@ -207,6 +222,10 @@ async function* streamOnce(
   const tools =
     request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
+  const cacheFingerprint = computeCacheFingerprint(
+    request.systemPrompt,
+    request.tools?.map((t) => t.name),
+  );
   const url = `${config.baseUrl}/chat/completions`;
 
   // Stream idle watchdog — create BEFORE fetch so the signal can cancel
@@ -405,7 +424,14 @@ async function* streamOnce(
       yield chunk;
     }
 
-    yield { kind: "done", response: buildModelResponse(acc) };
+    const response = buildModelResponse(acc);
+    yield {
+      kind: "done",
+      response: {
+        ...response,
+        metadata: { ...response.metadata, cacheFingerprint },
+      },
+    };
   } catch (error: unknown) {
     clearIdleTimer();
     if (request.signal?.aborted === true) return;
