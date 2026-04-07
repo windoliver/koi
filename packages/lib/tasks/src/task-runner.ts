@@ -69,6 +69,9 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
   const { board, store, registry, agentId, outputStreamConfig } = config;
 
   const activeTasks = new Map<TaskItemId, RuntimeTaskBase>();
+  // Tracks exit codes for tasks that exited before activeTasks.set() completed
+  // (race condition: fast-exiting processes can fire onExit during lifecycle.start())
+  const pendingExits = new Map<TaskItemId, number>();
 
   // Subscribe to store events for external reconciliation
   const unsubscribe = store.watch(handleStoreEvent);
@@ -96,14 +99,17 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
    * board to completed (exit 0) or failed (non-zero).
    */
   function enrichConfigWithExitHandler(taskId: TaskItemId, taskConfig: unknown): unknown {
-    if (typeof taskConfig !== "object" || taskConfig === null) return taskConfig;
+    if (typeof taskConfig !== "object" || taskConfig === null) {
+      return { onExit: (code: number) => { void handleNaturalExit(taskId, code); } };
+    }
     const cfg = taskConfig as Readonly<Record<string, unknown>>;
-    // Only inject if the config doesn't already have an onExit
-    if (cfg.onExit !== undefined) return taskConfig;
+    const callerOnExit = typeof cfg.onExit === "function" ? cfg.onExit as (code: number) => void : undefined;
     return {
       ...cfg,
       onExit: (code: number) => {
+        // Always run runner reconciliation, then chain the caller's callback
         void handleNaturalExit(taskId, code);
+        callerOnExit?.(code);
       },
     };
   }
@@ -114,7 +120,12 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
    */
   async function handleNaturalExit(taskId: TaskItemId, code: number): Promise<void> {
     const task = activeTasks.get(taskId);
-    if (task === undefined) return;
+    if (task === undefined) {
+      // Task may not be registered yet (fast exit during lifecycle.start()).
+      // Stash the exit code; start() will drain it after activeTasks.set().
+      pendingExits.set(taskId, code);
+      return;
+    }
     activeTasks.delete(taskId);
 
     const bufferedChunks = task.output.read(0);
@@ -183,6 +194,14 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     try {
       const state = await lifecycle.start(taskId, output, enrichedConfig);
       activeTasks.set(taskId, state);
+
+      // Drain any exit that arrived before activeTasks.set() (fast-exit race)
+      const pendingCode = pendingExits.get(taskId);
+      if (pendingCode !== undefined) {
+        pendingExits.delete(taskId);
+        void handleNaturalExit(taskId, pendingCode);
+      }
+
       return { ok: true, value: state };
     } catch (err: unknown) {
       // Lifecycle failed to start — fail the task on the board
