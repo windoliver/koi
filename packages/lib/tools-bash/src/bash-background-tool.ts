@@ -361,8 +361,18 @@ async function drainAndComplete(
     const abortReason = entry?.abortReason ?? "unknown";
     active.delete(String(taskId));
 
+    // Assemble output early so it's available for all paths (success, failure, abort).
+    // Operators need stdout/stderr for debugging failed background tasks.
+    const output = [
+      stdoutResult.text.length > 0 ? `stdout:\n${stdoutResult.text}` : "",
+      stderrResult.text.length > 0 ? `stderr:\n${stderrResult.text}` : "",
+      `exit code: ${exitCode}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
     if (spawnError !== undefined) {
-      await failTask(board, taskId, agentId, `Spawn failed: ${spawnError.message}`);
+      await failTask(board, taskId, agentId, `Spawn failed: ${spawnError.message}\n\n${output}`);
       return;
     }
 
@@ -373,28 +383,18 @@ async function drainAndComplete(
         board,
         taskId,
         agentId,
-        `Background task aborted (${abortReason}), exit code: ${exitCode}`,
+        `Background task aborted (${abortReason}), exit code: ${exitCode}\n\n${output}`,
       );
       return;
     }
 
-    const output = [
-      stdoutResult.text.length > 0 ? `stdout:\n${stdoutResult.text}` : "",
-      stderrResult.text.length > 0 ? `stderr:\n${stderrResult.text}` : "",
-      `exit code: ${exitCode}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
     // Non-zero exit = failed task. Reserve `completed` for exit 0 only.
-    // This prevents downstream automation from treating partial/failed
-    // execution as successful work.
     if (exitCode !== 0) {
       await failTask(
         board,
         taskId,
         agentId,
-        `Background command failed with exit code ${exitCode}`,
+        `Background command failed with exit code ${exitCode}\n\n${output}`,
       );
       return;
     }

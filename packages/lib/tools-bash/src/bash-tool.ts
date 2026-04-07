@@ -246,7 +246,12 @@ export function createBashTool(config?: BashToolConfig): Tool {
         }
 
         const cwdFile = join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`);
-        const wrappedCommand = `__koi_cwd_file=${shellQuote(cwdFile)}\ntrap 'pwd -P > "$__koi_cwd_file" 2>/dev/null' EXIT\n${command}`;
+        // Inline the file path directly in the trap command rather than
+        // storing it in a shell variable. This eliminates the variable
+        // from the command's namespace so the user command cannot read
+        // or overwrite it to forge the tracked cwd.
+        const quotedCwdFile = shellQuote(cwdFile);
+        const wrappedCommand = `trap 'pwd -P > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
 
         const result = await spawnBash(
           wrappedCommand,
