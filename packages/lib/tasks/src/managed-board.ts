@@ -204,10 +204,15 @@ export async function createManagedTaskBoard(
   // let justified: board is mutable state managed by the managed board
   let board = createTaskBoard(resolvedConfig, { items, results: initialResults });
 
-  // Emit initial snapshot so hydrated tasks are visible immediately
+  // Emit initial snapshot so hydrated tasks are visible immediately.
+  // Observer failures are non-fatal — matches post-persistence flush contract.
   if (hasEngineBridge && board.size() > 0) {
-    const snapshot = buildPlanUpdate(board, agentId, Date.now());
-    onEngineEvent(snapshot);
+    try {
+      const snapshot = buildPlanUpdate(board, agentId, Date.now());
+      onEngineEvent(snapshot);
+    } catch {
+      // Observer failures must not prevent board creation
+    }
   }
 
   // Async mutex: mutations queue behind the previous one to prevent
