@@ -16,6 +16,7 @@
 import { realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
+import { mapFrontmatterToMetadata } from "./map-frontmatter.js";
 import { parseSkillMd } from "./parse.js";
 import type { SkillMetadata, SkillSource } from "./types.js";
 import { validateFrontmatter } from "./validate.js";
@@ -105,11 +106,18 @@ export async function discoverSkills(
     }
   }
 
-  // Second pass: read frontmatter for each winning skill (progressive loading).
-  const entries = new Map<string, DiscoveredSkillEntry>();
+  // Second pass: read frontmatter in parallel for each winning skill (progressive loading).
+  const rawList = [...rawEntries.entries()];
+  const metadataResults = await Promise.all(
+    rawList.map(async ([name, raw]) => ({
+      name,
+      raw,
+      metadata: await readSkillMetadata(name, raw.dirPath, raw.source),
+    })),
+  );
 
-  for (const [name, raw] of rawEntries) {
-    const metadata = await readSkillMetadata(name, raw.dirPath, raw.source);
+  const entries = new Map<string, DiscoveredSkillEntry>();
+  for (const { name, raw, metadata } of metadataResults) {
     entries.set(name, {
       source: raw.source,
       dirPath: raw.dirPath,
@@ -153,19 +161,7 @@ async function readSkillMetadata(
   const fmResult = validateFrontmatter(parseResult.value.frontmatter, skillMdPath);
   if (!fmResult.ok) return fallback;
 
-  const fm = fmResult.value;
-  return {
-    name: fm.name,
-    description: fm.description,
-    source,
-    dirPath,
-    ...(fm.tags !== undefined ? { tags: fm.tags } : {}),
-    ...(fm.license !== undefined ? { license: fm.license } : {}),
-    ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
-    ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
-    ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
-    ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
-  };
+  return mapFrontmatterToMetadata(fmResult.value, source, dirPath);
 }
 
 function buildTierMap(config: DiscoverConfig): ReadonlyMap<SkillSource, string | null | undefined> {

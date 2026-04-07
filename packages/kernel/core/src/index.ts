@@ -361,6 +361,7 @@ export type {
   RunId,
   SessionId,
   SkillComponent,
+  SkillExecutionMode,
   SkillMetadata,
   SkippedComponent,
   SpawnLedger,

@@ -124,4 +124,61 @@ describe("validateFrontmatter", () => {
     if (result.ok) return;
     expect(result.error.message).toContain("/path/SKILL.md");
   });
+
+  // ---------------------------------------------------------------------------
+  // Execution mode tests
+  // ---------------------------------------------------------------------------
+
+  test('execution: "inline" → executionMode is "inline"', () => {
+    const result = validateFrontmatter({
+      name: "s",
+      description: "d",
+      execution: "inline",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.executionMode).toBe("inline");
+  });
+
+  test('execution: "fork" → executionMode is "fork"', () => {
+    const result = validateFrontmatter({
+      name: "s",
+      description: "d",
+      execution: "fork",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.executionMode).toBe("fork");
+  });
+
+  test("no execution field → executionMode is undefined (defaults to inline at runtime)", () => {
+    const result = validateFrontmatter({ name: "s", description: "d" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.executionMode).toBeUndefined();
+  });
+
+  test("invalid execution value → executionMode is undefined (silently ignored)", () => {
+    const result = validateFrontmatter({
+      name: "s",
+      description: "d",
+      execution: "invalid-mode",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Invalid values are silently ignored — treated as no execution field
+    expect(result.value.executionMode).toBeUndefined();
+  });
+
+  test("execution field is not collected into metadata", () => {
+    const result = validateFrontmatter({
+      name: "s",
+      description: "d",
+      execution: "fork",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // execution is a known key — should NOT appear in metadata
+    expect(result.value.metadata).toBeUndefined();
+  });
 });

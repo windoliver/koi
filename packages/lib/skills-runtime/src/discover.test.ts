@@ -17,7 +17,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverSkills } from "./discover.js";
-import type { SkillSource } from "./types.js";
+import { createSkillsRuntime } from "./index.js";
+import type { SkillMetadata, SkillSource } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -219,5 +220,86 @@ describe("discoverSkills", () => {
     expect(entry).toBeDefined();
     expect(entry?.metadata.name).toBe("broken-skill"); // dirName fallback
     expect(entry?.metadata.description).toBe(""); // empty fallback
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP shadow precedence tests (via createSkillsRuntime + registerExternal)
+// ---------------------------------------------------------------------------
+
+describe("MCP shadow precedence", () => {
+  let bundledRoot: string;
+  let userRoot: string;
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    bundledRoot = await mkdtemp(join(tmpdir(), "koi-mcp-bundled-"));
+    userRoot = await mkdtemp(join(tmpdir(), "koi-mcp-user-"));
+    projectRoot = await mkdtemp(join(tmpdir(), "koi-mcp-project-"));
+  });
+
+  afterEach(async () => {
+    await rm(bundledRoot, { recursive: true, force: true });
+    await rm(userRoot, { recursive: true, force: true });
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  function mcpSkill(name: string): SkillMetadata {
+    return { name, description: `MCP ${name}`, source: "mcp", dirPath: "mcp://server" };
+  }
+
+  // 7. MCP unique name (no conflict)
+  test("MCP skill with unique name appears in discover()", async () => {
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("mcp-only")]);
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.get("mcp-only")?.source).toBe("mcp");
+  });
+
+  // 8. MCP + bundled same name → bundled wins
+  test("bundled skill shadows MCP skill of same name", async () => {
+    await writeSkillDir(bundledRoot, "shared");
+    const runtime = createSkillsRuntime({ bundledRoot, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("shared")]);
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.get("shared")?.source).toBe("bundled");
+  });
+
+  // 9. MCP + user same name → user wins
+  test("user skill shadows MCP skill of same name", async () => {
+    await writeSkillDir(userRoot, "shared");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("shared")]);
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.get("shared")?.source).toBe("user");
+  });
+
+  // 10. MCP + project same name → project wins
+  test("project skill shadows MCP skill of same name", async () => {
+    await writeSkillDir(projectRoot, "shared");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("shared")]);
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.get("shared")?.source).toBe("project");
+  });
+
+  // 11. Three-way: MCP + bundled + project → project wins
+  test("project wins three-way with bundled and MCP", async () => {
+    await writeSkillDir(bundledRoot, "triple");
+    await writeSkillDir(projectRoot, "triple");
+    const runtime = createSkillsRuntime({ bundledRoot, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("triple")]);
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.get("triple")?.source).toBe("project");
   });
 });
