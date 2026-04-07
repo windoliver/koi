@@ -349,12 +349,13 @@ function createTaskOutputTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
       const id = taskItemId(args.taskId);
-      // Ownership check: only allow reading results for tasks assigned to this caller
-      const task = taskBoard.snapshot().get(id);
+      // Single snapshot for consistent authorization + read
+      const board = taskBoard.snapshot();
+      const task = board.get(id);
       if (task !== undefined && task.assignedTo !== undefined && task.assignedTo !== callerId) {
         throw new Error("Not authorized to read this task's output");
       }
-      const taskResult = taskBoard.snapshot().result(id);
+      const taskResult = board.result(id);
       if (taskResult === undefined) {
         throw new Error("No completed result for this task");
       }
