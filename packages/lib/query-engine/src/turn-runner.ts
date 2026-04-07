@@ -294,16 +294,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // Dedup: within this turn, skip tool calls with identical (toolName + args).
     // Models occasionally emit the same call twice in one response (e.g. Sonnet
     // via OpenRouter). Keep the first occurrence; record skipped duplicates for
-    // observability. Uses canonicalized JSON of parsed args (sorted keys) to
-    // catch semantically identical calls even with different key ordering.
+    // observability. Uses canonicalized JSON of parsed args (recursively sorted
+    // keys) to catch semantically identical calls even with different key ordering.
     const seen = new Set<string>();
     const dedupedToolCalls: typeof validToolCalls = [];
     const skippedToolCalls: typeof validToolCalls = [];
     for (const tc of validToolCalls) {
       const canonicalArgs =
-        tc.parsedArgs !== undefined
-          ? JSON.stringify(tc.parsedArgs, Object.keys(tc.parsedArgs).sort())
-          : tc.rawArgs;
+        tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
       const key = `${tc.toolName}\0${canonicalArgs}`;
       if (seen.has(key)) {
         skippedToolCalls.push(tc);
@@ -577,6 +575,24 @@ function safeStringify(value: unknown): string {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+/**
+ * Recursively sort object keys and serialize to JSON for stable comparison.
+ * Arrays preserve order; nested objects are sorted at every level.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortDeep(value));
+}
+
+function sortDeep(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortDeep);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortDeep((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
 }
 
 /**

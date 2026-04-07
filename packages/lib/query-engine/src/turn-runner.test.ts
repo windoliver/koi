@@ -1245,6 +1245,46 @@ describe("runTurn", () => {
       expect(dedupEvent).toBeDefined();
     });
 
+    test("nested args with different values are not deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* nestedArgsStream(): AsyncIterable<ModelChunk> {
+        // Same top-level keys but different nested values
+        yield { kind: "tool_call_start", toolName: "search", callId: callId("tc-1") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-1"),
+          delta: '{"filter":{"status":"open"}}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "search", callId: callId("tc-2") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-2"),
+          delta: '{"filter":{"status":"closed"}}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => nestedArgsStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "results" };
+        },
+        tools: [toolDesc("search")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Both should execute — different nested values
+      expect(callCount.value).toBe(2);
+
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeUndefined();
+    });
+
     test("skipped duplicate has synthetic tool result in transcript", async () => {
       const receivedRequests: ModelRequest[] = [];
       // let justified: mutable call counter for cycling through responses
