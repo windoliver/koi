@@ -39,12 +39,14 @@
   },
   "devDependencies": {
     "@koi/channel-cli": "workspace:*",
+    "@koi/config": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/query-engine": "workspace:*",
     "@koi/runtime": "workspace:*",
+    "@koi/session": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tui": "workspace:*"
   },

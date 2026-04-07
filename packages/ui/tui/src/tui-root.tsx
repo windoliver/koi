@@ -223,6 +223,11 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
       store.dispatch({ kind: "set_view", view: navView });
       return;
     }
+    // session:resume opens the session picker modal inline — host is not involved.
+    if (cmd.id === "session:resume") {
+      store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+      return;
+    }
     props.onCommand(cmd.id);
   };
 

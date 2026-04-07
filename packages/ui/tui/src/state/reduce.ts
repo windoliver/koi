@@ -438,6 +438,40 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_slash_query":
       return action.query === state.slashQuery ? state : { ...state, slashQuery: action.query };
 
+    case "load_history": {
+      if (action.messages.length === 0) return state;
+      const historical: TuiMessage[] = [];
+      let assistantIdx = 0;
+      let userIdx = 0;
+      for (const msg of action.messages) {
+        if (msg.senderId === "user") {
+          historical.push({
+            kind: "user",
+            id: `history-user-${userIdx++}`,
+            blocks: msg.content,
+          });
+        } else if (msg.senderId === "assistant") {
+          const text = msg.content
+            .filter((b) => b.kind === "text")
+            .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
+            .join("");
+          if (text.length > 0) {
+            historical.push({
+              kind: "assistant",
+              id: `history-assistant-${assistantIdx++}`,
+              blocks: [{ kind: "text", text }],
+              streaming: false,
+            });
+          }
+        }
+        // tool entries are skipped — they're in conversationHistory for model context
+        // but not needed in the display (no tool_call/tool_result rendering in replay)
+      }
+      if (historical.length === 0) return state;
+      // Prepend history before any live messages accumulated since load_history was queued.
+      return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
+    }
+
     default:
       return state;
   }

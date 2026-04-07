@@ -386,6 +386,13 @@ function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryDocumentStore 
 
 interface MinimalContextOptions {
   readonly streamId?: string;
+  /**
+   * Fixed session ID for TurnContext.session.sessionId. When provided, all
+   * streams share the same session ID so middleware (e.g. transcript) can
+   * route writes to a single persistent file across multi-turn sessions.
+   * When omitted, defaults to streamId (unique per stream).
+   */
+  readonly sessionId?: string;
   readonly signal?: AbortSignal;
   readonly requestApproval?: ApprovalHandler;
   readonly userId?: string;
@@ -403,7 +410,10 @@ interface MinimalContextOptions {
  */
 function createMinimalTurnContext(options: MinimalContextOptions = {}): TurnContext {
   const id = options.streamId ?? "runtime";
-  const sid = sessionId(id);
+  // Use explicit sessionId override when provided so multi-turn sessions share
+  // a single routing key (e.g., for transcript middleware). ATIF docId still
+  // uses streamId (unique per stream) to keep trajectory documents separate.
+  const sid = sessionId(options.sessionId ?? id);
   const rid = runId(`${id}:r0`);
   return {
     session: {
@@ -722,7 +732,10 @@ function composeMiddlewareIntoAdapter(
       // Per-stream identity — each stream() call gets a unique session
       const streamId = crypto.randomUUID();
       const streamSignal = input.signal;
-      const ctxOpts: MinimalContextOptions = { streamId };
+      const ctxOpts: MinimalContextOptions = {
+        streamId,
+        ...(fixedSessionId !== undefined ? { sessionId: fixedSessionId } : {}),
+      };
       if (streamSignal !== undefined) (ctxOpts as Record<string, unknown>).signal = streamSignal;
       if (requestApproval !== undefined)
         (ctxOpts as Record<string, unknown>).requestApproval = requestApproval;

@@ -1,24 +1,46 @@
 /**
  * `koi tui` command handler.
  *
- * Wires together the TUI application shell:
+ * Wires the TUI application shell:
  *   store + permissionBridge + batcher → createTuiApp → handle.start()
  *
- * Engine wiring: creates a minimal EngineAdapter backed by the OpenAI-compat
- * model adapter and composes it through createRuntime for middleware support.
+ * Architecture note: this command does NOT route through createKoi / createCliHarness.
+ * The TUI owns the full terminal UX including the input box (TUI-owns-UX model),
+ * while the harness is designed for the CLI model where the channel handles input
+ * and an optional TuiAdapter is a pure renderer. Bridging these two models
+ * (implementing TuiAdapter on createTuiApp) is a future issue.
  *
- * Model config is read from environment variables:
- *   OPENROUTER_API_KEY — key for OpenRouter (default base URL: openrouter.ai)
- *   OPENAI_API_KEY     — key for OpenAI (default base URL: api.openai.com/v1)
- *   OPENAI_BASE_URL or OPENROUTER_BASE_URL — optional explicit override
- *   KOI_MODEL — optional, defaults to "google/gemini-2.0-flash-001"
+ * Model config is read from environment variables (see env.ts for resolution order):
+ *   OPENROUTER_API_KEY — key for OpenRouter (default provider)
+ *   OPENAI_API_KEY     — key for OpenAI (injects api.openai.com/v1)
+ *   OPENAI_BASE_URL or OPENROUTER_BASE_URL — explicit base URL override
+ *   KOI_MODEL — model name override (default: google/gemini-2.0-flash-001)
+ *
+ * Sessions are recorded to JSONL transcripts at ~/.koi/sessions/<sessionId>.jsonl.
+ * The session ID is generated once per TUI process launch; agent:clear / session:new
+ * resets the conversation history but continues writing to the same transcript file.
  */
 
-import type { ModelChunk } from "@koi/core";
-import type { EngineAdapter, EngineEvent, EngineInput } from "@koi/core/engine";
+import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  InboundMessage,
+  SessionTranscript,
+} from "@koi/core";
+import { sessionId } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import { runTurn } from "@koi/query-engine";
 import { createRuntime } from "@koi/runtime";
-import type { EventBatcher, TuiStore } from "@koi/tui";
+import {
+  createJsonlTranscript,
+  createSessionTranscriptMiddleware,
+  resumeForSession,
+} from "@koi/session";
+import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
 import {
   createEventBatcher,
   createInitialState,
@@ -28,17 +50,92 @@ import {
 } from "@koi/tui";
 import { SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
+import { resolveApiConfig } from "./env.js";
 
 // ---------------------------------------------------------------------------
-// Drain loop (exported for unit testing — Decision 4A from test review)
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_TURNS = 10;
+/**
+ * Maximum number of transcript messages sent in each model request.
+ * Caps context window to control token costs in long sessions.
+ * Matches the default for `koi start --context-window`.
+ */
+const MAX_TRANSCRIPT_MESSAGES = 100;
+/** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
+const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
+/** Maximum characters for session name (first user message) in session picker. */
+const SESSION_NAME_MAX = 60;
+/** Maximum characters for session preview (last message) in session picker. */
+const SESSION_PREVIEW_MAX = 80;
+
+// ---------------------------------------------------------------------------
+// Session list loader
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan the sessions directory and build SessionSummary entries for the TUI
+ * session picker. Returns an empty list if the directory doesn't exist yet.
+ *
+ * Uses the same jsonlTranscript instance as the running TUI so no extra
+ * file handles are opened.
+ */
+async function loadSessionList(
+  sessionsDir: string,
+  transcript: SessionTranscript,
+): Promise<readonly SessionSummary[]> {
+  let files: string[];
+  try {
+    files = await readdir(sessionsDir);
+  } catch {
+    // Dir not created yet — no sessions to show.
+    return [];
+  }
+
+  const summaries = await Promise.all(
+    files
+      .filter((f) => f.endsWith(".jsonl"))
+      .map(async (file): Promise<SessionSummary | null> => {
+        const id = file.slice(0, -".jsonl".length);
+        const result = await transcript.load(sessionId(id));
+        if (!result.ok || result.value.entries.length === 0) return null;
+
+        const entries = result.value.entries;
+        const lastEntry = entries.at(-1);
+        const firstUserEntry = entries.find((e) => e.role === "user");
+
+        if (lastEntry === undefined) return null;
+
+        const name =
+          firstUserEntry !== undefined
+            ? firstUserEntry.content.slice(0, SESSION_NAME_MAX)
+            : new Date(entries[0]?.timestamp ?? Date.now()).toLocaleString();
+
+        return {
+          id,
+          name,
+          lastActivityAt: lastEntry.timestamp,
+          messageCount: entries.length,
+          preview: lastEntry.content.slice(0, SESSION_PREVIEW_MAX),
+        };
+      }),
+  );
+
+  return summaries
+    .filter((s): s is SessionSummary => s !== null)
+    .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+}
+
+// ---------------------------------------------------------------------------
+// Drain loop (exported for unit testing)
 // ---------------------------------------------------------------------------
 
 /**
  * Drain an async engine event stream into the store via the batcher.
  *
  * Sets connection status to "connected" before streaming, "disconnected" after.
- * On stream failure: dispatches add_error + disconnected (Decision 3A from code
- * quality review — error handling wraps the drain loop with try/catch/finally).
+ * On stream failure: dispatches add_error + disconnected.
  *
  * Exported for testing. Not part of the public @koi/tui API.
  */
@@ -66,219 +163,129 @@ export async function drainEngineStream(
 }
 
 // ---------------------------------------------------------------------------
-// Engine adapter (minimal streaming adapter backed by the model HTTP client)
-// ---------------------------------------------------------------------------
-
-const DEFAULT_MODEL = "google/gemini-2.0-flash-001";
-
-/** A single turn stored in the local conversation history. */
-type HistoryEntry = {
-  readonly content: ReadonlyArray<{ readonly kind: "text"; readonly text: string }>;
-  readonly senderId: string;
-  readonly timestamp: number;
-};
-
-/**
- * Build a minimal EngineAdapter whose `stream()` forwards text input to the
- * model and maps model chunks back to EngineEvents.
- *
- * The `history` array is mutated in-place by the adapter: each completed turn
- * appends user + assistant entries so subsequent turns include full context.
- * Callers should pass the same array for the lifetime of a session and reset
- * it (splice to length 0) when the user clears the conversation.
- *
- * Tool calls are not supported in this adapter (pass-through only). The
- * `terminals` field exposes the raw model call handlers so `createRuntime`
- * can compose middleware (event-trace, hooks, …) around them.
- */
-function createTextEngineAdapter(modelName: string, history: HistoryEntry[]): EngineAdapter {
-  return {
-    engineId: "koi-tui",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const handlers = input.callHandlers;
-      if (handlers?.modelStream === undefined) {
-        throw new Error(
-          "koi-tui adapter: no modelStream handler in callHandlers. " +
-            "Ensure the adapter is wrapped via createRuntime with a model adapter.",
-        );
-      }
-
-      const text = input.kind === "text" ? input.text : "";
-      const userEntry: HistoryEntry = {
-        content: [{ kind: "text", text }],
-        senderId: "user",
-        timestamp: Date.now(),
-      };
-
-      const modelReq = {
-        // Replay full history then append the current user message
-        messages: [...history, userEntry],
-        model: modelName,
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      };
-
-      yield { kind: "turn_start", turnIndex: 0 };
-
-      let inputTokens = 0;
-      let outputTokens = 0;
-      // `let` justified: accumulated across streaming chunks, read after loop
-      let assistantText = "";
-
-      // `let` justified: set in catch block, read after to emit interrupted terminal
-      let wasAborted = false;
-
-      try {
-        for await (const chunk of handlers.modelStream(modelReq)) {
-          const c = chunk as ModelChunk;
-          switch (c.kind) {
-            case "text_delta":
-              assistantText += c.delta;
-              yield c;
-              break;
-            case "thinking_delta":
-              yield c;
-              break;
-            case "usage":
-              inputTokens = c.inputTokens;
-              outputTokens = c.outputTokens;
-              break;
-            case "done":
-              if (c.response.usage !== undefined) {
-                inputTokens = c.response.usage.inputTokens;
-                outputTokens = c.response.usage.outputTokens;
-              }
-              break;
-            case "error":
-              throw new Error(c.message);
-            case "tool_call_start":
-            case "tool_call_delta":
-            case "tool_call_end":
-              // Tool calls are not yet supported in the TUI adapter
-              break;
-            default:
-              break;
-          }
-        }
-      } catch (e: unknown) {
-        // Treat AbortError as a clean user cancellation — not an engine error.
-        if (e instanceof Error && e.name === "AbortError") {
-          wasAborted = true;
-        } else {
-          throw e;
-        }
-      }
-
-      // Also catch late-abort: signal fired after the last chunk arrived.
-      if (input.signal?.aborted === true) {
-        wasAborted = true;
-      }
-
-      if (wasAborted) {
-        // Do NOT persist partial turn — would replay cancelled content on next submit.
-        yield { kind: "turn_end", turnIndex: 0 };
-        yield {
-          kind: "done",
-          output: {
-            content: [],
-            stopReason: "interrupted",
-            metrics: {
-              totalTokens: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              turns: 0,
-              durationMs: 0,
-            },
-          },
-        };
-        return;
-      }
-
-      // Persist the completed turn so the next submit sees full context.
-      history.push(userEntry);
-      if (assistantText !== "") {
-        history.push({
-          content: [{ kind: "text", text: assistantText }],
-          senderId: "assistant",
-          timestamp: Date.now(),
-        });
-      }
-
-      yield { kind: "turn_end", turnIndex: 0 };
-      yield {
-        kind: "done",
-        output: {
-          content: [],
-          stopReason: "completed",
-          metrics: {
-            totalTokens: inputTokens + outputTokens,
-            inputTokens,
-            outputTokens,
-            turns: 1,
-            durationMs: 0,
-          },
-        },
-      };
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Command handler
 // ---------------------------------------------------------------------------
 
+/**
+ * `koi tui` — launch the full-screen TUI.
+ *
+ * See architecture note at top of file for why this bypasses createKoi/harness.
+ */
 export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
-  // TTY check first — same condition as createTuiApp so the error is consistent
+  // TTY check first — createTuiApp will also check, but early exit gives a
+  // cleaner error before any setup allocations.
   if (!process.stdout.isTTY) {
     process.stderr.write("error: koi tui requires a TTY (stdout is not a terminal)\n");
     process.exit(1);
   }
 
-  // Resolve API key and pick the correct provider base URL.
-  // OPENROUTER_API_KEY → OpenRouter (adapter default; no explicit baseUrl needed).
-  // OPENAI_API_KEY only → OpenAI endpoint; supply base URL so the key is not
-  // accidentally forwarded to OpenRouter and rejected.
-  const openRouterKey = process.env.OPENROUTER_API_KEY;
-  const openAiKey = process.env.OPENAI_API_KEY;
-  const apiKey = openRouterKey ?? openAiKey;
-  if (apiKey === undefined || apiKey === "") {
-    process.stderr.write(
-      "error: koi tui requires an API key.\n" +
-        "  Set OPENROUTER_API_KEY or OPENAI_API_KEY in your environment or .env file.\n",
-    );
+  // ---------------------------------------------------------------------------
+  // 1. API configuration
+  // ---------------------------------------------------------------------------
+
+  const apiConfigResult = resolveApiConfig();
+  if (!apiConfigResult.ok) {
+    process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
+  const { apiKey, baseUrl, model: modelName } = apiConfigResult.value;
 
-  const modelName = process.env.KOI_MODEL ?? DEFAULT_MODEL;
-  // Explicit env override takes precedence; otherwise derive from key source.
-  const explicitBaseUrl = process.env.OPENAI_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
-  const providerDefaultUrl = openRouterKey !== undefined ? undefined : "https://api.openai.com/v1";
-  const baseUrl = explicitBaseUrl ?? providerDefaultUrl;
+  // ---------------------------------------------------------------------------
+  // 2. Engine adapter — model→tool→model loop via runTurn
+  // ---------------------------------------------------------------------------
 
-  // Wire the model HTTP client as terminals on a real OpenAI-compat adapter,
-  // then compose middleware via createRuntime.
+  // Mutable conversation history shared across all stream() calls for this session.
+  // Cleared on agent:clear / session:new via resetConversation().
+  // let: justified — splice-reset on clear, never replaced
+  const conversationHistory: InboundMessage[] = [];
+
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
   });
 
-  // Conversation history — shared mutable array threaded through the adapter.
-  // Cleared on agent:clear so the model starts a fresh context.
-  // `let` justified: splice-reset on clear, reassignment avoided by using splice.
-  const conversationHistory: HistoryEntry[] = [];
-
-  // Wrap model adapter as engine adapter: exposes terminals so createRuntime
-  // can compose middleware (event-trace, permissions, hooks) around them.
   const rawEngineAdapter: EngineAdapter = {
-    ...createTextEngineAdapter(modelName, conversationHistory),
+    engineId: "koi-tui",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
     },
+    stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      const handlers = input.callHandlers;
+      if (handlers === undefined) {
+        throw new Error(
+          "koi-tui adapter: callHandlers required. " +
+            "Ensure the adapter is wrapped via createRuntime.",
+        );
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const stagedUserMsg: InboundMessage = {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text }],
+      };
+
+      let deltaText = "";
+      let doneContentText = "";
+      // Cap context window to MAX_TRANSCRIPT_MESSAGES to control token costs.
+      const contextWindow = [...conversationHistory.slice(-MAX_TRANSCRIPT_MESSAGES), stagedUserMsg];
+
+      return (async function* (): AsyncIterable<EngineEvent> {
+        for await (const event of runTurn({
+          callHandlers: handlers,
+          messages: contextWindow,
+          signal: input.signal,
+          maxTurns: DEFAULT_MAX_TURNS,
+        })) {
+          yield event;
+          if (event.kind === "text_delta") {
+            deltaText += event.delta;
+          }
+          if (event.kind === "done") {
+            doneContentText = event.output.content
+              .filter((b) => b.kind === "text")
+              .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
+              .join("");
+            // Only persist completed turns — aborted/failed turns must not leave
+            // orphaned user prompts in history.
+            if (event.output.stopReason === "completed") {
+              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
+              conversationHistory.push(stagedUserMsg);
+              if (assistantText.length > 0) {
+                conversationHistory.push({
+                  senderId: "assistant",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text", text: assistantText }],
+                });
+              }
+            }
+          }
+        }
+      })();
+    },
   };
 
-  const runtime = createRuntime({ adapter: rawEngineAdapter });
+  // One session ID per TUI process launch. agent:clear / session:new reset the
+  // conversation history but continue writing to the same transcript file — the
+  // JSONL is a journal of everything that happened in this TUI invocation.
+  const tuiSessionId = sessionId(crypto.randomUUID());
+  const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
+
+  const runtime = createRuntime({
+    adapter: rawEngineAdapter,
+    // Pin all streams to the same session ID so the transcript middleware
+    // appends every turn to one file instead of creating a new file per submit.
+    sessionId: String(tuiSessionId),
+    middleware: [
+      createSessionTranscriptMiddleware({ transcript: jsonlTranscript, sessionId: tuiSessionId }),
+    ],
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3. TUI state setup
+  // ---------------------------------------------------------------------------
 
   const store = createStore(createInitialState());
   const permissionBridge = createPermissionBridge({ store });
@@ -291,21 +298,61 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   };
 
   // Event batcher: coalesces rapid engine events into 16ms flush windows
-  // matching the OpenTUI render cadence (Decision 2A — direct stream path).
-  // `let` justified: recreated on agent:clear to drop stale pre-clear events
-  // (dispose() drops the buffer; the in-flight drainEngineStream still holds a
-  // reference to the old disposed batcher, so its enqueue/flushSync are no-ops).
+  // matching the OpenTUI render cadence.
+  // let: justified — recreated on resetConversation() to drop stale pre-clear events
   let batcher = createEventBatcher<EngineEvent>(dispatchBatch);
 
-  // `let` justified: set once after createTuiApp resolves, read in callbacks
+  // let: set once after createTuiApp resolves, read in shutdown
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
-  // `let` justified: per-submit abort controller, replaced on each new stream
+  // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+
+  // ---------------------------------------------------------------------------
+  // 4. Helpers
+  // ---------------------------------------------------------------------------
 
   const onInterrupt = (): void => {
     permissionBridge.dispose();
     activeController?.abort();
   };
+
+  /**
+   * Reset conversation state: abort in-flight stream, drop stale buffered events,
+   * clear store messages, and wipe conversation history.
+   *
+   * Used by agent:clear, session:new, and onSessionSelect.
+   * Null activeController immediately so a fresh submit is unblocked
+   * even if the aborted stream's finally-cleanup settles late.
+   */
+  const resetConversation = (): void => {
+    activeController?.abort();
+    activeController = null;
+    // dispose() drops the buffer without flushing — the in-flight drainEngineStream
+    // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
+    batcher.dispose();
+    batcher = createEventBatcher<EngineEvent>(dispatchBatch);
+    store.dispatch({ kind: "clear_messages" });
+    conversationHistory.splice(0);
+  };
+
+  // Idempotent shutdown — called by both system:quit and signal handlers.
+  // let: justified — set once on first shutdown call
+  let shutdownStarted = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    try {
+      await appHandle?.stop();
+      batcher.dispose();
+      await runtime.dispose();
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // 5. Create TUI app
+  // ---------------------------------------------------------------------------
 
   const result = createTuiApp({
     store,
@@ -316,34 +363,13 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
           onInterrupt();
           break;
         case "agent:clear":
-          // Abort the in-flight stream and drop its buffered events atomically.
-          // Dispose drops the buffer without flushing; drainEngineStream still
-          // holds the old disposed batcher ref, so its later enqueue/flushSync
-          // are no-ops. The new batcher receives only post-clear events.
-          // Null activeController immediately so a fresh submit is unblocked
-          // even if the aborted stream's finally-cleanup settles late.
-          activeController?.abort();
-          activeController = null;
-          batcher.dispose();
-          batcher = createEventBatcher<EngineEvent>(dispatchBatch);
-          store.dispatch({ kind: "clear_messages" });
-          conversationHistory.splice(0);
+          resetConversation();
           break;
         case "system:quit":
-          void appHandle?.stop().then(() => {
-            batcher.dispose();
-            void runtime.dispose().then(() => process.exit(0));
-          });
+          void shutdown();
           break;
         case "session:new":
-          // Same as agent:clear — reset state and start fresh.
-          // Null activeController immediately (same reasoning as agent:clear above).
-          activeController?.abort();
-          activeController = null;
-          batcher.dispose();
-          batcher = createEventBatcher<EngineEvent>(dispatchBatch);
-          store.dispatch({ kind: "clear_messages" });
-          conversationHistory.splice(0);
+          resetConversation();
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
@@ -355,27 +381,39 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
           break;
       }
     },
-    onSessionSelect: (_sessionId: string): void => {
-      // Session persistence is not yet implemented. Fail closed: abort any
-      // in-flight stream, clear all state (messages + history), and return to
-      // the conversation view — identical to agent:clear so no stale context
-      // leaks into what the user believes is a fresh session.
-      activeController?.abort();
-      activeController = null;
-      batcher.dispose();
-      batcher = createEventBatcher<EngineEvent>(dispatchBatch);
-      store.dispatch({ kind: "clear_messages" });
-      conversationHistory.splice(0);
+    onSessionSelect: (selectedId: string): void => {
+      // Abort any in-flight stream, clear the display, and wipe history so no
+      // stale context leaks into the resumed session.
+      resetConversation();
       store.dispatch({ kind: "set_view", view: "conversation" });
-      store.dispatch({
-        kind: "add_error",
-        code: "SESSIONS_NOT_IMPLEMENTED",
-        message: "Session resume is not yet available. Starting a new conversation.",
-      });
+
+      void (async (): Promise<void> => {
+        store.dispatch({ kind: "set_connection_status", status: "connected" });
+        try {
+          const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
+          if (!resumeResult.ok) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESUME_ERROR",
+              message: `Could not load session: ${resumeResult.error.message}`,
+            });
+            return;
+          }
+          // Pre-populate conversation history so the AI has full context.
+          for (const msg of resumeResult.value.messages) {
+            conversationHistory.push(msg);
+          }
+          // Replay messages into the TUI store so the user sees the prior
+          // conversation. Tool entries are skipped (display-only limitation).
+          store.dispatch({
+            kind: "load_history",
+            messages: resumeResult.value.messages,
+          });
+        } finally {
+          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        }
+      })();
     },
-    // syntaxStyle enables JSON highlighting in tool call blocks (<code> path).
-    // TextBlock also receives syntaxStyle but falls back to <text> since
-    // treeSitterClient is not wired yet — prose renders correctly. See #1542.
     syntaxStyle: SyntaxStyle.create(),
     onSubmit: async (text: string): Promise<void> => {
       // Guard against overlapping submits: reject while a stream is in flight.
@@ -414,23 +452,30 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   });
 
   if (!result.ok) {
-    process.stderr.write("error: koi tui requires a TTY (stdout is not a terminal)\n");
+    process.stderr.write(`error: koi tui failed to start (${result.error.kind})\n`);
     process.exit(1);
   }
 
   appHandle = result.value;
 
-  // Graceful shutdown on SIGINT/SIGTERM
-  const shutdown = (): void => {
-    void result.value.stop().then(() => {
-      batcher.dispose();
-      void runtime.dispose().then(() => process.exit(0));
-    });
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  // ---------------------------------------------------------------------------
+  // 6. Signal handling and start
+  // ---------------------------------------------------------------------------
+
+  process.once("SIGINT", () => {
+    void shutdown();
+  });
+  process.once("SIGTERM", () => {
+    void shutdown();
+  });
 
   await result.value.start();
+
+  // Load saved sessions in the background after the TUI is rendering.
+  // Fire-and-forget: failures are silently swallowed (non-critical feature).
+  void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+    store.dispatch({ kind: "set_session_list", sessions });
+  });
   // Block until stop() completes (SIGINT/SIGTERM/quit command all call stop()
   // and then process.exit — done() resolves right before that exit).
   await result.value.done();
