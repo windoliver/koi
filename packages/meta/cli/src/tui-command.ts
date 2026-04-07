@@ -179,6 +179,18 @@ export async function drainEngineStream(
   try {
     for await (const event of stream) {
       batcher.enqueue(event);
+      // After text_delta events, flush the batcher immediately and yield to the
+      // event loop so OpenTUI can paint intermediate frames during streaming.
+      //
+      // Without this, HTTP response body chunks contain many SSE events which
+      // are all yielded synchronously by the model adapter's generator. The
+      // batcher would accumulate them all in one 16ms window, and the main
+      // thread would never yield for the renderer to paint — causing text to
+      // appear all at once instead of streaming progressively.
+      if (event.kind === "text_delta") {
+        batcher.flushSync();
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
     }
     batcher.flushSync();
   } catch (e: unknown) {
