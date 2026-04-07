@@ -18,10 +18,10 @@ const schema = z.object({
     .describe("Clear description of the work this child agent should perform."),
   task_id: z
     .string()
-    .optional()
+    .min(1)
     .describe(
-      "Optional task ID to associate with this spawn. " +
-        "Use task_delegate first to mark the task on the board, then pass its ID here.",
+      "Board task ID to associate with this spawn. " +
+        "Call task_create then task_delegate first — this links the child agent's result back to the board entry.",
     ),
   context: z
     .record(z.string(), z.unknown())
@@ -33,18 +33,22 @@ const schema = z.object({
  * agent_spawn — LLM-callable tool for coordinator agents.
  *
  * Spawns a named child agent to complete a specific task. The child runs
- * asynchronously and returns its final output string. Use task_delegate
- * before agent_spawn to mark the corresponding task as delegated on the board.
+ * asynchronously and returns its final output string.
+ *
+ * Requires the task to already be delegated on the board:
+ *   1. Call task_create to register the task.
+ *   2. Call task_delegate to assign it to a child agent.
+ *   3. Call agent_spawn with the task_id — this enforces the delegation precondition.
  */
 export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
   return {
     descriptor: {
       name: "agent_spawn",
       description:
-        "Spawn a named child agent to complete a specific task. " +
+        "Spawn a named child agent for a board-tracked task. " +
         "Returns the child agent's final output as a string. " +
-        "Call task_delegate first to mark the task as delegated on the board, " +
-        "then pass its task_id here so the child's result can be matched back.",
+        "Requires task_delegate to have been called first: the task must already be " +
+        "assigned on the board before spawning so the result can be matched back.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -57,12 +61,30 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
       }
 
       const { agent_name, description, task_id } = parsed.data;
+      const taskId = taskItemId(task_id);
+
+      // Enforce the delegation precondition: task_delegate must have been called first.
+      const task = config.board.snapshot().get(taskId);
+      if (task === undefined) {
+        return {
+          ok: false,
+          error: `Task '${task_id}' not found on the board. Call task_create first.`,
+          code: "NOT_FOUND",
+        };
+      }
+      if (task.assignedTo === undefined) {
+        return {
+          ok: false,
+          error: `Task '${task_id}' has not been delegated. Call task_delegate first.`,
+          code: "PRECONDITION_FAILED",
+        };
+      }
 
       const result = await config.spawnFn({
         agentName: agent_name,
         description,
         signal: config.signal,
-        ...(task_id !== undefined ? { taskId: taskItemId(task_id) } : {}),
+        taskId,
         agentId: config.agentId,
       });
 
