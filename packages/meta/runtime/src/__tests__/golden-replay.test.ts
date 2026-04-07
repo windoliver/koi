@@ -4702,30 +4702,30 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
       expect(["agent", "tool", "system"]).toContain(source);
     }
 
-    // Exfiltration guard span: intercept phase — may fire on wrapToolCall or wrapModelStream
-    // depending on how the model structures its response (tool call vs streamed output).
-    const guardSpan = steps.find((s) => {
+    // Exfiltration guard wrapToolCall span: intercept phase, nextCalled === false (blocked)
+    const guardToolSpan = steps.find((s) => {
       if (s.source !== "system") return false;
       const extra = s.extra as Record<string, unknown> | undefined;
-      return extra?.middlewareName === "exfiltration-guard";
+      return extra?.middlewareName === "exfiltration-guard" && extra?.hook === "wrapToolCall";
     });
-    expect(guardSpan).toBeDefined();
-    if (guardSpan !== undefined) {
-      const extra = guardSpan.extra as Record<string, unknown>;
+    expect(guardToolSpan).toBeDefined();
+    if (guardToolSpan !== undefined) {
+      const extra = guardToolSpan.extra as Record<string, unknown>;
       expect(extra.phase).toBe("intercept");
+      expect(extra.nextCalled).toBe(false);
     }
 
-    // Model attempted to exfiltrate a base64-encoded secret (AKIAIOSFODNN7EXAMPLE)
-    // via tool call or text output — the exfiltration guard must be present.
+    // The blocked response contains a PERMISSION error
     const agentSteps = steps.filter((s) => s.source === "agent");
-    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
-
-    // The secret token appears in the model's message (it tried to exfiltrate)
-    const exfilAttempt = agentSteps.find((s) => {
+    const blockStep = agentSteps.find((s) => {
       const msg = String(s.message ?? "");
-      return msg.includes("QUtJQUlPU0ZPRE5ON0VYQU1QTEU") || msg.includes("secret");
+      return msg.includes("PERMISSION") && msg.includes("secret(s) detected");
     });
-    expect(exfilAttempt).toBeDefined();
+    expect(blockStep).toBeDefined();
+
+    // No successful tool execution step (tool was blocked, never executed)
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
   });
 });
 
