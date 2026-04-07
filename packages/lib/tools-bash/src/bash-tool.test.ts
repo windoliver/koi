@@ -532,4 +532,30 @@ describe("createBashTool — trackCwd", () => {
     // Tracked cwd stays at wsRoot because sandbox path is outside workspace
     expect(result.cwd).toBe(wsRoot);
   });
+
+  test("trackCwd HMAC tamper resistance: clearing EXIT trap prevents cwd update", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
+
+    // First: verify normal cwd tracking works
+    const r1 = (await tool.execute({ command: "cd packages" }, {})) as Record<string, unknown>;
+    expect(r1.exitCode).toBe(0);
+    expect(r1.cwd).toBe(`${wsRoot}/packages`);
+
+    // Now: a command that clears the EXIT trap and cd's into a subdir.
+    // Without the trap, no cwd file is written → HMAC verification has nothing
+    // to verify → trackedCwd should NOT advance (stays at packages/).
+    const r2 = (await tool.execute({ command: "trap - EXIT\ncd .." }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(r2.exitCode).toBe(0);
+    // trackedCwd should stay at packages/ since trap was cleared
+    expect(r2.cwd).toBe(`${wsRoot}/packages`);
+
+    // Verify the next call still uses packages/ as cwd
+    const r3 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(r3.exitCode).toBe(0);
+    expect(String(r3.stdout).trim()).toBe(`${wsRoot}/packages`);
+  });
 });
