@@ -19,8 +19,11 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     reason: "eval executes arbitrary strings as shell code",
   },
   {
-    // source / dot-command executes arbitrary scripts from the filesystem
-    regex: /\bsource\b|\.\s+\S/,
+    // source / dot-command executes arbitrary scripts from the filesystem.
+    // The dot-command pattern requires `.` at a command boundary (start of line,
+    // after ; | && ||) to avoid false positives on `.` inside quoted strings
+    // (e.g., MIT license text: "Software"), to deal...").
+    regex: /\bsource\b|(?:^|[;|&]\s*)\.\s+\S/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },
