@@ -334,7 +334,7 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
   return result.value;
 }
 
-function createTaskOutputTool(taskBoard: ManagedTaskBoard): Tool {
+function createTaskOutputTool(callerId: AgentId, taskBoard: ManagedTaskBoard): Tool {
   const result = buildTool({
     name: "koi_task_output",
     description: "Get the output of a completed task",
@@ -349,6 +349,11 @@ function createTaskOutputTool(taskBoard: ManagedTaskBoard): Tool {
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
       const id = taskItemId(args.taskId);
+      // Ownership check: only allow reading results for tasks assigned to this caller
+      const task = taskBoard.snapshot().get(id);
+      if (task !== undefined && task.assignedTo !== undefined && task.assignedTo !== callerId) {
+        throw new Error("Not authorized to read this task's output");
+      }
       const taskResult = taskBoard.snapshot().result(id);
       if (taskResult === undefined) {
         throw new Error("No completed result for this task");
@@ -429,7 +434,7 @@ export function createPlatformTools(capabilities: PlatformCapabilities): readonl
     tools.push(createListTasksTool(taskBoard));
     tools.push(createGetTaskTool(taskBoard));
     tools.push(createUpdateTaskTool(callerId, taskBoard));
-    tools.push(createTaskOutputTool(taskBoard));
+    tools.push(createTaskOutputTool(callerId, taskBoard));
   }
 
   if (registry !== undefined) {
