@@ -50,7 +50,14 @@ import {
   resumeForSession,
 } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
-import { createGlobTool, createGrepTool } from "@koi/tools-builtin";
+import type { TodoItem } from "@koi/tools-builtin";
+import {
+  createEnterPlanModeTool,
+  createExitPlanModeTool,
+  createGlobTool,
+  createGrepTool,
+  createTodoTool,
+} from "@koi/tools-builtin";
 import { createWebExecutor, createWebFetchTool } from "@koi/tools-web";
 import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
 import {
@@ -80,7 +87,12 @@ const DEFAULT_SYSTEM_PROMPT =
   "Use your available tools (Bash for shell commands, Glob/Grep for search, " +
   "fs_read/fs_write/fs_edit for files, web_fetch for HTTP) to complete tasks. " +
   "Always prefer using tools to gather accurate real-time information rather than " +
-  "answering from memory.";
+  "answering from memory.\n\n" +
+  "For complex tasks that need exploration before implementation:\n" +
+  "- Call EnterPlanMode to switch to read-only planning (no file edits)\n" +
+  "- Use TodoWrite to track your progress across steps\n" +
+  "- When your plan is ready, call ExitPlanMode with the plan content to get approval\n" +
+  "Use these tools naturally — enter plan mode when a task requires thinking first.";
 /**
  * Maximum number of transcript messages sent in each model request.
  * Caps context window to control token costs in long sessions.
@@ -238,6 +250,40 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const webFetchTool = createWebFetchTool(webExecutor, "web", DEFAULT_UNSANDBOXED_POLICY);
   const bashTool = createBashTool({ workspaceRoot: cwd });
 
+  // --- Interaction tools (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion) ---
+  // let: mutable interaction state (per session, reset on agent:clear)
+  let todoItems: readonly TodoItem[] = [];
+  let inPlanMode = false;
+  let planContentMemory: string | undefined;
+
+  const todoTool = createTodoTool({
+    getItems: () => todoItems,
+    setItems: (items) => {
+      todoItems = items;
+    },
+  });
+  const enterPlanModeTool = createEnterPlanModeTool({
+    isAgentContext: () => false,
+    isInPlanMode: () => inPlanMode,
+    enterPlanMode: () => {
+      inPlanMode = true;
+    },
+  });
+  const exitPlanModeTool = createExitPlanModeTool({
+    isInPlanMode: () => inPlanMode,
+    isTeammate: false,
+    isPlanModeRequired: false,
+    exitPlanMode: () => {
+      inPlanMode = false;
+    },
+    getPlanContent: async () => planContentMemory,
+    savePlanContent: async (content) => {
+      planContentMemory = content;
+    },
+  });
+  // AskUserQuestion is omitted: the TUI owns the input box and doesn't expose
+  // a readline-compatible elicit callback yet. Future: wire via TUI dialog.
+
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
   // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
@@ -246,6 +292,9 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     [grepTool.descriptor.name, grepTool],
     [webFetchTool.descriptor.name, webFetchTool],
     [bashTool.descriptor.name, bashTool],
+    [todoTool.descriptor.name, todoTool],
+    [enterPlanModeTool.descriptor.name, enterPlanModeTool],
+    [exitPlanModeTool.descriptor.name, exitPlanModeTool],
   ]);
 
   const localToolDescriptors: readonly ToolDescriptor[] = [
@@ -253,6 +302,9 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     grepTool.descriptor,
     webFetchTool.descriptor,
     bashTool.descriptor,
+    todoTool.descriptor,
+    enterPlanModeTool.descriptor,
+    exitPlanModeTool.descriptor,
   ];
 
   const rawEngineAdapter: EngineAdapter = {
