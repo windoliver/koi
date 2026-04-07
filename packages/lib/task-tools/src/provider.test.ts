@@ -38,9 +38,10 @@ describe("createTaskToolsProvider", () => {
     const result = await provider.attach({} as never);
 
     // AttachResult has a components map
+    const resultObj = result as unknown as Record<string, unknown>;
     const components =
-      "components" in (result as Record<string, unknown>)
-        ? (result as { readonly components: ReadonlyMap<string, unknown> }).components
+      "components" in resultObj
+        ? (resultObj.components as ReadonlyMap<string, unknown>)
         : (result as ReadonlyMap<string, unknown>);
 
     // Expect 7 tools: task_create, task_get, task_update, task_list, task_stop, task_output, task_delegate

@@ -1,17 +1,21 @@
 # @koi/tasks
 
-Pluggable task board persistence — in-memory and file-based backends for `TaskBoardStore`.
+Task board persistence + runtime task lifecycle — stores, output streaming, task kinds,
+registry, and runner for background task coordination.
 
 ## Layer
 
-L2 — depends on `@koi/core` (L0), `@koi/validation` (L0u).
+L2 — depends on `@koi/core` (L0), `@koi/task-board` (L0u), `@koi/validation` (L0u).
 
 ## Purpose
 
-Provides concrete implementations of the `TaskBoardStore` interface (defined in
-`@koi/core/task-board`) for persisting task board items across agent sessions.
+Provides concrete implementations of the `TaskBoardStore` interface, plus the runtime
+task lifecycle system: output streaming, task kind types, a lifecycle registry, and
+a task runner that orchestrates start/stop with board reconciliation.
 
-Two backends ship with this package:
+### Persistence
+
+Two store backends ship with this package:
 
 1. **In-memory** — `Map`-backed store for tests and short-lived sessions. All operations
    are synchronous. State is lost when the process exits.
@@ -193,6 +197,36 @@ write succeeds, so consumers never observe events for uncommitted state.
 
 On construction, a `plan_update` snapshot is emitted as the initial hydration event so
 downstream consumers (TUI, trajectory) receive the full board state at startup.
+
+## Runtime Task System (#1557)
+
+### Output Streaming
+
+`createOutputStream(config?)` provides an in-memory output stream with:
+- Byte-accurate offsets (UTF-8 via `TextEncoder`)
+- Memory cap (default 8MB) with oldest-chunk eviction
+- Delta reads via `read(fromOffset)`
+- Subscriber notifications with error isolation
+
+### Task Kinds
+
+`RuntimeTask` discriminated union: `LocalShellTask | LocalAgentTask | RemoteAgentTask | InProcessTeammateTask | DreamTask`. Each kind extends `RuntimeTaskBase` with kind-specific fields. Type guards: `isLocalShellTask()`, `isRuntimeTask()`, etc.
+
+### Task Registry
+
+`createTaskRegistry()` maps `TaskKindName` to `TaskKindLifecycle<TConfig, TState>` implementations. Lifecycles define `start()` and `stop()` methods.
+
+### Task Runner
+
+`createTaskRunner(config)` orchestrates task start/stop with:
+- Board reconciliation via `store.watch()` — cleans up when tasks terminate externally
+- Owned-task APIs (`startTask`, `killOwnedTask`) for atomic ownership checks
+- `onExit` injection for natural process completion (with `pendingExits` for fast-exit races)
+- Delta output reads via `readOutput(taskId, fromOffset?)`
+
+### LocalShellTask Lifecycle
+
+`createLocalShellLifecycle()` — spawns shell processes via `Bun.spawn()`, pipes stdout/stderr to `TaskOutputStream`, handles timeouts, and propagates exit codes.
 
 ## Relationship to Other Packages
 
