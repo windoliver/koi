@@ -638,7 +638,7 @@ describe("verification nudge", () => {
 // ---------------------------------------------------------------------------
 
 describe("task_delegate", () => {
-  test("records delegation in metadata — task stays pending, coordinator keeps ownership", async () => {
+  test("delegates a pending task — in_progress owned by coordinator, delegatedTo in metadata", async () => {
     const { create, delegate } = await setup();
     const r = await exec(create, { subject: "Auth module", description: "Implement OAuth2" });
     expect(r.ok).toBe(true);
@@ -646,14 +646,14 @@ describe("task_delegate", () => {
 
     const dr = await exec(delegate, { task_id: id, agent_id: "child-agent-1" });
     expect(dr.ok).toBe(true);
-    // Soft delegation: task stays pending, coordinator retains assignedTo (#1416).
+    // Coordinator owns the in_progress task; child name is recorded in delegatedTo.
     const task = dr.task as Record<string, unknown>;
-    expect(task.status).toBe("pending");
-    expect(task.assignedTo).toBeUndefined();
+    expect(task.status).toBe("in_progress");
+    expect(task.assignedTo).toBe("agent-1"); // coordinator keeps ownership (#1416)
     expect((dr as Record<string, unknown>).delegatedTo).toBe("child-agent-1");
   });
 
-  test("allows N tasks to be delegated simultaneously — no in_progress conflict", async () => {
+  test("allows N tasks to be delegated simultaneously without coordinator in_progress conflict", async () => {
     const { create, delegate } = await setup();
     const r1 = await exec(create, { subject: "Task A", description: "First" });
     const r2 = await exec(create, { subject: "Task B", description: "Second" });
@@ -669,10 +669,10 @@ describe("task_delegate", () => {
     expect(d1.ok).toBe(true);
     expect(d2.ok).toBe(true);
     expect(d3.ok).toBe(true);
-    // All tasks remain pending — no in_progress promotion.
-    expect((d1.task as Record<string, unknown>).status).toBe("pending");
-    expect((d2.task as Record<string, unknown>).status).toBe("pending");
-    expect((d3.task as Record<string, unknown>).status).toBe("pending");
+    // All tasks move to in_progress — coordinator owns all, child names in metadata.
+    expect((d1.task as Record<string, unknown>).status).toBe("in_progress");
+    expect((d2.task as Record<string, unknown>).status).toBe("in_progress");
+    expect((d3.task as Record<string, unknown>).status).toBe("in_progress");
   });
 
   test("rejects re-delegation of an already-delegated task", async () => {
@@ -700,33 +700,52 @@ describe("task_delegate", () => {
     expect(r.ok).toBe(false);
     expect(typeof r.error).toBe("string");
   });
+
+  test("preserves existing task metadata through delegation (no clobber)", async () => {
+    const { create, get, delegate } = await setup();
+    const r = await exec(create, {
+      subject: "Research task",
+      description: "Research caching",
+      metadata: { kind: "research", priority: 1 },
+    });
+    const id = (r.task as Record<string, unknown>).id as string;
+
+    const dr = await exec(delegate, { task_id: id, agent_id: "researcher-1" });
+    expect(dr.ok).toBe(true);
+    expect((dr as Record<string, unknown>).delegatedTo).toBe("researcher-1");
+
+    // task_get returns full task details including metadata — verify no clobber.
+    const gr = await exec(get, { task_id: id });
+    expect(gr.ok).toBe(true);
+    const taskMeta = ((gr.task as Record<string, unknown>).metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(taskMeta.kind).toBe("research");
+    expect(taskMeta.priority).toBe(1);
+    expect(taskMeta.delegatedTo).toBe("researcher-1");
+  });
 });
 
 // ---------------------------------------------------------------------------
 // task_update regression — single-in-progress guard still active after delegation
 // ---------------------------------------------------------------------------
 
-describe("task_update — delegation does not block in_progress (soft delegation)", () => {
-  test("task_update can start a task after soft delegation (task stays pending)", async () => {
+describe("task_update regression — in_progress guard survives delegation", () => {
+  test("task_update cannot start a second task when one is already delegated (in_progress)", async () => {
     const { create, update, delegate } = await setup();
     const r1 = await exec(create, { subject: "Delegated task", description: "Delegated" });
     const r2 = await exec(create, { subject: "Worker task", description: "For worker" });
     const id1 = (r1.task as Record<string, unknown>).id as string;
     const id2 = (r2.task as Record<string, unknown>).id as string;
 
-    // Soft-delegate task 1 — it stays pending, so no in_progress conflict.
+    // Delegate task 1 — coordinator owns it in_progress; board prevents second in_progress.
     await exec(delegate, { task_id: id1, agent_id: "child-1" });
 
-    // task_update claiming task 2 as in_progress succeeds — no conflict.
+    // task_update trying to claim task 2 as in_progress should fail.
     const ur = await exec(update, { task_id: id2, status: "in_progress" });
-    expect(ur.ok).toBe(true);
-
-    // Second task_update on a different task should fail (guard fires now).
-    const r3 = await exec(create, { subject: "Third", description: "Third" });
-    const id3 = (r3.task as Record<string, unknown>).id as string;
-    const ur3 = await exec(update, { task_id: id3, status: "in_progress" });
-    expect(ur3.ok).toBe(false);
-    expect(String(ur3.error)).toMatch(/in_progress/);
+    expect(ur.ok).toBe(false);
+    expect(String(ur.error)).toMatch(/in_progress/);
   });
 });
 

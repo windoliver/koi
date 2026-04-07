@@ -1,4 +1,4 @@
-import type { JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
+import type { AgentId, JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
@@ -10,30 +10,32 @@ const schema = z.object({
 });
 
 /**
- * task_delegate — coordinator soft-delegation tool.
+ * task_delegate — coordinator delegation tool.
  *
- * Records which child agent should handle a task by writing
- * `metadata.delegatedTo = agent_id`. The coordinator retains board
- * ownership (assignedTo is NOT changed), so it can still complete,
- * fail, or stop the task after agent_spawn returns.
+ * Atomically assigns a pending task to the calling coordinator's AgentId
+ * (making it in_progress so it can't be re-dispatched) and records the
+ * intended child agent name in `metadata.delegatedTo`.
  *
+ * The coordinator retains board ownership (assignedTo = coordinatorAgentId)
+ * so it can complete or fail the task after agent_spawn returns.
  * Board ownership handoff to the spawned child's runtime AgentId
  * requires engine-level identity resolution — deferred to #1416.
- * Until then, the coordinator is responsible for closing the task.
  *
- * Only pending tasks may be delegated. Already-delegated (metadata.delegatedTo
- * set), completed, failed, and killed tasks are rejected.
+ * Rejection cases:
+ *   - Task not found
+ *   - Task is not pending (already in_progress/completed/etc.)
+ *   - Task already has metadata.delegatedTo set
  */
-export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
+export function createTaskDelegateTool(board: ManagedTaskBoard, coordinatorAgentId: AgentId): Tool {
   return {
     descriptor: {
       name: "task_delegate",
       description:
-        "Record which child agent should handle a pending task. " +
-        "Stores the agent ID in task metadata (delegatedTo) so the coordinator " +
-        "can track intent. The coordinator retains ownership and must complete or " +
-        "fail the task after agent_spawn returns — child agents cannot update it " +
-        "directly until #1416 is resolved.",
+        "Delegate a pending task to a named child agent. " +
+        "Moves the task to in_progress (preventing re-dispatch) and records the " +
+        "intended executor in metadata.delegatedTo. The coordinator retains " +
+        "board ownership and must complete or fail the task after agent_spawn " +
+        "returns — child agents cannot update it directly until #1416 is resolved.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -61,7 +63,6 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
             "Only pending tasks may be delegated.",
         };
       }
-      // Prevent re-delegation of an already-delegated task.
       if (task.metadata?.delegatedTo !== undefined) {
         return {
           ok: false,
@@ -71,12 +72,22 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
         };
       }
 
-      // Soft delegation: record intent in metadata, coordinator keeps ownership.
-      // No board.assign() — avoids creating an ownership state that no spawned
-      // child can satisfy (their runtime AgentId won't match #1416).
-      const updateResult = await board.update(id, { metadata: { delegatedTo: agent_id } });
-      if (!updateResult.ok) {
-        return { ok: false, error: updateResult.error.message };
+      // Atomically claim the task as coordinator-owned in_progress.
+      // board.assign() is serialized inside the managed-board lock — prevents
+      // concurrent delegates from both succeeding on the same pending task.
+      const assignResult = await board.assign(id, coordinatorAgentId);
+      if (!assignResult.ok) {
+        return { ok: false, error: assignResult.error.message };
+      }
+
+      // Record intended executor in metadata. Preserve any existing metadata.
+      // updateOwned is atomic within the lock and verifies we still own the task.
+      const existingMeta = board.snapshot().get(id)?.metadata ?? {};
+      const metaResult = await board.updateOwned(id, coordinatorAgentId, {
+        metadata: { ...existingMeta, delegatedTo: agent_id },
+      });
+      if (!metaResult.ok) {
+        return { ok: false, error: metaResult.error.message };
       }
 
       const updatedTask = board.snapshot().get(id);
