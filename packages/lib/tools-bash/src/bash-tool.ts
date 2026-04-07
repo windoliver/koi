@@ -1,4 +1,5 @@
 import { spawn as spawnChild } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -246,12 +247,16 @@ export function createBashTool(config?: BashToolConfig): Tool {
         }
 
         const cwdFile = join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`);
-        // Inline the file path directly in the trap command rather than
-        // storing it in a shell variable. This eliminates the variable
-        // from the command's namespace so the user command cannot read
-        // or overwrite it to forge the tracked cwd.
+        // Per-execution secret for HMAC integrity — the command cannot
+        // forge the cwd file because it doesn't have the secret. Even if
+        // the command discovers the file path via `trap -p EXIT`, writing
+        // a forged path will fail HMAC verification.
+        const cwdSecret = crypto.randomUUID();
         const quotedCwdFile = shellQuote(cwdFile);
-        const wrappedCommand = `trap 'pwd -P > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
+        const quotedSecret = shellQuote(cwdSecret);
+        // The trap writes: <cwd>\n<hmac> so we can verify integrity.
+        // printf is used to avoid trailing newlines from echo.
+        const wrappedCommand = `trap '__koi_d=$(pwd -P); printf "%s\\n%s" "$__koi_d" "$(printf "%s" "$__koi_d" | openssl dgst -sha256 -hmac ${quotedSecret} -r | cut -d" " -f1)" > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
 
         const result = await spawnBash(
           wrappedCommand,
@@ -265,7 +270,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         // Read cwd from temp file and update tracked state (success-only)
         try {
           if ("exitCode" in result && result.exitCode === 0) {
-            const newCwd = readCwdFile(cwdFile);
+            const newCwd = readCwdFile(cwdFile, cwdSecret);
             if (newCwd !== undefined && isWithinWorkspace(newCwd, workspaceRoot)) {
               trackedCwd = newCwd;
             }
@@ -290,11 +295,22 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/** Read the cwd temp file. Returns undefined if missing or empty. */
-function readCwdFile(path: string): string | undefined {
+/**
+ * Read the cwd temp file and verify HMAC integrity.
+ * Format: `<cwd>\n<hmac>`. Returns undefined if missing, empty, or HMAC mismatch.
+ */
+function readCwdFile(path: string, secret: string): string | undefined {
   try {
     const content = readFileSync(path, "utf-8").trim();
-    return content.length > 0 ? content : undefined;
+    if (content.length === 0) return undefined;
+    const newlineIdx = content.indexOf("\n");
+    if (newlineIdx === -1) return undefined;
+    const cwdValue = content.slice(0, newlineIdx);
+    const hmacValue = content.slice(newlineIdx + 1).trim();
+    // Verify HMAC — prevents the command from forging the tracked cwd
+    const expected = createHmac("sha256", secret).update(cwdValue).digest("hex");
+    if (hmacValue !== expected) return undefined;
+    return cwdValue;
   } catch {
     return undefined;
   }

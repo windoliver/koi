@@ -88,7 +88,9 @@ export function createBashBackgroundTool(
   const workspaceRoot = config.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = { ...DEFAULT_BASH_POLICY, ...config.policy };
   const maxOutputBytes = policy.maxOutputBytes ?? DEFAULT_BASH_POLICY.maxOutputBytes ?? 1_048_576;
-  const defaultTimeoutMs = DEFAULT_BACKGROUND_TIMEOUT_MS;
+  // Respect configured policy timeout, falling back to the background default (5 min).
+  // This prevents background commands from bypassing a tightened bash timeout policy.
+  const defaultTimeoutMs = policy.defaultTimeoutMs ?? DEFAULT_BACKGROUND_TIMEOUT_MS;
 
   const active = new Map<string, ActiveProcess>();
 
