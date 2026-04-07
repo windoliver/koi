@@ -22,42 +22,40 @@ import { createTaskBoard } from "./board.js";
 // Snapshot builder
 // ---------------------------------------------------------------------------
 
+/** Finds the first incomplete dependency for a pending task, if any. */
+function findBlocker(task: Task, board: TaskBoard): TaskItemId | undefined {
+  for (const dep of task.dependencies) {
+    const depTask = board.get(dep);
+    if (depTask === undefined || depTask.status !== "completed") {
+      return dep;
+    }
+  }
+  return undefined;
+}
+
 /** Builds a lightweight plan_update snapshot from the post-mutation board. */
 function buildPlanUpdate(
   board: TaskBoard,
   agentId: AgentId,
   timestamp: number,
 ): EngineEvent & { readonly kind: "plan_update" } {
-  const unreachableSet = new Set<TaskItemId>(board.unreachable().map((t) => t.id));
-  // Build a blockedBy index from unreachable tasks' dependencies
-  const blockedByMap = new Map<TaskItemId, TaskItemId>();
-  for (const task of board.unreachable()) {
-    for (const dep of task.dependencies) {
-      const depTask = board.get(dep);
-      if (depTask !== undefined && (depTask.status === "failed" || depTask.status === "killed")) {
-        blockedByMap.set(task.id, dep);
-        break;
-      }
-      if (unreachableSet.has(dep)) {
-        blockedByMap.set(task.id, dep);
-        break;
-      }
-    }
-  }
-
-  const tasks = board.all().map((t: Task) => ({
-    id: t.id,
-    subject: t.subject,
-    status: t.status,
-    ...(t.assignedTo !== undefined ? { assignedTo: t.assignedTo } : {}),
-    // Only include activeForm for in_progress tasks — prevents stale spinner text
-    // from retry/unassign paths that don't clear activeForm on the board
-    ...(t.activeForm !== undefined && t.status === "in_progress"
-      ? { activeForm: t.activeForm }
-      : {}),
-    ...(blockedByMap.has(t.id) ? { blockedBy: blockedByMap.get(t.id) } : {}),
-    dependencies: t.dependencies,
-  }));
+  const tasks = board.all().map((t: Task) => {
+    // Compute blockedBy for any pending task with incomplete dependencies
+    const blocker = t.status === "pending" ? findBlocker(t, board) : undefined;
+    return {
+      id: t.id,
+      subject: t.subject,
+      status: t.status,
+      ...(t.assignedTo !== undefined ? { assignedTo: t.assignedTo } : {}),
+      // Only include activeForm for in_progress tasks — prevents stale spinner text
+      // from retry/unassign paths that don't clear activeForm on the board
+      ...(t.activeForm !== undefined && t.status === "in_progress"
+        ? { activeForm: t.activeForm }
+        : {}),
+      ...(blocker !== undefined ? { blockedBy: blocker } : {}),
+      dependencies: t.dependencies,
+    };
+  });
 
   return {
     kind: "plan_update",
