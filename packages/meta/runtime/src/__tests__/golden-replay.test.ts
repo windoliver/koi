@@ -5138,6 +5138,99 @@ describe("bash-background ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 fixture-level assertions: @koi/tools-bash trajectories
+// ---------------------------------------------------------------------------
+
+describe("bash-exec ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with updated descriptor mentioning wrapCommand", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-exec.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly {
+          readonly name: string;
+          readonly description: string;
+        }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("bash-exec");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+    const bashTool = doc.agent.tool_definitions?.find((t) => t.name === "Bash");
+    expect(bashTool?.description).toContain("workspace root");
+    expect(bashTool?.description).toContain("wrapCommand");
+  });
+
+  test("contains tool call + tool result steps for Bash", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-exec.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string; readonly identifier?: string }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThan(0);
+  });
+});
+
+describe("bash-track-cwd ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with CWD tracking descriptor", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-track-cwd.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly {
+          readonly name: string;
+          readonly description: string;
+        }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("bash-track-cwd");
+    const bashTool = doc.agent.tool_definitions?.find((t) => t.name === "Bash");
+    expect(bashTool?.description).toContain("CWD tracking is enabled");
+  });
+
+  test("contains at least two tool result steps (cd + pwd verification)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-track-cwd.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("bash-background ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with BashBackground tool definition", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("bash-background");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "BashBackground")).toBe(true);
+  });
+
+  test("contains tool step for BashBackground returning taskId", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    // The tool result content is a JSON string containing taskId
+    const hasTaskId = toolSteps.some((s) =>
+      s.observation?.results?.some((r) => r.content?.includes("taskId")),
+    );
+    expect(hasTaskId).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/sandbox-os (2 queries)
 // ---------------------------------------------------------------------------
 
