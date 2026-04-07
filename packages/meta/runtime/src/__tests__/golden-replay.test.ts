@@ -4915,11 +4915,11 @@ describe("Golden: @koi/harness", () => {
 });
 
 // ---------------------------------------------------------------------------
-// sandbox-exec trajectory: @koi/sandbox-os run_sandboxed via Seatbelt/bwrap
+// sandbox-exec trajectory: @koi/sandbox-os — Bash tool transparently sandboxed via DI
 // ---------------------------------------------------------------------------
 
 describe("sandbox-exec ATIF trajectory (golden file)", () => {
-  test("valid ATIF v1.6 with run_sandboxed in tool_definitions", async () => {
+  test("valid ATIF v1.6 with Bash in tool_definitions", async () => {
     const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
       readonly schema_version: string;
       readonly agent: {
@@ -4927,22 +4927,12 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
       };
     };
     expect(doc.schema_version).toBe("ATIF-v1.6");
-    expect(doc.agent.tool_definitions?.some((t) => t.name === "run_sandboxed")).toBe(true);
+    // Sandbox is transparent to the model — it sees the Bash tool, not a separate run_sandboxed tool
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "run_sandboxed")).toBe(false);
   });
 
-  test("tool call uses path-only schema — no command or args in trajectory", async () => {
-    // The run_sandboxed tool uses a path-locked design: model supplies only the directory
-    // path to list; arbitrary command/args are not accepted. Assert the fixture reflects this.
-    const raw = await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).text();
-    // Model-emitted tool calls should include "path" key
-    expect(raw).toContain('"path"');
-    // No arbitrary command/args fields — the hardening must hold across re-recordings
-    const hasArbitraryCommand =
-      /"function_name"\s*:\s*"run_sandboxed"[\s\S]{0,400}"command"\s*:/.test(raw);
-    expect(hasArbitraryCommand).toBe(false);
-  });
-
-  test("TOOL step has auditable entry_count from sandbox stdout", async () => {
+  test("TOOL step has stdout and exitCode:0 from sandboxed Bash", async () => {
     const doc = (await Bun.file(`${FIXTURES}/sandbox-exec.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;
@@ -4954,14 +4944,8 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
     );
     expect(toolSteps.length).toBeGreaterThan(0);
     const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
-    // ATIF truncates large stdout by inserting literal newlines into the JSON string,
-    // making JSON.parse unreliable — use regex to extract the structured fields instead.
-    // Tool counted lines so this is auditable: the model never had to count the listing.
+    expect(content).toContain('"stdout"');
     expect(content).toContain('"exitCode":0');
-    expect(content).toMatch(/"platform":"(seatbelt|bwrap)"/);
-    const entryCountMatch = content.match(/"entry_count":(\d+)/);
-    const entryCount = entryCountMatch?.[1] !== undefined ? Number(entryCountMatch[1]) : 0;
-    expect(entryCount).toBeGreaterThan(0);
   });
 
   test("model response references the command output", async () => {
@@ -4976,7 +4960,7 @@ describe("sandbox-exec ATIF trajectory (golden file)", () => {
     expect(modelSteps.length).toBeGreaterThanOrEqual(2);
     const finalResponse =
       modelSteps[modelSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
-    // Model summarised the ls output — mentions executables or the directory
+    // Model summarised the ls output — mentions count or /usr/bin
     expect(finalResponse.length).toBeGreaterThan(20);
   });
 });
@@ -5011,6 +4995,136 @@ describe("Golden: @koi/tools-bash", () => {
       expect(typeof blocked.reason).toBe("string");
       expect(typeof blocked.pattern).toBe("string");
     }
+  });
+
+  test("createBashTool trackCwd: schema includes cwd and timeoutMs optional fields", async () => {
+    const { createBashTool } = await import("@koi/tools-bash");
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: process.cwd() });
+    const schema = tool.descriptor.inputSchema as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    // cwd and timeoutMs are optional — not in required
+    expect(schema.required).toContain("command");
+    expect(schema.required).not.toContain("cwd");
+    expect(schema.properties).toHaveProperty("cwd");
+    expect(schema.properties).toHaveProperty("timeoutMs");
+  });
+
+  test("createBashBackgroundTool produces a Tool named bash_background", async () => {
+    const { createBashBackgroundTool } = await import("@koi/tools-bash");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+    const board = await createManagedTaskBoard({ store: createMemoryTaskBoardStore() });
+    const agentId = "test-agent" as import("@koi/core").AgentId;
+    const tool = createBashBackgroundTool({ taskBoard: board, agentId });
+    expect(tool.descriptor.name).toBe("bash_background");
+    expect(tool.origin).toBe("primordial");
+    expect((tool.descriptor.inputSchema as { required: string[] }).required).toContain("command");
+    expect(tool.descriptor.tags).toContain("background");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-track-cwd ATIF trajectory: @koi/tools-bash trackCwd feature
+// ---------------------------------------------------------------------------
+
+describe("bash-track-cwd ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Bash in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-track-cwd.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+  });
+
+  test("two TOOL steps: both Bash calls captured in trajectory", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-track-cwd.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(2);
+    const bashCalls = toolSteps.filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "Bash"),
+    );
+    expect(bashCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("second Bash TOOL step stdout contains tracked cwd path", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-track-cwd.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly command?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    // Find the Bash tool step that ran `pwd` (no mkdir)
+    const pwdStep = doc.steps.find(
+      (s) =>
+        s.source === "tool" &&
+        s.tool_calls?.some((tc) => tc.function_name === "Bash" && tc.arguments.command === "pwd"),
+    );
+    expect(pwdStep).toBeDefined();
+    const content = pwdStep?.observation?.results?.[0]?.content ?? "";
+    // stdout should contain the cwd-golden-test subdirectory — cwd was tracked
+    expect(content).toContain("cwd-golden-test");
+    expect(content).toContain('"exitCode":0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-background ATIF trajectory: @koi/tools-bash bash_background feature
+// ---------------------------------------------------------------------------
+
+describe("bash-background ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with bash_background in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "bash_background")).toBe(true);
+  });
+
+  test("bash_background TOOL step returns taskId and in_progress status", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const bgStep = doc.steps.find(
+      (s) =>
+        s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "bash_background"),
+    );
+    expect(bgStep).toBeDefined();
+    const content = bgStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain('"status":"in_progress"');
+    expect(content).toContain('"taskId"');
+  });
+
+  test("task_output TOOL step shows completed stdout with expected output", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const outputStep = doc.steps.find(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "task_output"),
+    );
+    expect(outputStep).toBeDefined();
+    const content = outputStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain("hello-from-background");
+    expect(content).toContain('"exitCode":0');
   });
 });
 

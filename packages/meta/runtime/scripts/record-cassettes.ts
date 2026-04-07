@@ -84,7 +84,7 @@ import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashTool } from "@koi/tools-bash";
+import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -1161,107 +1161,52 @@ const webProvider = createWebProvider({
 });
 
 // ---------------------------------------------------------------------------
-// @koi/sandbox-os — run_sandboxed: executes arbitrary commands inside OS sandbox
+// @koi/sandbox-os — sandboxed Bash: OS sandbox injected into createBashTool (DI pattern).
 // Only enabled on supported platforms (macOS seatbelt, Linux bwrap).
 //
-// Design: the sandbox PROFILE is server-side config — LLM supplies only the
-// command path and its arguments. Restrictions (network disabled, credential
-// paths denied via restrictiveProfile) are enforced by the server, never by
-// the caller.
+// Design: the sandbox adapter and restrictive profile are L3 server-side config —
+// the model calls the ordinary Bash tool; the sandbox is transparent to it.
 // ---------------------------------------------------------------------------
 
-let sandboxProvider: import("@koi/core").ComponentProvider | undefined;
+let sandboxedBashProvider: ComponentProvider | undefined;
 
 const _sandboxAdapterResult = createOsAdapter();
 if (_sandboxAdapterResult.ok) {
   const _sandboxAdapter = _sandboxAdapterResult.value;
-
-  // Profile is config: network off + credential paths read-denied.
-  // LLM never controls which paths are blocked or whether network is allowed.
   const _sandboxProfile = restrictiveProfile();
-
-  // Path allowlist: only approved system directories may be listed.
-  // This prevents the recording model from enumerating arbitrary host paths via ls args.
-  const _SANDBOXED_PATH_ALLOWLIST = new Set(["/usr/bin", "/bin", "/usr/local/bin"]);
-
-  const _runSandboxedResult = buildTool({
-    name: "run_sandboxed",
-    description:
-      "List files inside a sandboxed system directory. Network access is disabled. Only /usr/bin, /bin, and /usr/local/bin are allowed paths. Provide the directory path to list.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description:
-            "Absolute path to a system directory to list. Allowed: /usr/bin, /bin, /usr/local/bin",
-        },
-      },
-      required: ["path"],
-    },
-    origin: "primordial",
-    execute: async (args: JsonObject): Promise<unknown> => {
-      const dirPath = String(args.path);
-      if (!_SANDBOXED_PATH_ALLOWLIST.has(dirPath)) {
-        // Throw so the framework marks this as tool.failed — not a silent success.
-        throw new Error(
-          `Path not permitted: ${dirPath}. Allowed: ${[..._SANDBOXED_PATH_ALLOWLIST].join(", ")}`,
-        );
-      }
-      const instance = await _sandboxAdapter.create(_sandboxProfile);
-      try {
-        // Hardcode the command — model only controls which approved directory to list.
-        // ls binary location varies by platform; try /bin/ls then /usr/bin/ls.
-        const lsBin = (await Bun.file("/bin/ls").exists()) ? "/bin/ls" : "/usr/bin/ls";
-        // Scrub inherited env so the recorder's OPENROUTER_API_KEY and other secrets are
-        // not visible inside the sandbox. Only pass a minimal allowlist.
-        const safeEnv: Record<string, string> = {
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-          HOME: process.env.HOME ?? "/tmp",
-          TMPDIR: process.env.TMPDIR ?? "/tmp",
-          TERM: "dumb",
-          LANG: process.env.LANG ?? "en_US.UTF-8",
-        };
-        // Hard 10-second wall-clock cap — prevents a blocking command from wedging the recorder.
-        const r = await instance.exec(lsBin, ["-1", dirPath], {
-          env: safeEnv,
-          timeoutMs: 10_000,
-        });
-        const stdout = r.stdout.trim();
-        // Only emit entry_count when output is complete — truncated output yields a partial
-        // count that is misleading for audit purposes. Callers should rerun with a narrower
-        // command or check `truncated` before trusting the count.
-        const entryCount =
-          !r.truncated && r.exitCode === 0 && stdout.length > 0
-            ? stdout.split("\n").filter((l) => l.trim()).length
-            : undefined;
-        return {
-          stdout,
-          stderr: r.stderr.trim(),
-          exitCode: r.exitCode,
-          timedOut: r.timedOut,
-          ...(r.truncated === true ? { truncated: true } : {}),
-          ...(r.signal !== undefined ? { signal: r.signal } : {}),
-          ...(entryCount !== undefined ? { entry_count: entryCount } : {}),
-          platform: _sandboxAdapter.platform.platform,
-        };
-      } finally {
-        await instance.destroy();
-      }
-    },
+  sandboxedBashProvider = createSingleToolProvider({
+    name: "bash",
+    toolName: "Bash",
+    createTool: () =>
+      createBashTool({
+        workspaceRoot: process.cwd(),
+        sandboxAdapter: _sandboxAdapter,
+        sandboxProfile: _sandboxProfile,
+      }),
   });
-
-  if (_runSandboxedResult.ok) {
-    const _runSandboxedTool = _runSandboxedResult.value;
-    sandboxProvider = createSingleToolProvider({
-      name: "run-sandboxed",
-      toolName: "run_sandboxed",
-      createTool: () => _runSandboxedTool,
-    });
-  } else {
-    console.warn(`buildTool(run_sandboxed) failed: ${_runSandboxedResult.error.message}`);
-  }
 }
+
+// ---------------------------------------------------------------------------
+// @koi/tools-bash bash_background + task polling tools
+// ---------------------------------------------------------------------------
+// Separate task board scoped to the background recording so tasks don't
+// bleed across queries.
+const bgTaskBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const bgAgentId = "golden-bg-agent" as import("@koi/core").AgentId;
+const bashBackgroundProvider = createSingleToolProvider({
+  name: "bash-background",
+  toolName: "bash_background",
+  createTool: () =>
+    createBashBackgroundTool({
+      taskBoard: bgTaskBoard,
+      agentId: bgAgentId,
+      workspaceRoot: process.cwd(),
+    }),
+});
+const bgTaskToolsAll = createTaskTools({ board: bgTaskBoard, agentId: bgAgentId });
+const [, bgTtGet, , bgTtList, , bgTtOutput] = bgTaskToolsAll as import("@koi/core").Tool[];
 
 // ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
@@ -2200,16 +2145,16 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 5,
   },
 
-  // sandbox-exec: @koi/sandbox-os — run_sandboxed tool validates Seatbelt/bwrap triggers
-  //   agent calls run_sandboxed with command+args → sandbox executes the command → ATIF captures output
-  //   Profile is server-side config (restrictiveProfile). LLM supplies only command + args.
-  //   Only included when platform detection succeeds (macOS or Linux).
-  ...(sandboxProvider !== undefined
+  // sandbox-exec: @koi/sandbox-os — Bash runs transparently inside OS sandbox (DI pattern).
+  //   agent calls Bash tool → Bash routes through SandboxInstance.exec() → ATIF captures output.
+  //   Sandbox adapter + restrictive profile are server-side config; model sees only Bash.
+  //   Only included when platform detection succeeds (macOS seatbelt or Linux bwrap).
+  ...(sandboxedBashProvider !== undefined
     ? [
         {
           name: "sandbox-exec",
           prompt:
-            "Use the run_sandboxed tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+            "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
           permissionMode: "bypass" as const,
           permissionRules: BYPASS_RULES,
           permissionDescription: "bypass (allow all)",
@@ -2221,7 +2166,7 @@ const queries: readonly QueryConfig[] = [
               filter: { events: ["tool.succeeded"] },
             },
           ],
-          providers: [sandboxProvider],
+          providers: [sandboxedBashProvider],
           maxTurns: 2,
         },
       ]
@@ -2250,6 +2195,65 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+  },
+
+  // bash-track-cwd: @koi/tools-bash — trackCwd flag persists cwd across tool calls.
+  //   Agent CDs into a subdir in one Bash call, then runs pwd in the next.
+  //   Verifies that cwd state is maintained across calls (feature from #1521).
+  //   workspaceRoot: process.cwd() avoids macOS /tmp→/private/tmp symlink issues.
+  {
+    name: "bash-track-cwd",
+    prompt:
+      "Use the Bash tool twice in sequence. " +
+      'First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo "changed-dir"`. ' +
+      "Second call: run `pwd` and report the directory printed.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () => createBashTool({ workspaceRoot: process.cwd(), trackCwd: true }),
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // bash-background: @koi/tools-bash — bash_background + task polling.
+  //   Agent fires a background command, then polls task_get to check status,
+  //   then reads output via task_output. Demonstrates fire-and-forget pattern.
+  {
+    name: "bash-background",
+    prompt:
+      "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. " +
+      "After it returns a taskId, use task_get with that taskId to check status. " +
+      "Then use task_output with the same taskId to get the output. " +
+      "Report what the stdout contained.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      bashBackgroundProvider,
+      createSingleToolProvider({
+        name: "task-get",
+        toolName: "task_get",
+        createTool: () => bgTtGet as import("@koi/core").Tool,
+      }),
+      createSingleToolProvider({
+        name: "task-list",
+        toolName: "task_list",
+        createTool: () => bgTtList as import("@koi/core").Tool,
+      }),
+      createSingleToolProvider({
+        name: "task-output",
+        toolName: "task_output",
+        createTool: () => bgTtOutput as import("@koi/core").Tool,
+      }),
+    ],
+    maxTurns: 4,
   },
 
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn

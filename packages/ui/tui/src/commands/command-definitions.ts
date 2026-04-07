@@ -40,6 +40,12 @@ export interface CommandDef {
 export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
   // ---- Navigation ----
   {
+    id: "nav:trajectory",
+    label: "Trajectory",
+    description: "View the ATIF execution trace for this session",
+    category: "navigation",
+  },
+  {
     id: "nav:sessions",
     label: "Sessions",
     description: "Browse and resume saved sessions",

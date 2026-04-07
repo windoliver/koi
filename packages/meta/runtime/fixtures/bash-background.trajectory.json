@@ -1,0 +1,1036 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "bash-background",
+  "agent": {
+    "name": "golden-bash-background",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "bash_background",
+        "description": "Run a bash command in the background and return a task ID immediately. The command runs asynchronously — use task_get(taskId) to check status, task_output(taskId) to read stdout/stderr once completed. Best for long-running commands: npm/bun install, docker compose up, cargo build, go build, make, pytest, etc. For quick commands (< 30s) prefer Bash."
+      },
+      {
+        "name": "task_get",
+        "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+      },
+      {
+        "name": "task_list",
+        "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+      },
+      {
+        "name": "task_output",
+        "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:57.728Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:57.728Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-07T00:47:57.728Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 484,
+        "completion_tokens": 12
+      },
+      "duration_ms": 755,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "bash_background",
+            "description": "Run a bash command in the background and return a task ID immediately. The command runs asynchronously — use task_get(taskId) to check status, task_output(taskId) to read stdout/stderr once completed. Best for long-running commands: npm/bun install, docker compose up, cargo build, go build, make, pytest, etc. For quick commands (< 30s) prefer Bash."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.485Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
+      "duration_ms": 757.0419170000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.485Z",
+      "model_name": "middleware:hooks",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
+      "duration_ms": 757.0960420000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.485Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 1.9872080000004644,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "tool",
+      "timestamp": "2026-04-07T00:47:58.483Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_bash_background_6",
+          "function_name": "bash_background",
+          "arguments": {
+            "command": "echo 'hello-from-background'"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_bash_background_6",
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 2.040541000000303,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:permissions",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
+      "duration_ms": 757.2276659999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
+      "duration_ms": 757.2589170000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:hooks",
+      "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 2.0979999999999563,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:permissions",
+      "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 2.1450830000003407,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}"
+          }
+        ]
+      },
+      "duration_ms": 2.1738329999998314,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-07T00:47:58.486Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 563,
+        "completion_tokens": 9
+      },
+      "duration_ms": 709,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "bash_background",
+            "description": "Run a bash command in the background and return a task ID immediately. The command runs asynchronously — use task_get(taskId) to check status, task_output(taskId) to read stdout/stderr once completed. Best for long-running commands: npm/bun install, docker compose up, cargo build, go build, make, pytest, etc. For quick commands (< 30s) prefer Bash."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_get({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 0.3077499999999418,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
+      "duration_ms": 709.9013330000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "tool",
+      "timestamp": "2026-04-07T00:47:59.195Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_get_16",
+          "function_name": "task_get",
+          "arguments": {
+            "task_id": "task_1"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_get_16",
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:hooks",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
+      "duration_ms": 709.9435840000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "task_get({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 0.3554169999997612,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:hooks",
+      "message": "task_get({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 0.4071670000002996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:permissions",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
+      "duration_ms": 710.048667,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
+      "duration_ms": 710.0720000000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:permissions",
+      "message": "task_get({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 0.4480830000002243,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "task_get({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}"
+          }
+        ]
+      },
+      "duration_ms": 0.4729590000006283,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "agent",
+      "timestamp": "2026-04-07T00:47:59.196Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775522878484,\"updatedAt\":1775522878489,\"assignedTo\":\"golden-bg-agent\"}}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 635,
+        "completion_tokens": 9
+      },
+      "duration_ms": 813,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "bash_background",
+            "description": "Run a bash command in the background and return a task ID immediately. The command runs asynchronously — use task_get(taskId) to check status, task_output(taskId) to read stdout/stderr once completed. Best for long-running commands: npm/bun install, docker compose up, cargo build, go build, make, pytest, etc. For quick commands (< 30s) prefer Bash."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:hook-dispatch",
+      "message": "task_output({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.3613329999998314,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hook-dispatch",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 950,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hook-dispatch"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 813.4478749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "tool",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_task_output_27",
+          "function_name": "task_output",
+          "arguments": {
+            "task_id": "task_1"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_task_output_27",
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0,
+      "outcome": "success"
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:hooks",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 813.5017080000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "task_output({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.42558400000052643,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:hooks",
+      "message": "task_output({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.4829589999999371,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:permissions",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 813.5893329999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 813.610291,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:permissions",
+      "message": "task_output({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.5382079999999405,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.009Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "task_output({\"task_id\":\"task_1\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.5716250000004948,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "agent",
+      "timestamp": "2026-04-07T00:48:00.010Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":4,\"results\":{\"exitCode\":0}}}",
+      "observation": {
+        "results": [
+          {
+            "content": "The stdout contained \"hello-from-background\\n\"."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 685,
+        "completion_tokens": 12
+      },
+      "duration_ms": 766,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 7,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "bash_background",
+            "description": "Run a bash command in the background and return a task ID immediately. The command runs asynchronously — use task_get(taskId) to check status, task_output(taskId) to read stdout/stderr once completed. Best for long-running commands: npm/bun install, docker compose up, cargo build, go build, make, pytest, etc. For quick commands (< 30s) prefer Bash."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 36,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.777Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 767.3291669999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 37,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.777Z",
+      "model_name": "middleware:hooks",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 767.3835419999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 38,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.777Z",
+      "model_name": "middleware:permissions",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 767.5403749999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 39,
+      "source": "system",
+      "timestamp": "2026-04-07T00:48:00.777Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.\n\n{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subj…",
+      "duration_ms": 767.5920420000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

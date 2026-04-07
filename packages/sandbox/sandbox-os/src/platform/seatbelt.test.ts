@@ -32,17 +32,19 @@ describe("generateSeatbeltProfile", () => {
     );
   });
 
-  test.skipIf(process.platform !== "darwin")("renders denyRead rules", () => {
-    expect(
-      generateSeatbeltProfile({
+  test.skipIf(process.platform !== "darwin")(
+    "renders denyRead rules as explicit file-read-data + file-read-metadata",
+    () => {
+      const profile = generateSeatbeltProfile({
         ...BASE_PROFILE,
-        filesystem: {
-          defaultReadAccess: "open",
-          denyRead: ["/foo"],
-        },
-      }),
-    ).toContain("(deny file-read*");
-  });
+        filesystem: { defaultReadAccess: "open", denyRead: ["/foo"] },
+      });
+      // Must use explicit operation names — NOT file-read* wildcard (silent no-op in seatbelt)
+      expect(profile).toContain('(deny file-read-data (subpath "/foo"))');
+      expect(profile).toContain('(deny file-read-metadata (subpath "/foo"))');
+      expect(profile).not.toContain("file-read*");
+    },
+  );
 
   test.skipIf(process.platform !== "darwin")("renders allowWrite rules", () => {
     expect(
@@ -79,8 +81,9 @@ describe("generateSeatbeltProfile", () => {
         ...BASE_PROFILE,
         filesystem: { defaultReadAccess: "open", denyRead: ["/var/db/sudo"] },
       });
-      expect(profile).toContain('(deny file-read* (subpath "/private/var/db/sudo"))');
-      expect(profile).not.toContain('(deny file-read* (subpath "/var/db/sudo"))');
+      expect(profile).toContain('(deny file-read-data (subpath "/private/var/db/sudo"))');
+      expect(profile).toContain('(deny file-read-metadata (subpath "/private/var/db/sudo"))');
+      expect(profile).not.toContain('(subpath "/var/db/sudo")');
     },
   );
 
@@ -113,8 +116,9 @@ describe("generateSeatbeltProfile", () => {
         { ...BASE_PROFILE, filesystem: { defaultReadAccess: "open", denyRead: ["~/.ssh"] } },
         { home: "/custom/home" },
       );
-      expect(profile).toContain('(deny file-read* (subpath "/custom/home/.ssh"))');
-      expect(profile).not.toContain(process.env["HOME"] ?? "__no_home__");
+      expect(profile).toContain('(deny file-read-data (subpath "/custom/home/.ssh"))');
+      expect(profile).toContain('(deny file-read-metadata (subpath "/custom/home/.ssh"))');
+      expect(profile).not.toContain(process.env.HOME ?? "__no_home__");
     },
   );
 });
