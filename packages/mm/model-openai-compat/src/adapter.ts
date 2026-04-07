@@ -9,6 +9,7 @@
  */
 
 import type { ModelAdapter, ModelChunk, ModelRequest, ModelResponse } from "@koi/core";
+import { computeStringHash } from "@koi/hash";
 import { mapProviderError } from "./error-mapper.js";
 import { buildRequestBody } from "./request-mapper.js";
 import { buildModelResponse, createEmptyAccumulator } from "./response-mapper.js";
@@ -23,7 +24,7 @@ import {
 } from "./retry.js";
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
-import type { OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
+import type { ChatCompletionTool, OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
 import { resolveConfig } from "./types.js";
 
 /** Stream idle timeout — abort hung streams after 90s of no data. */
@@ -196,6 +197,29 @@ async function* streamWithRetry(
 }
 
 // ---------------------------------------------------------------------------
+// Prompt prefix fingerprint — deterministic hash of the system prompt + sorted
+// tool payload. This covers the *static* portion of the provider-visible prefix
+// that should remain stable across turns for KV cache continuity.
+//
+// This does NOT include conversation messages (which change every turn by
+// definition). The intent is to detect unexpected prefix drift from tool
+// reordering, banner changes, or schema mutations — not to predict overall
+// cache hit/miss (which also depends on message history). (#1554)
+// ---------------------------------------------------------------------------
+
+function computePrefixFingerprint(
+  systemPrompt: string | undefined,
+  tools: readonly ChatCompletionTool[] | undefined,
+): string {
+  // Hash the exact payload sent on the wire: system prompt + full sorted tool
+  // definitions (name, description, parameters). Using JSON.stringify on the
+  // already-sorted mapped tools ensures schema/description changes are detected.
+  const toolPart = tools !== undefined ? JSON.stringify(tools) : "";
+  const input = `${systemPrompt ?? ""}\0${toolPart}`;
+  return computeStringHash(input);
+}
+
+// ---------------------------------------------------------------------------
 // Single stream attempt (no retry)
 // ---------------------------------------------------------------------------
 
@@ -207,6 +231,9 @@ async function* streamOnce(
   const tools =
     request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
+  // Fingerprint the actual wire payload (sorted tools + system prompt) so
+  // diagnostics accurately reflect provider-visible prefix changes.
+  const promptPrefixFingerprint = computePrefixFingerprint(request.systemPrompt, tools);
   const url = `${config.baseUrl}/chat/completions`;
 
   // Stream idle watchdog — create BEFORE fetch so the signal can cancel
@@ -405,7 +432,14 @@ async function* streamOnce(
       yield chunk;
     }
 
-    yield { kind: "done", response: buildModelResponse(acc) };
+    const response = buildModelResponse(acc);
+    yield {
+      kind: "done",
+      response: {
+        ...response,
+        metadata: { ...response.metadata, promptPrefixFingerprint },
+      },
+    };
   } catch (error: unknown) {
     clearIdleTimer();
     if (request.signal?.aborted === true) return;

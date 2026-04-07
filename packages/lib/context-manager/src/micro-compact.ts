@@ -16,6 +16,23 @@
  * - "micro-truncate": truncated to within target budget
  * - "micro-truncate-partial": truncated as aggressively as possible
  *   but could not reach target budget (callers should promote to full compact)
+ *
+ * ## Prompt cache interaction (#1554)
+ *
+ * Prompt caching providers (Anthropic, OpenAI) cache the KV state from
+ * the request prefix. Dropping messages shifts all subsequent token
+ * positions, invalidating the cached prefix even if the system prompt
+ * and tool definitions are unchanged.
+ *
+ * A future optimization could prefer dropping messages that precede the
+ * last provider-reported cache breakpoint, preserving the cached prefix.
+ * This requires cache-boundary metadata from the model adapter (e.g.,
+ * `cacheReadTokens` from the response), which is not yet propagated to
+ * the context manager.
+ *
+ * Additionally, `structured-output-guard` mutates the system prompt
+ * during `wrapModelCall`, which is another source of prefix instability
+ * independent of compaction — tracked separately.
  */
 
 import type { TokenEstimator } from "@koi/core";

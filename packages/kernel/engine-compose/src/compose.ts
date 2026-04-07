@@ -554,6 +554,42 @@ function estimateTokensFromChars(charCount: number): number {
 }
 
 /**
+ * Computes the capability banner text from middleware, applying optional
+ * token-budget truncation. Returns `undefined` if no middleware contributes
+ * capability fragments.
+ *
+ * Extracted from `injectCapabilities` so callers (e.g., `koi.ts`) can cache
+ * the banner across stop-gate retries for prompt-cache stability (#1554).
+ */
+export function computeCapabilityBanner(
+  middleware: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  config?: CapabilityInjectionConfig,
+): string | undefined {
+  const allFragments = collectCapabilities(middleware, ctx);
+  if (allFragments.length === 0) return undefined;
+
+  // Apply maxCapabilityTokens truncation from the end
+  let fragments: readonly CapabilityFragment[];
+  if (config?.maxCapabilityTokens !== undefined) {
+    let totalChars = "[Active Capabilities]\n".length;
+    const kept: CapabilityFragment[] = [];
+    for (const f of allFragments) {
+      const lineChars = `- **${f.label}**: ${f.description}\n`.length;
+      if (estimateTokensFromChars(totalChars + lineChars) > config.maxCapabilityTokens) break;
+      totalChars += lineChars;
+      kept.push(f);
+    }
+    if (kept.length === 0) return undefined;
+    fragments = kept;
+  } else {
+    fragments = allFragments;
+  }
+
+  return formatCapabilityBanner(fragments);
+}
+
+/**
  * Injects capability descriptions into a ModelRequest's trusted systemPrompt
  * channel. Prepends to any existing systemPrompt so the engine's capability
  * banner sits before agent-supplied instructions.
@@ -579,27 +615,9 @@ export function injectCapabilities(
   request: ModelRequest,
   config?: CapabilityInjectionConfig,
 ): ModelRequest {
-  const allFragments = collectCapabilities(middleware, ctx);
-  if (allFragments.length === 0) return request;
+  const banner = computeCapabilityBanner(middleware, ctx, config);
+  if (banner === undefined) return request;
 
-  // Apply maxCapabilityTokens truncation from the end
-  let fragments: readonly CapabilityFragment[];
-  if (config?.maxCapabilityTokens !== undefined) {
-    let totalChars = "[Active Capabilities]\n".length;
-    const kept: CapabilityFragment[] = [];
-    for (const f of allFragments) {
-      const lineChars = `- **${f.label}**: ${f.description}\n`.length;
-      if (estimateTokensFromChars(totalChars + lineChars) > config.maxCapabilityTokens) break;
-      totalChars += lineChars;
-      kept.push(f);
-    }
-    if (kept.length === 0) return request;
-    fragments = kept;
-  } else {
-    fragments = allFragments;
-  }
-
-  const banner = formatCapabilityBanner(fragments);
   const systemPrompt =
     request.systemPrompt !== undefined ? `${banner}\n\n${request.systemPrompt}` : banner;
   return { ...request, systemPrompt };
