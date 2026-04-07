@@ -48,6 +48,15 @@ function clampLimit(raw: unknown): number {
   return Math.min(Math.max(1, n), MAX_LIST_LIMIT);
 }
 
+/** Validate an optional enum field. Returns undefined if not provided, throws if invalid. */
+function validateEnum(raw: unknown, field: string, allowed: readonly string[]): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string" || !allowed.includes(raw)) {
+    throw new Error(`Invalid ${field}: must be one of ${allowed.join(", ")}`);
+  }
+  return raw;
+}
+
 function unwrapResult<T>(result: Result<T, KoiError>, action: string): T {
   if (!result.ok) {
     throw new Error(`${action}: ${result.error.message}`);
@@ -155,10 +164,11 @@ function createListMessagesTool(mailbox: MailboxComponent): Tool {
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
       const limit = clampLimit(args.limit);
+      const kind = validateEnum(args.kind, "kind", ["request", "response", "event", "cancel"]);
       const filter: Record<string, unknown> = { limit };
-      if (args.kind !== undefined) filter.kind = String(args.kind);
-      if (args.type !== undefined) filter.type = String(args.type);
-      if (args.from !== undefined) filter.from = String(args.from);
+      if (kind !== undefined) filter.kind = kind;
+      if (args.type !== undefined) filter.type = requireString(args.type, "type");
+      if (args.from !== undefined) filter.from = requireString(args.from, "from");
 
       const messages = await mailbox.list(filter as Parameters<MailboxComponent["list"]>[0]);
       return messages.map((m) => ({
@@ -198,7 +208,13 @@ function createListTasksTool(taskBoard: ManagedTaskBoard): Tool {
     async execute(args: JsonObject): Promise<unknown> {
       const limit = clampLimit(args.limit);
       const board = taskBoard.snapshot();
-      const status = args.status as string | undefined;
+      const status = validateEnum(args.status, "status", [
+        "pending",
+        "in_progress",
+        "completed",
+        "failed",
+        "killed",
+      ]);
 
       const statusMethodMap: Record<string, () => readonly Task[]> = {
         pending: () => board.pending(),
@@ -301,11 +317,14 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
             throw new Error(`Output exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
           }
           const output = rawOutput;
+          // Compute duration from task timestamps when available
+          const task = taskBoard.snapshot().get(id);
+          const durationMs = task !== undefined ? Math.max(0, Date.now() - task.updatedAt) : 0;
           unwrapResult(
             await taskBoard.completeOwnedTask(id, callerId, {
               taskId: id,
               output,
-              durationMs: 0,
+              durationMs,
             }),
             "complete task",
           );
@@ -389,16 +408,17 @@ function createListAgentsTool(callerId: AgentId, registry: AgentRegistry): Tool 
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
       const visibility: VisibilityContext = { callerId };
+      const validPhases = [
+        "created",
+        "running",
+        "waiting",
+        "suspended",
+        "idle",
+        "terminated",
+      ] as const;
+      const phase = validateEnum(args.phase, "phase", validPhases);
       const filter =
-        args.phase !== undefined
-          ? {
-              phase: String(args.phase) as Parameters<AgentRegistry["list"]>[0] extends infer F
-                ? F extends { readonly phase?: infer P }
-                  ? P
-                  : never
-                : never,
-            }
-          : undefined;
+        phase !== undefined ? { phase: phase as (typeof validPhases)[number] } : undefined;
 
       const entries = await registry.list(filter, visibility);
       return entries.map((e) => ({

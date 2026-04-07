@@ -86,14 +86,18 @@ function sanitizeValue(value: unknown): unknown {
  */
 export function registerHandlers(server: Server, toolCache: ToolCache): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const entries = toolCache.list();
-    return {
-      tools: entries.map((e) => ({
-        name: e.descriptor.name,
-        description: e.descriptor.description,
-        inputSchema: mapInputSchema(e.descriptor.inputSchema),
-      })),
-    };
+    try {
+      const entries = toolCache.list();
+      return {
+        tools: entries.map((e) => ({
+          name: e.descriptor.name,
+          description: e.descriptor.description,
+          inputSchema: mapInputSchema(e.descriptor.inputSchema),
+        })),
+      };
+    } catch (_err: unknown) {
+      return { tools: [] };
+    }
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -115,16 +119,15 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
       };
     }
 
-    const entry = toolCache.get(name);
-    if (entry === undefined) {
-      return {
-        content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
-        isError: true,
-      };
-    }
-
     const controller = new AbortController();
     try {
+      const entry = toolCache.get(name);
+      if (entry === undefined) {
+        return {
+          content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
+          isError: true,
+        };
+      }
       const result = await withTimeout(
         entry.execute(sanitizeArgs(rawArgs), { signal: controller.signal }),
         TOOL_TIMEOUT_MS,
