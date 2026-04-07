@@ -5,7 +5,7 @@
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
 import type { Accessor, JSX } from "solid-js";
-import { For, Match, Show, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
 import { TextBlock } from "./text-block.js";
@@ -112,6 +112,9 @@ function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
 
 const THINKING_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+/** Duration after which "thought for Xs" label auto-hides. */
+const THOUGHT_LABEL_HIDE_MS = 3000;
+
 function AssistantMessage(props: {
   readonly message: AssistantMessage_;
   readonly syntaxStyle?: SyntaxStyle | undefined;
@@ -122,12 +125,41 @@ function AssistantMessage(props: {
   const isThinking = () =>
     props.message.streaming && props.message.blocks.length === 0;
 
+  // Track thinking duration (like Claude Code's "thought for 3s")
+  // `let` justified: mutable timestamp for duration calculation
+  let thinkingStartedAt = 0;
+  const [thoughtDuration, setThoughtDuration] = createSignal<number | null>(null);
+
+  // When thinking starts, record timestamp
+  createEffect(
+    on(isThinking, (thinking: boolean, wasThinking: boolean | undefined) => {
+      if (thinking && !wasThinking) {
+        thinkingStartedAt = Date.now();
+        setThoughtDuration(null);
+      }
+      if (!thinking && wasThinking && thinkingStartedAt > 0) {
+        const duration = Math.round((Date.now() - thinkingStartedAt) / 1000);
+        if (duration >= 1) {
+          setThoughtDuration(duration);
+          // Auto-hide after 3 seconds
+          setTimeout(() => setThoughtDuration(null), THOUGHT_LABEL_HIDE_MS);
+        }
+        thinkingStartedAt = 0;
+      }
+    }),
+  );
+
   return (
     <box flexDirection="column">
       <Show when={isThinking()}>
         <text fg="gray">
           {THINKING_SPINNER[props.spinnerFrame() % THINKING_SPINNER.length] ?? "⠋"}{" "}
           <i>Thinking…</i>
+        </text>
+      </Show>
+      <Show when={thoughtDuration() !== null}>
+        <text fg="gray">
+          <i>∴ thought for {thoughtDuration()}s</i>
         </text>
       </Show>
       <For each={props.message.blocks}>
