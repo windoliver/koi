@@ -57,6 +57,10 @@ export function validateMcpServerConfig(config: McpServerConfig): void {
   const p = config.platform;
   if (p === undefined) return;
 
+  if (typeof p.callerId !== "string" || p.callerId.length === 0) {
+    throw new Error("McpServerConfig.platform.callerId is required and must be a non-empty string");
+  }
+
   if (p.mailbox === undefined && p.taskBoard === undefined && p.registry === undefined) {
     throw new Error(
       "McpServerConfig.platform requires at least one subsystem handle (mailbox, taskBoard, or registry)",

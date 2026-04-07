@@ -109,6 +109,11 @@ function createSendMessageTool(callerId: AgentId, mailbox: MailboxComponent): To
       ) {
         throw new Error("payload must be a JSON object");
       }
+      // Enforce serialized size limit on payload
+      const serialized = JSON.stringify(rawPayload ?? {});
+      if (serialized.length > MAX_PAYLOAD_CHARS) {
+        throw new Error(`payload exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
+      }
       const to = requireString(args.to, "to");
       const type = requireString(args.type, "type");
       const sendResult = await mailbox.send({

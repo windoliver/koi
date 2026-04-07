@@ -78,8 +78,13 @@ export function createMcpServer(config: McpServerConfig): McpServer {
 
   return {
     start: async (): Promise<void> => {
-      await sdkServer.connect(config.transport);
-      connected = true;
+      try {
+        await sdkServer.connect(config.transport);
+        connected = true;
+      } catch (err: unknown) {
+        toolCache.dispose();
+        throw err;
+      }
     },
     stop: async (): Promise<void> => {
       connected = false;
