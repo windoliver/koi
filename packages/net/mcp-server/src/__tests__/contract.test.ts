@@ -395,7 +395,9 @@ describe("tools/call — platform tools", () => {
     const parsed = JSON.parse(getText(result));
     expect(parsed.id).toBe("t-1");
     expect(parsed.description).toBeDefined();
-    expect(parsed.metadata).toBeDefined();
+    // metadata and activeForm excluded from MCP projection
+    expect(parsed.metadata).toBeUndefined();
+    expect(parsed.activeForm).toBeUndefined();
     await server.stop();
   });
 

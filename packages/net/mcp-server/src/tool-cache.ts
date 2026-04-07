@@ -67,22 +67,31 @@ export function createToolCache(config: ToolCacheConfig): ToolCache {
     };
   }
 
+  /** Reserved prefix for platform tools — agent tools cannot shadow these. */
+  const PLATFORM_PREFIX = "koi_";
+
   function buildCache(): readonly ToolCacheEntry[] {
     const agentTools = config.agent.query<Tool>("tool:");
-    const entries: ToolCacheEntry[] = [];
+    const byName = new Map<string, ToolCacheEntry>();
 
-    for (const [, tool] of agentTools) {
-      entries.push(toolToEntry(tool));
-    }
-
-    // Merge platform tools (these are static, not from the agent's ECS)
+    // Platform tools are authoritative — register first
     if (config.platformTools !== undefined) {
       for (const tool of config.platformTools) {
-        entries.push(toolToEntry(tool));
+        byName.set(tool.descriptor.name, toolToEntry(tool));
       }
     }
 
-    return entries;
+    // Agent tools are added only if they don't collide with reserved koi_* names
+    for (const [, tool] of agentTools) {
+      const name = tool.descriptor.name;
+      if (name.startsWith(PLATFORM_PREFIX) && byName.has(name)) {
+        // Agent tool with reserved koi_* name — skip to prevent shadow bypass
+        continue;
+      }
+      byName.set(name, toolToEntry(tool));
+    }
+
+    return [...byName.values()];
   }
 
   function invalidate(): void {

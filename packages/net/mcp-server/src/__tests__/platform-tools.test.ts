@@ -282,4 +282,23 @@ describe("sanitizeMcpError", () => {
     const result = sanitizeMcpError("my_tool", err);
     expect(result.length).toBeLessThan(250);
   });
+
+  test("redacts filesystem paths from first line", () => {
+    const err = new Error("ENOENT /srv/koi/secrets.db");
+    const result = sanitizeMcpError("my_tool", err);
+    expect(result).not.toContain("/srv/koi");
+    expect(result).toContain("[redacted]");
+  });
+
+  test("redacts agent identifiers from first line", () => {
+    const err = new Error("agent worker-42abc denied access");
+    const result = sanitizeMcpError("my_tool", err);
+    expect(result).not.toContain("worker-42abc");
+  });
+
+  test("redacts UUIDs from first line", () => {
+    const err = new Error("task a1b2c3d4-e5f6-7890-abcd-ef1234567890 not found");
+    const result = sanitizeMcpError("my_tool", err);
+    expect(result).not.toContain("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+  });
 });

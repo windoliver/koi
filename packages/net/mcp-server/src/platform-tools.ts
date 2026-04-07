@@ -216,6 +216,7 @@ function createGetTaskTool(taskBoard: ManagedTaskBoard): Tool {
       if (task === undefined) {
         return { error: "NOT_FOUND", message: `Task ${id} not found` };
       }
+      // Explicit allowlist — excludes metadata, activeForm, error internals
       return {
         id: task.id,
         subject: task.subject,
@@ -223,9 +224,7 @@ function createGetTaskTool(taskBoard: ManagedTaskBoard): Tool {
         status: task.status,
         assignedTo: task.assignedTo ?? null,
         dependencies: task.dependencies,
-        activeForm: task.activeForm ?? null,
         retries: task.retries,
-        metadata: task.metadata ?? {},
         createdAt: task.createdAt,
         updatedAt: task.updatedAt,
       };
