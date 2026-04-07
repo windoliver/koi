@@ -20,6 +20,11 @@ export interface LocalShellConfig {
   readonly cwd?: string | undefined;
   readonly env?: Readonly<Record<string, string>> | undefined;
   readonly timeout?: number | undefined;
+  /**
+   * Called when the subprocess exits naturally.
+   * The runner uses this to transition the task on the board.
+   */
+  readonly onExit?: (code: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +45,11 @@ async function pipeStream(
       if (value !== undefined) {
         output.write(decoder.decode(value, { stream: true }));
       }
+    }
+    // Flush any remaining bytes buffered in the decoder (e.g. split multibyte chars)
+    const trailing = decoder.decode();
+    if (trailing.length > 0) {
+      output.write(trailing);
     }
   } catch {
     // Stream may be closed when process is killed — swallow
@@ -83,18 +93,21 @@ export function createLocalShellLifecycle(): TaskKindLifecycle<LocalShellConfig,
       void pipeStream(proc.stdout, output);
       void pipeStream(proc.stderr, output);
 
-      // Write exit code when process completes
-      void proc.exited.then((code) => {
-        output.write(`\n[exit code: ${String(code)}]\n`);
-      });
-
       // Optional timeout
+      // let justified: mutable because it's set conditionally and cleared on exit
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           controller.abort();
         }, config.timeout);
       }
+
+      // Write exit code when process completes and notify runner
+      void proc.exited.then((code) => {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        output.write(`\n[exit code: ${String(code)}]\n`);
+        config.onExit?.(code);
+      });
 
       return {
         kind: "local_shell",

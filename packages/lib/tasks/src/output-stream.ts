@@ -13,6 +13,8 @@
 export interface OutputChunk {
   readonly offset: number;
   readonly content: string;
+  /** UTF-8 byte length of content. */
+  readonly byteLength: number;
   readonly timestamp: number;
 }
 
@@ -40,6 +42,7 @@ export interface OutputStreamConfig {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024; // 8MB
+const encoder = new TextEncoder();
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -64,7 +67,7 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
     while (bufferedBytes > maxBytes && chunks.length > 1) {
       const evicted = chunks[0]!;
       chunks = chunks.slice(1);
-      bufferedBytes -= evicted.content.length;
+      bufferedBytes -= evicted.byteLength;
     }
   };
 
@@ -77,7 +80,7 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
     let hi = chunks.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (chunks[mid]!.offset + chunks[mid]!.content.length <= targetOffset) {
+      if (chunks[mid]!.offset + chunks[mid]!.byteLength <= targetOffset) {
         lo = mid + 1;
       } else {
         hi = mid;
@@ -94,22 +97,44 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
   };
 
   const write = (content: string): number => {
+    const now = Date.now();
+    const contentByteLength = encoder.encode(content).byteLength;
+
+    // Split oversized writes into bounded chunks so eviction can reclaim memory.
+    // Without this, a single write larger than maxBytes would bypass the cap.
+    if (contentByteLength > maxBytes) {
+      // let justified: index advances through the oversized content
+      let pos = 0;
+      while (pos < content.length) {
+        // Approximate char-level split; actual byte accounting is per-chunk
+        const slice = content.slice(pos, pos + maxBytes);
+        writeChunk(slice, now);
+        pos += maxBytes;
+      }
+    } else {
+      writeChunk(content, now);
+    }
+
+    return totalBytes;
+  };
+
+  const writeChunk = (content: string, timestamp: number): void => {
+    const bytes = encoder.encode(content).byteLength;
     const chunk: OutputChunk = {
       offset: totalBytes,
       content,
-      timestamp: Date.now(),
+      byteLength: bytes,
+      timestamp,
     };
     chunks.push(chunk);
-    totalBytes += content.length;
-    bufferedBytes += content.length;
+    totalBytes += bytes;
+    bufferedBytes += bytes;
 
     evict();
 
     for (const listener of listeners) {
       listener(chunk);
     }
-
-    return totalBytes;
   };
 
   const subscribe = (listener: (chunk: OutputChunk) => void): (() => void) => {

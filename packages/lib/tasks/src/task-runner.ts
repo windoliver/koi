@@ -111,12 +111,31 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     const boardResult = await board.startTask(taskId, agentId);
     if (!boardResult.ok) return boardResult;
 
-    // Create output stream and start the lifecycle
+    // Create output stream and start the lifecycle.
+    // Wrap in try/catch: if lifecycle.start() rejects, fail the task on the board
+    // so it doesn't remain stuck in_progress with no runtime handle.
     const output = createOutputStream(outputStreamConfig);
-    const state = await lifecycle.start(taskId, output, taskConfig);
-
-    activeTasks.set(taskId, state);
-    return { ok: true, value: state };
+    try {
+      const state = await lifecycle.start(taskId, output, taskConfig);
+      activeTasks.set(taskId, state);
+      return { ok: true, value: state };
+    } catch (err: unknown) {
+      // Lifecycle failed to start — fail the task on the board
+      const message = err instanceof Error ? err.message : String(err);
+      await board.failOwnedTask(taskId, agentId, {
+        code: "EXTERNAL",
+        message: `Lifecycle start failed: ${message}`,
+        retryable: false,
+      });
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Failed to start task "${taskId}": ${message}`,
+          retryable: false,
+        },
+      };
+    }
   };
 
   const stop = async (
@@ -134,16 +153,17 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
       };
     }
 
-    // Clean up runtime state
+    // Transition board first — if this fails (e.g. ownership changed),
+    // we keep the runtime state so the caller can retry or read output.
+    const boardResult = await board.killOwnedTask(taskId, agentId);
+    if (!boardResult.ok) return boardResult;
+
+    // Board succeeded — now clean up runtime state
     const lifecycle = registry.get(task.kind);
     if (lifecycle !== undefined) {
       await lifecycle.stop(task);
     }
     activeTasks.delete(taskId);
-
-    // Transition board to killed
-    const boardResult = await board.killOwnedTask(taskId, agentId);
-    if (!boardResult.ok) return boardResult;
 
     return { ok: true, value: undefined };
   };
