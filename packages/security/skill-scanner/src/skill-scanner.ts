@@ -19,10 +19,10 @@ export interface CodeBlock {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Matches any opening fence (``` or ~~~ or longer variants, optionally indented by up to 3
-// spaces as allowed by CommonMark), optionally followed by a lang/info-string.
-// We capture the fence char (group 1) and the first word of the info-string (group 2).
-const OPENING_FENCE_RE = /^ {0,3}([`~]{3,})\s*(\S*)/;
+// Opening fence regexes: homogeneous runs only (no mixed ` and ~).
+// Per CommonMark §4.5, backtick info strings must not contain backticks.
+const OPENING_FENCE_BACKTICK_RE = /^ {0,3}(`{3,})\s*([^`]*)/;
+const OPENING_FENCE_TILDE_RE = /^ {0,3}(~{3,})\s*(\S*)/;
 // Closing fence regexes: homogeneous runs only (no mixed ` and ~).
 // Per CommonMark §4.5, the closing fence must be the same character repeated ≥ openLen times.
 const CLOSING_FENCE_BACKTICK_RE = /^ {0,3}(`{3,})\s*$/;
@@ -113,10 +113,10 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
     if (line === undefined) continue;
 
     if (!inBlock) {
-      const openMatch = OPENING_FENCE_RE.exec(line);
+      const openMatch = OPENING_FENCE_BACKTICK_RE.exec(line) ?? OPENING_FENCE_TILDE_RE.exec(line);
       if (openMatch !== null) {
         const fence = openMatch[1] ?? "```";
-        const lang = (openMatch[2] ?? "").toLowerCase();
+        const lang = (openMatch[2] ?? "").trim().split(/\s/)[0]?.toLowerCase() ?? "";
         // Fail-closed: scan everything EXCEPT unambiguously non-executable langs.
         // Unknown or empty lang tags are treated as JS/TS and scanned.
         if (!SKIP_LANGS.has(lang)) {

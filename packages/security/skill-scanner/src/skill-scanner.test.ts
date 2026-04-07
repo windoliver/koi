@@ -97,4 +97,29 @@ describe("extractCodeBlocks — fence length enforcement (CommonMark §6.1)", ()
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.code).toContain('eval("indented close")');
   });
+
+  test("mixed-character opener is not recognized as a fence", () => {
+    const md = ["`~`ts", 'eval("not a block");', "`~`"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(0);
+  });
+
+  test("backtick opener with backtick in info string still scans (fail-closed)", () => {
+    // CommonMark §4.5: backtick info string must not contain backticks.
+    // Our regex stops capturing at the backtick, so lang="ts" (valid).
+    // Fail-closed: the code IS scanned, which is the safe behavior.
+    const md = ["``` ts` extra", 'eval("smuggled");', "```"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("smuggled")');
+  });
+
+  test("closer with trailing non-whitespace does not terminate block", () => {
+    const md = ["```ts", 'eval("inside");', "``` still going", 'eval("also inside");', "```"].join(
+      "\n",
+    );
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("also inside")');
+  });
 });
