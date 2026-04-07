@@ -24,7 +24,7 @@ import {
 } from "./retry.js";
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
-import type { OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
+import type { ChatCompletionTool, OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
 import { resolveConfig } from "./types.js";
 
 /** Stream idle timeout — abort hung streams after 90s of no data. */

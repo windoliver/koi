@@ -21,7 +21,11 @@ function computeCacheFingerprint(
   return computeStringHash(input);
 }
 
-function tool(name: string, description = "desc", params = { type: "object" }): ChatCompletionTool {
+function tool(
+  name: string,
+  description = "desc",
+  params: Record<string, unknown> = { type: "object" },
+): ChatCompletionTool {
   return { type: "function", function: { name, description, parameters: params } };
 }
 
