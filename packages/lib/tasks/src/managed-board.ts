@@ -28,7 +28,11 @@ import type {
   TaskPatch,
   TaskResult,
 } from "@koi/core";
-import { createTaskBoard, mapTaskBoardEventToEngineEvents } from "@koi/task-board";
+import {
+  buildPlanUpdate,
+  createTaskBoard,
+  mapTaskBoardEventToEngineEvents,
+} from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -199,6 +203,12 @@ export async function createManagedTaskBoard(
 
   // let justified: board is mutable state managed by the managed board
   let board = createTaskBoard(resolvedConfig, { items, results: initialResults });
+
+  // Emit initial snapshot so hydrated tasks are visible immediately
+  if (hasEngineBridge && board.size() > 0) {
+    const snapshot = buildPlanUpdate(board, agentId, Date.now());
+    onEngineEvent(snapshot);
+  }
 
   // Async mutex: mutations queue behind the previous one to prevent
   // two callers from deriving from the same base board concurrently.

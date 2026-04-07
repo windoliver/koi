@@ -33,8 +33,11 @@ function findBlocker(task: Task, board: TaskBoard): TaskItemId | undefined {
   return undefined;
 }
 
-/** Builds a lightweight plan_update snapshot from the post-mutation board. */
-function buildPlanUpdate(
+/**
+ * Builds a plan_update EngineEvent from the current board state.
+ * Used internally by the bridge and exported for initial snapshot emission.
+ */
+export function buildPlanUpdate(
   board: TaskBoard,
   agentId: AgentId,
   timestamp: number,
