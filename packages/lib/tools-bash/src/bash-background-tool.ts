@@ -62,6 +62,8 @@ export interface BashBackgroundToolBundle {
 interface ActiveProcess {
   readonly proc: ChildProcess;
   readonly abortController: AbortController;
+  /** SIGKILL escalation timer — must be cleared when process exits to avoid killing reused PIDs. */
+  killTimer?: ReturnType<typeof setTimeout>;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +148,16 @@ export function createBashBackgroundTool(
         };
       }
 
+      // Reject non-durable boards — background task output must survive restart.
+      // Same guard as task-update tools to prevent silent result loss.
+      if (!config.board.hasResultPersistence()) {
+        return {
+          error:
+            "Background tasks require a board with result persistence. " +
+            "Configure a resultsDir on the ManagedTaskBoard.",
+        };
+      }
+
       // Register task on the board
       const taskId = await config.board.nextId();
       const addResult = await config.board.add({
@@ -190,12 +202,14 @@ export function createBashBackgroundTool(
         detached: true,
       });
 
-      active.set(String(taskId), { proc, abortController });
+      const entry: ActiveProcess = { proc, abortController };
+      active.set(String(taskId), entry);
 
       // Wire timeout
       const timer = setTimeout(() => abortController.abort(), timeoutMs);
 
-      // Wire abort signal to process kill
+      // Wire abort signal to process kill — stores SIGKILL escalation timer
+      // on the active entry so drainAndComplete can clear it after exit.
       const onAbort = (): void => {
         const pid = proc.pid;
         if (pid === undefined) return;
@@ -208,7 +222,7 @@ export function createBashBackgroundTool(
             /* already exited */
           }
         }
-        setTimeout(() => {
+        entry.killTimer = setTimeout(() => {
           try {
             if (pid !== undefined) process.kill(-pid, "SIGKILL");
           } catch {
@@ -294,14 +308,26 @@ async function drainAndComplete(
     const exitCode = await exited;
 
     clearTimeout(timer);
+    // Clear SIGKILL escalation timer to prevent killing a reused PID/process group
+    const entry = active.get(String(taskId));
+    if (entry?.killTimer !== undefined) clearTimeout(entry.killTimer);
     active.delete(String(taskId));
 
     if (spawnError !== undefined) {
-      await board.failOwnedTask(taskId, agentId, {
+      const failResult = await board.failOwnedTask(taskId, agentId, {
         code: "EXTERNAL",
         message: `Spawn failed: ${spawnError.message}`,
         retryable: false,
       });
+      // If fail itself failed (ownership conflict, store error), force-fail
+      // so the task doesn't stay stuck in_progress forever.
+      if (!failResult.ok) {
+        await board.fail(taskId, {
+          code: "EXTERNAL",
+          message: `Spawn failed and failOwnedTask rejected: ${failResult.error.message}`,
+          retryable: false,
+        });
+      }
       return;
     }
 
@@ -313,7 +339,7 @@ async function drainAndComplete(
       .filter(Boolean)
       .join("\n\n");
 
-    await board.completeOwnedTask(taskId, agentId, {
+    const completeResult = await board.completeOwnedTask(taskId, agentId, {
       taskId,
       output,
       durationMs: 0, // not tracked for background tasks
@@ -324,6 +350,15 @@ async function drainAndComplete(
         truncated: stdoutResult.truncated || stderrResult.truncated,
       },
     });
+    // If completion failed (ownership conflict, persistence error), mark failed
+    // so the task doesn't stay stuck in_progress.
+    if (!completeResult.ok) {
+      await board.fail(taskId, {
+        code: "EXTERNAL",
+        message: `Background task ran but completeOwnedTask rejected: ${completeResult.error.message}`,
+        retryable: false,
+      });
+    }
   } catch {
     // Best-effort — if board update fails, the task stays in_progress
     // and can be cleaned up by the coordinator.

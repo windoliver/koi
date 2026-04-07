@@ -33,7 +33,7 @@ function createMockBoard(): ManagedTaskBoard & { readonly tasks: Map<string, Tas
   const board = {
     tasks,
     snapshot: () => ({}) as TaskBoard,
-    hasResultPersistence: () => false,
+    hasResultPersistence: () => true,
     nextId: async () => {
       const id = String(nextIdCounter++) as TaskItemId;
       return id;

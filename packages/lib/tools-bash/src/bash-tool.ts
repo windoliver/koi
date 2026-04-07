@@ -136,10 +136,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
     policy.defaultTimeoutMs ?? DEFAULT_BASH_POLICY.defaultTimeoutMs ?? 30_000;
 
   // Mutable tracked cwd — updated only on successful execution (exit 0).
-  // Each execute() call uses its own temp file (UUID), so concurrent calls
-  // are safe; last-writer-wins is acceptable for sequential LLM tool calls.
+  // Serialized: when trackCwd is on, execute() calls queue behind a promise
+  // chain so concurrent calls cannot race on the shared cwd state.
+  // Single-caller contract: each tool instance tracks ONE cwd. Do not share
+  // a trackCwd-enabled tool across independent agents/sessions.
   // let justified: mutable state for cwd tracking across sequential tool calls
   let trackedCwd = workspaceRoot;
+  // let justified: promise chain serializes execute() when trackCwd is on
+  let pending: Promise<unknown> = Promise.resolve();
 
   const cwdDescription = trackCwd
     ? "Working directory for the command. Must be within the workspace root. " +
@@ -196,50 +200,59 @@ export function createBashTool(config?: BashToolConfig): Tool {
         };
       }
 
-      // When trackCwd is on and no explicit cwd arg, use the tracked cwd
-      const cwd = typeof args.cwd === "string" ? args.cwd : trackCwd ? trackedCwd : workspaceRoot;
-      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
-
-      // Security classification pipeline (allowlist → injection → path → command)
-      // workspaceRoot is always set (defaults to process.cwd()) so containment
-      // is always enforced — cwd must resolve inside workspaceRoot.
-      const classifyOpts = {
-        cwd,
-        policy,
-        workspaceRoot,
-      };
-      const classification = classifyBashCommand(command, classifyOpts);
-      if (!classification.ok) {
-        return {
-          error: "Command blocked by security policy",
-          category: classification.category,
-          reason: classification.reason,
-          pattern: classification.pattern,
-        };
+      // When trackCwd is off, run without serialization for zero overhead
+      if (!trackCwd) {
+        const cwd = typeof args.cwd === "string" ? args.cwd : workspaceRoot;
+        const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
+        const classification = classifyBashCommand(command, { cwd, policy, workspaceRoot });
+        if (!classification.ok) {
+          return {
+            error: "Command blocked by security policy",
+            category: classification.category,
+            reason: classification.reason,
+            pattern: classification.pattern,
+          };
+        }
+        return spawnBash(command, cwd, timeoutMs, maxOutputBytes, signal, config?.wrapCommand);
       }
 
-      // Generate unique temp file path for cwd capture when tracking
-      const cwdFile = trackCwd ? join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`) : undefined;
+      // Serialize execution when trackCwd is on — prevents concurrent
+      // callers from racing on the shared trackedCwd state.
+      const prev = pending;
+      // release is always assigned before await returns — safe to call in finally
+      let release: (() => void) | undefined;
+      pending = new Promise<void>((r) => {
+        release = r;
+      });
+      await prev;
 
-      // When trackCwd is on, wrap the command with an EXIT trap that writes
-      // the final cwd to a temp file. The temp file is an out-of-band channel —
-      // not spoofable via stdout/stderr output.
-      const wrappedCommand =
-        cwdFile !== undefined
-          ? `__koi_cwd_file=${shellQuote(cwdFile)}\ntrap 'pwd -P > "$__koi_cwd_file" 2>/dev/null' EXIT\n${command}`
-          : command;
+      try {
+        const cwd = typeof args.cwd === "string" ? args.cwd : trackedCwd;
+        const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
 
-      const result = await spawnBash(
-        wrappedCommand,
-        cwd,
-        timeoutMs,
-        maxOutputBytes,
-        signal,
-        config?.wrapCommand,
-      );
+        const classification = classifyBashCommand(command, { cwd, policy, workspaceRoot });
+        if (!classification.ok) {
+          return {
+            error: "Command blocked by security policy",
+            category: classification.category,
+            reason: classification.reason,
+            pattern: classification.pattern,
+          };
+        }
 
-      // Read cwd from temp file and update tracked state (success-only)
-      if (cwdFile !== undefined) {
+        const cwdFile = join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`);
+        const wrappedCommand = `__koi_cwd_file=${shellQuote(cwdFile)}\ntrap 'pwd -P > "$__koi_cwd_file" 2>/dev/null' EXIT\n${command}`;
+
+        const result = await spawnBash(
+          wrappedCommand,
+          cwd,
+          timeoutMs,
+          maxOutputBytes,
+          signal,
+          config?.wrapCommand,
+        );
+
+        // Read cwd from temp file and update tracked state (success-only)
         try {
           if ("exitCode" in result && result.exitCode === 0) {
             const newCwd = readCwdFile(cwdFile);
@@ -251,13 +264,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
           cleanupCwdFile(cwdFile);
         }
 
-        // Attach current tracked cwd to the result
         if ("exitCode" in result) {
           return { ...result, cwd: trackedCwd };
         }
+        return result;
+      } finally {
+        release?.();
       }
-
-      return result;
     },
   };
 }
