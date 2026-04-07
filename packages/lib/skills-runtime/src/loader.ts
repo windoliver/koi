@@ -12,7 +12,7 @@
  */
 
 import { realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { severityAtOrAbove } from "@koi/validation";
@@ -250,7 +250,8 @@ async function loadSkillUncached(
     realRoot = ctx.skillsRoot;
   }
 
-  if (!realDir.startsWith(`${realRoot}/`) && realDir !== realRoot) {
+  const relToRoot = relative(realRoot, realDir);
+  if (relToRoot.startsWith("..") || relToRoot.startsWith("/")) {
     return {
       ok: false,
       error: {

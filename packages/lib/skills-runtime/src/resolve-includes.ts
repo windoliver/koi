@@ -2,17 +2,21 @@
  * Nested include resolution for Agent Skills Standard.
  *
  * Resolves `includes` directives from SKILL.md frontmatter, supporting:
- * - Relative paths (./file.md, ../sibling/file.md)
+ * - Relative paths (./file.md) within the skill directory only
  * - Recursive includes up to MAX_DEPTH
  * - Diamond deduplication (visited set)
- * - Security boundary enforcement (paths must stay within skillsRoot)
+ * - Security boundary enforcement (paths must stay within the skill's own directory)
+ *
+ * Includes are intentionally restricted to the skill's own directory tree.
+ * Cross-skill includes (../other-skill/...) are rejected to prevent one
+ * untrusted skill from reading or injecting content from sibling skills.
  *
  * Decision 14C: sequential resolution (not parallel) to preserve include order
  * and simplify error propagation.
  */
 
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 
 const MAX_DEPTH = 3;
@@ -33,14 +37,17 @@ export interface ResolvedInclude {
 /**
  * Resolves include directives from a skill's frontmatter.
  *
+ * Security: includes are restricted to the skill's own directory tree.
+ * Cross-skill includes (e.g. `../other-skill/file.md`) are rejected.
+ *
  * @param includes  - Array of relative paths from the frontmatter `includes` key.
  * @param skillDir  - Absolute path to the skill directory (contains SKILL.md).
- * @param skillsRoot - Absolute path to the skills root (security boundary).
+ * @param _skillsRoot - Unused; kept for API compatibility. Boundary is skillDir.
  */
 export async function resolveIncludes(
   includes: readonly string[],
   skillDir: string,
-  skillsRoot: string,
+  _skillsRoot: string,
 ): Promise<Result<readonly ResolvedInclude[], KoiError>> {
   const visited = new Set<string>();
 
@@ -52,24 +59,25 @@ export async function resolveIncludes(
     // If current file can't be resolved, proceed without self-exclusion
   }
 
-  // Resolve skillsRoot once — avoids redundant realpath calls per include
-  let realRoot: string; // let: assigned in try, used across all recursive calls
+  // Resolve the skill's own directory as the security boundary.
+  // includes may only reference files within this directory tree.
+  let realSkillDir: string; // let: assigned in try, used across all recursive calls
   try {
-    realRoot = await realpath(resolve(skillsRoot));
+    realSkillDir = await realpath(resolve(skillDir));
   } catch (cause: unknown) {
     return {
       ok: false,
       error: {
         code: "NOT_FOUND",
-        message: `Skills root directory not found: ${skillsRoot}`,
+        message: `Skill directory not found: ${skillDir}`,
         retryable: false,
         cause,
-        context: { skillsRoot },
+        context: { skillDir },
       },
     };
   }
 
-  return resolveRecursive(includes, skillDir, realRoot, visited, MAX_DEPTH);
+  return resolveRecursive(includes, skillDir, realSkillDir, visited, MAX_DEPTH);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,15 +108,17 @@ async function resolveOnePath(
     };
   }
 
-  // Security boundary: resolved path must stay within skillsRoot
-  if (!realPath.startsWith(`${realRoot}/`) && realPath !== realRoot) {
+  // Security boundary: resolved path must stay within the skill's own directory.
+  // Use path.relative() to avoid separator-specific startsWith comparisons.
+  const rel = relative(realRoot, realPath);
+  if (rel.startsWith("..") || rel.startsWith("/")) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: `Include path escapes skills root: ${includePath} resolves to ${realPath}, which is outside ${realRoot}. Only paths within the skills directory are allowed.`,
+        message: `Include path escapes skill directory: ${includePath} resolves to ${realPath}, which is outside ${realRoot}. Includes must stay within the skill's own directory.`,
         retryable: false,
-        context: { errorKind: "INCLUDE_PATH_VIOLATION", includePath, realPath, realRoot },
+        context: { errorKind: "INCLUDE_PATH_VIOLATION", includePath, realPath, skillDir: realRoot },
       },
     };
   }

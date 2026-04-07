@@ -13,6 +13,7 @@ import type {
   Expression,
   ForInStatement,
   IdentifierReference,
+  ImportDeclaration,
   ImportExpression,
   MemberExpression,
   NewExpression,
@@ -81,6 +82,7 @@ export interface ScanVisitorCallbacks {
   readonly onIdentifier?: (node: IdentifierReference) => void;
   readonly onStringLiteral?: (node: StringLiteral) => void;
   readonly onImportExpression?: (node: ImportExpression) => void;
+  readonly onImportDeclaration?: (node: ImportDeclaration) => void;
   readonly onBinaryExpression?: (node: BinaryExpression) => void;
   readonly onAssignmentExpression?: (node: AssignmentExpression) => void;
   readonly onVariableDeclarator?: (node: VariableDeclarator) => void;
@@ -115,6 +117,9 @@ export function visitAst(program: Program, callbacks: ScanVisitorCallbacks): voi
   }
   if (callbacks.onImportExpression !== undefined) {
     visitor.ImportExpression = callbacks.onImportExpression;
+  }
+  if (callbacks.onImportDeclaration !== undefined) {
+    visitor.ImportDeclaration = callbacks.onImportDeclaration;
   }
   if (callbacks.onBinaryExpression !== undefined) {
     visitor.BinaryExpression = callbacks.onBinaryExpression;

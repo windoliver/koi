@@ -25,6 +25,11 @@ const DANGEROUS_TIMER_APIS = new Set(["setTimeout", "setInterval"]);
 
 const DANGEROUS_MODULES = new Set(["child_process", "cluster", "dgram", "net", "tls", "vm"]);
 
+/** Strip `node:` prefix so both `"child_process"` and `"node:child_process"` match. */
+function normalizeModuleId(specifier: string): string {
+  return specifier.startsWith("node:") ? specifier.slice(5) : specifier;
+}
+
 const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval"]);
 
 const DANGEROUS_MEMBER_CALLS = new Set([
@@ -93,7 +98,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
           const firstArg = node.arguments[0];
           if (firstArg !== undefined) {
             const strVal = getStringValue(firstArg);
-            if (strVal !== undefined && DANGEROUS_MODULES.has(strVal)) {
+            if (strVal !== undefined && DANGEROUS_MODULES.has(normalizeModuleId(strVal))) {
               const loc = offsetToLocation(ctx.sourceText, node.start);
               findings.push({
                 rule: "dangerous-api:require-dangerous-module",
@@ -169,7 +174,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
     onImportExpression(node) {
       // Dynamic import with non-literal source
       const strVal = getStringValue(node.source);
-      if (strVal !== undefined && DANGEROUS_MODULES.has(strVal)) {
+      if (strVal !== undefined && DANGEROUS_MODULES.has(normalizeModuleId(strVal))) {
         const loc = offsetToLocation(ctx.sourceText, node.start);
         findings.push({
           rule: "dangerous-api:import-dangerous-module",
@@ -187,6 +192,23 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
           confidence: 0.7,
           category: "DANGEROUS_API",
           message: "Dynamic import() with non-literal source",
+          location: loc,
+        });
+      }
+    },
+
+    onImportDeclaration(node) {
+      // Static import: `import { execSync } from "node:child_process"`
+      // Flag regardless of which specifiers are imported — the module access itself is dangerous.
+      const strVal = node.source.value;
+      if (DANGEROUS_MODULES.has(normalizeModuleId(strVal))) {
+        const loc = offsetToLocation(ctx.sourceText, node.start);
+        findings.push({
+          rule: "dangerous-api:static-import-dangerous-module",
+          severity: "CRITICAL",
+          confidence: 0.95,
+          category: "DANGEROUS_API",
+          message: `Static import of dangerous module: "${strVal}"`,
           location: loc,
         });
       }
