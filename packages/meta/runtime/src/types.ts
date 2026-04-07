@@ -67,6 +67,13 @@ export interface RuntimeConfig {
       }
     | undefined;
 
+  /**
+   * Called when trajectory flush fails (e.g., Nexus network error during persist).
+   * When provided, the host can retry, alert, or fail the request.
+   * When omitted, errors are logged to console.error.
+   */
+  readonly onTrajectoryFlushError?: ((error: unknown) => void) | undefined;
+
   /** Agent name for ATIF document metadata. Default: "koi-runtime". */
   readonly agentName?: string | undefined;
 

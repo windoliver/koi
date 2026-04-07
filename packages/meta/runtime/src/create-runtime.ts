@@ -180,6 +180,9 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const trajectoryStore = trajectoryResolution?.store;
   const trajectoryTransport = trajectoryResolution?.transport;
 
+  // Track active stream flush promises so dispose() can drain before closing transport.
+  const activeFlushes = new Set<Promise<void>>();
+
   // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
   // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
   const approvalDispatch = new Map<string, (sessionId: string, step: RichTrajectoryStep) => void>();
@@ -240,6 +243,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     config.retrySignalReader,
     config.agentName ?? DEFAULT_AGENT_NAME,
     createClock,
+    config.onTrajectoryFlushError,
+    activeFlushes,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -321,13 +326,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
+      // Drain active trajectory flushes before tearing down transport.
+      // This gives in-flight Nexus writes a chance to complete on shutdown.
+      if (activeFlushes.size > 0) {
+        await Promise.allSettled([...activeFlushes]);
+      }
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
         filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
-      // Close trajectory Nexus transport AFTER other dispose steps complete,
-      // giving in-flight trajectory writes time to drain before aborting.
+      // Close trajectory Nexus transport AFTER drain + dispose.
       trajectoryTransport?.close();
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failures.length > 0) {
@@ -737,6 +746,8 @@ function composeMiddlewareIntoAdapter(
   retrySignalReader?: RetrySignalReader,
   agentName?: string,
   createClock: () => () => number = () => Date.now,
+  onFlushError?: (error: unknown) => void,
+  flushTracker?: Set<Promise<void>>,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -1119,6 +1130,8 @@ function composeMiddlewareIntoAdapter(
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
         },
+        onFlushError,
+        flushTracker,
       );
     },
   };
@@ -1217,6 +1230,8 @@ async function* wrapStreamWithFlush(
   buffer: StepBuffer | undefined,
   beforeFlush?: () => void,
   afterFlush?: () => Promise<void>,
+  onFlushError?: (error: unknown) => void,
+  flushTracker?: Set<Promise<void>>,
 ): AsyncIterable<EngineEvent> {
   try {
     yield* inner;
@@ -1224,11 +1239,20 @@ async function* wrapStreamWithFlush(
     beforeFlush?.();
     // Surface trajectory flush failures so remote persistence errors are observable.
     // Prior to Nexus backends this was always in-memory and couldn't fail meaningfully.
-    try {
-      await buffer?.flush();
-    } catch (e: unknown) {
-      console.error("[koi:runtime] trajectory flush failed:", e);
-    }
+    const flushPromise = (async () => {
+      try {
+        await buffer?.flush();
+      } catch (e: unknown) {
+        if (onFlushError !== undefined) {
+          onFlushError(e);
+        } else {
+          console.error("[koi:runtime] trajectory flush failed:", e);
+        }
+      }
+    })();
+    flushTracker?.add(flushPromise);
+    await flushPromise;
+    flushTracker?.delete(flushPromise);
     await afterFlush?.().catch(noop);
   }
 }
