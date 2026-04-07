@@ -501,8 +501,10 @@ function createStepBuffer(store: TrajectoryDocumentStore, docId: string): StepBu
     flush: async () => {
       if (steps.length === 0) return;
       const batch = [...steps];
-      steps.length = 0;
+      // Only clear after successful append — failed remote writes preserve the batch
+      // so the caller's onFlushError can retry or the next flush picks them up.
       await store.append(docId, batch);
+      steps.length = 0;
     },
     size: () => steps.length,
   };
