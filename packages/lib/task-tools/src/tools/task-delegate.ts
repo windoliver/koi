@@ -72,6 +72,14 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
           updatedTask !== undefined
             ? toTaskSummary(updatedTask, board.snapshot())
             : ({ id } satisfies { id: TaskItemId }),
+        // NOTE: agent_spawn does not pass task identity to the child's runtime.
+        // The spawned child's AgentId will not match assignedTo, so the child
+        // cannot call task_update/task_output on this task (#1416).
+        // Use agent_spawn independently; track task completion out-of-band.
+        warning:
+          "Delegation recorded. Until #1416 is resolved the spawned child's runtime " +
+          "identity will not match assignedTo — the child cannot update or complete " +
+          "this task via task_update.",
       };
     },
   };
