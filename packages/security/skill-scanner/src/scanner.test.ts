@@ -220,6 +220,26 @@ describe("bracket-notation bypass detection", () => {
     const report = scanner.scan('self["eval"]("code");');
     expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
   });
+
+  test('detects aliased member: const e = globalThis["eval"]; e()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('const e = globalThis["eval"]; e("code");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
+  });
+
+  test("detects aliased member: const x = child_process.execSync; x()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan('const x = child_process.execSync; x("cmd");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
+      true,
+    );
+  });
+
+  test("does not flag shadowed global root: const self = { eval() {} }; self.eval()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("const self = {}; self.eval();");
+    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(false);
+  });
 });
 
 describe("onFilteredFinding callback", () => {
