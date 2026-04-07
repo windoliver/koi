@@ -289,11 +289,29 @@ export function createBashBackgroundTool(
     }
   }
 
+  /**
+   * Kill all active background processes and fail their tasks on the board.
+   * Must be called during shutdown to prevent orphaned subprocesses and
+   * stale in_progress tasks.
+   *
+   * **Limitation**: If the host process crashes without calling dispose(),
+   * detached subprocesses will continue running with no owner. Full
+   * cross-restart recovery (PID persistence, reattach) is out of scope
+   * for this tool — use process-level supervision (systemd, launchd) for
+   * crash resilience.
+   */
   function dispose(): void {
-    for (const [, entry] of active) {
+    for (const [taskId, entry] of active) {
       entry.aborted = true;
       entry.abortReason = "disposed";
       entry.abortController.abort();
+      // Best-effort: immediately fail the task so it doesn't stay in_progress
+      // if drainAndComplete doesn't run before process exit.
+      void config.board.fail(taskId as TaskItemId, {
+        code: "EXTERNAL",
+        message: "Background task killed during shutdown (dispose)",
+        retryable: false,
+      });
     }
   }
 
@@ -367,6 +385,19 @@ async function drainAndComplete(
     ]
       .filter(Boolean)
       .join("\n\n");
+
+    // Non-zero exit = failed task. Reserve `completed` for exit 0 only.
+    // This prevents downstream automation from treating partial/failed
+    // execution as successful work.
+    if (exitCode !== 0) {
+      await failTask(
+        board,
+        taskId,
+        agentId,
+        `Background command failed with exit code ${exitCode}`,
+      );
+      return;
+    }
 
     const completeResult = await board.completeOwnedTask(taskId, agentId, {
       taskId,

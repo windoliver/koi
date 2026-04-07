@@ -236,9 +236,9 @@ describe("createBashBackgroundTool — cancellation", () => {
     // Wait for cleanup
     await new Promise((r) => setTimeout(r, 500));
 
-    // Task should be completed (with non-zero exit) or failed
+    // Task should be failed — cancelled tasks are never marked completed
     const task = board.tasks.get(taskId);
-    expect(task?.status === "completed" || task?.status === "failed").toBe(true);
+    expect(task?.status).toBe("failed");
 
     dispose();
   });
