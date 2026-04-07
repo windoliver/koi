@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="13" assertions="29" failures="0" skipped="0" time="0.134953">
+  <testsuite name="packages/security/skill-scanner/src/skill-scanner.test.ts" file="packages/security/skill-scanner/src/skill-scanner.test.ts" tests="13" assertions="29" failures="0" skipped="0" time="0" hostname="MacBook-Air-97.local">
+    <testsuite name="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="4" tests="13" assertions="29" failures="0" skipped="0" time="0" hostname="MacBook-Air-97.local">
+      <testcase name="4-backtick block is not closed by inner 3-backtick line" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000263" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="5" assertions="3" />
+      <testcase name="4-backtick block closed by 5-backtick fence (length &gt;= opener)" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000014" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="15" assertions="2" />
+      <testcase name="4-tilde block is not closed by inner 3-tilde line" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000038" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="22" assertions="3" />
+      <testcase name="3-backtick block still closed by 3-backtick fence" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="30" assertions="2" />
+      <testcase name="3-backtick block closed by longer backtick fence" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000028" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="37" assertions="2" />
+      <testcase name="tilde fence does not close backtick block" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="44" assertions="2" />
+      <testcase name="backtick fence does not close tilde block" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="51" assertions="2" />
+      <testcase name="5-tilde block not closed by 4-tilde line" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="58" assertions="2" />
+      <testcase name="unclosed fence at EOF emits block (CommonMark §4.5)" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="65" assertions="3" />
+      <testcase name="unclosed 3-backtick fence at EOF emits block" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000062" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="73" assertions="2" />
+      <testcase name="mixed-character closer does not close backtick block" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000029" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="80" assertions="2" />
+      <testcase name="mixed-character closer does not close tilde block" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0.000014" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="87" assertions="2" />
+      <testcase name="indented closing fence respects length enforcement" classname="extractCodeBlocks — fence length enforcement (CommonMark §6.1)" time="0" file="packages/security/skill-scanner/src/skill-scanner.test.ts" line="94" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>
