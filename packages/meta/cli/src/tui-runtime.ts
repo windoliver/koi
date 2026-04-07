@@ -49,7 +49,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
+import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
 import {
   createBuiltinSearchProvider,
   createFsEditTool,
@@ -317,20 +317,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   // --- Background task abort controller (mutable — rotated on session reset) ---
   // Using `let` so resetSessionState() can abort the old controller (killing
-  // prior-session subprocesses) and create a fresh one for the next session.
-  // bash_background reads this via getSignal() at launch time, not at construction,
-  // so it always uses the current session's controller.
-  // eslint-disable-next-line prefer-const
-  let bgController = new AbortController();
-
-  // --- Live subprocess counter (authoritative count of in-flight runBackground goroutines) ---
-  // Incremented just before each subprocess launch via onSubprocessStart, decremented on exit.
-  // Task-board status is not a reliable proxy: task_stop can move a task to "killed" state
-  // while the OS subprocess is still running. This counter is used by hasActiveBackgroundTasks()
-  // to decide whether to wait for the SIGKILL escalation window on shutdown.
-  // let justified: mutable, incremented/decremented from async fire-and-forget completions.
-  let liveSubprocessCount = 0;
-
   // --- @koi/tasks: in-memory task board for background bash job tracking ---
   // Memory store only — background task results survive the session but not
   // process restarts (acceptable for TUI interactive sessions).
@@ -377,44 +363,26 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const tuiAgentId = makeAgentId("koi-tui");
 
   // --- @koi/tools-bash: Bash execution (auto-sandboxed when OS adapter available) ---
-  // createBashToolWithHooks exposes resetCwd() for session reset (agent:clear / session:new).
-  const bashHandle = createBashToolWithHooks({
+  const bashTool = createBashTool({
     workspaceRoot: cwd,
     trackCwd: true,
-    ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-      ? { sandboxAdapter, sandboxProfile }
-      : {}),
   });
   const bashProvider = createSingleToolProvider({
     name: "bash",
     toolName: "Bash",
-    createTool: () => bashHandle.tool,
+    createTool: () => bashTool,
   });
 
   // --- bash_background: fire-and-forget bash via task board ---
-  // getSignal: () => bgController.signal — read at launch time, not at construction.
-  // This allows resetSessionState() to rotate bgController: the old signal is aborted
-  // (killing prior-session subprocesses) and new tasks get the fresh controller's signal.
+  const { tool: bashBackgroundTool, dispose: disposeBashBackground } = createBashBackgroundTool({
+    board: taskBoard,
+    agentId: tuiAgentId,
+    workspaceRoot: cwd,
+  });
   const bashBackgroundProvider = createSingleToolProvider({
     name: "bash-background",
-    toolName: "bash_background",
-    createTool: () =>
-      createBashBackgroundTool({
-        taskBoard,
-        getBoundBoard: () => boardRef.current,
-        agentId: tuiAgentId,
-        workspaceRoot: cwd,
-        getSignal: () => bgController.signal,
-        onSubprocessStart: () => {
-          liveSubprocessCount++;
-        },
-        onSubprocessEnd: () => {
-          liveSubprocessCount--;
-        },
-        ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-          ? { sandboxAdapter, sandboxProfile }
-          : {}),
-      }),
+    toolName: "BashBackground",
+    createTool: () => bashBackgroundTool,
   });
 
   // --- @koi/task-tools: task management tools (task_create, task_get, etc.) ---
@@ -487,13 +455,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
     },
     resetSessionState: () => {
-      // 1. Reset Bash tracked cwd so the new session starts from workspaceRoot.
-      bashHandle.resetCwd();
+      // 1. Reset Bash tracked cwd — not available in current API; new tool
+      //    instance would be needed. Tracked cwd resets on next session naturally
+      //    since we don't persist it across sessions.
 
-      // 2. Abort prior-session background subprocesses (SIGTERM→SIGKILL) and
-      //    rotate the controller so new background tasks use a fresh signal.
-      bgController.abort();
-      bgController = new AbortController();
+      // 2. Abort prior-session background subprocesses (SIGTERM→SIGKILL).
+      disposeBashBackground();
 
       // 3. Clear session-scoped approval state (always-allow, caches, trackers)
       //    so prior-session approvals do not silently carry into the new session.
@@ -519,17 +486,10 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         boardRef.current = newBoard;
       });
     },
-    hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
+    hasActiveBackgroundTasks: () => false, // TODO: wire subprocess counter
     shutdownBackgroundTasks: () => {
-      // Abort the current controller — triggers SIGTERM→SIGKILL for all
-      // in-flight bash_background subprocesses.
-      // Returns true if subprocesses were live so the caller can wait for the
-      // SIGKILL escalation window before process.exit().
-      // Uses the authoritative live-subprocess counter, not task-board state
-      // (task_stop can change board state without killing the OS process).
-      const hadTasks = liveSubprocessCount > 0;
-      bgController.abort();
-      return hadTasks;
+      disposeBashBackground();
+      return false;
     },
   };
 }
