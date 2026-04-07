@@ -4,10 +4,12 @@
  * Applied decisions:
  * - 2A: instance-scoped cache (Map inside factory closure, not module-level)
  * - 3A: fail-closed security — blocks on >= blockOnSeverity via PERMISSION error
- * - 5A: buildEntryBase() helper to DRY optional-field spreading
- * - 7A: makeFindingCallback() helper to DRY 3× duplicated adapter closure
+ * - 5A: buildSkillDefinition() helper to DRY optional-field spreading
+ * - 7A: makeFindingCallback() helper to DRY the finding callback adapter
+ * - 7B (new): blockOnSeverity typed as Severity — no 'as' casts needed
  * - 13A: instance-scoped scanner passed in (no module-level scanner)
- * - 15A: pre-resolved basePath once via realpath before per-skill loop
+ * - 15A: skillsRoot pre-resolved once at discovery time (Decision 6A in discover.ts),
+ *         passed via LoaderContext — no per-load realpath
  * - 16A: MAX_BUNDLED_FILES and MAX_BUNDLED_FILE_SIZE_BYTES guards
  */
 
@@ -15,9 +17,10 @@ import { realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
-import { severityAtOrAbove } from "@koi/validation";
+import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { ParsedSkillMd } from "./parse.js";
 import { parseSkillMd } from "./parse.js";
+import type { ResolvedInclude } from "./resolve-includes.js";
 import { resolveIncludes } from "./resolve-includes.js";
 import type { SkillDefinition, SkillSource } from "./types.js";
 import type { ValidatedFrontmatter } from "./validate.js";
@@ -38,21 +41,21 @@ export const MAX_BUNDLED_FILE_SIZE_BYTES: number = 512 * 1024; // 512 KB
  * Decision 7A: DRY the finding callback adapter.
  * Returns a function that routes findings to the user's onSecurityFinding
  * callback, splitting above/below the block threshold.
+ * Decision 7B: blockOnSeverity typed as Severity — no 'as' casts needed.
  */
 function makeFindingCallback(
   name: string,
-  blockOnSeverity: string,
+  blockOnSeverity: Severity,
   onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
 ): (findings: readonly ScanFinding[]) => { readonly blocked: boolean } {
   return (findings) => {
     if (findings.length === 0) return { blocked: false };
 
-    const blocking = findings.filter((f) =>
-      severityAtOrAbove(f.severity, blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"),
+    const blocking = findings.filter((f: ScanFinding) =>
+      severityAtOrAbove(f.severity, blockOnSeverity),
     );
     const nonBlocking = findings.filter(
-      (f) =>
-        !severityAtOrAbove(f.severity, blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"),
+      (f: ScanFinding) => !severityAtOrAbove(f.severity, blockOnSeverity),
     );
 
     if (nonBlocking.length > 0) {
@@ -78,6 +81,7 @@ function buildSkillDefinition(
     body,
     source,
     dirPath,
+    ...(fm.tags !== undefined ? { tags: fm.tags } : {}),
     ...(fm.license !== undefined ? { license: fm.license } : {}),
     ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
     ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
@@ -95,10 +99,13 @@ export interface LoaderContext {
   readonly cache: Map<string, Result<SkillDefinition, KoiError>>;
   /** Instance-scoped scanner (Decision 13A). */
   readonly scanner: Scanner;
-  /** Pre-resolved absolute skills root for security boundary (Decision 15A). */
+  /**
+   * Pre-resolved absolute skills root for security boundary.
+   * Now pre-resolved at discovery time (Decision 6A via discover.ts).
+   */
   readonly skillsRoot: string;
   readonly config: {
-    readonly blockOnSeverity: string;
+    readonly blockOnSeverity: Severity;
     readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
     readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
   };
@@ -278,12 +285,12 @@ async function loadSkillUncached(
   // let: body may be extended with include content
   let body = rawBody;
   if (Array.isArray(rawIncludes) && rawIncludes.length > 0) {
-    const includes = rawIncludes.filter((i): i is string => typeof i === "string");
+    const includes = rawIncludes.filter((i: unknown): i is string => typeof i === "string");
     const includeResult = await resolveIncludes(includes, dirPath, ctx.skillsRoot);
     if (!includeResult.ok) return includeResult;
 
     // Append resolved include content to body
-    const appendix = includeResult.value.map((inc) => inc.content).join("\n\n");
+    const appendix = includeResult.value.map((inc: ResolvedInclude) => inc.content).join("\n\n");
     body = appendix.length > 0 ? `${rawBody}\n\n${appendix}` : rawBody;
   }
 
@@ -297,14 +304,11 @@ async function loadSkillUncached(
   const { blocked } = handleFindings(scanReport.findings);
 
   if (blocked) {
-    const blockingFindings = scanReport.findings.filter((f) =>
-      severityAtOrAbove(
-        f.severity,
-        ctx.config.blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
-      ),
+    const blockingFindings = scanReport.findings.filter((f: ScanFinding) =>
+      severityAtOrAbove(f.severity, ctx.config.blockOnSeverity),
     );
     const summary = blockingFindings
-      .map((f) => `[${f.severity}] ${f.rule}: ${f.message}`)
+      .map((f: ScanFinding) => `[${f.severity}] ${f.rule}: ${f.message}`)
       .join("; ");
     return {
       ok: false,

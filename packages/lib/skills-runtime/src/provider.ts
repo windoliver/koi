@@ -40,12 +40,21 @@ export function createSkillProvider(runtime: SkillsRuntime): ComponentProvider {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
     attach: async (_agent: Agent): Promise<AttachResult> => {
-      const all = await runtime.loadAll();
+      const allResult = await runtime.loadAll();
 
       const components = new Map<string, unknown>();
       const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
 
-      for (const [name, result] of all) {
+      // Handle outer discovery failure (Issue 3A: loadAll() now returns Result)
+      if (!allResult.ok) {
+        skipped.push({ name: "__discover__", reason: allResult.error.message });
+        return {
+          components: components as ReadonlyMap<string, unknown>,
+          skipped,
+        };
+      }
+
+      for (const [name, result] of allResult.value) {
         if (!result.ok) {
           skipped.push({ name, reason: result.error.message });
           continue;
