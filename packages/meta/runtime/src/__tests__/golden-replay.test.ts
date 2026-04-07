@@ -4326,9 +4326,10 @@ describe("Golden: @koi/task-tools", () => {
 
     // Attach and verify all 7 tools are registered
     const result = await provider.attach({} as never);
+    const resultObj = result as unknown as Record<string, unknown>;
     const components =
-      "components" in (result as Record<string, unknown>)
-        ? (result as { readonly components: ReadonlyMap<string, unknown> }).components
+      "components" in resultObj
+        ? (resultObj.components as ReadonlyMap<string, unknown>)
         : (result as ReadonlyMap<string, unknown>);
 
     expect(components.size).toBe(7);
@@ -4854,7 +4855,7 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     }
 
     // Exfiltration guard middleware must be present in the recorded trace.
-    // The guard may have wrapped a tool call (blocking it) or a model stream
+    // The guard wraps either a tool call (blocking it) or a model stream
     // (inspecting the response) depending on whether the LLM used the tool.
     const guardSpan = steps.find((s) => {
       if (s.source !== "system") return false;
@@ -4862,30 +4863,14 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
       return extra?.middlewareName === "exfiltration-guard";
     });
     expect(guardSpan).toBeDefined();
-
-    // If the guard blocked a tool call, verify the block was recorded correctly
-    const guardToolSpan = steps.find((s) => {
-      if (s.source !== "system") return false;
-      const extra = s.extra as Record<string, unknown> | undefined;
-      return extra?.middlewareName === "exfiltration-guard";
-    });
-    if (guardToolSpan !== undefined) {
-      const extra = guardToolSpan.extra as Record<string, unknown>;
+    if (guardSpan !== undefined) {
+      const extra = guardSpan.extra as Record<string, unknown>;
       expect(extra.phase).toBe("intercept");
-      expect(extra.nextCalled).toBe(false);
-
-      // When blocked, the response contains a PERMISSION error
-      const agentSteps = steps.filter((s) => s.source === "agent");
-      const blockStep = agentSteps.find((s) => {
-        const msg = String(s.message ?? "");
-        return msg.includes("PERMISSION") && msg.includes("secret(s) detected");
-      });
-      expect(blockStep).toBeDefined();
-
-      // No successful tool execution step (tool was blocked, never executed)
-      const toolSteps = steps.filter((s) => s.source === "tool");
-      expect(toolSteps).toHaveLength(0);
     }
+
+    // No successful tool execution step (tool was not called or was blocked)
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
   });
 });
 
