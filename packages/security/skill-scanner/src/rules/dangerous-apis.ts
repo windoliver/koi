@@ -30,18 +30,23 @@ function normalizeModuleId(specifier: string): string {
   return specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 }
 
+/** Root objects that alias the global scope — only these are trusted as chain prefixes. */
+const GLOBAL_ROOTS = new Set(["globalThis", "window", "global", "self"]);
+
 /**
- * Check if any two-segment suffix of a dotted path matches a set.
- * e.g. `"globalThis.process.binding"` checks `"process.binding"` and `"globalThis.process"`.
- * Returns the matching suffix, or undefined.
+ * Match a dotted member path against a set, allowing known global prefixes.
+ * Direct match: `process.binding` matches `process.binding`.
+ * Prefixed match: `globalThis.process.binding` strips the known root and matches `process.binding`.
+ * Unknown roots like `safe.process.binding` do NOT match (avoids false positives).
  */
-function matchSuffix(fullPath: string, set: ReadonlySet<string>): string | undefined {
+function matchWithGlobalPrefix(fullPath: string, set: ReadonlySet<string>): string | undefined {
   if (set.has(fullPath)) return fullPath;
-  const parts = fullPath.split(".");
-  for (let i = 1; i < parts.length - 1; i++) {
-    const suffix = parts.slice(i).join(".");
-    if (set.has(suffix)) return suffix;
-  }
+  const dotIdx = fullPath.indexOf(".");
+  if (dotIdx === -1) return undefined;
+  const root = fullPath.slice(0, dotIdx);
+  if (!GLOBAL_ROOTS.has(root)) return undefined;
+  const rest = fullPath.slice(dotIdx + 1);
+  if (set.has(rest)) return rest;
   return undefined;
 }
 
@@ -142,7 +147,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
       // Also matches chained access: globalThis.process["binding"]()
       const memberPath = getCalleeAsMemberPath(node);
       if (memberPath !== undefined) {
-        const dangerousMatch = matchSuffix(memberPath, DANGEROUS_MEMBER_CALLS);
+        const dangerousMatch = matchWithGlobalPrefix(memberPath, DANGEROUS_MEMBER_CALLS);
         if (dangerousMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
@@ -156,7 +161,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
         }
 
         // globalThis.eval(), window.eval(), global.eval()
-        const evalMatch = matchSuffix(memberPath, GLOBAL_EVAL_PATHS);
+        const evalMatch = matchWithGlobalPrefix(memberPath, GLOBAL_EVAL_PATHS);
         if (evalMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({

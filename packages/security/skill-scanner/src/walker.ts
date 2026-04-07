@@ -164,14 +164,14 @@ function resolvePropertyName(node: MemberExpression): string | undefined {
  * Flatten a (possibly nested) MemberExpression into a dot-separated path.
  * Walks up the chain: `a.b["c"].d` → `"a.b.c.d"`.
  * Returns undefined if any segment is a non-literal computed property.
- * Capped at 8 segments to prevent runaway recursion on pathological ASTs.
+ * Capped at 32 segments to guard against malformed ASTs.
  */
 function flattenMemberChain(node: MemberExpression): string | undefined {
   const segments: string[] = [];
   // let: walks up the member chain accumulating segments
   let current: Expression = node;
-  // Cap at 8 to avoid pathological chains
-  for (let depth = 0; depth < 8 && current.type === "MemberExpression"; depth++) {
+  // Cap at 32 to guard against malformed ASTs while allowing any realistic chain
+  for (let depth = 0; depth < 32 && current.type === "MemberExpression"; depth++) {
     const prop = resolvePropertyName(current);
     if (prop === undefined) return undefined;
     segments.push(prop);

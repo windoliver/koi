@@ -188,6 +188,20 @@ describe("bracket-notation bypass detection", () => {
       true,
     );
   });
+
+  test("does not flag non-global root: safe.process.binding()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("safe.process.binding('x');");
+    expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(false);
+  });
+
+  test("does not flag non-global root: client.child_process.execSync()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan('client.child_process.execSync("cmd");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
+      false,
+    );
+  });
 });
 
 describe("onFilteredFinding callback", () => {
