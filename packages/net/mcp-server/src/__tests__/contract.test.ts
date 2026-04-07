@@ -140,7 +140,7 @@ function createMockTaskBoard(tasks: readonly Task[] = []): ManagedTaskBoard {
     assign: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     unassign: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     startTask: mock(async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>),
-    hasResultPersistence: () => false,
+    hasResultPersistence: () => true,
     complete: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     completeOwnedTask: mock(
       async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
@@ -194,7 +194,9 @@ const CALLER_ID = agentId("mcp-caller");
 /** Extract text from MCP tool result content. */
 function getText(result: unknown): string {
   const r = result as { content: readonly { type: string; text: string }[] };
-  return r.content[0]!.text;
+  const first = r.content[0];
+  if (first === undefined) throw new Error("No content in MCP result");
+  return first.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,8 +413,8 @@ describe("tools/call — platform tools", () => {
       name: "koi_get_task",
       arguments: { taskId: "nonexistent" },
     });
-    const parsed = JSON.parse(getText(result));
-    expect(parsed.error).toBe("NOT_FOUND");
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(getText(result)).toContain("Task not found");
     await server.stop();
   });
 

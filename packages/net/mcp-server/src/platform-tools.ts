@@ -93,12 +93,19 @@ function createSendMessageTool(callerId: AgentId, mailbox: MailboxComponent): To
     origin: "primordial",
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
+      const rawPayload = args.payload;
+      if (
+        rawPayload !== undefined &&
+        (typeof rawPayload !== "object" || rawPayload === null || Array.isArray(rawPayload))
+      ) {
+        throw new Error("payload must be a JSON object");
+      }
       const sendResult = await mailbox.send({
         from: callerId,
         to: agentId(String(args.to)),
         kind: "event",
         type: String(args.type),
-        payload: (args.payload ?? {}) as JsonObject,
+        payload: (rawPayload ?? {}) as JsonObject,
       });
       const msg = unwrapResult(sendResult, "koi_send_message");
       return { id: msg.id, createdAt: msg.createdAt };
@@ -214,7 +221,7 @@ function createGetTaskTool(taskBoard: ManagedTaskBoard): Tool {
       const id = taskItemId(args.taskId);
       const task = taskBoard.snapshot().get(id);
       if (task === undefined) {
-        return { error: "NOT_FOUND", message: `Task ${id} not found` };
+        throw new Error("Task not found");
       }
       // Explicit allowlist — excludes metadata, activeForm, error internals
       return {
@@ -270,6 +277,9 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           return { status: "started", taskId: id, assignedTo: callerId };
         }
         case "complete": {
+          if (!taskBoard.hasResultPersistence()) {
+            throw new Error("Task completion requires durable result storage");
+          }
           const output = typeof args.output === "string" ? args.output : "";
           unwrapResult(
             await taskBoard.completeOwnedTask(id, callerId, {
@@ -292,7 +302,7 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           return { status: "failed", taskId: id };
         }
         default:
-          return { error: "INVALID_ACTION", message: `Unknown action: ${action}` };
+          throw new Error(`Unknown action: ${action}`);
       }
     },
   });
@@ -317,10 +327,7 @@ function createTaskOutputTool(taskBoard: ManagedTaskBoard): Tool {
       const id = taskItemId(args.taskId);
       const taskResult = taskBoard.snapshot().result(id);
       if (taskResult === undefined) {
-        return {
-          error: "NOT_FOUND",
-          message: `No completed result for task ${id}`,
-        };
+        throw new Error("No completed result for this task");
       }
       return {
         taskId: taskResult.taskId,

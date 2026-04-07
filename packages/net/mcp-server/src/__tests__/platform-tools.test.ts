@@ -86,7 +86,7 @@ function mockTaskBoard(tasks: readonly Task[] = []): ManagedTaskBoard {
     assign: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     unassign: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     startTask: mock(async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>),
-    hasResultPersistence: () => false,
+    hasResultPersistence: () => true,
     complete: async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
     completeOwnedTask: mock(
       async () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,
