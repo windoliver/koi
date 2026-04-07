@@ -30,7 +30,7 @@ import type { EngineAdapter, EngineEvent, EngineInput, JsonObject, ModelChunk } 
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
 // @koi/event-trace: trajectory recording middleware
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 // @koi/hooks: hook dispatch
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 // @koi/mcp: transport state machine
@@ -47,7 +47,6 @@ import { consumeModelStream } from "@koi/query-engine";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 // @koi/tools-core: tool building
 import { buildTool } from "@koi/tools-core";
-
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
@@ -116,12 +115,14 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       { agentName: "full-stack-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     // --- @koi/event-trace: trajectory recording middleware ---
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "full-stack-test",
+      clock,
     });
 
     // --- @koi/hooks: define test hooks ---
@@ -136,7 +137,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
     expect(hookResult.ok).toBe(true);
     const hookConfigs = hookResult.ok ? hookResult.value : [];
 
-    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId, clock });
     const hookMiddleware = createHookMiddleware({ hooks: hookConfigs, onExecuted });
 
     // --- @koi/permissions + @koi/middleware-permissions: permission gating ---
@@ -156,6 +157,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       store,
       docId,
       serverName: "test-mcp-server",
+      clock,
     });
 
     // Simulate MCP lifecycle: idle → connecting → connected
@@ -290,7 +292,7 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       manifest: { name: "full-stack-agent", version: "0.1.0", model: { name: MODEL } },
       adapter: bridgeAdapter,
       middleware: [eventTrace, hookMiddleware, hookObserverMw, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({

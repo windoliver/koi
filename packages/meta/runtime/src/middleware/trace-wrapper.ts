@@ -44,6 +44,8 @@ export interface TraceWrapperConfig {
    * Default: false (no overhead).
    */
   readonly captureDeltas?: boolean;
+  /** Injectable clock for deterministic timestamps. Default: Date.now. */
+  readonly clock?: () => number;
 }
 
 /**
@@ -63,6 +65,7 @@ export function wrapMiddlewareWithTrace(
   // Don't trace the trajectory recorder itself — circular and noisy
   if (TRACE_EXCLUDED.has(mw.name)) return mw;
   const { store, docId, captureDeltas } = config;
+  const clock = config.clock ?? Date.now;
 
   function recordStep(step: RichTrajectoryStep): void {
     void store.append(docId, [step]).catch(() => {});
@@ -116,7 +119,7 @@ export function wrapMiddlewareWithTrace(
                 : undefined;
             recordStep({
               stepIndex: 0,
-              timestamp: Date.now(),
+              timestamp: clock(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,
@@ -138,7 +141,7 @@ export function wrapMiddlewareWithTrace(
           } catch (error: unknown) {
             recordStep({
               stepIndex: 0,
-              timestamp: Date.now(),
+              timestamp: clock(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,
@@ -227,7 +230,7 @@ export function wrapMiddlewareWithTrace(
             }
             recordStep({
               stepIndex: 0,
-              timestamp: Date.now(),
+              timestamp: clock(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,
@@ -249,7 +252,7 @@ export function wrapMiddlewareWithTrace(
           } catch (error: unknown) {
             recordStep({
               stepIndex: 0,
-              timestamp: Date.now(),
+              timestamp: clock(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,
@@ -318,7 +321,7 @@ export function wrapMiddlewareWithTrace(
                 : undefined;
             recordStep({
               stepIndex: 0,
-              timestamp: Date.now(),
+              timestamp: clock(),
               source: "system",
               kind: "model_call",
               identifier: `middleware:${mw.name}`,

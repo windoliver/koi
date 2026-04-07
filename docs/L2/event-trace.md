@@ -176,6 +176,19 @@ function createAtifDocumentStore(
 ): TrajectoryDocumentStore;
 ```
 
+### Monotonic clock
+
+```typescript
+function createMonotonicClock(baseClock?: () => number): () => number;
+```
+
+Factory that guarantees strictly increasing timestamps. Each call returns
+`max(lastEmitted + 1, baseClock())`. Used by `@koi/runtime` to create per-stream
+clocks that prevent concurrent middleware observers from producing out-of-order
+timestamps. The base clock defaults to `Date.now`; during bursts of N events within
+one millisecond, timestamps advance by +1ms each (max drift = N ms), resyncing to
+wall-clock time once the burst ends.
+
 ### Utilities
 
 ```typescript
@@ -232,3 +245,5 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
 > **Maintenance note (PR #1506):** Renamed unused `hasMetadata` variable to `_hasMetadata` in `event-trace.ts` to satisfy Biome `noUnusedVariables`. No functional changes.
 
 > **Trust-boundary fix (PR #1541, issue #1499):** Tool step metadata is now allowlisted instead of copied wholesale. System steps with non-default `kind`/`identifier` (e.g., `provenance:turn_summary`) use a nested `extra.__koi` transport object for lossless ATIF round-trip. Both library and runtime mappers updated consistently.
+
+> **Monotonic timestamps (PR #1569, issue #1558):** Added `createMonotonicClock()` factory. Concurrent middleware observers each calling `Date.now()` independently caused 20/28 golden trajectory fixtures to have non-monotonic timestamps. The factory guarantees strictly increasing timestamps via `max(last+1, baseClock())`. `@koi/runtime` creates a per-stream monotonic clock (not per-runtime) so concurrent sessions never interfere. The ATIF store also enforces monotonicity at append time as a safety net for L1 emitters lacking clock injection; adjusted timestamps preserve the original value in `metadata._original_timestamp`. All 28 golden fixtures re-recorded.

@@ -208,6 +208,14 @@ export interface RuntimeConfig {
    * Pass `false` to disable (e.g., for testing or trusted environments).
    */
   readonly credentialPathGuard?: false | undefined;
+
+  /**
+   * Base clock for trajectory timestamps. Each stream creates its own
+   * monotonic wrapper around this base clock, so concurrent sessions
+   * never interfere with each other's timestamp sequences.
+   * Default: Date.now (wrapped in createMonotonicClock per stream).
+   */
+  readonly clock?: (() => number) | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
