@@ -1,0 +1,122 @@
+/**
+ * Zod schema for SKILL.md frontmatter validation.
+ *
+ * Decision 8A: use Zod .transform() to normalize `allowed-tools`
+ * (YAML key with hyphen) → `allowedTools` (camelCase TypeScript field).
+ * This eliminates manual optional-field spreading in the loader.
+ */
+
+import type { KoiError, Result } from "@koi/core";
+import { validateWith } from "@koi/validation";
+import { z } from "zod";
+import type { ValidatedSkillRequires } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Requires sub-schema
+// ---------------------------------------------------------------------------
+
+const requiresSchema = z.object({
+  bins: z.array(z.string()).optional(),
+  env: z.array(z.string()).optional(),
+  tools: z.array(z.string()).optional(),
+  network: z.boolean().optional(),
+  platform: z.array(z.string()).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Frontmatter schema with .transform() for camelCase normalization
+// ---------------------------------------------------------------------------
+
+const frontmatterSchema = z
+  .object({
+    name: z.string().min(1, "name must not be empty"),
+    description: z.string().min(1, "description must not be empty"),
+    license: z.string().optional(),
+    compatibility: z.string().optional(),
+    // YAML key uses hyphen: `allowed-tools`
+    "allowed-tools": z.union([z.string(), z.array(z.string())]).optional(),
+    requires: requiresSchema.optional(),
+    // Catch-all for extra string fields (e.g., version, author)
+    // Handled separately after base parse
+  })
+  .passthrough()
+  .transform((raw) => {
+    // Normalize `allowed-tools` → `allowedTools` (string or array → string[])
+    const rawAllowedTools = raw["allowed-tools"];
+    // let: allowedTools may be set below
+    let allowedTools: readonly string[] | undefined;
+    if (typeof rawAllowedTools === "string") {
+      allowedTools = rawAllowedTools
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
+    } else if (Array.isArray(rawAllowedTools)) {
+      allowedTools = rawAllowedTools.filter((t) => typeof t === "string");
+    }
+
+    // Collect extra string metadata fields (exclude known keys)
+    const knownKeys = new Set([
+      "name",
+      "description",
+      "license",
+      "compatibility",
+      "allowed-tools",
+      "requires",
+      "includes",
+    ]);
+    const metadata: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!knownKeys.has(key) && typeof value === "string") {
+        metadata[key] = value;
+      }
+    }
+
+    return {
+      name: raw.name,
+      description: raw.description,
+      license: raw.license,
+      compatibility: raw.compatibility,
+      allowedTools: allowedTools,
+      requires: raw.requires as ValidatedSkillRequires | undefined,
+      metadata:
+        Object.keys(metadata).length > 0
+          ? (metadata as Readonly<Record<string, string>>)
+          : undefined,
+    };
+  });
+
+// ---------------------------------------------------------------------------
+// Exported type — explicit shape matching the .transform() output
+// ---------------------------------------------------------------------------
+
+export interface ValidatedFrontmatter {
+  readonly name: string;
+  readonly description: string;
+  readonly license?: string;
+  readonly compatibility?: string;
+  readonly allowedTools?: readonly string[];
+  readonly requires?: ValidatedSkillRequires;
+  readonly metadata?: Readonly<Record<string, string>>;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates and transforms raw YAML frontmatter into a typed ValidatedFrontmatter.
+ *
+ * The transform normalizes `allowed-tools` → `allowedTools` and collects
+ * extra string fields into `metadata`.
+ */
+export function validateFrontmatter(
+  raw: Readonly<Record<string, unknown>>,
+  filePath?: string,
+): Result<ValidatedFrontmatter, KoiError> {
+  const prefix =
+    filePath !== undefined
+      ? `Skill frontmatter validation failed in ${filePath}`
+      : "Skill frontmatter validation failed";
+  // Cast needed: Zod's inferred transform output matches ValidatedFrontmatter shape
+  return validateWith(frontmatterSchema as z.ZodType<ValidatedFrontmatter>, raw, prefix);
+}

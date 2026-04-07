@@ -1,0 +1,325 @@
+/**
+ * Skill file loader — parse + validate + security scan + cache.
+ *
+ * Applied decisions:
+ * - 2A: instance-scoped cache (Map inside factory closure, not module-level)
+ * - 3A: fail-closed security — blocks on >= blockOnSeverity via PERMISSION error
+ * - 5A: buildEntryBase() helper to DRY optional-field spreading
+ * - 7A: makeFindingCallback() helper to DRY 3× duplicated adapter closure
+ * - 13A: instance-scoped scanner passed in (no module-level scanner)
+ * - 15A: pre-resolved basePath once via realpath before per-skill loop
+ * - 16A: MAX_BUNDLED_FILES and MAX_BUNDLED_FILE_SIZE_BYTES guards
+ */
+
+import { realpath } from "node:fs/promises";
+import { join } from "node:path";
+import type { KoiError, Result } from "@koi/core";
+import type { ScanFinding, Scanner } from "@koi/skill-scanner";
+import { severityAtOrAbove } from "@koi/validation";
+import type { ParsedSkillMd } from "./parse.js";
+import { parseSkillMd } from "./parse.js";
+import { resolveIncludes } from "./resolve-includes.js";
+import type { SkillDefinition, SkillSource } from "./types.js";
+import type { ValidatedFrontmatter } from "./validate.js";
+import { validateFrontmatter } from "./validate.js";
+
+// ---------------------------------------------------------------------------
+// Constants (Decision 16A)
+// ---------------------------------------------------------------------------
+
+export const MAX_BUNDLED_FILES: number = 50;
+export const MAX_BUNDLED_FILE_SIZE_BYTES: number = 512 * 1024; // 512 KB
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Decision 7A: DRY the finding callback adapter.
+ * Returns a function that routes findings to the user's onSecurityFinding
+ * callback, splitting above/below the block threshold.
+ */
+function makeFindingCallback(
+  name: string,
+  blockOnSeverity: string,
+  onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
+): (findings: readonly ScanFinding[]) => { readonly blocked: boolean } {
+  return (findings) => {
+    if (findings.length === 0) return { blocked: false };
+
+    const blocking = findings.filter((f) =>
+      severityAtOrAbove(f.severity, blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"),
+    );
+    const nonBlocking = findings.filter(
+      (f) =>
+        !severityAtOrAbove(f.severity, blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"),
+    );
+
+    if (nonBlocking.length > 0) {
+      onSecurityFinding?.(name, nonBlocking);
+    }
+
+    return { blocked: blocking.length > 0 };
+  };
+}
+
+/**
+ * Decision 5A: DRY optional-field spreading for SkillDefinition construction.
+ */
+function buildSkillDefinition(
+  fm: ValidatedFrontmatter,
+  body: string,
+  source: SkillSource,
+  dirPath: string,
+): SkillDefinition {
+  return {
+    name: fm.name,
+    description: fm.description,
+    body,
+    source,
+    dirPath,
+    ...(fm.license !== undefined ? { license: fm.license } : {}),
+    ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
+    ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
+    ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+    ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface LoaderContext {
+  /** Instance-scoped skill cache (Decision 2A). */
+  readonly cache: Map<string, Result<SkillDefinition, KoiError>>;
+  /** Instance-scoped scanner (Decision 13A). */
+  readonly scanner: Scanner;
+  /** Pre-resolved absolute skills root for security boundary (Decision 15A). */
+  readonly skillsRoot: string;
+  readonly config: {
+    readonly blockOnSeverity: string;
+    readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+    readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// File count + size guards (Decision 16A)
+// ---------------------------------------------------------------------------
+
+async function checkFileLimits(
+  dirPath: string,
+  source: SkillSource,
+): Promise<Result<void, KoiError>> {
+  if (source !== "bundled") return { ok: true, value: undefined };
+
+  // Only enforce limits for bundled skills
+  const glob = new Bun.Glob("**/*");
+  // let: count accumulates across async iteration
+  let count = 0;
+
+  try {
+    for await (const entry of glob.scan({ cwd: dirPath, dot: false })) {
+      count += 1;
+      if (count > MAX_BUNDLED_FILES) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Bundled skill directory exceeds file limit (${MAX_BUNDLED_FILES}): ${dirPath}`,
+            retryable: false,
+            context: { errorKind: "BUNDLED_FILE_LIMIT", dirPath, limit: MAX_BUNDLED_FILES },
+          },
+        };
+      }
+
+      const filePath = join(dirPath, entry);
+      const file = Bun.file(filePath);
+      const size = file.size;
+      if (size > MAX_BUNDLED_FILE_SIZE_BYTES) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Bundled skill file exceeds size limit (${MAX_BUNDLED_FILE_SIZE_BYTES} bytes): ${filePath}`,
+            retryable: false,
+            context: {
+              errorKind: "BUNDLED_FILE_SIZE_LIMIT",
+              filePath,
+              size,
+              limit: MAX_BUNDLED_FILE_SIZE_BYTES,
+            },
+          },
+        };
+      }
+    }
+  } catch (cause: unknown) {
+    // If we can't enumerate files, don't block loading
+    void cause;
+  }
+
+  return { ok: true, value: undefined };
+}
+
+// ---------------------------------------------------------------------------
+// Core load function
+// ---------------------------------------------------------------------------
+
+/**
+ * Loads a single skill by name from the discovered source tier.
+ *
+ * Steps:
+ * 1. Check instance cache (Decision 2A)
+ * 2. Check file limits (Decision 16A, bundled only)
+ * 3. Read and parse SKILL.md
+ * 4. Validate frontmatter with Zod (Decision 8A transform in validate.ts)
+ * 5. Resolve includes (sequential, Decision 14C)
+ * 6. Security scan (Decision 3A: fail-closed on >= blockOnSeverity)
+ * 7. Cache and return
+ */
+export async function loadSkill(
+  name: string,
+  dirPath: string,
+  source: SkillSource,
+  ctx: LoaderContext,
+): Promise<Result<SkillDefinition, KoiError>> {
+  // 1. Check cache (Decision 2A)
+  const cached = ctx.cache.get(name);
+  if (cached !== undefined) return cached;
+
+  const result = await loadSkillUncached(name, dirPath, source, ctx);
+
+  // Cache both successes and failures (to avoid re-scanning known-bad skills)
+  ctx.cache.set(name, result);
+  return result;
+}
+
+async function loadSkillUncached(
+  name: string,
+  dirPath: string,
+  source: SkillSource,
+  ctx: LoaderContext,
+): Promise<Result<SkillDefinition, KoiError>> {
+  // 2. File limits guard (Decision 16A)
+  const limitsCheck = await checkFileLimits(dirPath, source);
+  if (!limitsCheck.ok) return limitsCheck;
+
+  // 3. Read and parse SKILL.md
+  const skillMdPath = join(dirPath, "SKILL.md");
+  let content: string; // let: assigned in try, used after catch
+
+  try {
+    content = await Bun.file(skillMdPath).text();
+  } catch (cause: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Skill "${name}" not found: could not read ${skillMdPath}`,
+        retryable: false,
+        cause,
+        context: { name, dirPath, skillMdPath },
+      },
+    };
+  }
+
+  // Path traversal guard: dirPath must be within skillsRoot (Decision 9A)
+  // Both paths are realpath-resolved to handle /tmp → /private/tmp symlinks on macOS.
+  let realDir: string; // let: assigned in try, used after catch
+  let realRoot: string; // let: assigned in try, used after catch
+  try {
+    realDir = await realpath(dirPath);
+  } catch (cause: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Skill "${name}" directory not found: ${dirPath}`,
+        retryable: false,
+        cause,
+        context: { name, dirPath },
+      },
+    };
+  }
+
+  try {
+    realRoot = await realpath(ctx.skillsRoot);
+  } catch {
+    // If root can't be resolved, use as-is
+    realRoot = ctx.skillsRoot;
+  }
+
+  if (!realDir.startsWith(`${realRoot}/`) && realDir !== realRoot) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Skill "${name}" path escapes skills root: ${realDir} is outside ${realRoot}`,
+        retryable: false,
+        context: { errorKind: "PATH_TRAVERSAL", name, realDir, skillsRoot: realRoot },
+      },
+    };
+  }
+
+  const parseResult: Result<ParsedSkillMd, KoiError> = parseSkillMd(content, skillMdPath);
+  if (!parseResult.ok) return parseResult;
+
+  const { frontmatter, body: rawBody } = parseResult.value;
+
+  // 4. Validate frontmatter (Decision 8A: Zod .transform() normalizes allowed-tools)
+  const fmResult = validateFrontmatter(frontmatter, skillMdPath);
+  if (!fmResult.ok) return fmResult;
+  const fm = fmResult.value;
+
+  // 5. Resolve includes (sequential, Decision 14C)
+  const rawIncludes = frontmatter.includes;
+  // let: body may be extended with include content
+  let body = rawBody;
+  if (Array.isArray(rawIncludes) && rawIncludes.length > 0) {
+    const includes = rawIncludes.filter((i): i is string => typeof i === "string");
+    const includeResult = await resolveIncludes(includes, dirPath, ctx.skillsRoot);
+    if (!includeResult.ok) return includeResult;
+
+    // Append resolved include content to body
+    const appendix = includeResult.value.map((inc) => inc.content).join("\n\n");
+    body = appendix.length > 0 ? `${rawBody}\n\n${appendix}` : rawBody;
+  }
+
+  // 6. Security scan (Decision 3A: fail-closed)
+  const scanReport = ctx.scanner.scanSkill(`---\n${JSON.stringify(fm)}\n---\n\n${body}`);
+  const handleFindings = makeFindingCallback(
+    name,
+    ctx.config.blockOnSeverity,
+    ctx.config.onSecurityFinding,
+  );
+  const { blocked } = handleFindings(scanReport.findings);
+
+  if (blocked) {
+    const blockingFindings = scanReport.findings.filter((f) =>
+      severityAtOrAbove(
+        f.severity,
+        ctx.config.blockOnSeverity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+      ),
+    );
+    const summary = blockingFindings
+      .map((f) => `[${f.severity}] ${f.rule}: ${f.message}`)
+      .join("; ");
+    return {
+      ok: false,
+      error: {
+        code: "PERMISSION",
+        message: `Skill "${name}" blocked by security scan (${blockingFindings.length} finding(s) at or above ${ctx.config.blockOnSeverity}): ${summary}`,
+        retryable: false,
+        context: {
+          name,
+          blockOnSeverity: ctx.config.blockOnSeverity,
+          findings: blockingFindings,
+        },
+      },
+    };
+  }
+
+  // 7. Build and return
+  return { ok: true, value: buildSkillDefinition(fm, body, source, realDir) };
+}
