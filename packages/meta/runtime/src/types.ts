@@ -50,8 +50,22 @@ export interface RuntimeConfig {
   /**
    * Directory for trajectory ATIF files. When provided, creates a
    * filesystem-backed TrajectoryDocumentStore. When omitted, no store is created.
+   * Mutually exclusive with trajectoryNexus — providing both is a config error.
    */
   readonly trajectoryDir?: string | undefined;
+
+  /**
+   * Nexus trajectory storage config. When provided, trajectories are persisted
+   * to a Nexus server instead of the local filesystem.
+   * Mutually exclusive with trajectoryDir — providing both is a config error.
+   */
+  readonly trajectoryNexus?:
+    | {
+        readonly url: string;
+        readonly apiKey?: string | undefined;
+        readonly basePath?: string | undefined;
+      }
+    | undefined;
 
   /** Agent name for ATIF document metadata. Default: "koi-runtime". */
   readonly agentName?: string | undefined;

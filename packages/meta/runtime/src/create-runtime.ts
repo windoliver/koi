@@ -42,6 +42,7 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
@@ -60,6 +61,7 @@ import {
 } from "./stubs/index.js";
 import { createAtifDocumentStore } from "./trajectory/atif-store.js";
 import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
+import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
 import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
@@ -173,8 +175,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     );
   }
 
-  // Create trajectory store if directory provided
-  const trajectoryStore = resolveTrajectoryStore(config);
+  // Create trajectory store (filesystem or Nexus-backed)
+  const trajectoryResolution = resolveTrajectoryStore(config);
+  const trajectoryStore = trajectoryResolution?.store;
+  const trajectoryTransport = trajectoryResolution?.transport;
 
   // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
   // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
@@ -317,6 +321,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
+      // Close trajectory Nexus transport (abort pending requests)
+      trajectoryTransport?.close();
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
@@ -369,15 +375,43 @@ function resolveMiddleware(provided: readonly KoiMiddleware[] | undefined): {
   };
 }
 
-function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryDocumentStore | undefined {
-  if (config.trajectoryDir === undefined) return undefined;
-  const delegate = createFsAtifDelegate(config.trajectoryDir);
+interface TrajectoryResolution {
+  readonly store: TrajectoryDocumentStore;
+  /** Nexus transport to close on dispose. Undefined for filesystem delegate. */
+  readonly transport?: NexusTransport | undefined;
+}
+
+function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryResolution | undefined {
+  if (config.trajectoryDir !== undefined && config.trajectoryNexus !== undefined) {
+    throw new Error(
+      "Cannot provide both trajectoryDir and trajectoryNexus — pick one trajectory backend",
+    );
+  }
+
   const agentVersion = config.agentVersion;
   const storeConfig =
     agentVersion !== undefined
       ? { agentName: config.agentName ?? DEFAULT_AGENT_NAME, agentVersion }
       : { agentName: config.agentName ?? DEFAULT_AGENT_NAME };
-  return createAtifDocumentStore(storeConfig, delegate);
+
+  if (config.trajectoryNexus !== undefined) {
+    const transport = createHttpTransport({
+      url: config.trajectoryNexus.url,
+      apiKey: config.trajectoryNexus.apiKey,
+    });
+    const delegate = createNexusAtifDelegate({
+      transport,
+      basePath: config.trajectoryNexus.basePath,
+    });
+    return { store: createAtifDocumentStore(storeConfig, delegate), transport };
+  }
+
+  if (config.trajectoryDir !== undefined) {
+    const delegate = createFsAtifDelegate(config.trajectoryDir);
+    return { store: createAtifDocumentStore(storeConfig, delegate) };
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
