@@ -14,6 +14,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   AgentId,
+  EngineEvent,
   KoiError,
   ManagedTaskBoard,
   Result,
@@ -26,7 +27,7 @@ import type {
   TaskPatch,
   TaskResult,
 } from "@koi/core";
-import { createTaskBoard } from "@koi/task-board";
+import { createTaskBoard, mapTaskBoardEventToEngineEvents } from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +42,14 @@ export interface ManagedTaskBoardConfig {
    * will not survive process restart.
    */
   readonly resultsDir?: string | undefined;
+  /**
+   * When provided with `agentId`, automatically bridges task board events
+   * to EngineEvents (`plan_update` / `task_progress`) via the callback.
+   * Composes with any existing `boardConfig.onEvent` handler.
+   */
+  readonly onEngineEvent?: ((event: EngineEvent) => void) | undefined;
+  /** Agent ID for EngineEvent attribution. Required when `onEngineEvent` is set. */
+  readonly agentId?: AgentId | undefined;
 }
 
 // ManagedTaskBoard interface is defined in @koi/core so L2 packages can
@@ -144,7 +153,24 @@ async function persistBoardDiff(
 export async function createManagedTaskBoard(
   config: ManagedTaskBoardConfig,
 ): Promise<ManagedTaskBoard> {
-  const { store, boardConfig, resultsDir } = config;
+  const { store, boardConfig, resultsDir, onEngineEvent, agentId } = config;
+
+  // Compose onEvent: bridge to EngineEvents, then delegate to user handler
+  const resolvedConfig: TaskBoardConfig | undefined =
+    onEngineEvent !== undefined && agentId !== undefined
+      ? {
+          ...boardConfig,
+          onEvent: (event, newBoard) => {
+            // Fire user handler first (if any)
+            boardConfig?.onEvent?.(event, newBoard);
+            // Bridge to EngineEvents
+            const engineEvents = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
+            for (const e of engineEvents) {
+              onEngineEvent(e);
+            }
+          },
+        }
+      : boardConfig;
 
   // Load initial state from store
   const items = await store.list();
@@ -163,7 +189,7 @@ export async function createManagedTaskBoard(
   }
 
   // let justified: board is mutable state managed by the managed board
-  let board = createTaskBoard(boardConfig, { items, results: initialResults });
+  let board = createTaskBoard(resolvedConfig, { items, results: initialResults });
 
   // Async mutex: mutations queue behind the previous one to prevent
   // two callers from deriving from the same base board concurrently.
