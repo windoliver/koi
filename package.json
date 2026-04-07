@@ -31,6 +31,7 @@
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "check:orphans": "bun scripts/check-orphans.ts",
     "check:golden-queries": "bun scripts/check-golden-queries.ts",
+    "check:tui-tools": "bun scripts/check-tui-tools.ts",
     "check:trajectories": "bun scripts/check-trajectories.ts",
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",

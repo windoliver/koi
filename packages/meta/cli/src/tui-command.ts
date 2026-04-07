@@ -36,10 +36,11 @@ import type {
   EngineInput,
   InboundMessage,
   SessionTranscript,
+  SpawnResult,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
@@ -49,9 +50,11 @@ import {
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashTool } from "@koi/tools-bash";
 import type { TodoItem } from "@koi/tools-builtin";
 import {
+  createAskUserTool,
   createEnterPlanModeTool,
   createExitPlanModeTool,
   createGlobTool,
@@ -281,31 +284,58 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       planContentMemory = content;
     },
   });
-  // AskUserQuestion is omitted: the TUI owns the input box and doesn't expose
-  // a readline-compatible elicit callback yet. Future: wire via TUI dialog.
+  // AskUserQuestion: auto-answers with the first option for now.
+  // Proper TUI dialog integration is future work — the tool result shows
+  // the question text so the user sees what was asked.
+  const askUserTool = createAskUserTool({
+    elicit: async (questions) => {
+      return questions.map((q) => ({
+        selected: [q.options[0]?.label ?? ""],
+      }));
+    },
+  });
+
+  // --- Task + spawn tools (task_create, task_delegate, agent_spawn) ---
+  const { createTaskTools } = await import("@koi/task-tools");
+  const { createSpawnTools } = await import("@koi/spawn-tools");
+  const taskBoardStore = createMemoryTaskBoardStore();
+  const taskBoard = await createManagedTaskBoard({ store: taskBoardStore });
+  const coordinatorId = agentId("tui-coordinator");
+  const taskTools = createTaskTools({ board: taskBoard, agentId: coordinatorId });
+  const spawnTools = createSpawnTools({
+    spawnFn: async (request): Promise<SpawnResult> => ({
+      ok: false,
+      error: {
+        code: "INTERNAL",
+        message: `agent_spawn is not yet supported in the TUI. Requested: ${request.agentName}`,
+        retryable: false,
+      },
+    }),
+    board: taskBoard,
+    agentId: coordinatorId,
+    signal: AbortSignal.timeout(300_000),
+  });
 
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
   // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
-  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>([
-    [globTool.descriptor.name, globTool],
-    [grepTool.descriptor.name, grepTool],
-    [webFetchTool.descriptor.name, webFetchTool],
-    [bashTool.descriptor.name, bashTool],
-    [todoTool.descriptor.name, todoTool],
-    [enterPlanModeTool.descriptor.name, enterPlanModeTool],
-    [exitPlanModeTool.descriptor.name, exitPlanModeTool],
-  ]);
-
-  const localToolDescriptors: readonly ToolDescriptor[] = [
-    globTool.descriptor,
-    grepTool.descriptor,
-    webFetchTool.descriptor,
-    bashTool.descriptor,
-    todoTool.descriptor,
-    enterPlanModeTool.descriptor,
-    exitPlanModeTool.descriptor,
+  const allTools: readonly Tool[] = [
+    globTool,
+    grepTool,
+    webFetchTool,
+    bashTool,
+    todoTool,
+    enterPlanModeTool,
+    exitPlanModeTool,
+    askUserTool,
+    ...taskTools,
+    ...spawnTools,
   ];
+  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>(
+    allTools.map((t) => [t.descriptor.name, t]),
+  );
+
+  const localToolDescriptors: readonly ToolDescriptor[] = allTools.map((t) => t.descriptor);
 
   const rawEngineAdapter: EngineAdapter = {
     engineId: "koi-tui",
