@@ -147,9 +147,11 @@ export function createAtifDocumentStore(
 
         // Reassign stepIndex to be globally unique across the document.
         // Enforce monotonic timestamps: each step's timestamp is at least
-        // max(previous_step_timestamp, current_timestamp). This guarantees
-        // monotonicity even when concurrent middleware observers call Date.now()
-        // independently (see #1558).
+        // max(previous_step_timestamp, current_timestamp). This is a safety net
+        // for L1 engine-compose emitters that lack clock injection. The primary
+        // fix is per-stream monotonic clocks at emission time (#1558).
+        // Note: this preserves write order, not causal order — async appends
+        // that arrive out of order will be serialized by mutex acquisition time.
         const baseIndex = doc.steps.length;
         const lastExistingTs =
           doc.steps.length > 0

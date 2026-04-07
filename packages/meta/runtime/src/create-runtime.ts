@@ -77,9 +77,9 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  * 6. Return RuntimeHandle with store exposed
  */
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
-  // Shared monotonic clock — all trajectory emitters use the same instance
-  // to guarantee strictly increasing timestamps across concurrent observers.
-  const clock = config.clock ?? createMonotonicClock();
+  // Clock factory: creates a per-stream monotonic clock so concurrent sessions
+  // don't push each other's timestamps into the future (see #1558).
+  const createClock = (): (() => number) => config.clock ?? createMonotonicClock();
 
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
@@ -233,7 +233,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     allToolDescriptors,
     config.retrySignalReader,
     config.agentName ?? DEFAULT_AGENT_NAME,
-    clock,
+    createClock,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -689,7 +689,7 @@ function composeMiddlewareIntoAdapter(
   toolDescriptors?: readonly ToolDescriptor[],
   retrySignalReader?: RetrySignalReader,
   agentName?: string,
-  clock: () => number = Date.now,
+  createClock: () => () => number = () => Date.now,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -730,6 +730,9 @@ function composeMiddlewareIntoAdapter(
       const docId = `stream-${streamId}`;
 
       const buffer = store !== undefined ? createStepBuffer(store, docId) : undefined;
+      // Per-stream monotonic clock — scoped to this session so concurrent
+      // sessions don't interfere with each other's timestamp sequences.
+      const clock = createClock();
 
       // Per-stream event-trace: writes to the SAME store + docId as harness steps.
       // This unifies model/tool I/O (from event-trace) with middleware spans (from harness)
