@@ -124,7 +124,7 @@ so the key is not forwarded to OpenRouter.
 **Behaviour:**
 - Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
 - A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
-- The exfiltration guard middleware is disabled (`exfiltrationGuard: false`) for the local TUI session; it is not needed in a single-user interactive terminal and was previously blocking tool results that matched common dev-file patterns.
+- The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
 - `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.
@@ -194,6 +194,16 @@ packages/meta/cli/src/
     └── test-helpers.ts      ← Shared test utilities
 ```
 
+### OS Sandbox Wiring (`tui-command.ts`)
+
+`koi tui` now wires OS-level sandboxing into the Bash tool at startup. `createOsAdapter()`
+is called once; when available (macOS seatbelt or Linux bwrap), a `restrictiveProfile()`
+is merged with workspace-specific overrides (network allowed, write access to `cwd`,
+`/tmp`, `/var/folders`) and injected into `createBashTool()` via `sandboxAdapter` +
+`sandboxProfile`. The sandbox is transparent to the model — it calls the ordinary Bash
+tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
+the unsandboxed denylist-only path when the platform is unsupported.
+
 ### Engine Worker (`engine-worker.ts`)
 
 A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):
@@ -216,6 +226,8 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
+| `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only) |
 
 ---

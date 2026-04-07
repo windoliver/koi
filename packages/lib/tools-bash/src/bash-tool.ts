@@ -1,20 +1,44 @@
-import { spawn as spawnChild } from "node:child_process";
-import { Readable } from "node:stream";
 import { type BashPolicy, classifyBashCommand, DEFAULT_BASH_POLICY } from "@koi/bash-security";
-import type { JsonObject, Tool, ToolExecuteOptions } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import type {
+  JsonObject,
+  SandboxAdapter,
+  SandboxProfile,
+  Tool,
+  ToolExecuteOptions,
+} from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { execSandboxed, spawnBash } from "./exec.js";
 
-/** Grace period before escalating SIGTERM to SIGKILL on cancellation. */
-const SIGKILL_ESCALATION_MS = 3_000;
+/**
+ * Sentinel appended to the command string when `trackCwd` is enabled.
+ * After execution the last line matching `^__KOI_CWD__:` is parsed and stripped.
+ * Uses `printf` — safe across shells, outputs the literal prefix + resolved cwd.
+ *
+ * The sentinel is the LAST line in the script so `set -e` prevents it from
+ * printing when an earlier command fails — meaning cwd is only updated on success.
+ */
+const CWD_SENTINEL_PREFIX = "__KOI_CWD__:";
+const CWD_SENTINEL_SUFFIX = `\nprintf '${CWD_SENTINEL_PREFIX}%s\\n' "$(pwd -P)"`;
 
-/** Safe minimal environment for spawned bash processes. */
-const SAFE_ENV: Readonly<Record<string, string>> = {
-  PATH: "/usr/local/bin:/usr/bin:/bin",
-  HOME: process.env.HOME ?? "/tmp",
-  LANG: "en_US.UTF-8",
-  LC_ALL: "en_US.UTF-8",
-  TERM: "dumb",
-} as const;
+/** Parse and strip the sentinel line from stdout. Returns null if not found. */
+function extractCwdSentinel(stdout: string): { cwd: string; stdout: string } | null {
+  const lines = stdout.split("\n");
+  // Search backwards — sentinel is the last meaningful line
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line?.startsWith(CWD_SENTINEL_PREFIX)) {
+      const cwd = line.slice(CWD_SENTINEL_PREFIX.length).trim();
+      if (cwd.length === 0) return null;
+      const strippedLines = [...lines.slice(0, i), ...lines.slice(i + 1)];
+      // Remove trailing empty line left by stripping the sentinel
+      while (strippedLines.length > 0 && strippedLines[strippedLines.length - 1] === "") {
+        strippedLines.pop();
+      }
+      return { cwd, stdout: strippedLines.length > 0 ? `${strippedLines.join("\n")}\n` : "" };
+    }
+  }
+  return null;
+}
 
 export interface BashToolConfig {
   /**
@@ -26,6 +50,34 @@ export interface BashToolConfig {
   readonly workspaceRoot?: string;
   /** Security policy applied to every command. */
   readonly policy?: BashPolicy;
+  /**
+   * OS sandbox adapter — when provided, all bash execution is routed through
+   * the sandbox adapter instead of spawned directly.
+   *
+   * Inject at L3 (CLI/runtime) to transparently confine every Bash invocation
+   * without exposing a separate tool to the model.
+   */
+  readonly sandboxAdapter?: SandboxAdapter;
+  /**
+   * Sandbox profile applied when `sandboxAdapter` is provided.
+   *
+   * Defaults to a restrictive profile (no network, credential paths denied,
+   * defaultReadAccess open). Must be provided alongside `sandboxAdapter`.
+   */
+  readonly sandboxProfile?: SandboxProfile;
+  /**
+   * When true, the tool tracks the working directory across calls.
+   * After each successful execution, reads `pwd -P` from the subprocess
+   * output and stores it for the next call.
+   *
+   * Enables `cd` commands to persist between tool invocations.
+   * The tracked cwd is used as the default when `args.cwd` is not provided.
+   * An explicit `args.cwd` always overrides the tracked cwd for that call,
+   * but the tracked cwd still updates from the executed command.
+   *
+   * Defaults to false — opt-in to avoid unexpected state mutation.
+   */
+  readonly trackCwd?: boolean;
 }
 
 /** Shape of the bash tool's JSON output on success. */
@@ -67,12 +119,31 @@ type BashResult = BashSuccessResult | BashBlockedResult;
  *   A command like `cat /etc/passwd` passes even if cwd is within the workspace.
  *   This tool relies on the denylist (reverse shells, escalation, etc.) and the
  *   allowlist (if configured) for command-level control.  For full filesystem
- *   confinement inject an OS sandbox via `wrapCommand` at the L3 integration layer.
+ *   confinement inject an OS sandbox via `sandboxAdapter` at the L3 integration layer.
  */
+/**
+ * Bash tool + session reset hook.
+ *
+ * Use when `trackCwd: true` and the caller needs to reset tracked state on
+ * session clear (e.g. `agent:clear` / `session:new` in the TUI). Calling
+ * `resetCwd()` restores the working directory to `workspaceRoot` so a new
+ * conversation starts from a known directory.
+ *
+ * Backward-compatible: `createBashTool` continues to return just the Tool.
+ */
+export interface BashToolHandle {
+  readonly tool: Tool;
+  /** Reset tracked cwd back to workspaceRoot. No-op when trackCwd is false. */
+  readonly resetCwd: () => void;
+}
+
 export function createBashTool(config?: BashToolConfig): Tool {
+  return createBashToolWithHooks(config).tool;
+}
+
+export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle {
   // workspaceRoot gates cwd containment.  When omitted the cwd is still
-  // validated against process.cwd() so the tool is never fully unconstrained:
-  // a caller that does not set workspaceRoot gets process.cwd() as the fence.
+  // validated against process.cwd() so the tool is never fully unconstrained.
   const workspaceRoot = config?.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = {
     ...DEFAULT_BASH_POLICY,
@@ -81,15 +152,22 @@ export function createBashTool(config?: BashToolConfig): Tool {
   const maxOutputBytes = policy.maxOutputBytes ?? DEFAULT_BASH_POLICY.maxOutputBytes ?? 1_048_576;
   const defaultTimeoutMs =
     policy.defaultTimeoutMs ?? DEFAULT_BASH_POLICY.defaultTimeoutMs ?? 30_000;
+  const sandboxAdapter = config?.sandboxAdapter;
+  const sandboxProfile = config?.sandboxProfile;
+  const trackCwd = config?.trackCwd ?? false;
 
-  return {
+  // let justified: mutable cwd state for trackCwd — updated after each successful execution.
+  // Reset to workspaceRoot on session clear via resetCwd().
+  let currentCwd = workspaceRoot;
+
+  const tool: Tool = {
     descriptor: {
       name: "Bash",
       description:
         "Execute a bash command. The working directory is validated against the workspace root. " +
         "Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are " +
         "blocked by classifier. File path arguments inside the command string are NOT further " +
-        "restricted — for full filesystem confinement use an OS sandbox via wrapCommand.",
+        "restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter.",
       inputSchema: {
         type: "object",
         properties: {
@@ -114,10 +192,9 @@ export function createBashTool(config?: BashToolConfig): Tool {
       tags: ["shell", "execution"],
     },
     origin: "primordial",
-    // DEFAULT_UNSANDBOXED_POLICY: this tool intentionally runs without OS-level
-    // sandboxing.  Callers that need confinement should inject wrapCommand in
-    // BashToolConfig to run commands inside a sandbox (e.g. sandbox-exec, nsjail).
-    policy: DEFAULT_UNSANDBOXED_POLICY,
+    // When sandboxAdapter is injected (L3 concern), the tool runs inside an OS
+    // sandbox (seatbelt/bwrap) — policy reflects the actual execution environment.
+    policy: sandboxAdapter !== undefined ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<BashResult> => {
       const signal = options?.signal;
       signal?.throwIfAborted();
@@ -132,14 +209,16 @@ export function createBashTool(config?: BashToolConfig): Tool {
         };
       }
 
-      const cwd = typeof args.cwd === "string" ? args.cwd : workspaceRoot;
+      // When trackCwd is enabled: use the tracked cwd as default (falls back to
+      // workspaceRoot on first call). An explicit args.cwd overrides for this call
+      // only — cwd tracking only updates when no explicit cwd was provided.
+      const explicitCwd = typeof args.cwd === "string" ? args.cwd : undefined;
+      const rawCwd = explicitCwd ?? (trackCwd ? currentCwd : workspaceRoot);
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
 
       // Security classification pipeline (allowlist → injection → path → command)
-      // workspaceRoot is always set (defaults to process.cwd()) so containment
-      // is always enforced — cwd must resolve inside workspaceRoot.
       const classifyOpts = {
-        cwd,
+        cwd: rawCwd,
         policy,
         workspaceRoot,
       };
@@ -153,210 +232,61 @@ export function createBashTool(config?: BashToolConfig): Tool {
         };
       }
 
-      return spawnBash(command, cwd, timeoutMs, maxOutputBytes, signal);
-    },
-  };
-}
+      // Assemble the full command string:
+      //   set -euo pipefail (fail-fast defaults)
+      //   ${command}
+      //   [sentinel to capture cwd — only when trackCwd AND no explicit cwd override]
+      //   An explicit cwd override is a one-off: don't update the tracked cwd from it.
+      const updateTrackedCwd = trackCwd && explicitCwd === undefined;
+      const fullCommand = updateTrackedCwd
+        ? `set -euo pipefail\n${command}${CWD_SENTINEL_SUFFIX}`
+        : `set -euo pipefail\n${command}`;
 
-/**
- * Spawn bash and collect output with AbortSignal support and output budgeting.
- * Not exported — internal to this module.
- *
- * Process group kill: `detached: true` puts bash in its own process group so
- * that `process.kill(-pid, signal)` terminates bash AND all descendants.
- * Without this, long-running child processes survive after the tool reports
- * completion/cancellation, creating a rollback hazard.
- */
-async function spawnBash(
-  command: string,
-  cwd: string,
-  timeoutMs: number,
-  maxOutputBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<BashResult> {
-  const start = Date.now();
+      // Route through OS sandbox when adapter is injected (L3 DI pattern).
+      const raw =
+        sandboxAdapter !== undefined && sandboxProfile !== undefined
+          ? await execSandboxed(
+              sandboxAdapter,
+              sandboxProfile,
+              fullCommand,
+              rawCwd,
+              timeoutMs,
+              maxOutputBytes,
+              signal,
+            )
+          : await spawnBash(fullCommand, rawCwd, timeoutMs, maxOutputBytes, signal);
 
-  // Build effective signal: combine caller signal + per-invocation timeout
-  const timeoutController = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    timeoutController.abort();
-  }, timeoutMs);
-
-  const signals: AbortSignal[] = [timeoutController.signal];
-  if (signal !== undefined) signals.push(signal);
-  const effectiveSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
-
-  // Re-check after building signal — avoid spawn if already aborted
-  if (effectiveSignal?.aborted) {
-    clearTimeout(timer);
-    signal?.throwIfAborted();
-    return {
-      error: "Operation cancelled before spawn",
-      category: "injection",
-      reason: "Cancelled",
-      pattern: "",
-    };
-  }
-
-  // detached: true (Unix) — bash starts as the leader of a new process group.
-  // PGID == proc.pid, so `process.kill(-pid, sig)` kills every descendant.
-  // --noprofile --norc: skip /etc/profile and ~/.bashrc to prevent profile-based code execution
-  // set -euo pipefail: exit on error, unset vars, pipefail — fail-safe shell defaults
-  const proc = spawnChild(
-    "bash",
-    ["--noprofile", "--norc", "-c", `set -euo pipefail\n${command}`],
-    {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: SAFE_ENV,
-      detached: true,
-    },
-  );
-
-  // Convert Node.js Readable to Web ReadableStream for drainStream
-  const stdoutStream: ReadableStream<Uint8Array> | null =
-    proc.stdout !== null ? (Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>) : null;
-  const stderrStream: ReadableStream<Uint8Array> | null =
-    proc.stderr !== null ? (Readable.toWeb(proc.stderr) as ReadableStream<Uint8Array>) : null;
-
-  // Wire abort — kill the entire process group, not just the shell
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
-  const onAbort = (): void => {
-    const pid = proc.pid;
-    if (pid === undefined) return;
-    try {
-      process.kill(-pid, "SIGTERM"); // Negative PID targets the process group
-    } catch {
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-    }
-    killTimer = setTimeout(() => {
-      if (pid === undefined) return;
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // already exited
+      // Parse and strip cwd sentinel when tracking is active for this call.
+      // Only update on exitCode === 0 to avoid updating on partial failures.
+      let stdout = raw.stdout;
+      if (updateTrackedCwd && raw.exitCode === 0) {
+        const parsed = extractCwdSentinel(stdout);
+        if (parsed !== null) {
+          currentCwd = parsed.cwd;
+          stdout = parsed.stdout;
         }
       }
-    }, SIGKILL_ESCALATION_MS);
+
+      return {
+        stdout,
+        stderr: raw.stderr,
+        exitCode: raw.exitCode,
+        durationMs: raw.durationMs,
+        ...(raw.timedOut ? { timedOut: true as const } : {}),
+        ...(raw.truncated
+          ? {
+              truncated: true as const,
+              truncatedNote: raw.truncatedNote,
+            }
+          : {}),
+      };
+    },
   };
-  effectiveSignal?.addEventListener("abort", onAbort, { once: true });
-
-  // Guard against race: signal aborted between check and addEventListener
-  if (effectiveSignal?.aborted) {
-    onAbort();
-  }
-
-  // Collect stdout and stderr with a shared byte budget.
-  // Both streams are drained concurrently to prevent pipe-buffer deadlock:
-  // a subprocess blocked writing to a full pipe will never exit.
-  //
-  // 'error' handler is required: if bash cannot be spawned (e.g. the cwd path
-  // does not exist on disk despite passing validatePath's fallback-to-resolve),
-  // Node emits 'error' instead of 'exit'.  Without a listener that is an
-  // uncaught exception; with one we capture the message and return a blocked result.
-  const budget = { remaining: maxOutputBytes };
-  let spawnError: Error | undefined;
-  const exited = new Promise<number>((resolve) => {
-    proc.on("exit", (code) => resolve(code ?? 1));
-    proc.on("error", (err: Error) => {
-      spawnError = err;
-      resolve(1);
-    });
-  });
-  const [stdoutResult, stderrResult] = await Promise.all([
-    drainStream(stdoutStream, budget),
-    drainStream(stderrStream, budget),
-  ]);
-  const exitCode = await exited;
-
-  // Cleanup
-  effectiveSignal?.removeEventListener("abort", onAbort);
-  clearTimeout(timer);
-  if (killTimer !== undefined) clearTimeout(killTimer);
-
-  // Spawn failed (e.g. cwd does not exist) — return a blocked result rather
-  // than a success with exit code 1, so callers can distinguish the two cases.
-  if (spawnError !== undefined) {
-    return {
-      error: "Failed to spawn bash subprocess",
-      category: "injection",
-      reason: spawnError.message,
-      pattern: "",
-    };
-  }
-
-  const truncated = stdoutResult.truncated || stderrResult.truncated;
-  const totalBytes = stdoutResult.byteCount + stderrResult.byteCount;
 
   return {
-    stdout: stdoutResult.text,
-    stderr: stderrResult.text,
-    exitCode,
-    durationMs: Date.now() - start,
-    ...(timedOut ? { timedOut: true as const } : {}),
-    ...(truncated
-      ? {
-          truncated: true as const,
-          truncatedNote: `Output truncated at ${maxOutputBytes} bytes (${totalBytes} bytes total)`,
-        }
-      : {}),
+    tool,
+    resetCwd: () => {
+      currentCwd = workspaceRoot;
+    },
   };
-}
-
-interface DrainResult {
-  readonly text: string;
-  readonly truncated: boolean;
-  readonly byteCount: number;
-}
-
-/**
- * Drain a ReadableStream into a string, respecting a shared byte budget.
- * Keeps draining after budget is exhausted to prevent pipe-buffer deadlock.
- */
-async function drainStream(
-  stream: ReadableStream<Uint8Array> | null | undefined,
-  budget: { remaining: number },
-): Promise<DrainResult> {
-  if (stream == null) return { text: "", truncated: false, byteCount: 0 };
-
-  const decoder = new TextDecoder();
-  const reader = stream.getReader();
-  let text = "";
-  let truncated = false;
-  let byteCount = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteCount += value.length;
-
-      if (budget.remaining <= 0) {
-        // Budget exhausted — keep draining to unblock subprocess writes
-        truncated = true;
-        continue;
-      }
-
-      const chunk = value.length <= budget.remaining ? value : value.slice(0, budget.remaining);
-      text += decoder.decode(chunk, { stream: true });
-      budget.remaining -= chunk.length;
-
-      if (value.length > chunk.length) {
-        truncated = true;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  return { text, truncated, byteCount };
 }

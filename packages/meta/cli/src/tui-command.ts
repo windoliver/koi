@@ -44,6 +44,7 @@ import { createSystemPromptMiddleware } from "@koi/engine";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
 import { createRuntime, createToolDispatcher } from "@koi/runtime";
+import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import {
   createJsonlTranscript,
   createSessionTranscriptMiddleware,
@@ -236,7 +237,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const grepTool = createGrepTool({ cwd });
   const webExecutor = createWebExecutor({ allowHttps: true });
   const webFetchTool = createWebFetchTool(webExecutor, "web", DEFAULT_UNSANDBOXED_POLICY);
-  const bashTool = createBashTool({ workspaceRoot: cwd });
+
+  // --- OS sandbox: seatbelt (macOS) / bubblewrap (Linux) ---
+  // When available, all Bash commands run inside the OS sandbox automatically.
+  // Falls back gracefully to the unsandboxed path with only denylist guard.
+  // Profile: restrictive base + network + write paths for workspace/tmp/cache.
+  const osSandboxResult = createOsAdapter();
+  const sandboxAdapter = osSandboxResult.ok ? osSandboxResult.value : undefined;
+  const sandboxProfile = osSandboxResult.ok
+    ? mergeProfile(restrictiveProfile(), {
+        network: { allow: true },
+        filesystem: {
+          allowWrite: [cwd, "/tmp", "/var/folders"],
+        },
+      })
+    : undefined;
+  const bashTool = createBashTool({
+    workspaceRoot: cwd,
+    ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
+      ? { sandboxAdapter, sandboxProfile }
+      : {}),
+  });
 
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
@@ -339,8 +360,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     cwd,
     // Advertise local tools to the model (fs tools are added by createRuntime internally).
     toolDescriptors: localToolDescriptors,
-    // Local TUI runs on the user's machine — no exfiltration risk.
-    exfiltrationGuard: false,
+    // Enable exfiltration guard: block known secret patterns (API keys, tokens)
+    // from reaching shell commands or web_fetch — prevents accidental credential
+    // leakage even on the user's own machine.
+    exfiltrationGuard: {},
   });
 
   // ---------------------------------------------------------------------------

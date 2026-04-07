@@ -138,9 +138,9 @@ declare function createDenialTracker(maxEntries?: number): DenialTracker;
 
 /**
  * Extended middleware returned by {@link createPermissionsMiddleware}.
+ *
  * This IS a KoiMiddleware (backward compatible — can be passed directly
- * into \`middleware: [...]\`) with an additional method for wiring the
- * approval trajectory sink at runtime.
+ * into \`middleware: [...]\`) with additional methods for runtime wiring.
  */
 interface PermissionsMiddlewareHandle extends KoiMiddleware {
     /**
@@ -151,6 +151,14 @@ interface PermissionsMiddlewareHandle extends KoiMiddleware {
      * Returns an unsubscribe function to remove the sink on runtime disposal.
      */
     readonly setApprovalStepSink: (sink: (sessionId: string, step: RichTrajectoryStep) => void) => () => void;
+    /**
+     * Clear all session-scoped approval state (always-allow grants, decision
+     * caches, approval caches, denial trackers) for the given session ID.
+     *
+     * Call on \`agent:clear\` / \`session:new\` so prior-session approvals do not
+     * silently carry over into the next conversation.
+     */
+    readonly clearSessionApprovals: (sessionId: string) => void;
 }
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): PermissionsMiddlewareHandle;
 
