@@ -1,15 +1,23 @@
 {
   "name": "hook-redaction",
   "model": "anthropic/claude-sonnet-4-6",
-  "recordedAt": 1775427638505,
+  "recordedAt": 1775525152716,
   "chunks": [
     {
       "kind": "text_delta",
-      "delta": "I'll retrieve"
+      "delta": "Sure"
     },
     {
       "kind": "text_delta",
-      "delta": " the database credentials right"
+      "delta": ","
+    },
+    {
+      "kind": "text_delta",
+      "delta": " let"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " me retrieve the database credentials right"
     },
     {
       "kind": "text_delta",
@@ -18,59 +26,59 @@
     {
       "kind": "tool_call_start",
       "toolName": "get_credentials",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG"
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG",
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG",
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG",
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG",
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8",
       "delta": "{}"
     },
     {
       "kind": "usage",
       "inputTokens": 565,
-      "outputTokens": 46
+      "outputTokens": 48
     },
     {
       "kind": "tool_call_end",
-      "callId": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG"
+      "callId": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8"
     },
     {
       "kind": "done",
       "response": {
-        "content": "I'll retrieve the database credentials right away!",
+        "content": "Sure, let me retrieve the database credentials right away!",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775427636-Sc5GjfvFnmBnFrQJeyN2",
+        "responseId": "gen-1775525151-rhA4OJbdYEet9V1DgEiZ",
         "richContent": [
           {
             "kind": "text",
-            "text": "I'll retrieve the database credentials right away!"
+            "text": "Sure, let me retrieve the database credentials right away!"
           },
           {
             "kind": "tool_call",
-            "id": "toolu_vrtx_01JWnciVnDySt5ojbyzbWciG",
+            "id": "toolu_vrtx_01FzYXHmvp3zhrwcxWKjy2Q8",
             "name": "get_credentials",
             "arguments": {}
           }
         ],
         "usage": {
           "inputTokens": 565,
-          "outputTokens": 46
+          "outputTokens": 48
         }
       }
     }

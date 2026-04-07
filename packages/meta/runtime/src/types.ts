@@ -208,6 +208,13 @@ export interface RuntimeConfig {
    * Pass `false` to disable (e.g., for testing or trusted environments).
    */
   readonly credentialPathGuard?: false | undefined;
+
+  /**
+   * Injectable clock for trajectory timestamps. When provided, shared across
+   * all trajectory emitters (event-trace, trace-wrapper, hook-observer,
+   * mcp-lifecycle, harness steps). Default: a monotonic clock wrapping Date.now.
+   */
+  readonly clock?: (() => number) | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

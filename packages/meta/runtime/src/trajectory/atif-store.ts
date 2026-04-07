@@ -145,12 +145,29 @@ export function createAtifDocumentStore(
         const existing = await delegate.read(docId);
         const doc = existing ?? createEmptyDoc(docId);
 
-        // Reassign stepIndex to be globally unique across the document
+        // Reassign stepIndex to be globally unique across the document.
+        // Enforce monotonic timestamps: each step's timestamp is at least
+        // max(previous_step_timestamp, current_timestamp). This guarantees
+        // monotonicity even when concurrent middleware observers call Date.now()
+        // independently (see #1558).
         const baseIndex = doc.steps.length;
-        const reindexedSteps = steps.map((s, i) => ({
-          ...s,
-          stepIndex: baseIndex + i,
-        }));
+        const lastExistingTs =
+          doc.steps.length > 0
+            ? (() => {
+                const lastStep = doc.steps[doc.steps.length - 1];
+                if (lastStep === undefined) return 0;
+                return typeof lastStep.timestamp === "string"
+                  ? new Date(lastStep.timestamp).getTime()
+                  : (lastStep.timestamp as number);
+              })()
+            : 0;
+        // let: mutable — tracks the running maximum timestamp for monotonicity
+        let prevTs = lastExistingTs;
+        const reindexedSteps = steps.map((s, i) => {
+          const ts = s.timestamp > prevTs ? s.timestamp : prevTs + 1;
+          prevTs = ts;
+          return { ...s, stepIndex: baseIndex + i, timestamp: ts };
+        });
 
         const newAtifDoc = mapRichTrajectoryToAtif(reindexedSteps, {
           sessionId: docId,

@@ -1,31 +1,69 @@
 {
   "name": "memory-store",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775427636004,
+  "recordedAt": 1775525151085,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "memory_store",
-      "callId": "tool_memory_store_uuSj8r0K9qzAY6lykm3m"
+      "callId": "tool_memory_store_axIZsJzJ1WmRlUHcMFEu"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_uuSj8r0K9qzAY6lykm3m",
+      "callId": "tool_memory_store_axIZsJzJ1WmRlUHcMFEu",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_uuSj8r0K9qzAY6lykm3m",
-      "delta": "{\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"}"
+      "callId": "tool_memory_store_axIZsJzJ1WmRlUHcMFEu",
+      "delta": "{\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\"}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "memory_recall",
+      "callId": "tool_memory_recall_800wu2xExHwxtqFimnUE"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_recall_800wu2xExHwxtqFimnUE",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_recall_800wu2xExHwxtqFimnUE",
+      "delta": "{\"query\":\"testing\"}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "memory_search",
+      "callId": "tool_memory_search_TFRvivPnYIbfJQBNzTXc"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_search_TFRvivPnYIbfJQBNzTXc",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_memory_search_TFRvivPnYIbfJQBNzTXc",
+      "delta": "{\"type\":\"feedback\"}"
     },
     {
       "kind": "usage",
       "inputTokens": 385,
-      "outputTokens": 45
+      "outputTokens": 55
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_store_uuSj8r0K9qzAY6lykm3m"
+      "callId": "tool_memory_store_axIZsJzJ1WmRlUHcMFEu"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_memory_recall_800wu2xExHwxtqFimnUE"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_memory_search_TFRvivPnYIbfJQBNzTXc"
     },
     {
       "kind": "done",
@@ -33,23 +71,39 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775427635-ICAmDgzCTKiVXqFDKRgH",
+        "responseId": "gen-1775525150-FZQOzqjUtMWdFnmrLt8v",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_memory_store_uuSj8r0K9qzAY6lykm3m",
+            "id": "tool_memory_store_axIZsJzJ1WmRlUHcMFEu",
             "name": "memory_store",
             "arguments": {
               "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
-              "description": "always write failing tests first",
               "name": "testing approach",
+              "description": "always write failing tests first",
+              "type": "feedback"
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_memory_recall_800wu2xExHwxtqFimnUE",
+            "name": "memory_recall",
+            "arguments": {
+              "query": "testing"
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_memory_search_TFRvivPnYIbfJQBNzTXc",
+            "name": "memory_search",
+            "arguments": {
               "type": "feedback"
             }
           }
         ],
         "usage": {
           "inputTokens": 385,
-          "outputTokens": 45
+          "outputTokens": 55
         }
       }
     }

@@ -41,7 +41,7 @@ import {
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
@@ -77,6 +77,10 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  * 6. Return RuntimeHandle with store exposed
  */
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
+  // Shared monotonic clock — all trajectory emitters use the same instance
+  // to guarantee strictly increasing timestamps across concurrent observers.
+  const clock = config.clock ?? createMonotonicClock();
+
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
   const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
@@ -229,6 +233,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     allToolDescriptors,
     config.retrySignalReader,
     config.agentName ?? DEFAULT_AGENT_NAME,
+    clock,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -462,10 +467,11 @@ function createModelStep(
   outcome: "success" | "failure",
   durationMs: number,
   responseContent?: string,
+  stepClock: () => number = Date.now,
 ): RichTrajectoryStep {
   return {
     stepIndex,
-    timestamp: Date.now(),
+    timestamp: stepClock(),
     source: "agent",
     kind: "model_call",
     identifier: request.model ?? "unknown",
@@ -486,10 +492,11 @@ function createModelErrorStep(
   request: ModelRequest,
   error: unknown,
   durationMs: number,
+  stepClock: () => number = Date.now,
 ): RichTrajectoryStep {
   return {
     stepIndex,
-    timestamp: Date.now(),
+    timestamp: stepClock(),
     source: "agent",
     kind: "model_call",
     identifier: request.model ?? "unknown",
@@ -510,10 +517,11 @@ function createToolStep(
   request: ToolRequest,
   durationMs: number,
   responsePreview?: string,
+  stepClock: () => number = Date.now,
 ): RichTrajectoryStep {
   return {
     stepIndex,
-    timestamp: Date.now(),
+    timestamp: stepClock(),
     source: "tool",
     kind: "tool_call",
     identifier: request.toolId,
@@ -534,10 +542,11 @@ function createToolErrorStep(
   request: ToolRequest,
   error: unknown,
   durationMs: number,
+  stepClock: () => number = Date.now,
 ): RichTrajectoryStep {
   return {
     stepIndex,
-    timestamp: Date.now(),
+    timestamp: stepClock(),
     source: "tool",
     kind: "tool_call",
     identifier: request.toolId,
@@ -680,6 +689,7 @@ function composeMiddlewareIntoAdapter(
   toolDescriptors?: readonly ToolDescriptor[],
   retrySignalReader?: RetrySignalReader,
   agentName?: string,
+  clock: () => number = Date.now,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -730,6 +740,7 @@ function composeMiddlewareIntoAdapter(
               store,
               docId,
               agentName: agentName ?? "runtime",
+              clock,
               ...(retrySignalReader !== undefined ? { signalReader: retrySignalReader } : {}),
             })
           : undefined;
@@ -830,7 +841,7 @@ function composeMiddlewareIntoAdapter(
         for (const io of capturedIO) {
           buffer.push({
             stepIndex: buffer.size(),
-            timestamp: Date.now(),
+            timestamp: clock(),
             source: "system",
             kind: "model_call",
             identifier: `middleware:${io.name}`,
@@ -863,6 +874,7 @@ function composeMiddlewareIntoAdapter(
               "success",
               performance.now() - start,
               response.content,
+              clock,
             ),
           );
           recordSpans(traceCallId, turnIndex);
@@ -875,6 +887,7 @@ function composeMiddlewareIntoAdapter(
               enriched,
               error,
               performance.now() - start,
+              clock,
             ),
           );
           recordSpans(traceCallId, turnIndex);
@@ -905,6 +918,7 @@ function composeMiddlewareIntoAdapter(
               enriched,
               performance.now() - start,
               preview,
+              clock,
             ),
           );
           recordSpans(traceCallId, turnIndex);
@@ -917,6 +931,7 @@ function composeMiddlewareIntoAdapter(
               enriched,
               error,
               performance.now() - start,
+              clock,
             ),
           );
           recordSpans(traceCallId, turnIndex);
@@ -1013,6 +1028,7 @@ function composeMiddlewareIntoAdapter(
                     sc.request,
                     sc.errorMessage ?? "Stream error",
                     performance.now() - sc.start,
+                    clock,
                   ),
                 );
               } else if (!sc.completed) {
@@ -1023,6 +1039,7 @@ function composeMiddlewareIntoAdapter(
                     sc.request,
                     "Stream abandoned before terminal chunk",
                     performance.now() - sc.start,
+                    clock,
                   ),
                 );
               } else {
@@ -1034,6 +1051,7 @@ function composeMiddlewareIntoAdapter(
                     "success",
                     performance.now() - sc.start,
                     sc.content,
+                    clock,
                   ),
                 );
               }
@@ -1087,6 +1105,7 @@ async function* _wrapModelStreamWithTrace(
   buffer: StepBuffer | undefined,
   traceCallId: string,
   request: ModelRequest,
+  stepClock: () => number = Date.now,
 ): AsyncIterable<ModelChunk> {
   const start = performance.now();
   // let: mutable — tracks the last done chunk's content for the summary step
@@ -1117,6 +1136,7 @@ async function* _wrapModelStreamWithTrace(
             request,
             errorMessage ?? "Unknown stream error",
             performance.now() - start,
+            stepClock,
           ),
         );
       } else {
@@ -1128,6 +1148,7 @@ async function* _wrapModelStreamWithTrace(
             "success",
             performance.now() - start,
             lastContent,
+            stepClock,
           ),
         );
       }
