@@ -1754,13 +1754,13 @@ describe("reduce — agentStatus", () => {
     expect(next.agentStatus).toBe("idle");
   });
 
-  test("clear_messages preserves planTasks (plan state survives transcript clear)", () => {
+  test("clear_messages resets planTasks to empty (session reset is clean)", () => {
     const state = stateWith({
       planTasks: { "agent-1": [{ id: "t1", subject: "Thing", status: "in_progress" }] },
       messages: [userMsg("hi")],
     });
     const next = reduce(state, { kind: "clear_messages" });
-    expect(next.planTasks).toEqual(state.planTasks);
+    expect(next.planTasks).toEqual({});
   });
 
   test("session-picker modal does not affect agentStatus", () => {

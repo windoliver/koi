@@ -155,7 +155,10 @@ export async function createManagedTaskBoard(
 ): Promise<ManagedTaskBoard> {
   const { store, boardConfig, resultsDir, onEngineEvent, agentId } = config;
 
-  // Compose onEvent: bridge to EngineEvents, then delegate to user handler
+  // Buffer engine events during mutation, flush only after persistence succeeds.
+  // This prevents split-brain where the TUI shows committed state but persistence failed.
+  let pendingEngineEvents: EngineEvent[] = [];
+
   const resolvedConfig: TaskBoardConfig | undefined =
     onEngineEvent !== undefined && agentId !== undefined
       ? {
@@ -163,10 +166,10 @@ export async function createManagedTaskBoard(
           onEvent: (event, newBoard) => {
             // Fire user handler first (if any)
             boardConfig?.onEvent?.(event, newBoard);
-            // Bridge to EngineEvents
-            const engineEvents = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
-            for (const e of engineEvents) {
-              onEngineEvent(e);
+            // Buffer engine events — flushed by applyMutation after persistence
+            const mapped = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
+            for (const e of mapped) {
+              pendingEngineEvents.push(e);
             }
           },
         }
@@ -215,8 +218,13 @@ export async function createManagedTaskBoard(
 
     try {
       const oldBoard = board;
+      // Clear buffer before mutation — onEvent will fill it synchronously
+      pendingEngineEvents = [];
       const result = mutate(oldBoard);
-      if (!result.ok) return result;
+      if (!result.ok) {
+        pendingEngineEvents = [];
+        return result;
+      }
       // Run pre-persist hook before advancing task state in the store.
       // If this fails (e.g., disk-full writing result file), the task
       // state is never persisted, so the caller can safely retry.
@@ -225,8 +233,18 @@ export async function createManagedTaskBoard(
       }
       await persistBoardDiff(store, oldBoard, result.value);
       board = result.value;
+      // Flush engine events only after persistence succeeds
+      if (onEngineEvent !== undefined) {
+        const toFlush = pendingEngineEvents;
+        pendingEngineEvents = [];
+        for (const e of toFlush) {
+          onEngineEvent(e);
+        }
+      }
       return result;
     } catch (err: unknown) {
+      // Discard buffered engine events — persistence failed
+      pendingEngineEvents = [];
       // Translate store-layer exceptions (version conflicts, corrupt files,
       // I/O errors) into typed KoiError results instead of raw rejections.
       const message = err instanceof Error ? err.message : String(err);
