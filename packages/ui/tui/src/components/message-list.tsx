@@ -50,11 +50,13 @@ export function MessageList(props: MessageListProps): JSX.Element {
   const messages = useStoreMessages();
   const [spinnerFrame, setSpinnerFrame] = createSignal(0);
 
-  // O(1) check via counter (Decision 13A) — no O(messages × blocks) scan.
+  // Spinner ticks when tools are running OR agent is processing (thinking indicator).
   const hasRunningTools = useTuiStore((s) => s.runningToolCount > 0);
+  const isProcessing = useTuiStore((s) => s.agentStatus === "processing");
+  const needsSpinner = () => hasRunningTools() || isProcessing();
 
   createEffect(() => {
-    if (!hasRunningTools()) return;
+    if (!needsSpinner()) return;
     const id = setInterval(
       () => setSpinnerFrame((f) => (f + 1) % SPINNER_FRAME_COUNT),
       SPINNER_INTERVAL_MS,

@@ -5,7 +5,7 @@
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { ContentBlock } from "@koi/core/message";
 import type { Accessor, JSX } from "solid-js";
-import { For, Match, Switch } from "solid-js";
+import { For, Match, Show, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
 import { TextBlock } from "./text-block.js";
@@ -110,14 +110,26 @@ function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
   );
 }
 
+const THINKING_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
 function AssistantMessage(props: {
   readonly message: AssistantMessage_;
   readonly syntaxStyle?: SyntaxStyle | undefined;
   readonly treeSitterClient?: TreeSitterClient | undefined;
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
+  // Show thinking indicator while streaming with no content yet
+  const isThinking = () =>
+    props.message.streaming && props.message.blocks.length === 0;
+
   return (
     <box flexDirection="column">
+      <Show when={isThinking()}>
+        <text fg="gray">
+          {THINKING_SPINNER[props.spinnerFrame() % THINKING_SPINNER.length] ?? "⠋"}{" "}
+          <i>Thinking…</i>
+        </text>
+      </Show>
       <For each={props.message.blocks}>
         {(block) => (
           <AssistantBlock
