@@ -1551,7 +1551,7 @@ describe("Golden: @koi/tools-core", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/tools-builtin (2 queries)
+// L2 golden queries: @koi/tools-builtin (4 queries: search + interaction tools)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/tools-builtin", () => {
@@ -1573,6 +1573,68 @@ describe("Golden: @koi/tools-builtin", () => {
     };
     expect(result.paths).toBeDefined();
     expect(result.paths?.length).toBeGreaterThan(0);
+  });
+
+  test("createTodoTool writes items and auto-clears on all-completed", async () => {
+    const { createTodoTool } = await import("@koi/tools-builtin");
+
+    let stored: unknown[] = [];
+    const tool = createTodoTool({
+      getItems: () => stored as never,
+      setItems: (items) => {
+        stored = [...items];
+      },
+    });
+
+    expect(tool.descriptor.name).toBe("TodoWrite");
+    expect(tool.origin).toBe("primordial");
+
+    // Write two items
+    const r1 = (await tool.execute({
+      todos: [
+        { id: "a", content: "Task A", status: "in_progress" },
+        { id: "b", content: "Task B", status: "pending" },
+      ],
+    })) as { todos: unknown[]; cleared: boolean };
+    expect(r1.todos).toHaveLength(2);
+    expect(r1.cleared).toBe(false);
+
+    // All completed → auto-clear
+    const r2 = (await tool.execute({
+      todos: [
+        { id: "a", content: "Task A", status: "completed" },
+        { id: "b", content: "Task B", status: "completed" },
+      ],
+    })) as { todos: unknown[]; cleared: boolean };
+    expect(r2.cleared).toBe(true);
+    expect(r2.todos).toHaveLength(0);
+    expect(stored).toHaveLength(0);
+  });
+
+  test("createEnterPlanModeTool returns FORBIDDEN in agent context, confirmation otherwise", async () => {
+    const { createEnterPlanModeTool } = await import("@koi/tools-builtin");
+
+    // Blocked inside spawned agent
+    const agentTool = createEnterPlanModeTool({
+      isAgentContext: () => true,
+      isInPlanMode: () => false,
+      enterPlanMode: () => {},
+    });
+    const blocked = (await agentTool.execute({})) as { code: string };
+    expect(blocked.code).toBe("FORBIDDEN");
+
+    // Succeeds on main thread
+    let entered = false;
+    const mainTool = createEnterPlanModeTool({
+      isAgentContext: () => false,
+      isInPlanMode: () => false,
+      enterPlanMode: () => {
+        entered = true;
+      },
+    });
+    const ok = (await mainTool.execute({})) as { message: string };
+    expect(entered).toBe(true);
+    expect(ok.message).toContain("plan mode");
   });
 });
 
@@ -4149,6 +4211,369 @@ describe("task-tools ATIF trajectory (golden file)", () => {
     const toolSteps = doc.steps.filter((s) => s.source === "tool");
     expect(agentSteps.length).toBeGreaterThanOrEqual(2);
     expect(toolSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// todo-write ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("todo-write ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with TodoWrite tool definition", async () => {
+    const file = Bun.file(`${FIXTURES}/todo-write.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("todo-write.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    const toolNames = doc.agent.tool_definitions?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("TodoWrite");
+  });
+
+  test("has TOOL step for TodoWrite returning 2 items with cleared=false", async () => {
+    const file = Bun.file(`${FIXTURES}/todo-write.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("todo-write.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const todoStep = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    expect(todoStep).toBeDefined();
+    const content = todoStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain('"todos"');
+    expect(content).toContain('"cleared":false');
+  });
+
+  test("has at least 2 steps — agent + tool (multi-turn)", async () => {
+    const file = Bun.file(`${FIXTURES}/todo-write.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("todo-write.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// plan-mode ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("plan-mode ATIF trajectory (golden file)", () => {
+  // Helper: load and skip if missing
+  async function loadPlanMode() {
+    const file = Bun.file(`${FIXTURES}/plan-mode.trajectory.json`);
+    if (!(await file.exists())) return undefined;
+    return file.json() as Promise<{
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    }>;
+  }
+
+  test("valid ATIF v1.6 with all interaction tool definitions", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    const names = doc.agent.tool_definitions?.map((t) => t.name) ?? [];
+    expect(names).toContain("EnterPlanMode");
+    expect(names).toContain("ExitPlanMode");
+    expect(names).toContain("TodoWrite");
+  });
+
+  test("TOOL step 1: EnterPlanMode confirms plan mode entered", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const step = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "EnterPlanMode"),
+    );
+    expect(step).toBeDefined();
+    expect(step?.observation?.results?.[0]?.content ?? "").toContain("plan mode");
+  });
+
+  test("TOOL step 2: TodoWrite creates 2 tasks with cleared=false", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const todoSteps = toolSteps.filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    expect(todoSteps.length).toBeGreaterThanOrEqual(1);
+    const firstContent = todoSteps[0]?.observation?.results?.[0]?.content ?? "";
+    expect(firstContent).toContain('"todos"');
+    expect(firstContent).toContain('"cleared":false');
+  });
+
+  test("TOOL step 3: Glob called during exploration (real work between todos)", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const globStep = toolSteps.find((s) => s.tool_calls?.some((tc) => tc.function_name === "Glob"));
+    expect(globStep).toBeDefined();
+    const content = globStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain("package.json");
+  });
+
+  test("TOOL step 4-5: TodoWrite updates progress → final cleared=true (auto-clear)", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const todoSteps = toolSteps.filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    // Last TodoWrite must be the auto-clear
+    expect(todoSteps.length).toBeGreaterThanOrEqual(2);
+    const lastContent = todoSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(lastContent).toContain('"cleared":true');
+  });
+
+  test("TOOL step 4: ExitPlanMode returns approved=true", async () => {
+    const doc = await loadPlanMode();
+    if (!doc) {
+      console.warn("plan-mode.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const step = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "ExitPlanMode"),
+    );
+    expect(step).toBeDefined();
+    expect(step?.observation?.results?.[0]?.content ?? "").toContain('"approved":true');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ask-user ATIF trajectory (golden file — produced by real LLM recording)
+// ---------------------------------------------------------------------------
+
+describe("ask-user ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with AskUserQuestion tool definition", async () => {
+    const file = Bun.file(`${FIXTURES}/ask-user.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("ask-user.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    const toolNames = doc.agent.tool_definitions?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("AskUserQuestion");
+  });
+
+  test("has TOOL step for AskUserQuestion returning pre-canned answer", async () => {
+    const file = Bun.file(`${FIXTURES}/ask-user.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("ask-user.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const doc = (await file.json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const askStep = toolSteps.find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "AskUserQuestion"),
+    );
+    expect(askStep).toBeDefined();
+    const content = askStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain('"answers"');
+    expect(content).toContain("Extract Method");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interaction-full ATIF trajectory — ALL interaction tools in one E2E flow
+// AskUserQuestion → EnterPlanMode → TodoWrite → Glob → TodoWrite → TodoWrite → ExitPlanMode
+// ---------------------------------------------------------------------------
+
+describe("interaction-full ATIF trajectory (golden file)", () => {
+  type Step = {
+    readonly source: string;
+    readonly tool_calls?: readonly { readonly function_name: string }[];
+    readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+  };
+
+  async function loadDoc() {
+    const file = Bun.file(`${FIXTURES}/interaction-full.trajectory.json`);
+    if (!(await file.exists())) return undefined;
+    return file.json() as Promise<{
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+      readonly steps: readonly Step[];
+    }>;
+  }
+
+  function toolSteps(steps: readonly Step[]) {
+    return steps.filter((s) => s.source === "tool");
+  }
+  function toolContent(step: Step | undefined) {
+    return step?.observation?.results?.[0]?.content ?? "";
+  }
+
+  test("valid ATIF v1.6 with all 5 interaction tool definitions", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    const names = doc.agent.tool_definitions?.map((t) => t.name) ?? [];
+    expect(names).toContain("AskUserQuestion");
+    expect(names).toContain("EnterPlanMode");
+    expect(names).toContain("TodoWrite");
+    expect(names).toContain("Glob");
+    expect(names).toContain("ExitPlanMode");
+  });
+
+  test("step 1 — AskUserQuestion: mock elicit returns 'Targeted' answer", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "AskUserQuestion"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain('"answers"');
+    expect(toolContent(step)).toContain("Targeted");
+  });
+
+  test("step 2 — EnterPlanMode: confirms plan mode entered", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "EnterPlanMode"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain("plan mode");
+  });
+
+  test("step 3 — TodoWrite: creates 3 tasks (explore, write-plan, dispatch), cleared=false", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const todos = toolSteps(doc.steps).filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    expect(todos.length).toBeGreaterThanOrEqual(1);
+    const first = toolContent(todos[0]);
+    expect(first).toContain('"cleared":false');
+    expect(first).toContain("explore");
+    expect(first).toContain("dispatch");
+  });
+
+  test("step 4 — Glob: real exploration returns .json file paths", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "Glob"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain(".json");
+  });
+
+  test("step 5-6 — TodoWrite progress updates through all 3 tasks", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const todos = toolSteps(doc.steps).filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    // At least 3 TodoWrite calls: create, update x2
+    expect(todos.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("step 7 — ExitPlanMode: approved=true", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "ExitPlanMode"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain('"approved":true');
+  });
+
+  test("step 8 — agent_spawn: worker dispatched, stub returns output", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const step = toolSteps(doc.steps).find((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "agent_spawn"),
+    );
+    expect(step).toBeDefined();
+    expect(toolContent(step)).toContain("refactor-worker");
+  });
+
+  test("step 9 — final TodoWrite: dispatch completed → cleared=true (all done)", async () => {
+    const doc = await loadDoc();
+    if (!doc) {
+      console.warn("interaction-full.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const todos = toolSteps(doc.steps).filter((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "TodoWrite"),
+    );
+    // Very last TodoWrite must be the final auto-clear
+    expect(toolContent(todos.at(-1))).toContain('"cleared":true');
   });
 });
 
