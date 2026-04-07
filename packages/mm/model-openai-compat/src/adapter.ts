@@ -197,13 +197,17 @@ async function* streamWithRetry(
 }
 
 // ---------------------------------------------------------------------------
-// Cache fingerprint — deterministic hash of the actual provider-visible prefix
-// (system prompt + sorted tool payload) for prompt-cache diagnostics.
-// Attached to ModelResponse.metadata so trajectory and TUI can detect cache
-// hit/miss across turns (#1554).
+// Prompt prefix fingerprint — deterministic hash of the system prompt + sorted
+// tool payload. This covers the *static* portion of the provider-visible prefix
+// that should remain stable across turns for KV cache continuity.
+//
+// This does NOT include conversation messages (which change every turn by
+// definition). The intent is to detect unexpected prefix drift from tool
+// reordering, banner changes, or schema mutations — not to predict overall
+// cache hit/miss (which also depends on message history). (#1554)
 // ---------------------------------------------------------------------------
 
-function computeCacheFingerprint(
+function computePrefixFingerprint(
   systemPrompt: string | undefined,
   tools: readonly ChatCompletionTool[] | undefined,
 ): string {
@@ -229,7 +233,7 @@ async function* streamOnce(
   const body = buildRequestBody(request, config, tools);
   // Fingerprint the actual wire payload (sorted tools + system prompt) so
   // diagnostics accurately reflect provider-visible prefix changes.
-  const cacheFingerprint = computeCacheFingerprint(request.systemPrompt, tools);
+  const promptPrefixFingerprint = computePrefixFingerprint(request.systemPrompt, tools);
   const url = `${config.baseUrl}/chat/completions`;
 
   // Stream idle watchdog — create BEFORE fetch so the signal can cancel
@@ -433,7 +437,7 @@ async function* streamOnce(
       kind: "done",
       response: {
         ...response,
-        metadata: { ...response.metadata, cacheFingerprint },
+        metadata: { ...response.metadata, promptPrefixFingerprint },
       },
     };
   } catch (error: unknown) {

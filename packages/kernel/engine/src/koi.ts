@@ -394,6 +394,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // safer than recomputing a fresh banner. If a future model consistently
       // parrots the cached banner despite the instruction, restore the
       // skipCapabilityInjection guard as a fallback.
+      //
+      // Staleness note: capability descriptions from stateful middleware
+      // (e.g., retry budgets, goal progress) are frozen for the retry. This
+      // is intentional — stop-gate retries happen within milliseconds of the
+      // initial call for the same question, so capability state is effectively
+      // unchanged. Recomputing would break prefix cache continuity.
       // let justified: mutable cache coordinated between prepareRequest and stop-gate retry
       let cachedCapabilityBanner: string | undefined;
       // let justified: mutable flag — false until first prepareRequest call computes the banner
