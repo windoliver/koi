@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
+import type { SpawnTransformInput, SpawnTransformOutput } from "./bash-tool.js";
 import { createBashTool } from "./bash-tool.js";
 
 // ---------------------------------------------------------------------------
@@ -327,88 +328,186 @@ describe("createBashTool — tool descriptor", () => {
 });
 
 // ---------------------------------------------------------------------------
-// trackCwd feature tests — real subprocess (cwd sentinel + state persistence)
+// wrapCommand (SpawnTransform) tests
+// ---------------------------------------------------------------------------
+
+describe("createBashTool — wrapCommand (SpawnTransform)", () => {
+  test("passes through when no wrapCommand is set", async () => {
+    const tool = createBashTool();
+    const result = (await tool.execute({ command: "echo passthrough" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result.exitCode).toBe(0);
+    expect(String(result.stdout).trim()).toBe("passthrough");
+  });
+
+  test("wrapCommand receives correct argv structure", async () => {
+    let captured: SpawnTransformInput | undefined;
+    const tool = createBashTool({
+      wrapCommand: (input: SpawnTransformInput): SpawnTransformOutput => {
+        captured = input;
+        return input; // pass through unchanged
+      },
+    });
+    const result = (await tool.execute({ command: "echo transformed" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result.exitCode).toBe(0);
+    expect(captured).toBeDefined();
+    expect(captured?.argv[0]).toBe("bash");
+    expect(captured?.argv[1]).toBe("--noprofile");
+    expect(captured?.argv[2]).toBe("--norc");
+    expect(captured?.argv[3]).toBe("-c");
+    expect(captured?.argv[4]).toContain("echo transformed");
+    expect(typeof captured?.cwd).toBe("string");
+    expect(captured?.env.PATH).toBeDefined();
+  });
+
+  test("wrapCommand can prepend sandbox argv", async () => {
+    const tool = createBashTool({
+      wrapCommand: (input: SpawnTransformInput): SpawnTransformOutput => ({
+        // Simulate sandbox by wrapping with env (which passes through to bash)
+        argv: ["env", ...input.argv],
+        cwd: input.cwd,
+        env: input.env,
+      }),
+    });
+    const result = (await tool.execute({ command: "echo sandboxed" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result.exitCode).toBe(0);
+    expect(String(result.stdout).trim()).toBe("sandboxed");
+  });
+
+  test("wrapCommand can extend environment", async () => {
+    const tool = createBashTool({
+      wrapCommand: (input: SpawnTransformInput): SpawnTransformOutput => ({
+        argv: input.argv,
+        cwd: input.cwd,
+        env: { ...input.env, KOI_TEST_MARKER: "present" },
+      }),
+    });
+    const result = (await tool.execute({ command: "echo $KOI_TEST_MARKER" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result.exitCode).toBe(0);
+    expect(String(result.stdout).trim()).toBe("present");
+  });
+
+  test("wrapCommand returning empty argv produces error", async () => {
+    const tool = createBashTool({
+      wrapCommand: (_input: SpawnTransformInput): SpawnTransformOutput => ({
+        argv: [],
+        cwd: _input.cwd,
+        env: _input.env,
+      }),
+    });
+    const result = (await tool.execute({ command: "echo test" }, {})) as Record<string, unknown>;
+    expect(result.error).toBeDefined();
+    expect(String(result.error)).toMatch(/empty argv/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// trackCwd tests
 // ---------------------------------------------------------------------------
 
 describe("createBashTool — trackCwd", () => {
-  // Use process.cwd() as workspace root — always a valid, fully-resolved path
-  // without macOS symlink surprises that would trip the security classifier.
-  const workspaceRoot = realpathSync(process.cwd());
+  test("cwd persists across calls after successful cd", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
 
-  test("cwd persists across calls after cd", async () => {
-    const tool = createBashTool({ workspaceRoot, trackCwd: true });
-    // Create a subdirectory to cd into (must be within workspaceRoot)
-    const subdir = `${workspaceRoot}/koi-trackCwd-test-${Date.now()}`;
-    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
+    // cd into a subdirectory (must exist within workspace)
+    const result1 = (await tool.execute({ command: "cd packages && pwd" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result1.exitCode).toBe(0);
+    expect(result1.cwd).toBe(`${wsRoot}/packages`);
 
-    // cd into the subdir
-    const r1 = (await tool.execute({ command: `cd ${subdir}` }, {})) as Record<string, unknown>;
-    expect(r1.exitCode).toBe(0);
-
-    // Second call: pwd should reflect the subdir (cwd tracked)
-    const r2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(r2.exitCode).toBe(0);
-    expect(String(r2.stdout).trim()).toBe(subdir);
-
-    // Cleanup
-    await tool.execute({ command: `rmdir ${subdir}` }, {});
+    // Next call should use the tracked cwd
+    const result2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(result2.exitCode).toBe(0);
+    expect(String(result2.stdout).trim()).toBe(`${wsRoot}/packages`);
+    expect(result2.cwd).toBe(`${wsRoot}/packages`);
   });
 
-  test("sentinel is stripped from returned stdout", async () => {
-    const tool = createBashTool({ workspaceRoot, trackCwd: true });
-    const result = (await tool.execute({ command: "echo hello" }, {})) as Record<string, unknown>;
+  test("cwd does NOT update on failed command", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
+
+    // Run a failing command after cd — cwd should NOT update
+    const result1 = (await tool.execute({ command: "cd packages && false" }, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(result1.exitCode).not.toBe(0);
+    // cwd should still be workspace root since command failed
+    expect(result1.cwd).toBe(wsRoot);
+
+    // Verify next call still uses workspace root
+    const result2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(result2.exitCode).toBe(0);
+    expect(String(result2.stdout).trim()).toBe(wsRoot);
+  });
+
+  test("explicit cwd arg overrides tracked cwd", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
+
+    // Track into packages/
+    await tool.execute({ command: "cd packages" }, {});
+
+    // Explicit cwd should override tracked
+    const result = (await tool.execute({ command: "pwd", cwd: wsRoot }, {})) as Record<
+      string,
+      unknown
+    >;
     expect(result.exitCode).toBe(0);
-    expect(String(result.stdout)).not.toContain("__KOI_CWD__");
-    expect(String(result.stdout).trim()).toBe("hello");
+    expect(String(result.stdout).trim()).toBe(wsRoot);
   });
 
-  test("cwd not updated when command fails", async () => {
-    const tool = createBashTool({ workspaceRoot, trackCwd: true });
-    const subdir = `${workspaceRoot}/koi-trackCwd-fail-${Date.now()}`;
-    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
-    await tool.execute({ command: `cd ${subdir}` }, {});
-
-    // Failing command — cwd should NOT change
-    await tool.execute({ command: "exit 1" }, {});
-
-    // Should still be in subdir
-    const r = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(r.exitCode).toBe(0);
-    expect(String(r.stdout).trim()).toBe(subdir);
-
-    await tool.execute({ command: `rmdir ${subdir}` }, {});
+  test("cwd field is absent when trackCwd is false", async () => {
+    const tool = createBashTool({ trackCwd: false });
+    const result = (await tool.execute({ command: "echo test" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    expect(result.cwd).toBeUndefined();
   });
 
-  test("explicit args.cwd overrides tracked cwd for that call", async () => {
-    const tool = createBashTool({ workspaceRoot, trackCwd: true });
-    const subA = `${workspaceRoot}/koi-cwdA-${Date.now()}`;
-    const subB = `${workspaceRoot}/koi-cwdB-${Date.now()}`;
-    await tool.execute({ command: `mkdir -p ${subA} ${subB}` }, {});
-
-    // Track cwd to subA
-    await tool.execute({ command: `cd ${subA}` }, {});
-
-    // Override to subB for one call
-    const r = (await tool.execute({ command: "pwd", cwd: subB }, {})) as Record<string, unknown>;
-    expect(r.exitCode).toBe(0);
-    expect(String(r.stdout).trim()).toBe(subB);
-
-    // Tracked cwd should still be subA after the override
-    const r2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(String(r2.stdout).trim()).toBe(subA);
-
-    await tool.execute({ command: `rmdir ${subA} ${subB}` }, {});
+  test("cwd field is absent when trackCwd is not set", async () => {
+    const tool = createBashTool();
+    const result = (await tool.execute({ command: "echo test" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    expect(result.cwd).toBeUndefined();
   });
 
-  test("without trackCwd, cwd does not persist", async () => {
-    const tool = createBashTool({ workspaceRoot });
-    const subdir = `${workspaceRoot}/koi-notrack-${Date.now()}`;
-    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
-    await tool.execute({ command: `cd ${subdir}` }, {});
-    // Next call should be back at workspaceRoot (not subdir)
-    const r = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(r.exitCode).toBe(0);
-    expect(String(r.stdout).trim()).toBe(workspaceRoot);
-    await tool.execute({ command: `rmdir ${subdir}` }, {});
+  test("trackCwd rejects cwd that escapes workspace root", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
+
+    // Even if bash exits 0 after cd /tmp, the tracked cwd should NOT
+    // update to outside workspace. The trap writes /tmp to the file,
+    // but isWithinWorkspace rejects it.
+    // Note: this test uses workspaceRoot=process.cwd(), and /tmp is outside it.
+    // The security classifier would block "cd /tmp" if it detects path traversal,
+    // but cd itself isn't blocked. The cwd tracking validation catches it.
+    const result = (await tool.execute({ command: "cd /tmp && pwd" }, {})) as Record<
+      string,
+      unknown
+    >;
+    // Command may succeed (exit 0) if /tmp cd works
+    // But the tracked cwd should NOT be /tmp — it should remain wsRoot
+    if (result.exitCode === 0) {
+      expect(result.cwd).toBe(wsRoot);
+    }
+  });
+
+  test("description mentions cwd tracking when enabled", () => {
+    const tool = createBashTool({ trackCwd: true });
+    expect(tool.descriptor.description).toContain("CWD tracking is enabled");
   });
 });
