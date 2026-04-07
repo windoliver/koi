@@ -13,19 +13,17 @@ import { createInitialState } from "../state/initial.js";
 import { reduce } from "../state/reduce.js";
 import { createStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
-import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
+import { StoreContext } from "../store-context.js";
 import type { TuiStore } from "../state/store.js";
 import { ConversationView } from "./ConversationView.js";
 
 const OPTS = { width: 80, height: 24 };
 
-/** Wraps children in both store contexts so useTuiStore works in tests. */
+/** Wraps children in store context so useTuiStore works in tests. */
 function StoreProviders(props: { store: TuiStore; children: JSX.Element }): JSX.Element {
   return (
     <StoreContext.Provider value={props.store}>
-      <TuiStateContext.Provider value={createStoreSignal(props.store)}>
-        {props.children}
-      </TuiStateContext.Provider>
+      {props.children}
     </StoreContext.Provider>
   );
 }

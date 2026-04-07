@@ -13,7 +13,7 @@ import { createInitialState } from "../state/initial.js";
 import { reduce } from "../state/reduce.js";
 import { createStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
-import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
+import { StoreContext } from "../store-context.js";
 import { MessageList } from "./message-list.js";
 
 const RENDER_OPTS = { width: 80, height: 100 };
@@ -23,9 +23,7 @@ async function renderList(state: TuiState): Promise<string> {
   const { captureCharFrame, renderOnce, renderer } = await testRender(
     () => (
       <StoreContext.Provider value={store}>
-        <TuiStateContext.Provider value={createStoreSignal(store)}>
-          <MessageList />
-        </TuiStateContext.Provider>
+        <MessageList />
       </StoreContext.Provider>
     ),
     RENDER_OPTS,
@@ -97,7 +95,7 @@ describe("MessageList — rendering", () => {
     expect(frame).toContain("Hi there!");
   });
 
-  test("renders tool call with result", async () => {
+  test("renders tool call with result (expanded)", async () => {
     const state = buildState([
       { kind: "engine_event", event: { kind: "turn_start", turnIndex: 0 } },
       {
@@ -117,6 +115,8 @@ describe("MessageList — rendering", () => {
         },
       },
       { kind: "engine_event", event: { kind: "turn_end", turnIndex: 0 } },
+      // Expand tool results to make content visible (collapsed by default, Decision 15A)
+      { kind: "toggle_tools_expanded" },
     ]);
     const frame = await renderList(state);
     expect(frame).toContain("read_file");

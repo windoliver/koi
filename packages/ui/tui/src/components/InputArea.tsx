@@ -32,6 +32,8 @@ export interface InputAreaProps {
   readonly onSubmit: (text: string) => void;
   /** Called when slash command prefix is detected. Null = no overlay. */
   readonly onSlashDetected: (query: string | null) => void;
+  /** Called when the user navigates prompt history (arrow up/down). */
+  readonly onHistoryNav?: ((direction: "up" | "down") => string | null) | undefined;
   /** Whether input is disabled (e.g., modal active, disconnected). */
   readonly disabled?: boolean;
   /** Whether this area has keyboard focus. */
@@ -119,6 +121,18 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           const text = textareaRef?.plainText ?? "";
           props.onSlashDetected(detectSlashPrefix(text));
         });
+        break;
+      }
+      case "history-up":
+      case "history-down": {
+        key.preventDefault();
+        if (props.onHistoryNav) {
+          const direction = result.kind === "history-up" ? "up" : "down";
+          const historyText = props.onHistoryNav(direction);
+          if (historyText !== null) {
+            textareaRef?.setText(historyText);
+          }
+        }
         break;
       }
       case "noop":

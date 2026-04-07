@@ -1,5 +1,5 @@
 /**
- * MessageList — scrollable conversation display.
+ * MessageList — scrollable conversation display with auto-scroll.
  *
  * A single global spinnerFrame signal drives all ToolCallBlock spinners in sync.
  * The signal is passed as an Accessor<number> (not a resolved number) so only the
@@ -9,15 +9,29 @@
  * The spinner interval is paused when no tool calls are in the "running" state,
  * eliminating idle timer overhead (12.5 noop updates/second at idle).
  *
- * TODO: Consider OpenTUI scrollbox virtualization for very large conversations
- * (>1000 messages). First verify whether scrollbox frame diffing already avoids
- * re-rendering off-screen rows at the renderer level before adding complexity.
- * The MAX_MESSAGES compaction cap bounds the worst case for now.
+ * Auto-scroll (Decisions 6-8, 7A):
+ * - Scroll-up pauses auto-follow
+ * - Text selection pauses auto-follow
+ * - 300ms settling period after streaming ends
+ * - Keyboard scroll (PageUp/PageDown) pauses auto-follow
+ * - Terminal resize re-engages following
  */
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
+import { onResize, useKeyboard, useSelectionHandler } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, For, onCleanup } from "solid-js";
+import { createEffect, createSignal, For, on, onCleanup } from "solid-js";
+import {
+  INITIAL_SCROLL_STATE,
+  SETTLE_DURATION_MS,
+  onScrollToBottom,
+  onScrollUp,
+  onSelectionEnd,
+  onSelectionStart,
+  onSettleTimeout,
+  onStreamEnd,
+  shouldFollow,
+} from "../auto-scroll/auto-scroll-state.js";
 import { useTuiStore } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
 
@@ -33,15 +47,8 @@ export function MessageList(props: MessageListProps): JSX.Element {
   const messages = useTuiStore((s) => s.messages);
   const [spinnerFrame, setSpinnerFrame] = createSignal(0);
 
-  // Derive whether any tool call is currently running. The interval only fires
-  // when there is visible work to animate, eliminating idle overhead.
-  const hasRunningTools = useTuiStore((s) =>
-    s.messages.some(
-      (m) =>
-        m.kind === "assistant" &&
-        m.blocks.some((b) => b.kind === "tool_call" && b.status === "running"),
-    ),
-  );
+  // O(1) check via counter (Decision 13A) — no O(messages × blocks) scan.
+  const hasRunningTools = useTuiStore((s) => s.runningToolCount > 0);
 
   createEffect(() => {
     if (!hasRunningTools()) return;
@@ -52,8 +59,62 @@ export function MessageList(props: MessageListProps): JSX.Element {
     onCleanup(() => clearInterval(id));
   });
 
+  // ── Auto-scroll state machine (Decisions 6-8, 7A) ────────────────────────
+  const [scrollState, setScrollState] = createSignal(INITIAL_SCROLL_STATE);
+  const agentStatus = useTuiStore((s) => s.agentStatus);
+
+  // Detect streaming end → settling period
+  createEffect(
+    on(agentStatus, (status, prevStatus) => {
+      if (prevStatus === "processing" && status === "idle") {
+        setScrollState((s) => onStreamEnd(s, Date.now()));
+        // Schedule settling timeout
+        const timer = setTimeout(() => {
+          setScrollState((s) => onSettleTimeout(s));
+        }, SETTLE_DURATION_MS);
+        onCleanup(() => clearTimeout(timer));
+      }
+    }),
+  );
+
+  // Keyboard scroll detection (Decision 7A)
+  useKeyboard((key) => {
+    if (key.name === "pageup" || (key.name === "up" && key.ctrl)) {
+      setScrollState((s) => onScrollUp(s));
+    }
+    if (key.name === "pagedown" || (key.name === "down" && key.ctrl)) {
+      setScrollState((s) => onScrollToBottom(s));
+    }
+  });
+
+  // Terminal resize re-engages following (Decision 7A)
+  onResize(() => {
+    setScrollState(INITIAL_SCROLL_STATE);
+  });
+
+  // Text selection pauses auto-scroll
+  useSelectionHandler((selection) => {
+    if (selection && selection.text.length > 0) {
+      setScrollState((s) => onSelectionStart(s));
+    } else {
+      setScrollState((s) => onSelectionEnd(s));
+    }
+  });
+
   return (
-    <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
+    <scrollbox
+      flexGrow={1}
+      stickyScroll={shouldFollow(scrollState())}
+      stickyStart="bottom"
+      onMouseScroll={(event: { readonly deltaY: number }) => {
+        if (event.deltaY < 0) {
+          setScrollState((s) => onScrollUp(s));
+        } else {
+          // Scrolling down — check if we're at the bottom to re-engage
+          setScrollState((s) => onScrollToBottom(s));
+        }
+      }}
+    >
       <box flexDirection="column" gap={1}>
         <For each={messages()}>
           {(msg) => (

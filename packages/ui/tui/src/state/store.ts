@@ -1,37 +1,44 @@
 /**
- * TuiStore — thin wrapper around reduce() for React integration.
+ * TuiStore — SolidJS store-backed state management.
  *
- * Matches the useSyncExternalStore contract:
- * - getState() always returns the latest state (never stale)
- * - subscribe(listener) returns an unsubscribe function
- * - dispatch(action) applies reducer synchronously, coalesces notifications via microtask
+ * Uses `createStore()` from `solid-js/store` for fine-grained reactivity.
+ * Each mutation via `produce()` only triggers signals for the specific
+ * properties that changed — text_delta only fires the text signal on
+ * one block, not the entire messages array.
+ *
+ * External API unchanged: getState/dispatch/dispatchBatch/subscribe.
+ * getState() returns the reactive proxy — reads inside Solid tracking
+ * scopes (createMemo, createEffect) are automatically tracked.
  */
 
-import { reduce } from "./reduce.js";
+import { createStore as createSolidStore, produce } from "solid-js/store";
+import { mutate } from "./mutations.js";
 import type { TuiAction, TuiState } from "./types.js";
 
 /** Listener callback — notified when state changes. */
 export type StateListener = () => void;
 
-/** Minimal store API for useSyncExternalStore integration. */
+/** Minimal store API — same interface as the previous reducer-based store. */
 export interface TuiStore {
+  /** Returns the reactive proxy. Reads inside Solid scopes are tracked. */
   readonly getState: () => TuiState;
   readonly dispatch: (action: TuiAction) => void;
   /**
-   * Reduce an array of actions in one pass and notify listeners once.
-   * Avoids N state updates + N signal invalidations for batched events
-   * (e.g., 10 text_delta events flushed by EventBatcher in one 16ms window).
+   * Apply an array of actions in one produce() call and notify listeners once.
+   * Used by EventBatcher to coalesce batched events.
    */
   readonly dispatchBatch: (actions: readonly TuiAction[]) => void;
+  /** Subscribe to state changes. Returns an unsubscribe function. */
   readonly subscribe: (listener: StateListener) => () => void;
 }
 
-/** Create a TuiStore wrapping the pure reducer with microtask-batched notifications. */
+/** Create a TuiStore backed by SolidJS fine-grained reactive store. */
 export function createStore(initialState: TuiState): TuiStore {
-  let state = initialState;
+  const [state, setState] = createSolidStore(initialState);
   const listeners = new Set<StateListener>();
+
+  // `let` justified: mutable flag for microtask-batched notification coalescing
   let pendingNotify = false;
-  let changed = false;
 
   function notifySubscribers(): void {
     for (const listener of listeners) {
@@ -43,32 +50,31 @@ export function createStore(initialState: TuiState): TuiStore {
     }
   }
 
-  function dispatch(action: TuiAction): void {
-    const next = reduce(state, action);
-    if (next === state) return; // no-op guard — skip notification
-    state = next;
-    changed = true;
-
+  function scheduleNotify(): void {
+    if (listeners.size === 0) return;
     if (!pendingNotify) {
       pendingNotify = true;
       queueMicrotask(() => {
         pendingNotify = false;
-        if (changed) {
-          changed = false;
-          notifySubscribers();
-        }
+        notifySubscribers();
       });
     }
   }
 
+  function dispatch(action: TuiAction): void {
+    setState(produce((draft) => mutate(draft as TuiState, action)));
+    scheduleNotify();
+  }
+
   function dispatchBatch(actions: readonly TuiAction[]): void {
-    // Reduce all actions in one pass — O(n) state transitions, 0 notifications
-    let current = state;
-    for (const action of actions) {
-      current = reduce(current, action);
-    }
-    if (current === state) return; // entire batch was no-ops
-    state = current;
+    if (actions.length === 0) return;
+    setState(
+      produce((draft) => {
+        for (const action of actions) {
+          mutate(draft as TuiState, action);
+        }
+      }),
+    );
     // Notify synchronously — caller (EventBatcher flush) already rate-limits
     notifySubscribers();
   }

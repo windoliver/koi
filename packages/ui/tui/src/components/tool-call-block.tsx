@@ -5,15 +5,20 @@
  * JSON and cannot be parsed. On completion, switches to the structured display:
  * human-readable title, most-important-arg subtitle, and scalar chips.
  *
- * Result rendering (Phase 3): extracts scalar metadata chips (exitCode, status,
- * bytesWritten, etc.) and displays the main content body separately.
+ * Features:
+ * - Accordion collapse: tool results collapsed by default (Decision 15A).
+ *   Click title row or Ctrl+E (global toggle) to expand.
+ * - Diff display: `_edit` tools render unified diffs via OpenTUI <diff> component.
+ * - Result rendering: extracts scalar metadata chips and displays content body.
  */
 
 import type { SyntaxStyle } from "@opentui/core";
 import type { Accessor, JSX } from "solid-js";
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
+import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
+import { computeEditDiff } from "../utils/compute-edit-diff.js";
 import {
   getResultDisplay,
   getToolDisplay,
@@ -76,6 +81,39 @@ function useResultDisplay(block: ToolCallData): Accessor<ResultDisplay | null> {
   });
 }
 
+/** Extract parsed args object for diff computation. Only for _edit tools. */
+function useParsedArgs(block: ToolCallData): Accessor<Readonly<Record<string, unknown>> | null> {
+  return createMemo((): Readonly<Record<string, unknown>> | null => {
+    if (block.status !== "complete") return null;
+    if (!block.toolName.endsWith("_edit")) return null;
+    const raw = block.args;
+    if (raw === undefined || raw === "") return null;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Readonly<Record<string, unknown>>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** Compute unified diff string for _edit tools. */
+function useEditDiff(block: ToolCallData): Accessor<string | null> {
+  const parsedArgs = useParsedArgs(block);
+  return createMemo((): string | null => {
+    const args = parsedArgs();
+    if (args === null) return null;
+    const oldStr = typeof args.old_string === "string" ? args.old_string : "";
+    const newStr = typeof args.new_string === "string" ? args.new_string : "";
+    if (oldStr === "" && newStr === "") return null;
+    const filePath = typeof args.file_path === "string" ? args.file_path : undefined;
+    return computeEditDiff(oldStr, newStr, filePath);
+  });
+}
+
 /** Renders highlighted or plain text, deduplicating the Show pattern (Decision 5A). */
 function HighlightedText(props: {
   readonly content: string;
@@ -94,9 +132,24 @@ function HighlightedText(props: {
   );
 }
 
+/** Extract file extension from a file path for syntax highlighting. */
+function getFiletype(toolName: string, args: Readonly<Record<string, unknown>> | null): string {
+  if (args === null) return "text";
+  const filePath = typeof args.file_path === "string" ? args.file_path : "";
+  const ext = filePath.split(".").pop();
+  return ext ?? "text";
+}
+
 export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   const display = useToolDisplay(props.block);
   const resultDisplay = useResultDisplay(props.block);
+  const editDiff = useEditDiff(props.block);
+  const parsedArgs = useParsedArgs(props.block);
+
+  // Accordion: local expanded state, global toggle overrides (Decision 15A)
+  const [localExpanded, setLocalExpanded] = createSignal(false);
+  const globalExpanded = useTuiStore((s) => s.toolsExpanded);
+  const isExpanded = createMemo(() => localExpanded() || globalExpanded());
 
   /** Merge arg chips and result chips for the chips row. */
   const allChips = createMemo((): readonly string[] => {
@@ -107,10 +160,17 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
     return [...argChips, ...resChips];
   });
 
+  const isComplete = () => props.block.status !== "running";
+  const hasBody = () => resultDisplay()?.body !== undefined && resultDisplay()?.body !== "";
+
   return (
     <box flexDirection="column" paddingLeft={1}>
-      {/* Title row: status indicator + title + subtitle */}
-      <box flexDirection="row" gap={1}>
+      {/* Title row: status indicator + title + subtitle (clickable for accordion) */}
+      <box
+        flexDirection="row"
+        gap={1}
+        onClick={isComplete() ? () => setLocalExpanded((e) => !e) : undefined}
+      >
         <StatusIndicator status={props.block.status} spinnerFrame={props.spinnerFrame} />
         <Show
           when={display()}
@@ -124,12 +184,13 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
             <text>
               <b>{d().title}</b>
               {d().subtitle !== "" ? `  ${d().subtitle}` : ""}
+              {isComplete() && hasBody() ? (isExpanded() ? " ▾" : " ▸") : ""}
             </text>
           )}
         </Show>
       </box>
 
-      {/* Chips row — arg chips + result chips merged */}
+      {/* Chips row — always visible when present */}
       <Show when={allChips().length > 0}>
         <box flexDirection="row" gap={1} paddingLeft={2}>
           <For each={allChips()}>
@@ -138,13 +199,30 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
         </box>
       </Show>
 
-      {/* Result body — shown on completion */}
-      <Show when={resultDisplay()?.body}>
-        {(body: Accessor<string>) => (
-          <box paddingLeft={2}>
-            <HighlightedText content={body()} syntaxStyle={props.syntaxStyle} />
-          </box>
-        )}
+      {/* Result body — shown only when expanded (Decision 15A) */}
+      <Show when={isExpanded() && isComplete()}>
+        {/* Diff rendering for _edit tools */}
+        <Show when={editDiff()}>
+          {(diffStr: Accessor<string>) => (
+            <box paddingLeft={2}>
+              <diff
+                diff={diffStr()}
+                view="unified"
+                syntaxStyle={props.syntaxStyle}
+                filetype={getFiletype(props.block.toolName, parsedArgs())}
+              />
+            </box>
+          )}
+        </Show>
+
+        {/* Standard result body (non-diff) */}
+        <Show when={editDiff() === null && resultDisplay()?.body}>
+          {(body: Accessor<string>) => (
+            <box paddingLeft={2}>
+              <HighlightedText content={body()} syntaxStyle={props.syntaxStyle} />
+            </box>
+          )}
+        </Show>
       </Show>
     </box>
   );

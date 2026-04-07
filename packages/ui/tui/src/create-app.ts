@@ -256,8 +256,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
               createComponent(StoreContext.Provider, {
                 value: store,
                 get children() {
-                  // TuiRoot creates TuiStateContext.Provider internally, so
-                  // only StoreContext.Provider is needed at this level.
+                  // TuiRoot only needs StoreContext.Provider — the SolidJS
+                  // store provides reactivity directly, no extra provider needed.
                   return createComponent(TuiRoot, {
                     onCommand,
                     onSessionSelect,
