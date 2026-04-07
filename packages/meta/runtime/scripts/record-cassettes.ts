@@ -60,6 +60,7 @@ import {
   createTransportStateMachine,
   resolveServerConfig,
 } from "@koi/mcp";
+import { createMcpServer } from "@koi/mcp-server";
 import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
@@ -2453,6 +2454,26 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [skillProvider],
   },
+
+  // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
+  {
+    name: "mcp-server-send",
+    prompt:
+      'Use the koi-platform__koi_send_message tool to send an event message to agent "target-agent" with type "status-update" and payload {"status": "ready"}. Report the result.',
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-mcp-server-tool",
+        cmd: ["echo", "mcp-server-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [], // Set dynamically below (after MCP server setup)
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================
@@ -2744,6 +2765,94 @@ await recordCassette("exfiltration-guard-block", () =>
   }),
 );
 
+import type { AttachResult, Tool } from "@koi/core";
+// ---------------------------------------------------------------------------
+// MCP server setup: @koi/mcp-server platform tools via InMemoryTransport
+// ---------------------------------------------------------------------------
+import { agentId, toolToken } from "@koi/core";
+
+const mcpServerSentMessages: unknown[] = [];
+const mcpServerMailbox = {
+  send: async (input: unknown) => {
+    mcpServerSentMessages.push(input);
+    return {
+      ok: true as const,
+      value: {
+        ...(input as Record<string, unknown>),
+        id: `msg-${mcpServerSentMessages.length}`,
+        createdAt: new Date().toISOString(),
+      },
+    };
+  },
+  onMessage: () => () => {},
+  list: async () => [],
+};
+
+const [mcpServerClientTransport, mcpServerServerTransport] = InMemoryTransport.createLinkedPair();
+
+const mcpPlatformAgent = {
+  manifest: { name: "golden-mcp-server", version: "0.0.0", description: "golden" },
+  component: () => undefined,
+  has: () => false,
+  hasAll: () => false,
+  query: () => new Map(),
+  components: () => new Map(),
+};
+
+const mcpPlatformServer = createMcpServer({
+  agent: mcpPlatformAgent as never,
+  transport: mcpServerServerTransport,
+  name: "koi-platform",
+  platform: {
+    callerId: agentId("golden-caller"),
+    mailbox: mcpServerMailbox as never,
+  },
+});
+await mcpPlatformServer.start();
+
+// Connect MCP SDK Client directly to the server
+const mcpServerClient = new McpSdkClient({ name: "golden-client", version: "1.0.0" });
+await mcpServerClient.connect(mcpServerClientTransport);
+
+// Discover tools and wrap them as a ComponentProvider
+const mcpServerToolList = await mcpServerClient.listTools();
+const mcpServerComponentProvider: ComponentProvider = {
+  name: "mcp-server-platform",
+  async attach(): Promise<AttachResult> {
+    const components = new Map<string, unknown>();
+    for (const t of mcpServerToolList.tools) {
+      const namespacedName = `koi-platform__${t.name}`;
+      const tool: Tool = {
+        descriptor: {
+          name: namespacedName,
+          description: t.description ?? "",
+          inputSchema: (t.inputSchema ?? {}) as JsonObject,
+          origin: "operator",
+          server: "koi-platform",
+        },
+        origin: "operator",
+        policy: { sandbox: false, capabilities: {} },
+        execute: async (args: JsonObject) => {
+          const result = await mcpServerClient.callTool({
+            name: t.name,
+            arguments: args as Record<string, unknown>,
+          });
+          const content = result.content as readonly { type: string; text: string }[];
+          return content[0]?.text ?? "";
+        },
+      };
+      components.set(toolToken(namespacedName), tool);
+    }
+    return { components, skipped: [] };
+  },
+};
+
+// Inject MCP server provider for the mcp-server-send query
+const mcpServerQuery = queries.find((q) => q.name === "mcp-server-send");
+if (mcpServerQuery !== undefined) {
+  (mcpServerQuery as { providers: ComponentProvider[] }).providers = [mcpServerComponentProvider];
+}
+
 // Full-stack ATIF trajectories
 for (const q of queries) {
   if (RECORD_ONLY_FILTER !== undefined && !RECORD_ONLY_FILTER.has(q.name)) {
@@ -2753,8 +2862,10 @@ for (const q of queries) {
   await recordTrajectory(q);
 }
 
-// Cleanup MCP server + nexus transport
+// Cleanup MCP servers + nexus transport
 await mcpSetup.cleanup();
+await mcpServerClient.close();
+await mcpPlatformServer.stop();
 nexusTransport?.close();
 
 console.log(`\nDone. ${4 + queries.length} fixture files ready:`);

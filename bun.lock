@@ -400,6 +400,7 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/mcp": "workspace:*",
+        "@koi/mcp-server": "workspace:*",
         "@koi/memory": "workspace:*",
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
@@ -483,6 +484,15 @@
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
+      },
+    },
+    "packages/net/mcp-server": {
+      "name": "@koi/mcp-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
     "packages/sandbox/sandbox-os": {
@@ -848,6 +858,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
+
+    "@koi/mcp-server": ["@koi/mcp-server@workspace:packages/net/mcp-server"],
 
     "@koi/memory": ["@koi/memory@workspace:packages/mm/memory"],
 

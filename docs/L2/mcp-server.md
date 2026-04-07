@@ -1,34 +1,34 @@
-# @koi/mcp-server — Agent-as-MCP-Server
+# @koi/mcp-server — Agent + Platform as MCP Server
 
-`@koi/mcp-server` is an L2 package that exposes a Koi agent's tools via the MCP (Model Context Protocol) JSON-RPC interface. External MCP clients can discover and call the agent's tools — including dynamically forged ones — through a standard protocol.
+`@koi/mcp-server` is an L2 package that exposes a Koi agent's tools **and platform capabilities** via the MCP (Model Context Protocol) JSON-RPC interface. External MCP clients can discover and call the agent's tools — including dynamically forged ones — through a standard protocol. Additionally, platform tools expose mailbox, task board, and agent registry to external agents.
 
 ---
 
 ## Why It Exists
 
-Koi agents accumulate tools over their lifetime: built-in tools, MCP-sourced tools, and auto-forged composite tools. Without `@koi/mcp-server`, these tools are only available within the Koi runtime. This package makes the agent a **tool server** that any MCP client can connect to.
+Koi agents accumulate tools over their lifetime: built-in tools, MCP-sourced tools, and auto-forged composite tools. Without `@koi/mcp-server`, these tools and platform capabilities are only available within the Koi runtime. This package makes the agent a **tool server** and **platform gateway** that any MCP client can connect to.
 
 ```
-BEFORE: Tools trapped inside the agent
-┌──────────────────────────────┐
-│  Koi Agent                   │
-│  ┌────┐ ┌────┐ ┌──────────┐ │
-│  │read│ │parse│ │fetch-    │ │     External tools
-│  │file│ │json │ │parse-save│ │     can't reach these
-│  └────┘ └────┘ └──────────┘ │
-└──────────────────────────────┘
+BEFORE: Tools + platform trapped inside the agent
+┌──────────────────────────────────┐
+│  Koi Agent                       │
+│  ┌────┐ ┌────┐ ┌──────────────┐ │
+│  │read│ │parse│ │ mailbox/tasks │ │     External agents
+│  │file│ │json │ │ registry     │ │     can't reach these
+│  └────┘ └────┘ └──────────────┘ │
+└──────────────────────────────────┘
 
-AFTER: Agent exposes tools via MCP
-┌──────────────────────────────┐         ┌─────────────┐
-│  Koi Agent                   │   MCP   │ Claude Code  │
-│  ┌────┐ ┌────┐ ┌──────────┐ │◄───────►│ IDE plugins  │
-│  │read│ │parse│ │fetch-    │ │  JSON-  │ Other agents │
-│  │file│ │json │ │parse-save│ │  RPC    │ Workflows    │
-│  └────┘ └────┘ └──────────┘ │         └─────────────┘
-└──────────────────────────────┘
+AFTER: Agent exposes tools + platform via MCP
+┌──────────────────────────────────┐         ┌─────────────┐
+│  Koi Agent                       │   MCP   │ Claude Code  │
+│  ┌────┐ ┌────┐ ┌──────────────┐ │◄───────►│ Containers   │
+│  │read│ │parse│ │ mailbox/tasks │ │  JSON-  │ IDE plugins  │
+│  │file│ │json │ │ registry     │ │  RPC    │ Other agents │
+│  └────┘ └────┘ └──────────────┘ │         └─────────────┘
+└──────────────────────────────────┘
 ```
 
-### Hot-reload
+### Hot-reload (agent tools)
 
 When auto-forge creates a new tool, the MCP server automatically picks it up:
 
@@ -48,8 +48,9 @@ When auto-forge creates a new tool, the MCP server automatically picks it up:
 ### Layer position
 
 ```
-L0  @koi/core                ─ Agent, Tool, ForgeStore, JsonObject (types only)
-L2  @koi/mcp-server          ─ this package (depends on L0 + @modelcontextprotocol/sdk)
+L0  @koi/core                ─ Agent, Tool, ForgeStore, MailboxComponent, ManagedTaskBoard, AgentRegistry
+L0u @koi/tools-core          ─ buildTool() for real Koi Tool creation
+L2  @koi/mcp-server          ─ this package (depends on L0 + L0u + @modelcontextprotocol/sdk)
 ```
 
 ### Internal module map
@@ -59,35 +60,33 @@ index.ts                     ← public re-exports
 │
 ├── server.ts                ← createMcpServer() factory
 ├── handler.ts               ← MCP request handler registration
-├── tool-cache.ts            ← event-driven tool cache
-└── transport.ts             ← createStdioServerTransport()
+├── tool-cache.ts            ← event-driven tool cache (agent + platform tools)
+├── transport.ts             ← createStdioServerTransport()
+├── config.ts                ← McpServerConfig, PlatformCapabilities
+├── platform-tools.ts        ← 7 platform tool builders (real Koi Tools)
+└── errors.ts                ← error sanitization for MCP boundary
 ```
 
-### Request flow
+### Two modes
 
-```
-MCP Client                        MCP Server
-    │                                  │
-    │── initialize ──────────────────→ │  capabilities negotiation
-    │← { tools: { listChanged: true }}│
-    │                                  │
-    │── tools/list ──────────────────→ │
-    │                                  │  ToolCache.list()
-    │                                  │  → agent.query<Tool>("tool:")
-    │← [{ name, description, ... }]   │
-    │                                  │
-    │── tools/call("read_file", {})──→ │
-    │                                  │  ToolCache.get("read_file")
-    │                                  │  → tool.execute(args)
-    │← { content: [{ text: "..." }] } │
-    │                                  │
-    │                                  │  ┌── ForgeStore change ──┐
-    │                                  │  │  cache.invalidate()   │
-    │← tools/list_changed ───────────  │  │  sendToolListChanged()│
-    │                                  │  └───────────────────────┘
-    │── tools/list ──────────────────→ │
-    │← [{ ..., new_forged_tool }]      │  ← includes newly forged tool
-```
+1. **Agent tools mode** (v1): proxies `agent.query("tool:")` via ToolCache with ForgeStore hot-reload
+2. **Platform tools mode** (v2): exposes mailbox, tasks, registry as dedicated MCP tools built via `buildTool()`
+
+Both modes are capability-gated and composable. Platform tools pass through the existing Koi safety envelope (permissions middleware, exfiltration guard) because they are real `Tool` objects.
+
+---
+
+## Platform Tools (7)
+
+| MCP Tool | Subsystem | Security |
+|----------|-----------|----------|
+| `koi_send_message` | MailboxComponent | `from` = callerId enforced, `kind` = "event" only |
+| `koi_list_messages` | MailboxComponent | Max 100, lean projections |
+| `koi_list_tasks` | ManagedTaskBoard | Status filter, lean projections, max 100 |
+| `koi_get_task` | ManagedTaskBoard | Full task details by ID |
+| `koi_update_task` | ManagedTaskBoard | Atomic `startTask()`, owned `completeOwnedTask`/`failOwnedTask` |
+| `koi_task_output` | ManagedTaskBoard | Completed task results only |
+| `koi_list_agents` | AgentRegistry | `VisibilityContext` with callerId, strict projection (no metadata/generation) |
 
 ---
 
@@ -98,21 +97,24 @@ MCP Client                        MCP Server
 Factory that returns an `McpServer` with lifecycle control.
 
 ```typescript
-import { createMcpServer } from "@koi/mcp-server";
-import { createStdioServerTransport } from "@koi/mcp-server";
+import { createMcpServer, createStdioServerTransport } from "@koi/mcp-server";
 
 const server = createMcpServer({
-  agent,                        // Koi Agent entity
+  agent,                                // Koi Agent entity
   transport: createStdioServerTransport(),
-  name: "my-agent-server",     // default: agent.manifest.name
-  version: "1.0.0",            // default: "1.0.0"
-  forgeStore,                   // optional: enables hot-reload
+  name: "my-agent-server",              // default: agent.manifest.name
+  version: "1.0.0",                     // default: "1.0.0"
+  forgeStore,                            // optional: enables hot-reload
+  platform: {                            // optional: enables platform tools
+    callerId: agentId("mcp-client-1"),
+    mailbox,                             // enables koi_send_message + koi_list_messages
+    taskBoard,                           // enables koi_list_tasks + koi_get_task + koi_update_task + koi_task_output
+    registry,                            // enables koi_list_agents
+  },
 });
 
 await server.start();
 console.log(`Serving ${server.toolCount()} tools`);
-
-// On shutdown:
 await server.stop();
 ```
 
@@ -121,10 +123,20 @@ await server.stop();
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `agent` | `Agent` | required | Agent whose tools to expose |
-| `transport` | `Transport` | required | MCP SDK transport (stdio, HTTP, in-memory) |
+| `transport` | `Transport` | required | MCP SDK transport (stdio) |
 | `name` | `string` | `agent.manifest.name` | Server name in MCP handshake |
 | `version` | `string` | `"1.0.0"` | Server version in MCP handshake |
 | `forgeStore` | `ForgeStore` | `undefined` | Enables hot-reload via `watch()` |
+| `platform` | `PlatformCapabilities` | `undefined` | Enables platform tools |
+
+**PlatformCapabilities:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `callerId` | `AgentId` | required — identity for platform operations |
+| `mailbox` | `MailboxComponent` | optional — enables mailbox tools |
+| `taskBoard` | `ManagedTaskBoard` | optional — enables task tools |
+| `registry` | `AgentRegistry` | optional — enables agent list tool |
 
 **Returns:** `McpServer`
 
@@ -134,86 +146,27 @@ await server.stop();
 | `stop` | `() => Promise<void>` | Dispose cache and close server |
 | `toolCount` | `() => number` | Number of tools currently exposed |
 
-### `createToolCache(config)`
-
-Event-driven tool cache with lazy rebuild and ForgeStore subscription.
-
-```typescript
-import { createToolCache } from "@koi/mcp-server";
-
-const cache = createToolCache({
-  agent,
-  forgeStore,            // optional: subscribes to watch() for invalidation
-  onChange: () => {       // called when cache is invalidated
-    notifyClients();
-  },
-});
-
-cache.list();           // → readonly ToolCacheEntry[]
-cache.get("read_file"); // → ToolCacheEntry | undefined
-cache.count();          // → number
-cache.invalidate();     // force rebuild on next access
-cache.dispose();        // unsubscribe from ForgeStore
-```
-
-### `createStdioServerTransport()`
-
-Creates a stdio-based MCP transport (stdin/stdout JSON-RPC).
-
-```typescript
-import { createStdioServerTransport } from "@koi/mcp-server";
-
-const transport = createStdioServerTransport();
-```
-
 ---
 
-## Integration Example
+## Security Design
 
-### Full self-extension pipeline
+Security was validated by Codex adversarial review before implementation:
 
-```typescript
-import { createCrystallizeMiddleware, createAutoForgeMiddleware } from "@koi/crystallize";
-import { createOptimizerMiddleware } from "@koi/forge-optimizer";
-import { createMcpServer, createStdioServerTransport } from "@koi/mcp-server";
-
-// 1. Pattern detection
-const crystallize = createCrystallizeMiddleware({
-  readTraces: async () => ({ ok: true, value: traces }),
-  onCandidatesDetected: (candidates) => {
-    console.log(`${candidates.length} patterns detected`);
-  },
-});
-
-// 2. Auto-forge (closes the pipeline gap)
-const autoForge = createAutoForgeMiddleware({
-  crystallizeHandle: crystallize,
-  forgeStore,
-  scope: "agent",
-});
-
-// 3. Statistical optimization
-const optimizer = createOptimizerMiddleware({
-  store: forgeStore,
-});
-
-// 4. Expose tools via MCP (including forged ones)
-const mcpServer = createMcpServer({
-  agent,
-  transport: createStdioServerTransport(),
-  forgeStore,  // hot-reload when new tools are forged
-});
-
-await mcpServer.start();
-```
+1. **Stdio only** — HTTP/SSE transports deferred until per-connection authentication is designed
+2. **Real Koi Tools** — platform tools are built via `buildTool()` with proper `ToolPolicy` and `origin: "primordial"`, passing through the existing safety envelope
+3. **callerId enforcement** — `koi_send_message` always sets `from` to the configured `callerId`, never caller-supplied
+4. **Event-only mailbox** — external clients can only send `"event"` kind messages, no request/response flows
+5. **Owned task mutations** — uses atomic `startTask()` and owned variants (`completeOwnedTask`, `failOwnedTask`) to prevent cross-agent races
+6. **Visibility-filtered registry** — passes `VisibilityContext` with `callerId` to `registry.list()`, returns strict projections excluding `metadata` and `generation`
+7. **Sanitized errors** — error messages are stripped of stack traces and internal details before returning to MCP clients
 
 ---
 
 ## Design Decisions
 
-1. **SDK-based protocol handling** — Uses `@modelcontextprotocol/sdk` for JSON-RPC framing, capabilities negotiation, and transport abstraction. No custom protocol implementation.
-2. **Lazy caching** — Tool cache rebuilds from `agent.query("tool:")` only when accessed after invalidation. No periodic polling.
-3. **Input validation at boundary** — Tool call arguments are validated as JSON objects before being passed to tool executors. The MCP client is an external system boundary.
-4. **`listChanged` capability** — Advertised when a ForgeStore is provided. The server sends `notifications/tools/list_changed` when the store fires change events, enabling clients to re-fetch the tool list.
-5. **Transport-agnostic** — The server accepts any MCP SDK `Transport`. Stdio is provided as a convenience; HTTP and in-memory transports can be injected.
-6. **No L1 dependency** — The server only needs an `Agent` entity (L0 type) and optionally a `ForgeStore`. It can run in any environment that provides these.
+1. **SDK-based protocol handling** — Uses `@modelcontextprotocol/sdk` for JSON-RPC framing, capabilities negotiation, and transport abstraction
+2. **Lazy caching** — Tool cache rebuilds from `agent.query("tool:")` only when accessed after invalidation
+3. **`listChanged` capability** — Advertised when a ForgeStore is provided. The server sends `notifications/tools/list_changed` when the store fires change events
+4. **Transport-agnostic** — The server accepts any MCP SDK `Transport`. Stdio is provided as a convenience
+5. **No L1 dependency** — The server only needs an `Agent` entity (L0 type) and optional L0 subsystem handles
+6. **Capability gating** — Only tools for provided subsystem handles are registered. If `platform.mailbox` is undefined, mailbox tools are not exposed
