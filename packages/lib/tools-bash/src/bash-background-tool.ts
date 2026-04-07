@@ -129,7 +129,8 @@ export function createBashBackgroundTool(
     policy: DEFAULT_UNSANDBOXED_POLICY,
 
     execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
-      options?.signal?.throwIfAborted();
+      const callerSignal = options?.signal;
+      callerSignal?.throwIfAborted();
 
       const command = args.command;
       if (typeof command !== "string" || command.trim() === "") {
@@ -155,7 +156,6 @@ export function createBashBackgroundTool(
       }
 
       // Reject non-durable boards — background task output must survive restart.
-      // Same guard as task-update tools to prevent silent result loss.
       if (!config.board.hasResultPersistence()) {
         return {
           error:
@@ -163,6 +163,10 @@ export function createBashBackgroundTool(
             "Configure a resultsDir on the ManagedTaskBoard.",
         };
       }
+
+      // Re-check abort before task registration — prevents launching
+      // untracked work if the caller disconnected during setup.
+      callerSignal?.throwIfAborted();
 
       // Register task on the board
       const taskId = await config.board.nextId();
@@ -176,7 +180,11 @@ export function createBashBackgroundTool(
         return { error: `Failed to register task: ${addResult.error.message}` };
       }
 
-      // Assign to agent — fail the task if assignment fails to avoid orphan
+      // Assign to agent — intentionally uses assign() instead of startTask()
+      // because background tasks must allow multiple concurrent in_progress
+      // tasks (e.g., npm build + docker compose up simultaneously).
+      // startTask() enforces a single-in-progress invariant that is correct
+      // for foreground work but too restrictive for background execution.
       const assignResult = await config.board.assign(taskId, config.agentId);
       if (!assignResult.ok) {
         await config.board.fail(taskId, {
@@ -185,6 +193,17 @@ export function createBashBackgroundTool(
           retryable: false,
         });
         return { error: `Failed to assign task: ${assignResult.error.message}` };
+      }
+
+      // Re-check abort before spawn — prevents launching a detached
+      // subprocess when the caller has already disconnected/timed out.
+      if (callerSignal?.aborted === true) {
+        await config.board.fail(taskId, {
+          code: "EXTERNAL",
+          message: "Caller cancelled before subprocess spawn",
+          retryable: false,
+        });
+        return { error: "Caller cancelled before subprocess spawn" };
       }
 
       // Spawn subprocess — wrapped in try/catch to fail the task on
