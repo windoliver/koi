@@ -318,37 +318,55 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       };
     }
 
-    // ----- Plan/progress events -----
+    // ----- Plan/progress events (keyed by agentId) -----
     case "plan_update": {
-      const planTasks = event.tasks.map((t) => ({
+      const aid = event.agentId as string;
+      const agentTasks = event.tasks.map((t) => ({
         id: t.id as string,
         subject: t.subject,
         status: t.status as string,
         ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
         ...(t.blockedBy !== undefined ? { blockedBy: t.blockedBy as string } : {}),
       }));
-      return { ...state, planTasks };
+      return { ...state, planTasks: { ...state.planTasks, [aid]: agentTasks } };
     }
 
     case "task_progress": {
-      if (state.planTasks === null) return state;
+      const aid = event.agentId as string;
+      const agentTasks = state.planTasks[aid];
       const taskId = event.taskId as string;
-      const idx = state.planTasks.findIndex((t) => t.id === taskId);
-      const existing = idx >= 0 ? state.planTasks[idx] : undefined;
-      if (existing === undefined) return state;
+
+      if (agentTasks === undefined) {
+        // Upsert: create agent entry with single task (handles task:added without plan_update)
+        const task: PlanTask = {
+          id: taskId,
+          subject: event.subject,
+          status: event.status as string,
+          ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
+        };
+        return { ...state, planTasks: { ...state.planTasks, [aid]: [task] } };
+      }
+      const idx = agentTasks.findIndex((t) => t.id === taskId);
+      if (idx < 0) {
+        // Upsert: append new task to this agent's list
+        const task: PlanTask = {
+          id: taskId,
+          subject: event.subject,
+          status: event.status as string,
+          ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
+        };
+        return { ...state, planTasks: { ...state.planTasks, [aid]: [...agentTasks, task] } };
+      }
+      const existing = agentTasks[idx];
       const updated: PlanTask = {
-        id: existing.id,
+        id: taskId,
         subject: event.subject,
         status: event.status as string,
         ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
-        ...(existing.blockedBy !== undefined ? { blockedBy: existing.blockedBy } : {}),
+        ...(existing?.blockedBy !== undefined ? { blockedBy: existing.blockedBy } : {}),
       };
-      const planTasks = [
-        ...state.planTasks.slice(0, idx),
-        updated,
-        ...state.planTasks.slice(idx + 1),
-      ];
-      return { ...state, planTasks };
+      const newAgentTasks = [...agentTasks.slice(0, idx), updated, ...agentTasks.slice(idx + 1)];
+      return { ...state, planTasks: { ...state.planTasks, [aid]: newAgentTasks } };
     }
 
     // ----- Events the TUI ignores -----
@@ -436,10 +454,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: maybeCompact([...state.messages, implicit]) };
     }
 
-    case "clear_messages":
-      if (state.messages.length === 0 && state.agentStatus === "idle" && state.planTasks === null)
-        return state;
-      return { ...state, messages: [], agentStatus: "idle", planTasks: null };
+    case "clear_messages": {
+      const hasPlans = Object.keys(state.planTasks).length > 0;
+      if (state.messages.length === 0 && state.agentStatus === "idle" && !hasPlans) return state;
+      return { ...state, messages: [], agentStatus: "idle", planTasks: {} };
+    }
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.

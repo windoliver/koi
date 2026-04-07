@@ -200,8 +200,8 @@ export interface TuiState {
   /** Saved sessions, sorted most-recent-first, capped at MAX_SESSIONS. */
   readonly sessions: readonly SessionSummary[];
   readonly slashQuery: string | null;
-  /** Task board progress — null before first plan_update event. */
-  readonly planTasks: readonly PlanTask[] | null;
+  /** Task board progress keyed by agent ID — empty before first plan event. */
+  readonly planTasks: Readonly<Record<string, readonly PlanTask[]>>;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ exports[`createInitialState initial state shape 1`] = `
   "layoutTier": "normal",
   "messages": [],
   "modal": null,
-  "planTasks": null,
+  "planTasks": {},
   "sessionInfo": null,
   "sessions": [],
   "slashQuery": null,

@@ -137,9 +137,12 @@ function deriveActiveForm(event: TaskBoardEvent, board: TaskBoard): string | und
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Events that trigger a plan_update snapshot in addition to task_progress. */
+/**
+ * Events that trigger a plan_update snapshot in addition to task_progress.
+ * task:added is excluded — addAll() emits one per task, producing O(N^2)
+ * snapshot traffic. The TUI reducer upserts on task_progress instead.
+ */
 const STRUCTURAL_EVENTS = new Set<TaskBoardEvent["kind"]>([
-  "task:added",
   "task:completed",
   "task:failed",
   "task:killed",

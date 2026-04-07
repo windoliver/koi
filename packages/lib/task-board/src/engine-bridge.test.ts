@@ -38,12 +38,12 @@ function createWiredBoard(
 // ---------------------------------------------------------------------------
 
 describe("task:added mapping", () => {
-  test("emits task_progress + plan_update", () => {
+  test("emits task_progress only (non-structural to avoid O(N^2) batch traffic)", () => {
     const { engineEvents, board } = createWiredBoard();
     const result = board.add({ id: tid("t1"), description: "Do thing", subject: "Thing" });
     expect(result.ok).toBe(true);
 
-    expect(engineEvents).toHaveLength(2);
+    expect(engineEvents).toHaveLength(1);
     const progress = engineEvents[0] as EngineEvent & { readonly kind: "task_progress" };
     expect(progress.kind).toBe("task_progress");
     expect(progress.taskId).toBe(tid("t1"));
@@ -51,13 +51,6 @@ describe("task:added mapping", () => {
     expect(progress.previousStatus).toBe("pending");
     expect(progress.status).toBe("pending");
     expect(progress.timestamp).toBe(1000);
-
-    const update = engineEvents[1] as EngineEvent & { readonly kind: "plan_update" };
-    expect(update.kind).toBe("plan_update");
-    expect(update.agentId).toBe(AGENT);
-    expect(update.tasks).toHaveLength(1);
-    expect(update.tasks[0]?.id).toBe(tid("t1"));
-    expect(update.tasks[0]?.status).toBe("pending");
   });
 
   test("added task with activeForm carries it through", () => {
@@ -71,9 +64,21 @@ describe("task:added mapping", () => {
 
     const progress = engineEvents[0] as EngineEvent & { readonly kind: "task_progress" };
     expect(progress.activeForm).toBe("Doing thing");
+  });
 
-    const update = engineEvents[1] as EngineEvent & { readonly kind: "plan_update" };
-    expect(update.tasks[0]?.activeForm).toBe("Doing thing");
+  test("addAll emits bounded events (no O(N^2) snapshots)", () => {
+    const { engineEvents, board } = createWiredBoard();
+    const tasks = Array.from({ length: 20 }, (_, i) => ({
+      id: tid(`t${i}`),
+      description: `Task ${i}`,
+    }));
+    const result = board.addAll(tasks);
+    expect(result.ok).toBe(true);
+    // Should be 20 task_progress events, 0 plan_update snapshots
+    const progressCount = engineEvents.filter((e) => e.kind === "task_progress").length;
+    const snapshotCount = engineEvents.filter((e) => e.kind === "plan_update").length;
+    expect(progressCount).toBe(20);
+    expect(snapshotCount).toBe(0);
   });
 });
 
@@ -341,9 +346,8 @@ describe("createWiredTaskBoard", () => {
 
     const r1 = board.add({ id: tid("t1"), description: "Do thing", subject: "Thing" });
     expect(r1.ok).toBe(true);
-    expect(engineEvents).toHaveLength(2);
+    expect(engineEvents).toHaveLength(1);
     expect(engineEvents[0]?.kind).toBe("task_progress");
-    expect(engineEvents[1]?.kind).toBe("plan_update");
   });
 
   test("passes through config options", () => {
