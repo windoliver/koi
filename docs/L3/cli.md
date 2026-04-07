@@ -225,7 +225,8 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
-| `@koi/tasks` | L2 | `createManagedTaskBoard()` — persistent task coordination. Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
+| `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
+| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
