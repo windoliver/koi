@@ -230,6 +230,14 @@ const RESULT_CONSUMED_KEYS = new Set<string>([
   "reason",
   "pattern",
   "path",
+  // AccumulatedToolCall fields — the engine emits tool_call_end with the
+  // accumulated call metadata, not the tool's execution output. These fields
+  // duplicate the title/subtitle/chips from args display and must be hidden.
+  "toolName",
+  "callId",
+  "rawArgs",
+  "parsedArgs",
+  "parseError",
 ]);
 
 function extractResultChips(obj: Readonly<Record<string, unknown>>): readonly string[] {
