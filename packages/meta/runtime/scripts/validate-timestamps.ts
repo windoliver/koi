@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 /**
- * Validates that all golden trajectory fixtures have monotonically
- * non-decreasing timestamps across all steps.
+ * Validates that all golden trajectory fixtures have strictly increasing
+ * timestamps across all steps (strict monotonicity — no equal adjacent timestamps).
  *
  * Usage: bun run packages/meta/runtime/scripts/validate-timestamps.ts
  */
@@ -13,7 +13,8 @@ import { join } from "node:path";
 const FIXTURES = join(import.meta.dirname, "../fixtures");
 
 interface TrajectoryStep {
-  readonly stepIndex: number;
+  readonly step_id?: number;
+  readonly stepIndex?: number;
   readonly timestamp: string | number;
 }
 
@@ -23,13 +24,17 @@ interface Trajectory {
   readonly fixture_type?: string;
 }
 
+function stepLabel(step: TrajectoryStep): string {
+  return `step ${step.step_id ?? step.stepIndex ?? "?"}`;
+}
+
 const files = readdirSync(FIXTURES).filter((f) => f.endsWith(".trajectory.json"));
 // let: mutable — accumulates failures across all files
 let totalFailures = 0;
 // let: mutable — tracks files with non-monotonic timestamps
 let filesWithIssues = 0;
 
-console.log(`Checking ${files.length} trajectory fixtures for monotonic timestamps...\n`);
+console.log(`Checking ${files.length} trajectory fixtures for strictly increasing timestamps...\n`);
 
 for (const file of files.sort()) {
   const raw = readFileSync(join(FIXTURES, file), "utf-8");
@@ -59,7 +64,7 @@ for (const file of files.sort()) {
         console.log(`  ❌ ${file}`);
       }
       console.log(
-        `     step ${prev.stepIndex} (${prevTs}) > step ${curr.stepIndex} (${currTs}) — delta: ${currTs - prevTs}ms`,
+        `     ${stepLabel(prev)} (${prevTs}) >= ${stepLabel(curr)} (${currTs}) — delta: ${currTs - prevTs}ms`,
       );
       violations++;
     }
@@ -69,11 +74,11 @@ for (const file of files.sort()) {
     totalFailures += violations;
     filesWithIssues++;
   } else {
-    console.log(`  ✅ ${file} — ${steps.length} steps, all monotonic`);
+    console.log(`  ✅ ${file} — ${steps.length} steps, all strictly increasing`);
   }
 }
 
 console.log(
-  `\n${totalFailures === 0 ? "✅ All fixtures have monotonic timestamps." : `❌ ${totalFailures} violation(s) in ${filesWithIssues} file(s).`}`,
+  `\n${totalFailures === 0 ? "✅ All fixtures have strictly increasing timestamps." : `❌ ${totalFailures} violation(s) in ${filesWithIssues} file(s).`}`,
 );
 process.exit(totalFailures === 0 ? 0 : 1);
