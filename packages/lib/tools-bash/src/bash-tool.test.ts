@@ -421,19 +421,29 @@ describe("createBashTool — trackCwd", () => {
     const wsRoot = realpathSync(process.cwd());
     const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
 
-    // cd into a subdirectory (must exist within workspace)
-    const result1 = (await tool.execute({ command: "cd packages && pwd" }, {})) as Record<
-      string,
-      unknown
-    >;
-    expect(result1.exitCode).toBe(0);
-    expect(result1.cwd).toBe(`${wsRoot}/packages`);
+    // Create a temp subdirectory inside the workspace for the test
+    const { mkdtempSync, rmdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const subdir = mkdtempSync(join(wsRoot, "koi-cwd-test-"));
+    const subdirReal = realpathSync(subdir);
 
-    // Next call should use the tracked cwd
-    const result2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(result2.exitCode).toBe(0);
-    expect(String(result2.stdout).trim()).toBe(`${wsRoot}/packages`);
-    expect(result2.cwd).toBe(`${wsRoot}/packages`);
+    try {
+      // cd into the subdirectory
+      const result1 = (await tool.execute({ command: `cd ${subdirReal} && pwd` }, {})) as Record<
+        string,
+        unknown
+      >;
+      expect(result1.exitCode).toBe(0);
+      expect(result1.cwd).toBe(subdirReal);
+
+      // Next call should use the tracked cwd
+      const result2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+      expect(result2.exitCode).toBe(0);
+      expect(String(result2.stdout).trim()).toBe(subdirReal);
+      expect(result2.cwd).toBe(subdirReal);
+    } finally {
+      rmdirSync(subdir);
+    }
   });
 
   test("cwd does NOT update on failed command", async () => {
@@ -533,29 +543,41 @@ describe("createBashTool — trackCwd", () => {
     expect(result.cwd).toBe(wsRoot);
   });
 
-  test("trackCwd HMAC tamper resistance: clearing EXIT trap prevents cwd update", async () => {
+  test("clearing EXIT trap prevents cwd update (nonce fail-safe)", async () => {
     const wsRoot = realpathSync(process.cwd());
     const tool = createBashTool({ trackCwd: true, workspaceRoot: wsRoot });
 
-    // First: verify normal cwd tracking works
-    const r1 = (await tool.execute({ command: "cd packages" }, {})) as Record<string, unknown>;
-    expect(r1.exitCode).toBe(0);
-    expect(r1.cwd).toBe(`${wsRoot}/packages`);
+    // Create a temp subdirectory for cwd tracking
+    const { mkdtempSync, rmdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const subdir = mkdtempSync(join(wsRoot, "koi-cwd-nonce-"));
+    const subdirReal = realpathSync(subdir);
 
-    // Now: a command that clears the EXIT trap and cd's into a subdir.
-    // Without the trap, no cwd file is written → HMAC verification has nothing
-    // to verify → trackedCwd should NOT advance (stays at packages/).
-    const r2 = (await tool.execute({ command: "trap - EXIT\ncd .." }, {})) as Record<
-      string,
-      unknown
-    >;
-    expect(r2.exitCode).toBe(0);
-    // trackedCwd should stay at packages/ since trap was cleared
-    expect(r2.cwd).toBe(`${wsRoot}/packages`);
+    try {
+      // Track into the subdirectory
+      const r1 = (await tool.execute({ command: `cd ${subdirReal}` }, {})) as Record<
+        string,
+        unknown
+      >;
+      expect(r1.exitCode).toBe(0);
+      expect(r1.cwd).toBe(subdirReal);
 
-    // Verify the next call still uses packages/ as cwd
-    const r3 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
-    expect(r3.exitCode).toBe(0);
-    expect(String(r3.stdout).trim()).toBe(`${wsRoot}/packages`);
+      // Clear the EXIT trap then run a command. Without the trap, no cwd
+      // file is written → nonce verification has nothing to verify →
+      // trackedCwd should NOT advance.
+      const r2 = (await tool.execute({ command: "trap - EXIT\necho cleared" }, {})) as Record<
+        string,
+        unknown
+      >;
+      expect(r2.exitCode).toBe(0);
+      expect(r2.cwd).toBe(subdirReal);
+
+      // Next call still uses the previously tracked cwd
+      const r3 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+      expect(r3.exitCode).toBe(0);
+      expect(String(r3.stdout).trim()).toBe(subdirReal);
+    } finally {
+      rmdirSync(subdir);
+    }
   });
 });

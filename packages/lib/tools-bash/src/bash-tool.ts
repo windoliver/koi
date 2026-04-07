@@ -331,6 +331,8 @@ function cleanupCwdFile(path: string): void {
 function isWithinWorkspace(path: string, workspaceRoot: string): boolean {
   const resolved = resolve(path);
   const root = resolve(workspaceRoot);
+  // Special case: root "/" — everything is within /
+  if (root === "/") return true;
   return resolved === root || resolved.startsWith(`${root}/`);
 }
 
