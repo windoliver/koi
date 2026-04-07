@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:28.049Z",
+      "timestamp": "2026-04-05T08:18:48.355Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:28.050Z",
+      "timestamp": "2026-04-05T08:18:48.356Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:01:28.054Z",
+      "timestamp": "2026-04-05T08:18:48.497Z",
       "model_name": "anthropic/claude-sonnet-4-6",
       "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
       "observation": {
@@ -61,13 +61,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 678,
+        "prompt_tokens": 683,
         "completion_tokens": 46
       },
-      "duration_ms": 1029,
+      "duration_ms": 2615,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "anthropic/claude-sonnet-4-6",
         "toolCount": 1,
         "tools": [
@@ -81,31 +81,9 @@
     },
     {
       "step_id": 3,
-      "source": "tool",
-      "timestamp": "2026-04-07T02:01:29.085Z",
-      "tool_calls": [
-        {
-          "tool_call_id": "call_get_credentials_3",
-          "function_name": "get_credentials",
-          "arguments": {}
-        }
-      ],
-      "observation": {
-        "results": [
-          {
-            "source_call_id": "call_get_credentials_3",
-            "content": "{\"host\":\"db.example.com\",\"user\":\"admin\",\"password\":\"super-secret-pw-123\",\"apiKey\":\"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
-          }
-        ]
-      },
-      "duration_ms": 1,
-      "outcome": "success"
-    },
-    {
-      "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:29.087Z",
-      "model_name": "middleware:semantic-retry",
+      "timestamp": "2026-04-05T08:18:51.120Z",
+      "model_name": "middleware:hook-dispatch",
       "message": "get_credentials({})",
       "observation": {
         "results": [
@@ -114,27 +92,27 @@
           }
         ]
       },
-      "duration_ms": 0.47670800000196323,
+      "duration_ms": 1.6533330000002024,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "semantic-retry",
+        "middlewareName": "hook-dispatch",
         "hook": "wrapToolCall",
-        "phase": "resolve",
-        "priority": 420,
+        "phase": "observe",
+        "priority": 950,
         "nextCalled": true,
         "__koi": {
-          "identifier": "middleware:semantic-retry"
+          "identifier": "middleware:hook-dispatch"
         }
       }
     },
     {
-      "step_id": 5,
+      "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:29.088Z",
+      "timestamp": "2026-04-05T08:18:51.121Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
-      "duration_ms": 1034.0472089999967,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2624.8655419999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -149,12 +127,34 @@
       }
     },
     {
+      "step_id": 5,
+      "source": "tool",
+      "timestamp": "2026-04-05T08:18:51.122Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_get_credentials_5",
+          "function_name": "get_credentials",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_get_credentials_5",
+            "content": "{\"host\":\"db.example.com\",\"user\":\"admin\",\"password\":\"super-secret-pw-123\",\"apiKey\":\"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:29.089Z",
+      "timestamp": "2026-04-05T08:18:51.123Z",
       "model_name": "middleware:hooks",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
-      "duration_ms": 1034.2450830000016,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2653.460333000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -171,10 +171,37 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:29.090Z",
+      "timestamp": "2026-04-05T08:18:51.124Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "get_credentials({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"host\":\"db.example.com\",\"user\":\"admin\",\"password\":\"super-secret-pw-123\",\"apiKey\":\"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+          }
+        ]
+      },
+      "duration_ms": 2.9499999999989086,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-05T08:18:51.125Z",
       "model_name": "middleware:permissions",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
-      "duration_ms": 1035.1650840000002,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2658.3857499999995,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -189,12 +216,12 @@
       }
     },
     {
-      "step_id": 8,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:29.091Z",
+      "timestamp": "2026-04-05T08:18:51.126Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.",
-      "duration_ms": 1035.3197910000017,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2660.190917,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -209,29 +236,9 @@
       }
     },
     {
-      "step_id": 9,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:33.007Z",
-      "model_name": "hook:secret-scanner",
-      "message": "tool.succeeded → secret-scanner",
-      "duration_ms": 3920.7793749999983,
-      "outcome": "success",
-      "extra": {
-        "type": "hook_execution",
-        "triggerEvent": "tool.succeeded",
-        "hookName": "secret-scanner",
-        "decision": {
-          "kind": "continue"
-        },
-        "__koi": {
-          "identifier": "hook:secret-scanner"
-        }
-      }
-    },
-    {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:33.008Z",
+      "timestamp": "2026-04-05T08:18:54.647Z",
       "model_name": "middleware:hooks",
       "message": "get_credentials({})",
       "observation": {
@@ -241,7 +248,7 @@
           }
         ]
       },
-      "duration_ms": 3922.567541000004,
+      "duration_ms": 3529.9044169999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -258,7 +265,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:33.009Z",
+      "timestamp": "2026-04-05T08:18:54.648Z",
       "model_name": "middleware:permissions",
       "message": "get_credentials({})",
       "observation": {
@@ -268,7 +275,7 @@
           }
         ]
       },
-      "duration_ms": 3923.1978750000053,
+      "duration_ms": 3532.1067079999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -285,17 +292,17 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:33.010Z",
+      "timestamp": "2026-04-05T08:18:54.649Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "get_credentials({})",
       "observation": {
         "results": [
           {
-            "content": "{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}"
+            "content": "{\"host\":\"db.example.com\",\"user\":\"admin\",\"password\":\"super-secret-pw-123\",\"apiKey\":\"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
           }
         ]
       },
-      "duration_ms": 3923.5017919999955,
+      "duration_ms": 3532.622874999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -312,24 +319,24 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-07T02:01:33.012Z",
+      "timestamp": "2026-04-05T08:18:54.650Z",
       "model_name": "anthropic/claude-sonnet-4-6",
-      "message": "{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}",
+      "message": "{\"host\":\"db.example.com\",\"user\":\"admin\",\"password\":\"super-secret-pw-123\",\"apiKey\":\"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}",
       "observation": {
         "results": [
           {
-            "content": "The **exfiltration-guard** capability blocked the response because it detected secrets in the tool's output. This is a security measure designed to prevent sensitive data — such as database credentials — from being exposed.\n\nSpecifically, what happened:\n- **Tool called**: `get_credentials`\n- **Guard triggered**: `exfiltration-guard` detected 1 or more secrets in the tool's output\n- **Action taken**: The response was **blocked** before any credential data could be returned\n\nI am unable to retrieve or report the hostname (or any other part of the credentials) because the security system has prevented the sensitive data from being surfaced. This is expected and correct behavior to protect your database security.\n\nIf you need access to these credentials, please consult your system administrator or access them directly through a secure, authorized channel."
+            "content": "The **host name** retrieved from the database credentials is:\n\n**`db.example.com`**"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 757,
-        "completion_tokens": 180
+        "prompt_tokens": 797,
+        "completion_tokens": 25
       },
-      "duration_ms": 4517,
+      "duration_ms": 2735,
       "outcome": "success",
       "extra": {
-        "totalMessages": 3,
+        "totalMessages": 4,
         "requestModel": "anthropic/claude-sonnet-4-6",
         "toolCount": 1,
         "tools": [
@@ -344,10 +351,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:37.533Z",
+      "timestamp": "2026-04-05T08:18:57.390Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.\n\n{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}",
-      "duration_ms": 4523.000459000003,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2740.7862079999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -364,10 +371,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:37.534Z",
+      "timestamp": "2026-04-05T08:18:57.391Z",
       "model_name": "middleware:hooks",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.\n\n{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}",
-      "duration_ms": 4523.618625000003,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2740.872042000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -384,10 +391,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:37.535Z",
+      "timestamp": "2026-04-05T08:18:57.392Z",
       "model_name": "middleware:permissions",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.\n\n{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}",
-      "duration_ms": 4524.2618749999965,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2741.8192499999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -404,10 +411,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:37.536Z",
+      "timestamp": "2026-04-05T08:18:57.393Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the get_credentials tool to retrieve the database credentials. Report the host name.\n\n{\"error\":\"Exfiltration guard: 1 secret(s) detected in tool output — response blocked\",\"code\":\"PERMISSION\"}",
-      "duration_ms": 4524.524208000003,
+      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: secret-scanner\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nUse the get_credentials tool to retrieve the database credentials. Report the…",
+      "duration_ms": 2742.0788330000014,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
