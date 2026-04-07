@@ -30,6 +30,18 @@ const SUPPORTED_PROPERTY_KEYWORDS = new Set([
   "description",
   "title",
   "default",
+  // String constraints — recognized but not validated (Zod handles runtime validation).
+  "minLength",
+  "maxLength",
+  "pattern",
+  // Numeric constraints — recognized but not validated.
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  // Array constraints — recognized but not validated.
+  "minItems",
+  "maxItems",
   // Structural keywords for arrays/objects — recognized but not deeply validated.
   // The validator only checks top-level property types; nested schema contents
   // (item shapes, nested required, nested properties) are not evaluated.

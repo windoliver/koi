@@ -884,3 +884,88 @@ describe("task_output — resultSchemas validation", () => {
     expect(r.resultsValidationError).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// task_output — offset-based incremental reads
+// ---------------------------------------------------------------------------
+
+describe("task_output — offset reads", () => {
+  async function setupWithOutputReader() {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    const mockChunks = [
+      { offset: 0, content: "hello ", timestamp: 1000 },
+      { offset: 6, content: "world", timestamp: 1001 },
+    ];
+
+    const outputReader = {
+      readOutput: (_taskId: import("@koi/core").TaskItemId, fromOffset?: number) => {
+        const offset = fromOffset ?? 0;
+        const filtered = mockChunks.filter((c) => c.offset + c.content.length > offset);
+        return {
+          ok: true as const,
+          value: { chunks: filtered, nextOffset: 11 },
+        };
+      },
+    };
+
+    const tools = createTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      outputReader,
+    });
+    const [create, _get, update, _list, _stop, output] = tools as [
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+      Tool,
+    ];
+    return { create, update, output };
+  }
+
+  test("in_progress with offset returns delta chunks", async () => {
+    const { create, update, output } = await setupWithOutputReader();
+    const rc = await exec(create, { subject: "Auth", description: "Do auth" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(output, { task_id: id, offset: 6 })) as {
+      kind: string;
+      chunks?: readonly { content: string }[];
+      nextOffset?: number;
+    };
+    expect(r.kind).toBe("in_progress_output");
+    expect(r.chunks).toHaveLength(1);
+    expect(r.chunks?.[0]?.content).toBe("world");
+    expect(r.nextOffset).toBe(11);
+  });
+
+  test("in_progress without offset returns status only", async () => {
+    const { create, update, output } = await setupWithOutputReader();
+    const rc = await exec(create, { subject: "Auth", description: "Do auth" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("in_progress");
+  });
+
+  test("in_progress with offset=0 returns all chunks", async () => {
+    const { create, update, output } = await setupWithOutputReader();
+    const rc = await exec(create, { subject: "Auth", description: "Do auth" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(output, { task_id: id, offset: 0 })) as {
+      kind: string;
+      chunks?: readonly { content: string }[];
+    };
+    expect(r.kind).toBe("in_progress_output");
+    expect(r.chunks).toHaveLength(2);
+  });
+});

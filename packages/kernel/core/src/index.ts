@@ -1046,6 +1046,7 @@ export type {
   TaskItemInput,
   TaskItemPatch,
   TaskItemStatus,
+  TaskKindName,
   TaskPatch,
   TaskReconcileAction,
   TaskReconciler,

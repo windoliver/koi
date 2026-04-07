@@ -54,8 +54,8 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/permissions` | Permission backend (bypass/default/nexus modes) | `permission-deny` |
 | `@koi/query-engine` | Model stream consumer + turn runner; `validateToolArgs` recognizes `items`/`properties`/`required` in addition to `type`/`description`/`title`/`default` — tools with array/object parameters now pass schema validation | all queries |
 | `@koi/spawn-tools` | Agent spawn tool + coordinator utilities (TaskCascade, recoverOrphanedTasks) | `spawn-tools` |
-| `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
-| `@koi/tasks` | In-memory task board store. `ManagedTaskBoardConfig` gains `onEngineEvent` + `agentId` for automatic plan/progress engine event bridging with post-persistence flush (#1555) | `task-board` |
+| `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) + ComponentProvider + offset-based output reads | `task-tools` |
+| `@koi/tasks` | Task board stores + runtime task system (output streaming, task kinds, registry, runner, LocalShellTask lifecycle). `ManagedTaskBoardConfig` gains `onEngineEvent` + `agentId` for automatic plan/progress engine event bridging (#1555) | `task-board` |
 | `@koi/bash-security` | Bash command classifier pipeline — allowlist gate, injection/path/command denylist (L0u) | standalone |
 | `@koi/tools-bash` | Bash execution tool: cwd-contained, env-isolated, process-group kill, exfiltration denylist. Now includes `createBashBackgroundTool()` for fire-and-forget subprocess execution via `ManagedTaskBoard`, shared `exec.ts` spawn/drain layer, `trackCwd` sentinel for directory tracking, and OS sandbox DI (`sandboxAdapter` + `sandboxProfile`) | `bash-exec`, `bash-background`, `bash-track-cwd` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead. Credential path guard (`createCredentialPathGuard`) blocks fs tool access to `~/.ssh`, `~/.aws`, etc. — default-on via `RuntimeConfig.credentialPathGuard` | `glob-use` |

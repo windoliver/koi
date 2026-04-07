@@ -7,12 +7,20 @@ import type { ResultSchema, TaskOutputResponse, TaskToolsConfig } from "../types
 
 const schema = z.object({
   task_id: z.string().min(1).describe("ID of the task to retrieve output for"),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Byte offset for incremental output reads. When provided for in_progress tasks, returns only output since that offset.",
+    ),
 });
 
 export function createTaskOutputTool(
   board: ManagedTaskBoard,
   agentId: AgentId,
-  config: Pick<TaskToolsConfig, "resultSchemas">,
+  config: Pick<TaskToolsConfig, "resultSchemas" | "outputReader">,
 ): Tool {
   return {
     descriptor: {
@@ -61,6 +69,20 @@ export function createTaskOutputTool(
           return response;
         }
         case "in_progress": {
+          // If offset is provided and an output reader is available, return delta chunks
+          if (parsed.data.offset !== undefined && config.outputReader !== undefined) {
+            const readResult = config.outputReader.readOutput(id, parsed.data.offset);
+            if (readResult.ok) {
+              const response: TaskOutputResponse = {
+                kind: "in_progress_output",
+                task: toTaskSummary(task, snapshot),
+                chunks: readResult.value.chunks,
+                nextOffset: readResult.value.nextOffset,
+              };
+              return response;
+            }
+            // Fall through to status-only response if read fails (task might not be tracked by runner)
+          }
           const response: TaskOutputResponse = {
             kind: "in_progress",
             task: toTaskSummary(task, snapshot),

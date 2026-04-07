@@ -1,7 +1,7 @@
 {
   "name": "hook-redaction",
   "model": "anthropic/claude-sonnet-4-6",
-  "recordedAt": 1775531470100,
+  "recordedAt": 1775531782728,
   "chunks": [
     {
       "kind": "text_delta",
@@ -9,11 +9,11 @@
     },
     {
       "kind": "text_delta",
-      "delta": "!"
+      "delta": "! Let"
     },
     {
       "kind": "text_delta",
-      "delta": " Let me retrieve the database credentials right"
+      "delta": " me retrieve the database credentials right"
     },
     {
       "kind": "text_delta",
@@ -22,26 +22,26 @@
     {
       "kind": "tool_call_start",
       "toolName": "get_credentials",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1"
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk",
       "delta": "{}"
     },
     {
@@ -51,7 +51,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1"
+      "callId": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk"
     },
     {
       "kind": "done",
@@ -59,7 +59,7 @@
         "content": "Sure! Let me retrieve the database credentials right away.",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531467-xLwKzcUNlRsD0xEDpcZh",
+        "responseId": "gen-1775531780-PziP3XEjM4f3ZcpkPwmX",
         "richContent": [
           {
             "kind": "text",
@@ -67,7 +67,7 @@
           },
           {
             "kind": "tool_call",
-            "id": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+            "id": "toolu_vrtx_01GfjksBf9JH8wubFqBasfNk",
             "name": "get_credentials",
             "arguments": {}
           }
@@ -75,6 +75,9 @@
         "usage": {
           "inputTokens": 565,
           "outputTokens": 48
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "2c4464a77f790c770f921a832310634673e1152d9d669dc0935805090f18319a"
         }
       }
     }

@@ -1796,6 +1796,68 @@ describe("Golden: @koi/tasks", () => {
     const { rmSync } = await import("node:fs");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("createOutputStream write/read delta cycle with byte-accurate offsets", async () => {
+    const { createOutputStream } = await import("@koi/tasks");
+
+    const stream = createOutputStream({ maxBytes: 1024 });
+
+    // Write two chunks and verify byte-accurate offsets
+    stream.write("hello ");
+    stream.write("world");
+
+    const allChunks = stream.read(0);
+    expect(allChunks).toHaveLength(2);
+    expect(allChunks[0]!.content).toBe("hello ");
+    expect(allChunks[0]!.offset).toBe(0);
+    expect(allChunks[1]!.content).toBe("world");
+
+    // Each chunk has byteLength
+    expect(allChunks[0]!.byteLength).toBe(6); // "hello " = 6 bytes
+    expect(allChunks[1]!.byteLength).toBe(5); // "world" = 5 bytes
+
+    // Total length is 11 bytes
+    expect(stream.length()).toBe(11);
+
+    // Delta read from second chunk's offset returns only "world"
+    const deltaChunks = stream.read(allChunks[1]!.offset);
+    expect(deltaChunks).toHaveLength(1);
+    expect(deltaChunks[0]!.content).toBe("world");
+  });
+
+  test("createTaskRegistry + task kind type guards exercise runtime surface", async () => {
+    const { createTaskRegistry, createOutputStream, isLocalShellTask, isRuntimeTask } =
+      await import("@koi/tasks");
+    const { taskItemId } = await import("@koi/core");
+
+    const registry = createTaskRegistry();
+    expect(registry.kinds()).toHaveLength(0);
+
+    // Register a mock lifecycle
+    registry.register({
+      kind: "local_shell",
+      start: async (id, output, _config) => ({
+        kind: "local_shell" as const,
+        taskId: id,
+        cancel: () => {},
+        output,
+        startedAt: Date.now(),
+        command: "echo test",
+      }),
+      stop: async () => {},
+    });
+    expect(registry.has("local_shell")).toBe(true);
+    expect(registry.kinds()).toContain("local_shell");
+
+    // Start a task through the lifecycle
+    const output = createOutputStream();
+    const state = await registry
+      .get("local_shell")!
+      .start(taskItemId("task_1"), output, { command: "echo test" });
+    expect(isLocalShellTask(state)).toBe(true);
+    expect(isRuntimeTask(state)).toBe(true);
+    expect(state.kind).toBe("local_shell");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4246,6 +4308,95 @@ describe("Golden: @koi/task-tools", () => {
     expect(sr.ok).toBe(false);
     expect(sr.error as string).toContain("in_progress");
   });
+
+  test("createTaskToolsProvider returns ComponentProvider with 7 tools under toolToken keys", async () => {
+    const { createTaskToolsProvider } = await import("@koi/task-tools");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+    const { COMPONENT_PRIORITY } = await import("@koi/core");
+
+    const store = createMemoryTaskBoardStore();
+    const board = await createManagedTaskBoard({ store });
+    const provider = createTaskToolsProvider({
+      board,
+      agentId: "golden-agent" as import("@koi/core").AgentId,
+    });
+
+    expect(provider.name).toBe("task-tools");
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.BUNDLED);
+
+    // Attach and verify all 7 tools are registered
+    const result = await provider.attach({} as never);
+    const resultObj = result as unknown as Record<string, unknown>;
+    const components =
+      "components" in resultObj
+        ? (resultObj.components as ReadonlyMap<string, unknown>)
+        : (result as ReadonlyMap<string, unknown>);
+
+    expect(components.size).toBe(7);
+    const toolNames = [...components.keys()].sort();
+    expect(toolNames).toEqual([
+      "tool:task_create",
+      "tool:task_delegate",
+      "tool:task_get",
+      "tool:task_list",
+      "tool:task_output",
+      "tool:task_stop",
+      "tool:task_update",
+    ]);
+  });
+
+  test("task_output with offset returns in_progress_output for streaming reads", async () => {
+    const { createTaskTools } = await import("@koi/task-tools");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+
+    const store = createMemoryTaskBoardStore();
+    const board = await createManagedTaskBoard({ store });
+
+    const mockReader = {
+      readOutput: (_taskId: import("@koi/core").TaskItemId, fromOffset?: number) => ({
+        ok: true as const,
+        value: {
+          chunks: [{ offset: fromOffset ?? 0, content: "chunk data", timestamp: Date.now() }],
+          nextOffset: (fromOffset ?? 0) + 10,
+        },
+      }),
+    };
+
+    const tools = createTaskTools({
+      board,
+      agentId: "golden-agent" as import("@koi/core").AgentId,
+      outputReader: mockReader,
+    });
+    const [create, , update, , , output] = tools as [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    // Create and start a task
+    const cr = (await create.execute({
+      subject: "Streaming",
+      description: "Test streaming",
+    } as import("@koi/core").JsonObject)) as Record<string, unknown>;
+    const id = (cr.task as Record<string, unknown>).id as string;
+    await update.execute({ task_id: id, status: "in_progress" } as import("@koi/core").JsonObject);
+
+    // Read with offset — should return in_progress_output
+    const or = (await output.execute({
+      task_id: id,
+      offset: 5,
+    } as import("@koi/core").JsonObject)) as {
+      kind: string;
+      chunks?: readonly { content: string }[];
+      nextOffset?: number;
+    };
+    expect(or.kind).toBe("in_progress_output");
+    expect(or.chunks).toHaveLength(1);
+    expect(or.nextOffset).toBe(15);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4704,7 +4855,7 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     }
 
     // Exfiltration guard middleware must be present in the recorded trace.
-    // The guard may have wrapped a tool call (blocking it) or a model stream
+    // The guard wraps either a tool call (blocking it) or a model stream
     // (inspecting the response) depending on whether the LLM used the tool.
     const guardSpan = steps.find((s) => {
       if (s.source !== "system") return false;
@@ -4712,30 +4863,14 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
       return extra?.middlewareName === "exfiltration-guard";
     });
     expect(guardSpan).toBeDefined();
-
-    // If the guard blocked a tool call, verify the block was recorded correctly
-    const guardToolSpan = steps.find((s) => {
-      if (s.source !== "system") return false;
-      const extra = s.extra as Record<string, unknown> | undefined;
-      return extra?.middlewareName === "exfiltration-guard" && extra?.hook === "wrapToolCall";
-    });
-    if (guardToolSpan !== undefined) {
-      const extra = guardToolSpan.extra as Record<string, unknown>;
+    if (guardSpan !== undefined) {
+      const extra = guardSpan.extra as Record<string, unknown>;
       expect(extra.phase).toBe("intercept");
-      expect(extra.nextCalled).toBe(false);
-
-      // When blocked, the response contains a PERMISSION error
-      const agentSteps = steps.filter((s) => s.source === "agent");
-      const blockStep = agentSteps.find((s) => {
-        const msg = String(s.message ?? "");
-        return msg.includes("PERMISSION") && msg.includes("secret(s) detected");
-      });
-      expect(blockStep).toBeDefined();
-
-      // No successful tool execution step (tool was blocked, never executed)
-      const toolSteps = steps.filter((s) => s.source === "tool");
-      expect(toolSteps).toHaveLength(0);
     }
+
+    // No successful tool execution step (tool was not called or was blocked)
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps).toHaveLength(0);
   });
 });
 

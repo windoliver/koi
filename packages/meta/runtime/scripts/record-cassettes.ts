@@ -224,60 +224,7 @@ if (!credentialsToolResult.ok) {
 const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
-// Task tools (backed by @koi/tasks in-memory store)
-// ---------------------------------------------------------------------------
-
-const taskStore = createMemoryTaskBoardStore();
-
-const taskCreateResult = buildTool({
-  name: "task_create",
-  description: "Create a new task on the task board. Returns the created task.",
-  inputSchema: {
-    type: "object",
-    properties: { description: { type: "string", description: "What the task is about" } },
-    required: ["description"],
-  },
-  origin: "primordial",
-  execute: async (args: JsonObject): Promise<unknown> => {
-    const id = await taskStore.nextId();
-    const now = Date.now();
-    const item = {
-      id,
-      subject: String(args.description),
-      description: String(args.description),
-      dependencies: [],
-      retries: 0,
-      status: "pending" as const,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await taskStore.put(item);
-    return { created: { id, description: item.description, status: item.status } };
-  },
-});
-if (!taskCreateResult.ok) {
-  console.error(`buildTool(task_create) failed: ${taskCreateResult.error.message}`);
-  process.exit(1);
-}
-const taskCreateTool = taskCreateResult.value;
-
-const taskListResult = buildTool({
-  name: "task_list",
-  description: "List all tasks on the task board.",
-  inputSchema: { type: "object", properties: {} },
-  origin: "primordial",
-  execute: async (): Promise<unknown> => {
-    const items = await taskStore.list();
-    return {
-      tasks: items.map((i) => ({ id: i.id, description: i.description, status: i.status })),
-    };
-  },
-});
-if (!taskListResult.ok) {
-  console.error(`buildTool(task_list) failed: ${taskListResult.error.message}`);
-  process.exit(1);
-}
-const taskListTool = taskListResult.value;
+// Task tools — removed hand-built stubs; task-board query now uses real createTaskTools
 
 // ---------------------------------------------------------------------------
 // @koi/task-tools — full tool surface (7 tools via createTaskTools)
@@ -300,6 +247,23 @@ const [ttCreate, ttGet, ttUpdate, ttList, ttStop, ttOutput, ttDelegate] = taskTo
   import("@koi/core").Tool,
   import("@koi/core").Tool,
 ];
+
+// task-board query uses a separate ManagedTaskBoard with real createTaskTools
+// (distinct from the taskToolsBoard used by the task-tools query above)
+const taskBoardBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const taskBoardTools = createTaskTools({
+  board: taskBoardBoard,
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+});
+const taskBoardToolProviders = taskBoardTools.map((tool) =>
+  createSingleToolProvider({
+    name: `task-board-${tool.descriptor.name}`,
+    toolName: tool.descriptor.name,
+    createTool: () => tool,
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -1666,11 +1630,11 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
-  // 9. task-board: @koi/tasks exercised — create + list tasks via in-memory store
+  // 9. task-board: @koi/tasks + @koi/task-tools exercised — create + list via real createTaskTools
   {
     name: "task-board",
     prompt:
-      'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+      'Use the task_create tool to create a task with subject "Review README" and description "Review the README for typos". Then use the task_list tool to show all tasks.',
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
@@ -1682,18 +1646,7 @@ const queries: readonly QueryConfig[] = [
         filter: { events: ["tool.succeeded"] },
       },
     ],
-    providers: [
-      createSingleToolProvider({
-        name: "task-create",
-        toolName: "task_create",
-        createTool: () => taskCreateTool,
-      }),
-      createSingleToolProvider({
-        name: "task-list",
-        toolName: "task_list",
-        createTool: () => taskListTool,
-      }),
-    ],
+    providers: taskBoardToolProviders,
     maxTurns: 3,
   },
 
@@ -2514,12 +2467,12 @@ await recordCassette("task-board", () =>
         content: [
           {
             kind: "text",
-            text: 'Use the task_create tool to create a task with description "Review the README for typos". Then use the task_list tool to show all tasks.',
+            text: 'Use the task_create tool to create a task with subject "Review README" and description "Review the README for typos". Then use the task_list tool to show all tasks.',
           },
         ],
       },
     ],
-    tools: [taskCreateTool.descriptor, taskListTool.descriptor],
+    tools: taskBoardTools.map((t) => t.descriptor),
   }),
 );
 

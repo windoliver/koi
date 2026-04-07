@@ -4,13 +4,16 @@ LLM-callable task management tools — `task_create`, `task_get`, `task_update`,
 
 ## Layer
 
-L2 — depends on `@koi/core` (L0). `@koi/tasks` is a `devDependency` (test-only).
+L2 — depends on `@koi/core` (L0), `@koi/tools-core` (L0u). `@koi/tasks` is a `devDependency` (test-only).
 
 ## Purpose
 
 Provides the 7 tool surfaces that an LLM agent calls to create, inspect, manage, and
 delegate tasks on a `ManagedTaskBoard` during execution. Each tool validates its input with
 Zod and routes to the appropriate `ManagedTaskBoard` method.
+
+Also provides `createTaskToolsProvider()` — a `ComponentProvider` that wraps all 7 tools
+for ECS agent assembly, and offset-based incremental output reads via the `task_output` tool.
 
 The package is the LLM-facing side of the task system. The persistence layer
 (`@koi/tasks`) and the immutable board logic (`@koi/task-board`) are separate packages

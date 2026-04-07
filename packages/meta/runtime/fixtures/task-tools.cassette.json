@@ -1,69 +1,69 @@
 {
   "name": "task-tools",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775531463554,
+  "recordedAt": 1775531777154,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_kGQ0UyE5vDqB0DIRnWMN"
+      "callId": "tool_task_create_ey2bsQC2ZRTv3G7zQgEc"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_kGQ0UyE5vDqB0DIRnWMN",
+      "callId": "tool_task_create_ey2bsQC2ZRTv3G7zQgEc",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_kGQ0UyE5vDqB0DIRnWMN",
+      "callId": "tool_task_create_ey2bsQC2ZRTv3G7zQgEc",
       "delta": "{\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_ZgDC7MPei49K8fK4mBpk"
+      "callId": "tool_task_create_xLQdw5UyCLrdYWZgDSEl"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_ZgDC7MPei49K8fK4mBpk",
+      "callId": "tool_task_create_xLQdw5UyCLrdYWZgDSEl",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_ZgDC7MPei49K8fK4mBpk",
-      "delta": "{\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"}"
+      "callId": "tool_task_create_xLQdw5UyCLrdYWZgDSEl",
+      "delta": "{\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_L2n1CM8uYMly4CRfd4UA"
+      "callId": "tool_task_list_pafTdQAcdCZvvSEJHJQF"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_L2n1CM8uYMly4CRfd4UA",
+      "callId": "tool_task_list_pafTdQAcdCZvvSEJHJQF",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_L2n1CM8uYMly4CRfd4UA",
+      "callId": "tool_task_list_pafTdQAcdCZvvSEJHJQF",
       "delta": "{}"
     },
     {
       "kind": "usage",
-      "inputTokens": 809,
+      "inputTokens": 833,
       "outputTokens": 25
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_kGQ0UyE5vDqB0DIRnWMN"
+      "callId": "tool_task_create_ey2bsQC2ZRTv3G7zQgEc"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_ZgDC7MPei49K8fK4mBpk"
+      "callId": "tool_task_create_xLQdw5UyCLrdYWZgDSEl"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_L2n1CM8uYMly4CRfd4UA"
+      "callId": "tool_task_list_pafTdQAcdCZvvSEJHJQF"
     },
     {
       "kind": "done",
@@ -71,11 +71,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531462-AP0yS6yzOGq86wg7kQw6",
+        "responseId": "gen-1775531776-phH6ASHCTxL7pwe1RmWI",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_kGQ0UyE5vDqB0DIRnWMN",
+            "id": "tool_task_create_ey2bsQC2ZRTv3G7zQgEc",
             "name": "task_create",
             "arguments": {
               "description": "Build OAuth2",
@@ -84,23 +84,26 @@
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_create_ZgDC7MPei49K8fK4mBpk",
+            "id": "tool_task_create_xLQdw5UyCLrdYWZgDSEl",
             "name": "task_create",
             "arguments": {
-              "description": "Add integration tests",
-              "subject": "Write API tests"
+              "subject": "Write API tests",
+              "description": "Add integration tests"
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_L2n1CM8uYMly4CRfd4UA",
+            "id": "tool_task_list_pafTdQAcdCZvvSEJHJQF",
             "name": "task_list",
             "arguments": {}
           }
         ],
         "usage": {
-          "inputTokens": 809,
+          "inputTokens": 833,
           "outputTokens": 25
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "3fb77b2db4b49888f23a9ce3df5fd5ec719431cb471b5f69783fcad9297526ff"
         }
       }
     }

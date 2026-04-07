@@ -42,7 +42,7 @@ Pure state machine driving the model→tool→model loop (#1233).
 - `createTurnState(turnIndex?)` — factory for initial idle state.
 - `transitionTurn(state, input)` — pure transition function, throws on invalid transitions.
 - `runTurn(config)` — async generator that drives the turn loop via `ComposedCallHandlers`, yielding `EngineEvent`s.
-- `validateToolArgs(args, descriptor)` — lightweight JSON Schema validation (allowlist-based, fail-closed on unsupported keywords). Recognized property keywords: `type`, `description`, `title`, `default`, `items`, `properties`, `required`. The structural keywords (`items`, `properties`, `required`) are allowlisted so tools that declare array or object parameters pass validation; their nested contents are not deeply validated — only top-level property types are checked.
+- `validateToolArgs(args, descriptor)` — lightweight JSON Schema validation (allowlist-based, fail-closed on unsupported keywords). Recognized property keywords: `type`, `description`, `title`, `default`, `items`, `properties`, `required`, plus constraint keywords (`minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minItems`, `maxItems`). Constraint keywords are recognized but not deeply validated — Zod handles runtime validation. The structural keywords (`items`, `properties`, `required`) are allowlisted so tools that declare array or object parameters pass validation; their nested contents are not deeply validated — only top-level property types are checked.
 
 ### Types
 
