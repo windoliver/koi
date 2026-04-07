@@ -1221,7 +1221,13 @@ async function* wrapStreamWithFlush(
     yield* inner;
   } finally {
     beforeFlush?.();
-    await buffer?.flush().catch(noop);
+    // Surface trajectory flush failures so remote persistence errors are observable.
+    // Prior to Nexus backends this was always in-memory and couldn't fail meaningfully.
+    try {
+      await buffer?.flush();
+    } catch (e: unknown) {
+      console.error("[koi:runtime] trajectory flush failed:", e);
+    }
     await afterFlush?.().catch(noop);
   }
 }

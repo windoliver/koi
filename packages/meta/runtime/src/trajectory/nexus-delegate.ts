@@ -5,7 +5,11 @@
  * Ported from archive/v1/packages/fs/nexus-store/src/ace.ts (createNexusAtifDelegate).
  *
  * Design constraints (Phase 1):
- *   - Single-writer per docId (no OCC — process-level mutex in AtifDocumentStore suffices)
+ *   - **Single-writer per docId** — no OCC or server-side locking. The AtifDocumentStore
+ *     serializes appends per-process via a per-docId mutex, but two processes writing to
+ *     the same docId WILL lose updates (last-writer-wins). This is safe because docId =
+ *     sessionId and sessions are single-process. Phase 2 should add OCC via etag/if_match
+ *     if multi-writer is ever needed (#1469).
  *   - Rate-limit retry with exponential backoff on write
  *   - Only NOT_FOUND maps to undefined; auth/permission errors propagate
  */
