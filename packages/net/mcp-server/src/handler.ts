@@ -97,7 +97,14 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name;
+    const rawName = request.params.name;
+    if (typeof rawName !== "string" || rawName.length === 0 || rawName.length > 256) {
+      return {
+        content: [{ type: "text" as const, text: "Invalid tool name" }],
+        isError: true,
+      };
+    }
+    const name = rawName;
 
     // Validate arguments at system boundary
     const rawArgs: unknown = request.params.arguments ?? {};
