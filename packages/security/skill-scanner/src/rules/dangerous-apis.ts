@@ -6,7 +6,6 @@
  */
 
 import type { ScanContext, ScanFinding, ScanRule } from "../types.js";
-import type { ScopeTracker } from "../walker.js";
 import {
   buildScopeTracker,
   getCalleeAsMemberPath,
@@ -39,20 +38,17 @@ const GLOBAL_ROOTS = new Set(["globalThis", "window", "global", "self"]);
  * Direct match: `process.binding` matches `process.binding`.
  * Prefixed match: `globalThis.process.binding` strips the known root and matches `process.binding`.
  * Unknown roots like `safe.process.binding` do NOT match (avoids false positives).
- * If a scope tracker is provided, locally-declared roots are not treated as globals.
+ *
+ * Note: does not check if the root is shadowed by a local binding. Correct scope
+ * analysis requires a full scope walker (out of scope for this fix). False positives
+ * on shadowed roots are acceptable for a security scanner — better to over-flag.
  */
-function matchWithGlobalPrefix(
-  fullPath: string,
-  set: ReadonlySet<string>,
-  scope?: ScopeTracker,
-): string | undefined {
+function matchWithGlobalPrefix(fullPath: string, set: ReadonlySet<string>): string | undefined {
   if (set.has(fullPath)) return fullPath;
   const dotIdx = fullPath.indexOf(".");
   if (dotIdx === -1) return undefined;
   const root = fullPath.slice(0, dotIdx);
   if (!GLOBAL_ROOTS.has(root)) return undefined;
-  // Skip prefix stripping if the root is locally declared (shadowed)
-  if (scope?.isDeclared(root)) return undefined;
   const rest = fullPath.slice(dotIdx + 1);
   if (set.has(rest)) return rest;
   return undefined;
@@ -107,7 +103,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
 
         // Aliased member-expression call: const e = globalThis["eval"]; e()
         if (resolved.includes(".")) {
-          const dangerousAlias = matchWithGlobalPrefix(resolved, DANGEROUS_MEMBER_CALLS, scope);
+          const dangerousAlias = matchWithGlobalPrefix(resolved, DANGEROUS_MEMBER_CALLS);
           if (dangerousAlias !== undefined) {
             const loc = offsetToLocation(ctx.sourceText, node.start);
             findings.push({
@@ -119,7 +115,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
               location: loc,
             });
           }
-          const evalAlias = matchWithGlobalPrefix(resolved, GLOBAL_EVAL_PATHS, scope);
+          const evalAlias = matchWithGlobalPrefix(resolved, GLOBAL_EVAL_PATHS);
           if (evalAlias !== undefined) {
             const loc = offsetToLocation(ctx.sourceText, node.start);
             findings.push({
@@ -183,7 +179,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
       // Also matches chained access: globalThis.process["binding"]()
       const memberPath = getCalleeAsMemberPath(node);
       if (memberPath !== undefined) {
-        const dangerousMatch = matchWithGlobalPrefix(memberPath, DANGEROUS_MEMBER_CALLS, scope);
+        const dangerousMatch = matchWithGlobalPrefix(memberPath, DANGEROUS_MEMBER_CALLS);
         if (dangerousMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
@@ -197,7 +193,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
         }
 
         // globalThis.eval(), window.eval(), global.eval()
-        const evalMatch = matchWithGlobalPrefix(memberPath, GLOBAL_EVAL_PATHS, scope);
+        const evalMatch = matchWithGlobalPrefix(memberPath, GLOBAL_EVAL_PATHS);
         if (evalMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
