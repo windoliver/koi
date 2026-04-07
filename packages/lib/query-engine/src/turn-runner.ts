@@ -365,9 +365,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       // every tool_call_* event the model emitted has a matching intent.
       appendAssistantTurn(transcript, turnText, validToolCalls);
 
-      // Append synthetic results for skipped duplicates so the transcript
-      // has a result for every intent (prevents dangling-call detection
-      // on session resume).
+      // Append synthetic results for skipped duplicates so the in-memory
+      // transcript has a result for every intent. Note: the durable session
+      // transcript middleware (wrapToolCall) will not persist these synthetic
+      // results — if the process crashes between this turn and the next model
+      // call, resume may inject synthetic error results for skipped callIds.
+      // This is acceptable: dedup-skipped calls had no side effects, so
+      // re-prompting the model with a synthetic error is safe and self-healing.
       for (const tc of skippedToolCalls) {
         appendToolResult(transcript, {
           callId: tc.callId,
