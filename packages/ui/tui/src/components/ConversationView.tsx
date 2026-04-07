@@ -10,7 +10,7 @@
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
-import { createSignal, Show } from "solid-js";
+import { createEffect, createSignal, on, Show } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import type { SlashCommand } from "../commands/slash-detection.js";
 import { useTuiStore } from "../store-context.js";
@@ -40,12 +40,28 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
 
-  // Prompt history (Decision 4.3) — local state, not in TuiState
+  // Prompt history — session-scoped. Cleared when messages are reset
+  // (agent:clear, session:new, session resume) to prevent leaking
+  // prior-session prompts into a fresh context.
   const [history, setHistory] = createSignal<readonly string[]>([]);
   // `let` justified: mutable index tracking current position in history navigation
   let historyIdx = -1;
   // `let` justified: stores the draft text before history navigation started
   let draft = "";
+
+  // Clear history when session resets (messages drop to 0).
+  // This covers agent:clear, session:new, and session resume — all of which
+  // dispatch clear_messages before loading new state.
+  const messageCount = useTuiStore((s) => s.messages.length);
+  createEffect(
+    on(messageCount, (count: number, prev: number | undefined) => {
+      if (count === 0 && prev !== undefined && prev > 0) {
+        setHistory([]);
+        historyIdx = -1;
+        draft = "";
+      }
+    }),
+  );
 
   const dismissOverlay = (): void => {
     props.onSlashDetected(null);
@@ -71,13 +87,22 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     props.onSubmit(text);
   };
 
-  const handleHistoryNav = (direction: "up" | "down"): string | null => {
+  /**
+   * Navigate prompt history. The `currentText` parameter captures the
+   * textarea contents at the moment navigation starts, so the user's
+   * in-progress draft is preserved and restored on Down past index 0.
+   */
+  const handleHistoryNav = (
+    direction: "up" | "down",
+    currentText: string,
+  ): string | null => {
     const h = history();
     if (h.length === 0) return null;
 
     if (direction === "up") {
       if (historyIdx < 0) {
-        // Starting navigation — save current draft (not captured here, InputArea owns text)
+        // Starting navigation — save the user's current draft
+        draft = currentText;
         historyIdx = 0;
       } else if (historyIdx < h.length - 1) {
         historyIdx++;
@@ -90,7 +115,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     if (historyIdx < 0) return null; // Not navigating
     historyIdx--;
     if (historyIdx < 0) {
-      return draft; // Return to draft
+      return draft; // Return to saved draft
     }
     return h[historyIdx] ?? null;
   };

@@ -65,8 +65,14 @@ export function onSelectionEnd(state: AutoScrollState): AutoScrollState {
   return state;
 }
 
-/** Streaming ended -> enter settling period */
-export function onStreamEnd(_state: AutoScrollState, now: number): AutoScrollState {
+/**
+ * Streaming ended -> enter settling period, BUT only if currently following.
+ * A user who explicitly paused (scroll-up or text selection) should NOT be
+ * yanked back to the live tail just because the stream completed.
+ */
+export function onStreamEnd(state: AutoScrollState, now: number): AutoScrollState {
+  // Preserve explicit user pause — don't override scroll/selection pauses
+  if (state.mode === "paused") return state;
   return { mode: "settling", settleUntil: now + SETTLE_DURATION_MS };
 }
 

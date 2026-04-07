@@ -106,16 +106,28 @@ export function MessageList(props: MessageListProps): JSX.Element {
     }
   });
 
+  // Ref for scroll position detection — only resume follow when actually at bottom
+  // `let` justified: mutable ref assigned by JSX ref callback
+  let scrollboxRef: { readonly scrollTop: number; readonly scrollHeight: number; readonly height: number } | null = null;
+
+  /** Check if viewport is within 5px of the bottom edge. */
+  const isAtBottom = (): boolean => {
+    if (!scrollboxRef) return true; // assume bottom if no ref yet
+    const bottom = scrollboxRef.scrollTop + scrollboxRef.height;
+    return scrollboxRef.scrollHeight - bottom < 5;
+  };
+
   return (
     <scrollbox
+      ref={(el: typeof scrollboxRef) => { scrollboxRef = el; }}
       flexGrow={1}
       stickyScroll={shouldFollow(scrollState())}
       stickyStart="bottom"
       onMouseScroll={(event: { readonly deltaY: number }) => {
         if (event.deltaY < 0) {
           setScrollState((s) => onScrollUp(s));
-        } else {
-          // Scrolling down — check if we're at the bottom to re-engage
+        } else if (isAtBottom()) {
+          // Only resume follow when viewport has actually reached the bottom
           setScrollState((s) => onScrollToBottom(s));
         }
       }}

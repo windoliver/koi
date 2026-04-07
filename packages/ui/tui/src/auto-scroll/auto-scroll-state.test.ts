@@ -138,12 +138,13 @@ describe("onStreamEnd", () => {
     expect(next.settleUntil).toBe(now + SETTLE_DURATION_MS);
   });
 
-  test("paused -> settling", () => {
+  test("paused stays paused on stream end (user pause preserved)", () => {
     const paused: AutoScrollState = { mode: "paused", pauseReason: "scroll" };
     const now = 5000;
     const next = onStreamEnd(paused, now);
-    expect(next.mode).toBe("settling");
-    expect(next.settleUntil).toBe(now + SETTLE_DURATION_MS);
+    // User explicitly paused — stream completion should NOT yank them back
+    expect(next.mode).toBe("paused");
+    expect(next).toBe(paused); // same reference — no-op
   });
 });
 

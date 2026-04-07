@@ -32,8 +32,11 @@ export interface InputAreaProps {
   readonly onSubmit: (text: string) => void;
   /** Called when slash command prefix is detected. Null = no overlay. */
   readonly onSlashDetected: (query: string | null) => void;
-  /** Called when the user navigates prompt history (arrow up/down). */
-  readonly onHistoryNav?: ((direction: "up" | "down") => string | null) | undefined;
+  /**
+   * Called when the user navigates prompt history (arrow up/down).
+   * Receives the current textarea text so the draft can be saved/restored.
+   */
+  readonly onHistoryNav?: ((direction: "up" | "down", currentText: string) => string | null) | undefined;
   /** Whether input is disabled (e.g., modal active, disconnected). */
   readonly disabled?: boolean;
   /** Whether this area has keyboard focus. */
@@ -125,10 +128,18 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       }
       case "history-up":
       case "history-down": {
+        // Only navigate history when the input is single-line (no multiline
+        // caret movement to steal) or empty. This prevents Up/Down from
+        // destroying multiline drafts — the user keeps normal caret movement
+        // in multiline text and uses history only when the buffer is simple.
+        const text = textareaRef?.plainText ?? "";
+        const isMultiline = text.includes("\n");
+        if (isMultiline) break; // let textarea handle normal caret movement
+
         key.preventDefault();
         if (props.onHistoryNav) {
           const direction = result.kind === "history-up" ? "up" : "down";
-          const historyText = props.onHistoryNav(direction);
+          const historyText = props.onHistoryNav(direction, text);
           if (historyText !== null) {
             textareaRef?.setText(historyText);
           }
