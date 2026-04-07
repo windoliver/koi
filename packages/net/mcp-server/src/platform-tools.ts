@@ -36,6 +36,8 @@ import type { PlatformCapabilities } from "./config.js";
 
 const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 50;
+/** Maximum characters for task output/error payloads. */
+const MAX_PAYLOAD_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -280,7 +282,11 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           if (!taskBoard.hasResultPersistence()) {
             throw new Error("Task completion requires durable result storage");
           }
-          const output = typeof args.output === "string" ? args.output : "";
+          const rawOutput = typeof args.output === "string" ? args.output : "";
+          if (rawOutput.length > MAX_PAYLOAD_CHARS) {
+            throw new Error(`Output exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
+          }
+          const output = rawOutput;
           unwrapResult(
             await taskBoard.completeOwnedTask(id, callerId, {
               taskId: id,
@@ -292,7 +298,11 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           return { status: "completed", taskId: id };
         }
         case "fail": {
-          const errorMsg = typeof args.error === "string" ? args.error : "Unknown error";
+          const rawError = typeof args.error === "string" ? args.error : "Unknown error";
+          if (rawError.length > MAX_PAYLOAD_CHARS) {
+            throw new Error(`Error message exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
+          }
+          const errorMsg = rawError;
           const koiError: KoiError = {
             code: "INTERNAL",
             message: errorMsg,

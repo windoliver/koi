@@ -13,6 +13,34 @@ import { sanitizeMcpError } from "./errors.js";
 import type { ToolCache } from "./tool-cache.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Maximum tool execution time in milliseconds (30 seconds). */
+const TOOL_TIMEOUT_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Timeout
+// ---------------------------------------------------------------------------
+
+/** Race a promise against a deadline. Rejects with Error on timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Tool execution timed out")), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -64,7 +92,7 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
     }
 
     try {
-      const result = await entry.execute(rawArgs);
+      const result = await withTimeout(entry.execute(rawArgs), TOOL_TIMEOUT_MS);
       const text = typeof result === "string" ? result : JSON.stringify(result);
       return {
         content: [{ type: "text" as const, text }],
