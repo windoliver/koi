@@ -27,6 +27,6 @@ export function createInitialState(): TuiState {
     agentStatus: "idle",
     sessions: [],
     slashQuery: null,
-    planTasks: {},
+    planTasks: null,
   };
 }

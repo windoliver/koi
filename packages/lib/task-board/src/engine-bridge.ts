@@ -156,25 +156,14 @@ const STRUCTURAL_EVENTS = new Set<TaskBoardEvent["kind"]>([
 ]);
 
 /**
- * Derives the acting agent for an event. Prefers per-event/per-task agent
- * identity over the board-wide default to preserve multi-agent isolation.
- */
-function deriveAgentId(event: TaskBoardEvent, board: TaskBoard, fallback: AgentId): AgentId {
-  // Assignment events carry the acting agent explicitly
-  if (event.kind === "task:assigned") return event.agentId;
-  // For other events, use the task's current assignee if available
-  const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
-  const task = board.get(taskId);
-  return task?.assignedTo ?? fallback;
-}
-
-/**
  * Maps a TaskBoardEvent + post-mutation board to EngineEvent(s).
  *
  * Always produces at least one `task_progress` event.
  * Structural changes also produce a `plan_update` snapshot.
  *
- * @param boardOwner - Default agent ID when no per-task/per-event agent is available
+ * @param boardOwner - Agent that owns this board. Used as agentId on all emitted
+ *   events. A shared board is a shared plan — consumers key by boardOwner, not
+ *   per-task assignee, so all events from one board appear in one plan view.
  */
 export function mapTaskBoardEventToEngineEvents(
   event: TaskBoardEvent,
@@ -184,7 +173,6 @@ export function mapTaskBoardEventToEngineEvents(
 ): readonly EngineEvent[] {
   const timestamp = clock();
   const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
-  const agentId = deriveAgentId(event, board, boardOwner);
   const previousStatus = derivePreviousStatus(event, board);
   const status = deriveNewStatus(event, board);
   const subject = deriveSubject(event, board);
@@ -196,7 +184,7 @@ export function mapTaskBoardEventToEngineEvents(
 
   const progress: EngineEvent = {
     kind: "task_progress",
-    agentId,
+    agentId: boardOwner,
     taskId,
     subject,
     previousStatus,
@@ -207,7 +195,7 @@ export function mapTaskBoardEventToEngineEvents(
   };
 
   if (STRUCTURAL_EVENTS.has(event.kind)) {
-    return [progress, buildPlanUpdate(board, agentId, timestamp)];
+    return [progress, buildPlanUpdate(board, boardOwner, timestamp)];
   }
 
   return [progress];
