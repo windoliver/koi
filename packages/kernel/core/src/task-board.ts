@@ -453,3 +453,18 @@ export type TaskItemStatus = TaskStatus;
 export type TaskItemInput = TaskInput;
 /** @deprecated Use `TaskPatch` instead. */
 export type TaskItemPatch = TaskPatch;
+
+// ---------------------------------------------------------------------------
+// Task kind name — runtime task type discriminator
+// ---------------------------------------------------------------------------
+
+/**
+ * Runtime task kind discriminator. Stored in `task.metadata.kind` to
+ * identify which lifecycle implementation manages a given task.
+ */
+export type TaskKindName =
+  | "local_shell"
+  | "local_agent"
+  | "remote_agent"
+  | "in_process_teammate"
+  | "dream";

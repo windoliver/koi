@@ -47,6 +47,8 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/sandbox-os",
   "@koi/session",
   "@koi/skills-runtime",
+  "@koi/task-tools",
+  "@koi/tasks",
   "@koi/tools-bash",
 ]);
 

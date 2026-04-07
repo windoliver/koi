@@ -53,6 +53,12 @@ export type TaskOutputResponse =
   | { readonly kind: "pending"; readonly task: TaskSummary }
   | { readonly kind: "in_progress"; readonly task: TaskSummary }
   | {
+      readonly kind: "in_progress_output";
+      readonly task: TaskSummary;
+      readonly chunks: readonly OutputChunkData[];
+      readonly nextOffset: number;
+    }
+  | {
       readonly kind: "completed";
       readonly result: TaskResult;
       /** Present when resultSchemas is configured and validation fails. */
@@ -66,9 +72,35 @@ export type TaskOutputResponse =
       readonly message: string;
     };
 
+/** Serializable output chunk data (no methods). */
+export interface OutputChunkData {
+  readonly offset: number;
+  readonly content: string;
+  readonly timestamp: number;
+}
+
 // ---------------------------------------------------------------------------
 // TaskToolsConfig
 // ---------------------------------------------------------------------------
+
+/**
+ * Minimal interface for reading incremental task output.
+ * Matches TaskRunner.readOutput() without depending on the full TaskRunner type.
+ */
+export interface TaskOutputReader {
+  readonly readOutput: (
+    taskId: TaskItemId,
+    fromOffset?: number,
+  ) =>
+    | {
+        readonly ok: true;
+        readonly value: {
+          readonly chunks: readonly OutputChunkData[];
+          readonly nextOffset: number;
+        };
+      }
+    | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+}
 
 export interface TaskToolsConfig {
   readonly board: ManagedTaskBoard;
@@ -84,4 +116,10 @@ export interface TaskToolsConfig {
    * Opt-in — tasks with no registered schema are not validated.
    */
   readonly resultSchemas?: Readonly<Record<string, ResultSchema>> | undefined;
+  /**
+   * Optional output reader for incremental streaming reads.
+   * When provided, task_output accepts an `offset` parameter to return
+   * delta output chunks for in_progress tasks.
+   */
+  readonly outputReader?: TaskOutputReader | undefined;
 }
