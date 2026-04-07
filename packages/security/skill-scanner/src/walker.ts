@@ -141,6 +141,55 @@ export function visitAst(program: Program, callbacks: ScanVisitorCallbacks): voi
 // Node inspection helpers
 // ---------------------------------------------------------------------------
 
+/** Extract string value from a computed member property (`obj["method"]` or ``obj[`method`]``). */
+function getComputedStringProperty(node: MemberExpression): string | undefined {
+  if (!node.computed) return undefined;
+  const prop = node.property;
+  // String literal: obj["method"]
+  if (prop.type === "Literal" && "value" in prop && typeof prop.value === "string") {
+    return prop.value;
+  }
+  // No-substitution template literal: obj[`method`]
+  if (
+    prop.type === "TemplateLiteral" &&
+    prop.expressions.length === 0 &&
+    prop.quasis.length === 1
+  ) {
+    const quasi = prop.quasis[0];
+    if (quasi !== undefined && quasi.value.cooked !== null) return quasi.value.cooked;
+  }
+  return undefined;
+}
+
+/** Resolve the property name of a MemberExpression (static or string-literal computed). */
+function resolvePropertyName(node: MemberExpression): string | undefined {
+  if (!node.computed) return node.property.name;
+  return getComputedStringProperty(node);
+}
+
+/**
+ * Flatten a (possibly nested) MemberExpression into a dot-separated path.
+ * Walks up the chain: `a.b["c"].d` → `"a.b.c.d"`.
+ * Returns undefined if any segment is a non-literal computed property.
+ * Capped at 32 segments to guard against malformed ASTs.
+ */
+function flattenMemberChain(node: MemberExpression): string | undefined {
+  const segments: string[] = [];
+  // let: walks up the member chain accumulating segments
+  let current: Expression = node;
+  // Cap at 32 to guard against malformed ASTs while allowing any realistic chain
+  for (let depth = 0; depth < 32 && current.type === "MemberExpression"; depth++) {
+    const prop = resolvePropertyName(current);
+    if (prop === undefined) return undefined;
+    segments.push(prop);
+    current = current.object;
+  }
+  if (current.type !== "Identifier") return undefined;
+  segments.push(current.name);
+  segments.reverse();
+  return segments.join(".");
+}
+
 export function getCalleeName(node: CallExpression): string | undefined {
   if (node.callee.type === "Identifier") {
     return node.callee.name;
@@ -149,28 +198,31 @@ export function getCalleeName(node: CallExpression): string | undefined {
 }
 
 export function getMemberPath(node: MemberExpression): string | undefined {
-  // !computed narrows to StaticMemberExpression | PrivateFieldExpression — both have property.name
-  if (!node.computed && node.object.type === "Identifier") {
+  if (node.object.type !== "Identifier") return undefined;
+  // Static: obj.method
+  if (!node.computed) {
     return `${node.object.name}.${node.property.name}`;
+  }
+  // Computed with string literal: obj["method"]
+  const prop = getComputedStringProperty(node);
+  if (prop !== undefined) {
+    return `${node.object.name}.${prop}`;
   }
   return undefined;
 }
 
 export function getStaticMemberProperty(node: MemberExpression): string | undefined {
-  // !computed narrows to StaticMemberExpression | PrivateFieldExpression — both have property.name
+  // Static: obj.method
   if (!node.computed) {
     return node.property.name;
   }
-  return undefined;
+  // Computed with string literal: obj["method"]
+  return getComputedStringProperty(node);
 }
 
 export function getCalleeAsMemberPath(node: CallExpression): string | undefined {
-  if (node.callee.type === "MemberExpression" && !node.callee.computed) {
-    if (node.callee.object.type === "Identifier") {
-      return `${node.callee.object.name}.${node.callee.property.name}`;
-    }
-  }
-  return undefined;
+  if (node.callee.type !== "MemberExpression") return undefined;
+  return flattenMemberChain(node.callee);
 }
 
 export function isStringLiteralNode(node: Expression | Argument): node is StringLiteral {
