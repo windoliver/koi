@@ -104,6 +104,13 @@ export function createInteractionProvider(
       // Each agent that receives this provider gets its own isolated state.
       // This prevents a spawned child from mutating the parent's todo list,
       // plan mode flag, or plan content through shared closures.
+      //
+      // IMPORTANT: This isolation only holds when the engine calls attach()
+      // for each child agent independently. If the engine copies the parent's
+      // assembled component map into children by reference (without re-running
+      // providers), children will share tool instances and can mutate parent
+      // state. The engine MUST NOT provide this provider to spawned children —
+      // omit it from child assembly or pass isAgentContext: () => true.
 
       // let: mutable todo list, replaced atomically on each write
       let todoItems: readonly TodoItem[] = [];

@@ -314,9 +314,14 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
       const planSection =
         plan !== undefined && plan.trim().length > 0 ? `\n\n## Approved Plan:\n${plan}` : "";
 
+      // Pass allowedPrompts through so the harness can wire them into
+      // permission rules (e.g., pre-approve specific Bash commands).
+      const allowedPrompts = Array.isArray(args.allowedPrompts) ? args.allowedPrompts : [];
+
       return {
         approved: true,
         filePath,
+        allowedPrompts,
         message:
           `Plan approved. You can now start coding. Update your todo list if applicable.${teamHint}` +
           (filePath !== undefined ? `\n\nPlan saved to: ${filePath}` : "") +

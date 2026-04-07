@@ -4427,7 +4427,7 @@ describe("ask-user ATIF trajectory (golden file)", () => {
 // ---------------------------------------------------------------------------
 // interaction-full ATIF trajectory — ALL interaction tools in one E2E flow
 // AskUserQuestion → EnterPlanMode → TodoWrite → Glob → TodoWrite × 2 → ExitPlanMode
-// → task_create → task_delegate → agent_spawn(task_id) → TodoWrite(clear)
+// → task_create → task_delegate → agent_spawn → TodoWrite(clear)
 // ---------------------------------------------------------------------------
 
 describe("interaction-full ATIF trajectory (golden file)", () => {
@@ -4580,7 +4580,7 @@ describe("interaction-full ATIF trajectory (golden file)", () => {
     expect(toolContent(step)).toContain("refactor-worker");
   });
 
-  test("step 10 — agent_spawn: spawns with task_id, stub returns output", async () => {
+  test("step 10 — agent_spawn: spawns after delegate, stub returns output", async () => {
     const doc = await loadDoc();
     if (!doc) {
       console.warn("interaction-full.trajectory.json not recorded yet — skipping");

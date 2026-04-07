@@ -2273,9 +2273,11 @@ const queries: readonly QueryConfig[] = [
   // interaction-full: ALL interaction tools + task_delegate + agent_spawn in one coordinator flow
   //   AskUserQuestion → EnterPlanMode → TodoWrite(3 tasks) → Glob → TodoWrite(update)
   //   → TodoWrite(write-plan done) → ExitPlanMode
-  //   → task_create → task_delegate → agent_spawn(task_id) → TodoWrite(auto-clear)
+  //   → task_create → task_delegate → agent_spawn → TodoWrite(auto-clear)
   //   Uses Sonnet 4.6: Gemini drops function name tokens after 3+ sequential tool calls.
   //   task_create/task_delegate/agent_spawn all share taskToolsBoard — auto-wired.
+  //   agent_spawn does NOT accept task_id (deferred to #1416); delegation is tracked
+  //   separately on the board.
   {
     name: "interaction-full",
     prompt:
@@ -2292,7 +2294,7 @@ const queries: readonly QueryConfig[] = [
       "7. Call ExitPlanMode.\n" +
       "8. Call task_create: subject='Refactor targeted module', description='Apply approved plan'. NOTE the returned task_id.\n" +
       "9. Call task_delegate: task_id=<from step 8>, agent_id='refactor-worker'. THIS STEP IS MANDATORY before agent_spawn.\n" +
-      "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module', task_id=<from step 8>.\n" +
+      "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module'.\n" +
       "11. Call TodoWrite: dispatch=completed (this clears the list).\n" +
       "Report: user choice, worker output, list cleared confirmation.",
     permissionMode: "bypass",
