@@ -36,6 +36,16 @@ const SUPPORTED_PROPERTY_KEYWORDS = new Set([
   "items",
   "properties",
   "required",
+  // String/number constraints — recognized (checked by the model), not validated.
+  // Zod's toJSONSchema emits these for z.string().min(1), z.enum([...]), etc.
+  "minLength",
+  "maxLength",
+  "enum",
+  "pattern",
+  "minimum",
+  "maximum",
+  // additionalProperties at the property level (nested objects)
+  "additionalProperties",
 ]);
 
 /**
