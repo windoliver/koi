@@ -1,5 +1,6 @@
 /**
- * @koi/tools-bash — Bash shell execution tool with security classifiers.
+ * @koi/tools-bash — Bash shell execution tool with security classifiers,
+ * CWD tracking, background execution, and sandbox injection.
  */
 
 export type { BashBackgroundToolBundle, BashBackgroundToolConfig } from "./bash-background-tool.js";
