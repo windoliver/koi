@@ -115,10 +115,11 @@ describe("createSkillInjectorMiddleware", () => {
     expect(received[0]?.systemPrompt).toBe("Always use bullet points.");
   });
 
-  test("concatenates multiple skills with separator", async () => {
+  test("concatenates multiple skills sorted by name with separator", async () => {
+    // Insert in reverse alphabetical order to verify sorting
     const skills = new Map([
-      skill("bullet-points", "Always use bullet points."),
       skill("concise", "Be concise."),
+      skill("bullet-points", "Always use bullet points."),
     ]);
     const agent = mockAgent(skills);
     const mw = createSkillInjectorMiddleware({ agent });
@@ -134,10 +135,8 @@ describe("createSkillInjectorMiddleware", () => {
     await wrapModelCall(mockTurnContext(), request, next);
 
     expect(received).toHaveLength(1);
-    const prompt = received[0]?.systemPrompt;
-    expect(prompt).toContain("Always use bullet points.");
-    expect(prompt).toContain("Be concise.");
-    expect(prompt).toContain("\n\n---\n\n");
+    // Exact order: bullet-points before concise (alphabetical)
+    expect(received[0]?.systemPrompt).toBe("Always use bullet points.\n\n---\n\nBe concise.");
   });
 
   test("prepends skill content before existing systemPrompt", async () => {

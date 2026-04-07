@@ -6212,14 +6212,16 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     });
 
     // Simple text adapter (skills attach at ECS level, no tool calls needed)
-    // let: mutable call counter
+    // let: mutable call counter + request capture for injection assertion
     let callCount = 0;
+    const capturedRequests: ModelRequest[] = [];
     const skillAdapter: EngineAdapter = {
       engineId: "skills-cassette-replay",
       capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "fallback", model: MODEL }),
-        modelStream: (): AsyncIterable<ModelChunk> => {
+        modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+          capturedRequests.push(request);
           const currentCall = callCount;
           callCount++;
           if (currentCall === 0) return toAsyncIterable(cassette.chunks);
@@ -6324,6 +6326,12 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     const [, bulletSkill] = firstEntry ?? [undefined, undefined];
     expect(bulletSkill?.name).toBe("bullet-points");
     expect(bulletSkill?.content).toContain("bullet point");
+
+    // Skill content was actually injected into the model request's systemPrompt
+    expect(capturedRequests.length).toBeGreaterThanOrEqual(1);
+    const firstRequest = capturedRequests[0];
+    expect(firstRequest?.systemPrompt).toBeDefined();
+    expect(firstRequest?.systemPrompt).toContain("bullet point");
   }, 15000);
 });
 

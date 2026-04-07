@@ -53,24 +53,33 @@ function resolveAgent(agentOrFn: Agent | (() => Agent)): Agent {
 }
 
 /**
+ * Returns all skill components sorted by name for deterministic output.
+ * Map iteration order depends on insertion order (Bun.Glob scan order),
+ * which is nondeterministic across machines. Sorting by name ensures
+ * stable systemPrompt text and prompt-cache hits.
+ */
+function sortedSkills(agent: Agent): readonly SkillComponent[] {
+  const skills = agent.query<SkillComponent>(SKILL_PREFIX);
+  if (skills.size === 0) return [];
+  return [...skills.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
  * Queries the agent ECS for all attached SkillComponent entries and returns
  * their content joined with a separator. Returns undefined when no skills
  * are attached (callers should passthrough without modification).
  */
 function collectSkillContent(agent: Agent): string | undefined {
-  const skills = agent.query<SkillComponent>(SKILL_PREFIX);
-  if (skills.size === 0) return undefined;
-
-  const parts: readonly string[] = [...skills.values()].map((s) => s.content);
-  return parts.join(SEPARATOR);
+  const sorted = sortedSkills(agent);
+  if (sorted.length === 0) return undefined;
+  return sorted.map((s) => s.content).join(SEPARATOR);
 }
 
 /**
  * Collects skill names from the agent ECS for capability description.
  */
 function collectSkillNames(agent: Agent): readonly string[] {
-  const skills = agent.query<SkillComponent>(SKILL_PREFIX);
-  return [...skills.values()].map((s) => s.name);
+  return sortedSkills(agent).map((s) => s.name);
 }
 
 /**
