@@ -6288,4 +6288,46 @@ describe("Golden: @koi/mcp-server", () => {
 
     await server.stop();
   });
+
+  test("mcp-server-send trajectory has correct ATIF structure and tool call", async () => {
+    const traj = await Bun.file(
+      `${import.meta.dirname}/../../fixtures/mcp-server-send.trajectory.json`,
+    ).json();
+
+    // ATIF v1.6 structure
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThan(0);
+
+    // All steps have valid sources
+    const validSources = new Set([
+      "system",
+      "agent",
+      "tool",
+      "middleware",
+      "hook",
+      "mcp",
+      "lifecycle",
+    ]);
+    for (const step of traj.steps) {
+      expect(validSources.has(step.source)).toBe(true);
+    }
+
+    // All steps succeeded
+    for (const step of traj.steps) {
+      expect(step.outcome).toBe("success");
+    }
+
+    // Tool call step exists with correct tool name
+    const toolStep = traj.steps.find(
+      (s: { source: string; tool_calls?: readonly { function_name: string }[] }) =>
+        s.source === "tool" &&
+        s.tool_calls?.some((tc) => tc.function_name.includes("koi_send_message")),
+    );
+    expect(toolStep).toBeDefined();
+    expect(toolStep.tool_calls[0].function_name).toBe("koi-platform__koi_send_message");
+
+    // Tool result contains a message ID (successful send)
+    const resultContent = toolStep.observation?.results?.[0]?.content ?? "";
+    expect(String(resultContent)).toContain("msg-");
+  });
 });
