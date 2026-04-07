@@ -14,8 +14,9 @@
  * max drift is ~100ms — negligible for retention (days) and replay.
  */
 export function createMonotonicClock(baseClock: () => number = Date.now): () => number {
-  // let: mutable — tracks the last emitted timestamp for monotonicity guarantee
-  let last = 0;
+  // let: mutable — tracks the last emitted timestamp for monotonicity guarantee.
+  // -Infinity ensures the first call returns baseClock() unmodified.
+  let last = -Infinity;
   return (): number => {
     const now = baseClock();
     const next = now > last ? now : last + 1;

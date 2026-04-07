@@ -52,6 +52,12 @@ describe("createMonotonicClock", () => {
     expect(result).toBeLessThanOrEqual(after + 1);
   });
 
+  test("first call returns baseClock() unmodified when starting at 0", () => {
+    const clock = createMonotonicClock(() => 0);
+    expect(clock()).toBe(0);
+    expect(clock()).toBe(1); // subsequent calls increment
+  });
+
   test("never returns the same value twice", () => {
     const clock = createMonotonicClock(() => 42);
     const seen = new Set<number>();
