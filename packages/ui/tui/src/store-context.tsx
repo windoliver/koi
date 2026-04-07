@@ -10,7 +10,7 @@
 
 import { createContext, createMemo, useContext, type Accessor, type JSX } from "solid-js";
 import type { TuiStore } from "./state/store.js";
-import type { TuiState } from "./state/types.js";
+import type { TuiMessage, TuiState } from "./state/types.js";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -51,6 +51,29 @@ export function useTuiStore<T>(selector: (state: TuiState) => T): Accessor<T> {
     );
   }
   return createMemo(() => selector(store.getState()));
+}
+
+/**
+ * Access the store's messages array as a direct reactive proxy.
+ *
+ * Unlike `useTuiStore(s => s.messages)`, this does NOT wrap in createMemo.
+ * createMemo caches by reference equality — since the SolidJS store always
+ * returns the same proxy object, the memo never re-fires for nested changes
+ * like `block.text += delta`. Direct proxy access lets SolidJS's `For`
+ * component and JSX expressions track nested store paths natively.
+ *
+ * Use this for store arrays/objects where nested reactivity is needed.
+ * Use `useTuiStore` for scalar values (string, number, boolean) where
+ * memo caching is correct and efficient.
+ */
+export function useStoreMessages(): () => readonly TuiMessage[] {
+  const store = useContext(StoreContext);
+  if (!store) {
+    throw new Error(
+      "useStoreMessages must be used within a component tree that provides StoreContext.",
+    );
+  }
+  return () => store.getState().messages;
 }
 
 // Re-export JSX namespace types consumed by callers

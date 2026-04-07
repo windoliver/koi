@@ -32,7 +32,7 @@ import {
   onStreamEnd,
   shouldFollow,
 } from "../auto-scroll/auto-scroll-state.js";
-import { useTuiStore } from "../store-context.js";
+import { useStoreMessages, useTuiStore } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
 
 const SPINNER_FRAME_COUNT = 10;
@@ -44,7 +44,10 @@ interface MessageListProps {
 }
 
 export function MessageList(props: MessageListProps): JSX.Element {
-  const messages = useTuiStore((s) => s.messages);
+  // Direct store proxy access — NOT memoized — so SolidJS For can track
+  // nested changes (block.text += delta) natively. useTuiStore's createMemo
+  // would cache by reference and miss nested mutations.
+  const messages = useStoreMessages();
   const [spinnerFrame, setSpinnerFrame] = createSignal(0);
 
   // O(1) check via counter (Decision 13A) — no O(messages × blocks) scan.
