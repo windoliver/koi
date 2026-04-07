@@ -1,51 +1,51 @@
 {
   "name": "memory-store",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775530220758,
+  "recordedAt": 1775531780401,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "memory_store",
-      "callId": "tool_memory_store_N3732Zh1FVZYHNSF4Yex"
+      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_N3732Zh1FVZYHNSF4Yex",
+      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_N3732Zh1FVZYHNSF4Yex",
-      "delta": "{\"name\":\"testing approach\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"type\":\"feedback\",\"description\":\"always write failing tests first\"}"
+      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
+      "delta": "{\"type\":\"feedback\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "memory_recall",
-      "callId": "tool_memory_recall_RYnaRP5nZbcsNPXupNmF"
+      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_RYnaRP5nZbcsNPXupNmF",
+      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_RYnaRP5nZbcsNPXupNmF",
+      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
       "delta": "{\"query\":\"testing\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "memory_search",
-      "callId": "tool_memory_search_opxd5RtmAifGM2cVC2Cl"
+      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_search_opxd5RtmAifGM2cVC2Cl",
+      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_search_opxd5RtmAifGM2cVC2Cl",
+      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
       "delta": "{\"type\":\"feedback\"}"
     },
     {
@@ -55,15 +55,15 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_store_N3732Zh1FVZYHNSF4Yex"
+      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_recall_RYnaRP5nZbcsNPXupNmF"
+      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_search_opxd5RtmAifGM2cVC2Cl"
+      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5"
     },
     {
       "kind": "done",
@@ -71,22 +71,22 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775530219-lkQiqms8FuwzWE91Cizh",
+        "responseId": "gen-1775531779-yBNQrpuXLLLkRwah3qGh",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_memory_store_N3732Zh1FVZYHNSF4Yex",
+            "id": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
             "name": "memory_store",
             "arguments": {
-              "name": "testing approach",
-              "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
               "type": "feedback",
-              "description": "always write failing tests first"
+              "description": "always write failing tests first",
+              "name": "testing approach",
+              "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features."
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_memory_recall_RYnaRP5nZbcsNPXupNmF",
+            "id": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
             "name": "memory_recall",
             "arguments": {
               "query": "testing"
@@ -94,7 +94,7 @@
           },
           {
             "kind": "tool_call",
-            "id": "tool_memory_search_opxd5RtmAifGM2cVC2Cl",
+            "id": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
             "name": "memory_search",
             "arguments": {
               "type": "feedback"
@@ -104,6 +104,9 @@
         "usage": {
           "inputTokens": 385,
           "outputTokens": 55
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "60b5bcc734c67c0fbfeeaf548f952852200c2c1a431d9c8ef7b57cca3d8b748b"
         }
       }
     }
