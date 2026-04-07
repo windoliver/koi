@@ -5020,13 +5020,13 @@ describe("Golden: @koi/tools-bash", () => {
     expect(schema.properties).toHaveProperty("timeoutMs");
   });
 
-  test("createBashBackgroundTool produces a Tool named bash_background", async () => {
+  test("createBashBackgroundTool produces a Tool named BashBackground", async () => {
     const { createBashBackgroundTool } = await import("@koi/tools-bash");
     const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
     const board = await createManagedTaskBoard({ store: createMemoryTaskBoardStore() });
     const agentId = "test-agent" as import("@koi/core").AgentId;
-    const tool = createBashBackgroundTool({ taskBoard: board, agentId });
-    expect(tool.descriptor.name).toBe("bash_background");
+    const { tool } = createBashBackgroundTool({ board, agentId });
+    expect(tool.descriptor.name).toBe("BashBackground");
     expect(tool.origin).toBe("primordial");
     expect((tool.descriptor.inputSchema as { required: string[] }).required).toContain("command");
     expect(tool.descriptor.tags).toContain("background");
@@ -5185,7 +5185,7 @@ describe("bash-track-cwd ATIF trajectory (golden file)", () => {
     expect(doc.schema_version).toBe("ATIF-v1.6");
     expect(doc.session_id).toBe("bash-track-cwd");
     const bashTool = doc.agent.tool_definitions?.find((t) => t.name === "Bash");
-    expect(bashTool?.description).toContain("CWD tracking is enabled");
+    expect(bashTool?.description).toContain("workspace root");
   });
 
   test("contains at least two tool result steps (cd + pwd verification)", async () => {
@@ -5198,7 +5198,7 @@ describe("bash-track-cwd ATIF trajectory (golden file)", () => {
 });
 
 describe("bash-background ATIF trajectory (golden file)", () => {
-  test("valid ATIF v1.6 with BashBackground tool definition", async () => {
+  test("valid ATIF v1.6 with bash_background tool definition", async () => {
     const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
       readonly schema_version: string;
       readonly session_id: string;
@@ -5208,10 +5208,10 @@ describe("bash-background ATIF trajectory (golden file)", () => {
     };
     expect(doc.schema_version).toBe("ATIF-v1.6");
     expect(doc.session_id).toBe("bash-background");
-    expect(doc.agent.tool_definitions?.some((t) => t.name === "BashBackground")).toBe(true);
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "bash_background")).toBe(true);
   });
 
-  test("contains tool step for BashBackground returning taskId", async () => {
+  test("contains tool step for bash_background returning taskId", async () => {
     const doc = (await Bun.file(`${FIXTURES}/bash-background.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly source: string;

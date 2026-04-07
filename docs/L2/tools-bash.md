@@ -1,6 +1,6 @@
 # @koi/tools-bash
 
-L2 package — Bash shell execution tool with security classifiers.
+L2 package — Bash shell execution tool with security classifiers, CWD tracking, background execution, and sandbox injection.
 
 ## Purpose
 

@@ -202,7 +202,8 @@ is merged with workspace-specific overrides (network allowed, write access to `c
 `/tmp`, `/var/folders`) and injected into `createBashTool()` via `sandboxAdapter` +
 `sandboxProfile`. The sandbox is transparent to the model — it calls the ordinary Bash
 tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
-the unsandboxed denylist-only path when the platform is unsupported.
+the unsandboxed denylist-only path when the platform is unsupported. The `SpawnTransform`
+interface provides an additional argv-based injection hook for custom sandbox wiring.
 
 ### Engine Worker (`engine-worker.ts`)
 
