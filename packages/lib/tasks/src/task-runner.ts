@@ -103,34 +103,51 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     return {
       ...cfg,
       onExit: (code: number) => {
-        // Remove from active tasks first to prevent duplicate stop from watcher
-        const task = activeTasks.get(taskId);
-        if (task === undefined) return;
-        activeTasks.delete(taskId);
-
-        // Snapshot buffered output before transitioning so it's preserved
-        // in the terminal result (task_output reads TaskResult.output, not the stream)
-        const bufferedChunks = task.output.read(0);
-        const capturedOutput = bufferedChunks.map((c) => c.content).join("");
-        const durationMs = Date.now() - task.startedAt;
-
-        if (code === 0) {
-          void board.completeOwnedTask(taskId, agentId, {
-            taskId,
-            output: capturedOutput || `Process exited with code 0`,
-            durationMs,
-            metadata: { exitCode: code },
-          });
-        } else {
-          void board.failOwnedTask(taskId, agentId, {
-            code: "EXTERNAL",
-            message: capturedOutput || `Process exited with code ${String(code)}`,
-            retryable: false,
-            context: { exitCode: code },
-          });
-        }
+        void handleNaturalExit(taskId, code);
       },
     };
+  }
+
+  /**
+   * Async handler for natural process exits. Awaits board transitions and
+   * handles failures so tasks don't remain stuck in_progress.
+   */
+  async function handleNaturalExit(taskId: TaskItemId, code: number): Promise<void> {
+    const task = activeTasks.get(taskId);
+    if (task === undefined) return;
+    activeTasks.delete(taskId);
+
+    const bufferedChunks = task.output.read(0);
+    const capturedOutput = bufferedChunks.map((c) => c.content).join("");
+    const durationMs = Date.now() - task.startedAt;
+
+    try {
+      if (code === 0) {
+        const result = await board.completeOwnedTask(taskId, agentId, {
+          taskId,
+          output: capturedOutput || `Process exited with code 0`,
+          durationMs,
+          metadata: { exitCode: code },
+        });
+        // If completion fails (e.g. ownership changed), try to kill as fallback
+        if (!result.ok) {
+          await board.kill(taskId).catch(() => {});
+        }
+      } else {
+        const result = await board.failOwnedTask(taskId, agentId, {
+          code: "EXTERNAL",
+          message: capturedOutput || `Process exited with code ${String(code)}`,
+          retryable: false,
+          context: { exitCode: code },
+        });
+        if (!result.ok) {
+          await board.kill(taskId).catch(() => {});
+        }
+      }
+    } catch {
+      // Last resort: try to kill the task so it's not stuck in_progress
+      await board.kill(taskId).catch(() => {});
+    }
   }
 
   const start = async (
@@ -209,10 +226,16 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     // active tracking (watcher won't double-stop) but we report the error.
     const boardResult = await board.killOwnedTask(taskId, agentId);
 
-    // Clean up runtime state regardless of board result
+    // Clean up runtime state regardless of board result.
+    // Wrap in try/catch so lifecycle failures don't reject the promise.
     const lifecycle = registry.get(task.kind);
     if (lifecycle !== undefined) {
-      await lifecycle.stop(task);
+      try {
+        await lifecycle.stop(task);
+      } catch {
+        // Lifecycle cleanup failed — task is already removed from tracking
+        // and board transition is done; swallow to honor the Result contract.
+      }
     }
 
     if (!boardResult.ok) return boardResult;

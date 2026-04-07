@@ -97,18 +97,24 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
     const result = chunks.slice(idx);
 
     // If the requested offset falls mid-chunk, trim the first chunk
-    // to only include content after the offset. This prevents duplicate
-    // data when callers resume from an arbitrary byte position.
+    // to only include content after the offset. Advance to the next
+    // valid UTF-8 character boundary to prevent corrupted output.
     const first = result[0];
     if (first !== undefined && first.offset < fromOffset) {
-      const skipBytes = fromOffset - first.offset;
-      // Decode and re-encode to find the character boundary at skipBytes
       const encoded = encoder.encode(first.content);
+      // let justified: advance past the skip point to a valid UTF-8 boundary
+      let skipBytes = fromOffset - first.offset;
+      // UTF-8 continuation bytes start with 0b10xxxxxx (0x80-0xBF).
+      // Advance past any continuation bytes to the next character start.
+      while (skipBytes < encoded.byteLength && (encoded[skipBytes]! & 0xc0) === 0x80) {
+        skipBytes += 1;
+      }
       if (skipBytes < encoded.byteLength) {
         const trimmedBytes = encoded.slice(skipBytes);
         const trimmedContent = new TextDecoder().decode(trimmedBytes);
+        const adjustedOffset = first.offset + skipBytes;
         const trimmed: OutputChunk = {
-          offset: fromOffset,
+          offset: adjustedOffset,
           content: trimmedContent,
           byteLength: trimmedBytes.byteLength,
           timestamp: first.timestamp,
