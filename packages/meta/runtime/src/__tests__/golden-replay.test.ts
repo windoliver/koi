@@ -6733,7 +6733,7 @@ describe("Golden: @koi/query-engine within-turn dedup", () => {
     if (secondReq !== undefined) {
       const assistantMsgs = secondReq.messages.filter((m) => m.senderId === "assistant");
       const toolMsgs = secondReq.messages.filter((m) => m.senderId === "tool");
-      expect(assistantMsgs.length).toBe(2);
+      expect(assistantMsgs.length).toBe(1);
       expect(toolMsgs.length).toBe(2);
       // Both tool results contain the real output (replicated, not placeholder)
       for (const msg of toolMsgs) {

@@ -154,12 +154,12 @@ describe("validateToolArgs", () => {
     expect(result).toBeUndefined();
   });
 
-  test("rejects property with enum keyword", () => {
+  test("accepts property with enum keyword (recognized, not deeply validated)", () => {
     const result = validateToolArgs(
       { mode: "fast" },
       desc({ properties: { mode: { type: "string", enum: ["fast", "slow"] } } }),
     );
-    expect(result).toContain('property "mode" uses unsupported keyword "enum"');
+    expect(result).toBeUndefined();
   });
 
   test("accepts property with pattern keyword (recognized, not deeply validated)", () => {

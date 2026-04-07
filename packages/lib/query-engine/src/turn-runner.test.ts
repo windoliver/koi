@@ -1325,8 +1325,8 @@ describe("runTurn", () => {
       if (secondRequest !== undefined) {
         const assistantMsgs = secondRequest.messages.filter((m) => m.senderId === "assistant");
         const toolMsgs = secondRequest.messages.filter((m) => m.senderId === "tool");
-        // 2 assistant intents (one per tool call, including skipped)
-        expect(assistantMsgs.length).toBe(2);
+        // 1 assistant message with both tool call intents in metadata.toolCalls
+        expect(assistantMsgs.length).toBe(1);
         // 2 tool results (real execution + replicated real output)
         expect(toolMsgs.length).toBe(2);
         // Both tool results should contain the real output, not a placeholder
