@@ -6,7 +6,14 @@
  * hot-reload of newly forged tools.
  */
 
-import type { Agent, ForgeStore, JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  Agent,
+  ForgeStore,
+  JsonObject,
+  Tool,
+  ToolDescriptor,
+  ToolExecuteOptions,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,7 +22,7 @@ import type { Agent, ForgeStore, JsonObject, Tool, ToolDescriptor } from "@koi/c
 /** Cached tool entry with descriptor and bound execute function. */
 export interface ToolCacheEntry {
   readonly descriptor: ToolDescriptor;
-  readonly execute: (args: JsonObject) => Promise<unknown>;
+  readonly execute: (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown>;
 }
 
 /** Configuration for the tool cache. */
@@ -63,7 +70,7 @@ export function createToolCache(config: ToolCacheConfig): ToolCache {
   function toolToEntry(tool: Tool): ToolCacheEntry {
     return {
       descriptor: tool.descriptor,
-      execute: (args: JsonObject) => tool.execute(args),
+      execute: (args: JsonObject, options?: ToolExecuteOptions) => tool.execute(args, options),
     };
   }
 

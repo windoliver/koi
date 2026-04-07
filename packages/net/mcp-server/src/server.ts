@@ -59,12 +59,18 @@ export function createMcpServer(config: McpServerConfig): McpServer {
   const platformTools =
     config.platform !== undefined ? createPlatformTools(config.platform) : undefined;
 
+  // justified: mutable connection state for hot-reload notification guard
+  let connected = false;
+
   const toolCache: ToolCache = createToolCache({
     agent: config.agent,
     ...(config.forgeStore !== undefined ? { forgeStore: config.forgeStore } : {}),
     ...(platformTools !== undefined ? { platformTools } : {}),
     onChange: () => {
-      void sdkServer.sendToolListChanged();
+      // Guard: only send notifications when transport is connected
+      if (connected) {
+        sdkServer.sendToolListChanged().catch(() => {});
+      }
     },
   });
 
@@ -73,8 +79,10 @@ export function createMcpServer(config: McpServerConfig): McpServer {
   return {
     start: async (): Promise<void> => {
       await sdkServer.connect(config.transport);
+      connected = true;
     },
     stop: async (): Promise<void> => {
+      connected = false;
       toolCache.dispose();
       await sdkServer.close();
     },

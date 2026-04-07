@@ -55,6 +55,13 @@ function unwrapResult<T>(result: Result<T, KoiError>, action: string): T {
   return result.value;
 }
 
+function requireString(raw: unknown, field: string): string {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new Error(`${field} is required and must be a non-empty string`);
+  }
+  return raw;
+}
+
 function taskItemId(raw: unknown): TaskItemId {
   if (typeof raw !== "string" || raw.length === 0) {
     throw new Error("taskId is required and must be a non-empty string");
@@ -102,11 +109,13 @@ function createSendMessageTool(callerId: AgentId, mailbox: MailboxComponent): To
       ) {
         throw new Error("payload must be a JSON object");
       }
+      const to = requireString(args.to, "to");
+      const type = requireString(args.type, "type");
       const sendResult = await mailbox.send({
         from: callerId,
-        to: agentId(String(args.to)),
+        to: agentId(to),
         kind: "event",
-        type: String(args.type),
+        type,
         payload: (rawPayload ?? {}) as JsonObject,
       });
       const msg = unwrapResult(sendResult, "koi_send_message");
@@ -271,7 +280,7 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
     sandbox: false,
     async execute(args: JsonObject): Promise<unknown> {
       const id = taskItemId(args.taskId);
-      const action = String(args.action);
+      const action = requireString(args.action, "action");
 
       switch (action) {
         case "start": {
@@ -282,7 +291,7 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           if (!taskBoard.hasResultPersistence()) {
             throw new Error("Task completion requires durable result storage");
           }
-          const rawOutput = typeof args.output === "string" ? args.output : "";
+          const rawOutput = requireString(args.output, "output");
           if (rawOutput.length > MAX_PAYLOAD_CHARS) {
             throw new Error(`Output exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
           }
@@ -298,7 +307,7 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           return { status: "completed", taskId: id };
         }
         case "fail": {
-          const rawError = typeof args.error === "string" ? args.error : "Unknown error";
+          const rawError = requireString(args.error, "error");
           if (rawError.length > MAX_PAYLOAD_CHARS) {
             throw new Error(`Error message exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
           }

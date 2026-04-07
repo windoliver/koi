@@ -16,6 +16,9 @@ import type { ToolCache } from "./tool-cache.js";
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Maximum serialized response size in characters (1 MB). */
+const MAX_RESPONSE_CHARS = 1_000_000;
+
 /** Maximum tool execution time in milliseconds (30 seconds). */
 const TOOL_TIMEOUT_MS = 30_000;
 
@@ -23,10 +26,13 @@ const TOOL_TIMEOUT_MS = 30_000;
 // Timeout
 // ---------------------------------------------------------------------------
 
-/** Race a promise against a deadline. Rejects with Error on timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** Race a promise against a deadline. Aborts the controller and rejects on timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number, controller?: AbortController): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Tool execution timed out")), ms);
+    const timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error("Tool execution timed out"));
+    }, ms);
     promise.then(
       (v) => {
         clearTimeout(timer);
@@ -91,9 +97,20 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
       };
     }
 
+    const controller = new AbortController();
     try {
-      const result = await withTimeout(entry.execute(rawArgs), TOOL_TIMEOUT_MS);
-      const text = typeof result === "string" ? result : JSON.stringify(result);
+      const result = await withTimeout(
+        entry.execute(rawArgs, { signal: controller.signal }),
+        TOOL_TIMEOUT_MS,
+        controller,
+      );
+      const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "");
+      if (text.length > MAX_RESPONSE_CHARS) {
+        return {
+          content: [{ type: "text" as const, text: `Tool "${name}" response exceeds size limit` }],
+          isError: true,
+        };
+      }
       return {
         content: [{ type: "text" as const, text }],
       };
