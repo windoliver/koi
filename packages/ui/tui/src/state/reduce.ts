@@ -333,10 +333,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     case "task_progress": {
       const taskId = event.taskId as string;
       const newStatus = event.status as string;
-      // Extract blockedBy from detail field (format: "blocked:<taskId>")
-      const detail = event.detail;
-      const blockedBy =
-        detail !== undefined && detail.startsWith("blocked:") ? detail.slice(8) : undefined;
+      const blockedBy = event.blockedBy !== undefined ? (event.blockedBy as string) : undefined;
 
       const buildTask = (existingBlockedBy?: string): PlanTask => ({
         id: taskId,

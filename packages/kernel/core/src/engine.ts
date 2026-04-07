@@ -186,6 +186,8 @@ export type EngineEvent =
       readonly status: TaskStatus;
       readonly activeForm?: string | undefined;
       readonly detail?: string | undefined;
+      /** First incomplete dependency blocking this task (for unreachable events). */
+      readonly blockedBy?: TaskItemId | undefined;
       readonly timestamp: number;
     };
 
