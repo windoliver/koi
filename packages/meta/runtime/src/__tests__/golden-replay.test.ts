@@ -6162,3 +6162,130 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     expect(mwNames.has("permissions")).toBe(true);
   }, 15000);
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/mcp-server (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/mcp-server", () => {
+  test("createMcpServer exposes platform tools when capabilities provided", async () => {
+    const { createMcpServer, createPlatformTools } = await import("@koi/mcp-server");
+    const { agentId } = await import("@koi/core");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+
+    const callerId = agentId("golden-caller");
+
+    // Minimal mock mailbox
+    const mockMailbox = {
+      send: async (input: unknown) => ({
+        ok: true as const,
+        value: {
+          ...(input as Record<string, unknown>),
+          id: "msg-1",
+          createdAt: new Date().toISOString(),
+        },
+      }),
+      onMessage: () => () => {},
+      list: async () => [],
+    };
+
+    // Minimal mock agent (no tools)
+    const mockAgent = {
+      manifest: { name: "golden-agent", version: "0.0.0", description: "test" },
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createMcpServer({
+      agent: mockAgent as never,
+      transport: serverTransport,
+      platform: {
+        callerId,
+        mailbox: mockMailbox as never,
+      },
+    });
+
+    const client = new Client({ name: "golden-client", version: "1.0.0" });
+    await server.start();
+    await client.connect(clientTransport);
+
+    // Verify tools/list returns platform tools
+    const tools = await client.listTools();
+    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    const names = tools.tools.map((t) => t.name);
+    expect(names).toContain("koi_send_message");
+    expect(names).toContain("koi_list_messages");
+
+    // Verify tool schemas have required fields
+    const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
+    expect(sendTool?.description).toContain("event message");
+    expect(sendTool?.inputSchema).toBeDefined();
+
+    await server.stop();
+  });
+
+  test("koi_send_message enforces callerId as from and kind as event via MCP", async () => {
+    const { createMcpServer } = await import("@koi/mcp-server");
+    const { agentId } = await import("@koi/core");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+
+    const callerId = agentId("golden-caller");
+    const sentMessages: unknown[] = [];
+
+    const mockMailbox = {
+      send: async (input: unknown) => {
+        sentMessages.push(input);
+        return {
+          ok: true as const,
+          value: {
+            ...(input as Record<string, unknown>),
+            id: "msg-1",
+            createdAt: new Date().toISOString(),
+          },
+        };
+      },
+      onMessage: () => () => {},
+      list: async () => [],
+    };
+
+    const mockAgent = {
+      manifest: { name: "golden-agent", version: "0.0.0", description: "test" },
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    };
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createMcpServer({
+      agent: mockAgent as never,
+      transport: serverTransport,
+      platform: { callerId, mailbox: mockMailbox as never },
+    });
+
+    const client = new Client({ name: "golden-client", version: "1.0.0" });
+    await server.start();
+    await client.connect(clientTransport);
+
+    // Call koi_send_message
+    await client.callTool({
+      name: "koi_send_message",
+      arguments: { to: "target-agent", type: "test-msg", payload: { data: 42 } },
+    });
+
+    // Verify security invariants
+    expect(sentMessages).toHaveLength(1);
+    const sent = sentMessages[0] as Record<string, unknown>;
+    expect(sent.from).toBe(callerId); // callerId enforced
+    expect(sent.kind).toBe("event"); // event-only enforced
+
+    await server.stop();
+  });
+});
