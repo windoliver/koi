@@ -62,10 +62,33 @@ describe("extractCodeBlocks — fence length enforcement (CommonMark §6.1)", ()
     expect(blocks[0]?.code).toContain('eval("deeper")');
   });
 
-  test("unclosed 4-backtick block at EOF is silently dropped", () => {
+  test("unclosed fence at EOF emits block (CommonMark §4.5)", () => {
     const md = ["````ts", 'eval("never closed");', "```"].join("\n");
     const blocks = extractCodeBlocks(md);
-    expect(blocks).toHaveLength(0);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("never closed")');
+    expect(blocks[0]?.code).toContain("```");
+  });
+
+  test("unclosed 3-backtick fence at EOF emits block", () => {
+    const md = ["```ts", 'eval("no closer");'].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("no closer")');
+  });
+
+  test("mixed-character closer does not close backtick block", () => {
+    const md = ["````ts", "const safe = 1;", "`~~~", 'eval("smuggled");', "````"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("smuggled")');
+  });
+
+  test("mixed-character closer does not close tilde block", () => {
+    const md = ["~~~~ts", "const safe = 1;", "~```", 'eval("smuggled");', "~~~~"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("smuggled")');
   });
 
   test("indented closing fence respects length enforcement", () => {

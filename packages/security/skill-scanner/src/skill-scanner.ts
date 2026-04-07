@@ -23,14 +23,15 @@ export interface CodeBlock {
 // spaces as allowed by CommonMark), optionally followed by a lang/info-string.
 // We capture the fence char (group 1) and the first word of the info-string (group 2).
 const OPENING_FENCE_RE = /^ {0,3}([`~]{3,})\s*(\S*)/;
-// Closing fence: same char repeated at least `openLen` times, no trailing content.
-// Per CommonMark §6.1, the closing fence must use the same character with length ≥ opener.
-const CLOSING_FENCE_RE = /^ {0,3}([`~]{3,})\s*$/;
+// Closing fence regexes: homogeneous runs only (no mixed ` and ~).
+// Per CommonMark §4.5, the closing fence must be the same character repeated ≥ openLen times.
+const CLOSING_FENCE_BACKTICK_RE = /^ {0,3}(`{3,})\s*$/;
+const CLOSING_FENCE_TILDE_RE = /^ {0,3}(~{3,})\s*$/;
 function isClosingFence(line: string, fenceChar: string, openLen: number): boolean {
-  const match = CLOSING_FENCE_RE.exec(line);
+  const re = fenceChar === "~" ? CLOSING_FENCE_TILDE_RE : CLOSING_FENCE_BACKTICK_RE;
+  const match = re.exec(line);
   if (match === null) return false;
-  const fence = match[1] ?? "";
-  return fence[0] === fenceChar && fence.length >= openLen;
+  return (match[1] ?? "").length >= openLen;
 }
 
 const LANG_TO_EXT: Readonly<Record<string, string>> = {
@@ -142,6 +143,20 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
       blockLines = [];
     } else {
       blockLines.push(line);
+    }
+  }
+
+  // CommonMark §4.5: unclosed fence runs to end of document — emit remaining content.
+  // Fail-closed: scan the trailing code so attackers can't smuggle by omitting the closer.
+  if (inBlock) {
+    const code = blockLines.join("\n");
+    if (code.trim().length > 0) {
+      const ext = LANG_TO_EXT[blockLang] ?? ".ts";
+      blocks.push({
+        code: `${code}\n`,
+        filename: `block-${blocks.length}${ext}`,
+        startLine: blockStartLine,
+      });
     }
   }
 
