@@ -62,11 +62,11 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
         };
       }
       // Prevent re-delegation of an already-delegated task.
-      if (task.metadata?.["delegatedTo"] !== undefined) {
+      if (task.metadata?.delegatedTo !== undefined) {
         return {
           ok: false,
           error:
-            `Task '${task_id}' is already delegated to '${String(task.metadata["delegatedTo"])}'. ` +
+            `Task '${task_id}' is already delegated to '${String(task.metadata.delegatedTo)}'. ` +
             "Undelegate first or create a new task.",
         };
       }
