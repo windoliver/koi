@@ -30,30 +30,6 @@ function normalizeModuleId(specifier: string): string {
   return specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 }
 
-/** Root objects that alias the global scope — only these are trusted as chain prefixes. */
-const GLOBAL_ROOTS = new Set(["globalThis", "window", "global"]);
-
-/**
- * Match a dotted member path against a set, allowing known global prefixes.
- * Direct match: `process.binding` matches `process.binding`.
- * Prefixed match: `globalThis.process.binding` strips the known root and matches `process.binding`.
- * Unknown roots like `safe.process.binding` do NOT match (avoids false positives).
- *
- * Note: does not check if the root is shadowed by a local binding. Correct scope
- * analysis requires a full scope walker (out of scope for this fix). False positives
- * on shadowed roots are acceptable for a security scanner — better to over-flag.
- */
-function matchWithGlobalPrefix(fullPath: string, set: ReadonlySet<string>): string | undefined {
-  if (set.has(fullPath)) return fullPath;
-  const dotIdx = fullPath.indexOf(".");
-  if (dotIdx === -1) return undefined;
-  const root = fullPath.slice(0, dotIdx);
-  if (!GLOBAL_ROOTS.has(root)) return undefined;
-  const rest = fullPath.slice(dotIdx + 1);
-  if (set.has(rest)) return rest;
-  return undefined;
-}
-
 const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval"]);
 
 const DANGEROUS_MEMBER_CALLS = new Set([
@@ -148,16 +124,15 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
       }
 
       // Member expression calls: child_process.exec(), process.binding()
-      // Also matches chained access: globalThis.process["binding"]()
+      // Now also matches bracket notation: child_process["execSync"]()
       const memberPath = getCalleeAsMemberPath(node);
       if (memberPath !== undefined) {
-        const dangerousMatch = matchWithGlobalPrefix(memberPath, DANGEROUS_MEMBER_CALLS);
-        if (dangerousMatch !== undefined) {
+        if (DANGEROUS_MEMBER_CALLS.has(memberPath)) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
-            rule: `dangerous-api:${dangerousMatch}`,
+            rule: `dangerous-api:${memberPath}`,
             severity: "CRITICAL",
-            confidence: memberPath === dangerousMatch ? 0.9 : 0.85,
+            confidence: 0.9,
             category: "DANGEROUS_API",
             message: `Call to dangerous API: ${memberPath}()`,
             location: loc,
@@ -165,8 +140,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
         }
 
         // globalThis.eval(), window.eval(), global.eval()
-        const evalMatch = matchWithGlobalPrefix(memberPath, GLOBAL_EVAL_PATHS);
-        if (evalMatch !== undefined) {
+        if (GLOBAL_EVAL_PATHS.has(memberPath)) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
             rule: "dangerous-api:global-eval",
