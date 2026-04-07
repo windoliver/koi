@@ -44,8 +44,8 @@ const MAX_PAYLOAD_CHARS = 100_000;
 // ---------------------------------------------------------------------------
 
 function clampLimit(raw: unknown): number {
-  const n = typeof raw === "number" ? raw : DEFAULT_LIST_LIMIT;
-  return Math.min(Math.max(1, Math.floor(n)), MAX_LIST_LIMIT);
+  const n = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_LIST_LIMIT;
+  return Math.min(Math.max(1, n), MAX_LIST_LIMIT);
 }
 
 function unwrapResult<T>(result: Result<T, KoiError>, action: string): T {

@@ -11,7 +11,8 @@
 
 /** Patterns that indicate internal details in error messages. */
 const REDACT_PATTERNS: readonly RegExp[] = [
-  /\/[^\s:]+\.[a-z]{1,4}/gi, // filesystem paths (/foo/bar.ts)
+  /\/[^\s:,)]+/g, // POSIX paths (/foo/bar, /var/lib/koi/secrets)
+  /[A-Z]:\\[^\s:,)]+/g, // Windows paths (C:\koi\secret.txt)
   /agent[- ]?[a-zA-Z0-9_-]{4,}/gi, // agent identifiers
   /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, // UUIDs
   /(?:sk|pk|key|token|secret)[_-]?[a-zA-Z0-9]{8,}/gi, // API keys/tokens

@@ -55,6 +55,25 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Keys that can cause prototype pollution when merged with Object.assign or spread. */
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Deep-clone arguments into safe null-prototype objects, stripping dangerous keys. */
+function sanitizeArgs(obj: JsonObject): JsonObject {
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(obj)) {
+    if (DANGEROUS_KEYS.has(key)) continue;
+    result[key] = sanitizeValue(value);
+  }
+  return result as JsonObject;
+}
+
+function sanitizeValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  return sanitizeArgs(value as JsonObject);
+}
+
 // ---------------------------------------------------------------------------
 // Handler registration
 // ---------------------------------------------------------------------------
@@ -100,7 +119,7 @@ export function registerHandlers(server: Server, toolCache: ToolCache): void {
     const controller = new AbortController();
     try {
       const result = await withTimeout(
-        entry.execute(rawArgs, { signal: controller.signal }),
+        entry.execute(sanitizeArgs(rawArgs), { signal: controller.signal }),
         TOOL_TIMEOUT_MS,
         controller,
       );
