@@ -1,0 +1,25 @@
+{
+  "name": "@koi/mcp-server",
+  "description": "Expose agent tools and platform capabilities via Model Context Protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/tools-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.12.1"
+  },
+  "devDependencies": {}
+}
