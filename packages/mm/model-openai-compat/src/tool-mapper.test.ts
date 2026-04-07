@@ -72,4 +72,34 @@ describe("mapToolDescriptors", () => {
     const result = mapToolDescriptors(tools, compat);
     expect(result[0]?.function).not.toHaveProperty("strict");
   });
+
+  test("sorts tools alphabetically by name for cache stability", () => {
+    const tools: readonly ToolDescriptor[] = [
+      { name: "z_tool", description: "Z", inputSchema: { type: "object" } },
+      { name: "a_tool", description: "A", inputSchema: { type: "object" } },
+      { name: "m_tool", description: "M", inputSchema: { type: "object" } },
+    ];
+    const result = mapToolDescriptors(tools, DEFAULT_COMPAT);
+    expect(result.map((t) => t.function.name)).toEqual(["a_tool", "m_tool", "z_tool"]);
+  });
+
+  test("sorting is stable across repeated calls with same input", () => {
+    const tools: readonly ToolDescriptor[] = [
+      { name: "beta", description: "B", inputSchema: { type: "object" } },
+      { name: "alpha", description: "A", inputSchema: { type: "object" } },
+    ];
+    const r1 = mapToolDescriptors(tools, DEFAULT_COMPAT);
+    const r2 = mapToolDescriptors(tools, DEFAULT_COMPAT);
+    expect(r1.map((t) => t.function.name)).toEqual(r2.map((t) => t.function.name));
+  });
+
+  test("does not mutate the input array", () => {
+    const tools: ToolDescriptor[] = [
+      { name: "z", description: "Z", inputSchema: { type: "object" } },
+      { name: "a", description: "A", inputSchema: { type: "object" } },
+    ];
+    const original = [...tools];
+    mapToolDescriptors(tools, DEFAULT_COMPAT);
+    expect(tools).toEqual(original);
+  });
 });

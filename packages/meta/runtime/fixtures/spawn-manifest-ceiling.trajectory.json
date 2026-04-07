@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.074Z",
+      "timestamp": "2026-04-07T02:01:06.752Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.074Z",
+      "timestamp": "2026-04-07T02:01:06.753Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-04T10:54:04.075Z",
+      "timestamp": "2026-04-07T02:01:06.755Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
       "observation": {
@@ -73,13 +73,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 669,
+        "prompt_tokens": 665,
         "completion_tokens": 23
       },
-      "duration_ms": 718,
+      "duration_ms": 773,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
@@ -106,10 +106,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.794Z",
+      "timestamp": "2026-04-07T02:01:07.530Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 718.1481249999997,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 774.8633330000011,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -126,10 +126,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.794Z",
+      "timestamp": "2026-04-07T02:01:07.531Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 718.1946670000034,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 774.9472499999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -146,10 +146,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.794Z",
+      "timestamp": "2026-04-07T02:01:07.532Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 718.3669999999984,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 775.1700000000055,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -166,10 +166,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:04.794Z",
+      "timestamp": "2026-04-07T02:01:07.533Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 718.4318749999948,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.",
+      "duration_ms": 775.2250419999982,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -186,7 +186,7 @@
     {
       "step_id": 7,
       "source": "agent",
-      "timestamp": "2026-04-04T10:54:04.794Z",
+      "timestamp": "2026-04-07T02:01:07.534Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "List your available tools by name, then answer: what is 2+2?",
       "observation": {
@@ -200,10 +200,10 @@
         "prompt_tokens": 408,
         "completion_tokens": 19
       },
-      "duration_ms": 485,
+      "duration_ms": 616,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "toolCount": 1,
         "tools": [
           {
@@ -211,67 +211,44 @@
             "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "_original_timestamp": 1775527267529
       }
     },
     {
       "step_id": 8,
-      "source": "system",
-      "timestamp": "2026-04-04T10:54:05.288Z",
-      "model_name": "middleware:hook-dispatch",
-      "message": "Spawn({\"agentName\":\"researcher\",\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
-          }
-        ]
-      },
-      "duration_ms": 494.50754200000665,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hook-dispatch",
-        "hook": "wrapToolCall",
-        "phase": "observe",
-        "priority": 950,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hook-dispatch"
-        }
-      }
-    },
-    {
-      "step_id": 9,
       "source": "tool",
-      "timestamp": "2026-04-04T10:54:04.793Z",
+      "timestamp": "2026-04-07T02:01:07.535Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_Spawn_9",
+          "tool_call_id": "call_Spawn_8",
           "function_name": "Spawn",
           "arguments": {
-            "agentName": "researcher",
-            "description": "List your available tools by name, then answer: what is 2+2?"
+            "description": "List your available tools by name, then answer: what is 2+2?",
+            "agentName": "researcher"
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_Spawn_9",
+            "source_call_id": "call_Spawn_8",
             "content": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}"
           }
         ]
       },
-      "duration_ms": 495,
-      "outcome": "success"
+      "duration_ms": 617,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775527267529
+      }
     },
     {
-      "step_id": 10,
+      "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:05.288Z",
+      "timestamp": "2026-04-07T02:01:08.147Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Spawn({\"agentName\":\"researcher\",\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
@@ -279,7 +256,7 @@
           }
         ]
       },
-      "duration_ms": 494.5775419999991,
+      "duration_ms": 618.2303749999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -294,11 +271,11 @@
       }
     },
     {
-      "step_id": 11,
+      "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:05.288Z",
+      "timestamp": "2026-04-07T02:01:08.148Z",
       "model_name": "middleware:hooks",
-      "message": "Spawn({\"agentName\":\"researcher\",\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
@@ -306,7 +283,7 @@
           }
         ]
       },
-      "duration_ms": 494.6271659999984,
+      "duration_ms": 618.3599579999936,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -321,11 +298,11 @@
       }
     },
     {
-      "step_id": 12,
+      "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:05.288Z",
+      "timestamp": "2026-04-07T02:01:08.149Z",
       "model_name": "middleware:permissions",
-      "message": "Spawn({\"agentName\":\"researcher\",\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
@@ -333,7 +310,7 @@
           }
         ]
       },
-      "duration_ms": 494.76870800000324,
+      "duration_ms": 618.507375000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -348,11 +325,11 @@
       }
     },
     {
-      "step_id": 13,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:05.288Z",
+      "timestamp": "2026-04-07T02:01:08.150Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Spawn({\"agentName\":\"researcher\",\"description\":\"List your available tools by name, then answer: what is 2+2?\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name, then answer: what is 2+2?\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
@@ -360,7 +337,7 @@
           }
         ]
       },
-      "duration_ms": 494.8130000000019,
+      "duration_ms": 618.603916,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -375,9 +352,9 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-04T10:54:05.288Z",
+      "timestamp": "2026-04-07T02:01:08.152Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
       "observation": {
@@ -388,13 +365,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 708,
+        "prompt_tokens": 725,
         "completion_tokens": 30
       },
-      "duration_ms": 783,
+      "duration_ms": 662,
       "outcome": "success",
       "extra": {
-        "totalMessages": 4,
+        "totalMessages": 3,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
@@ -419,12 +396,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:06.071Z",
+      "timestamp": "2026-04-07T02:01:08.816Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 782.5667089999988,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 668.5955839999951,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -439,12 +416,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:06.071Z",
+      "timestamp": "2026-04-07T02:01:08.817Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 782.5928750000021,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 668.8119579999984,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -459,12 +436,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:06.071Z",
+      "timestamp": "2026-04-07T02:01:08.818Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 782.6922919999997,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 669.1626250000045,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -479,12 +456,12 @@
       }
     },
     {
-      "step_id": 18,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-04T10:54:06.071Z",
+      "timestamp": "2026-04-07T02:01:08.819Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT se…",
-      "duration_ms": 782.7172090000022,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' to delegate (do NOT set toolAllowlist): 'List your available tools by name, then answer: what is 2+2?' Then report the researcher's answer.\n\n{\"output\":\"My available tools are:\\n\\n*   Grep\\n\\n2 + 2 = 4\\n\"}",
+      "duration_ms": 669.2631669999973,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

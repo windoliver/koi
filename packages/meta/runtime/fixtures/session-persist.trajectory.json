@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.116Z",
+      "timestamp": "2026-04-07T02:01:37.642Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -18,13 +18,16 @@
         "type": "mcp_lifecycle",
         "serverName": "test-mcp-server",
         "transportState": "connecting",
-        "attempt": 1
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
       }
     },
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.116Z",
+      "timestamp": "2026-04-07T02:01:37.643Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -32,13 +35,16 @@
       "extra": {
         "type": "mcp_lifecycle",
         "serverName": "test-mcp-server",
-        "transportState": "connected"
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
       }
     },
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-05T22:03:30.123Z",
+      "timestamp": "2026-04-07T02:01:37.647Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Reply with just the number.",
       "observation": {
@@ -49,13 +55,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 106,
+        "prompt_tokens": 102,
         "completion_tokens": 2
       },
-      "duration_ms": 597,
+      "duration_ms": 1033,
       "outcome": "success",
       "extra": {
-        "totalMessages": 2,
+        "totalMessages": 1,
         "requestModel": "google/gemini-2.0-flash-001",
         "responseModel": "google/gemini-2.0-flash-001"
       }
@@ -63,10 +69,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.724Z",
+      "timestamp": "2026-04-07T02:01:38.682Z",
       "model_name": "middleware:@koi/session:transcript",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nWhat is 2+2? Reply with just the number.",
-      "duration_ms": 600.980959,
+      "message": "What is 2+2? Reply with just the number.",
+      "duration_ms": 1034.6723749999946,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -74,16 +80,19 @@
         "hook": "wrapModelStream",
         "phase": "observe",
         "priority": 200,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:@koi/session:transcript"
+        }
       }
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.724Z",
+      "timestamp": "2026-04-07T02:01:38.683Z",
       "model_name": "middleware:semantic-retry",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nWhat is 2+2? Reply with just the number.",
-      "duration_ms": 601.4438330000003,
+      "message": "What is 2+2? Reply with just the number.",
+      "duration_ms": 1034.7365410000057,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -91,16 +100,19 @@
         "hook": "wrapModelStream",
         "phase": "resolve",
         "priority": 420,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
       }
     },
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.724Z",
+      "timestamp": "2026-04-07T02:01:38.684Z",
       "model_name": "middleware:hooks",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nWhat is 2+2? Reply with just the number.",
-      "duration_ms": 601.9752090000002,
+      "message": "What is 2+2? Reply with just the number.",
+      "duration_ms": 1034.8040829999954,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -108,16 +120,19 @@
         "hook": "wrapModelStream",
         "phase": "resolve",
         "priority": 400,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.725Z",
+      "timestamp": "2026-04-07T02:01:38.685Z",
       "model_name": "middleware:permissions",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nWhat is 2+2? Reply with just the number.",
-      "duration_ms": 602.802792,
+      "message": "What is 2+2? Reply with just the number.",
+      "duration_ms": 1034.9662499999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -125,16 +140,19 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 100,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
       }
     },
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-05T22:03:30.725Z",
+      "timestamp": "2026-04-07T02:01:38.686Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 0 hook(s) configured for event-driven execution\nWhat is 2+2? Reply with just the number.",
-      "duration_ms": 603.83725,
+      "message": "What is 2+2? Reply with just the number.",
+      "duration_ms": 1035.046583999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -142,7 +160,10 @@
         "hook": "wrapModelStream",
         "phase": "intercept",
         "priority": 50,
-        "nextCalled": true
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
       }
     }
   ]

@@ -17,6 +17,7 @@ export {
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
+  computeCapabilityBanner,
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,

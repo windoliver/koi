@@ -49,7 +49,7 @@ import type {
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -693,6 +693,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     { agentName: `golden-${name}` },
     createFsAtifDelegate(trajDir),
   );
+  const clock = createMonotonicClock();
 
   // @koi/middleware-semantic-retry — broker created early so event-trace can read signals
   const retryBroker = createRetrySignalBroker();
@@ -702,6 +703,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     store,
     docId,
     agentName: `golden-${name}`,
+    clock,
     signalReader: retryBroker,
   });
 
@@ -833,6 +835,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const { onExecuted: hookObserverTap, middleware: hookObserverMw } = createHookObserver({
     store,
     docId,
+    clock,
   });
 
   // coreHookMw owns all hooks (including agent hooks). spawnFn is required
@@ -864,6 +867,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     store,
     docId,
     serverName: "test-mcp-server",
+    clock,
   });
   mcpSm.transition({ kind: "connecting", attempt: 1 });
   mcpSm.transition({ kind: "connected" });
@@ -1025,7 +1029,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     permHandle,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
-  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
+  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
 
   // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
   // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware

@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:44.369Z",
+      "timestamp": "2026-04-05T22:20:44.370Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -126,7 +126,7 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:45.178Z",
+      "timestamp": "2026-04-05T22:20:45.179Z",
       "model_name": "middleware:hooks",
       "message": "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
       "duration_ms": 688.5547499999993,
@@ -146,7 +146,7 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:45.178Z",
+      "timestamp": "2026-04-05T22:20:45.180Z",
       "model_name": "middleware:permissions",
       "message": "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
       "duration_ms": 696.627790999999,
@@ -166,7 +166,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-05T22:20:45.179Z",
+      "timestamp": "2026-04-05T22:20:45.181Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
       "duration_ms": 709.020749999996,

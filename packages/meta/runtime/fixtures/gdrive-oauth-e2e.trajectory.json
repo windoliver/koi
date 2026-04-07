@@ -89,5 +89,6 @@
       }
     }
   ],
-  "notes": "E2E OAuth flow: AuthenticationError \u2192 localhost callback \u2192 token exchange. Auth steps 0-4 all succeed. Step 5 fails with FileNotFound (file does not exist on test drive) \u2014 auth itself is fully functional."
+  "fixture_type": "manual",
+  "notes": "Designated manual fixture — not auto-recorded by record-cassettes.ts. Re-record via test-gdrive-auth.py with valid Google OAuth credentials. E2E OAuth flow: AuthenticationError \u2192 localhost callback \u2192 token exchange. Auth steps 0-4 all succeed. Step 5 fails with FileNotFound (file does not exist on test drive) \u2014 auth itself is fully functional."
 }

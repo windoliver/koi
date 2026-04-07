@@ -27,7 +27,7 @@ import type {
 } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
@@ -297,12 +297,14 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       { agentName: "replay-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     // @koi/event-trace
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-test",
+      clock,
     });
 
     // @koi/hooks
@@ -315,7 +317,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       },
     ]);
     const loadedHooks = hookResult.ok ? hookResult.value : [];
-    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId, clock });
     const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
 
     // @koi/permissions + @koi/middleware-permissions
@@ -335,6 +337,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       store,
       docId,
       serverName: "test-mcp",
+      clock,
     });
     mcpSm.transition({ kind: "connecting", attempt: 1 });
     mcpSm.transition({ kind: "connected" });
@@ -346,7 +349,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -423,11 +426,13 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       { agentName: "goal-report-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "goal-report-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -457,7 +462,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, goalMw, reportHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -530,10 +535,12 @@ describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () =>
       { agentName: "callback-goal-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "callback-goal-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -573,7 +580,7 @@ describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () =>
       manifest: { name: "callback-goal-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, goalMw, permMiddleware].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -2995,11 +3002,13 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       { agentName: "replay-memory-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-memory-test",
+      clock,
     });
 
     const hookResult = loadHooks([
@@ -3014,6 +3023,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const { onExecuted: onExecuted2, middleware: hookObserverMw2 } = createHookObserver({
       store,
       docId,
+      clock,
     });
     const hookMw = createHookMiddleware({ hooks: loadedHooks2, onExecuted: onExecuted2 });
 
@@ -3032,6 +3042,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       store,
       docId,
       serverName: "test-mcp",
+      clock,
     });
     mcpSm.transition({ kind: "connecting", attempt: 1 });
     mcpSm.transition({ kind: "connected" });
@@ -3187,7 +3198,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, hookMw, hookObserverMw2, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [memProvider],
       loopDetection: false,
@@ -4263,11 +4274,13 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       { agentName: "replay-spawn-tools" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-spawn-tools",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -4305,7 +4318,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       manifest: { name: "replay-spawn-tools", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -5093,12 +5106,14 @@ describe("Approval trajectory capture (e2e)", () => {
       { agentName: "approval-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     // Event-trace: retain full handle for emitExternalStep
     const eventTraceHandle = createEventTraceMiddleware({
       store,
       docId,
       agentName: "approval-test",
+      clock,
     });
 
     // Permissions in "ask" mode — every tool call triggers approval flow
@@ -5120,7 +5135,7 @@ describe("Approval trajectory capture (e2e)", () => {
       manifest: { name: "approval-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -5169,11 +5184,13 @@ describe("Approval trajectory capture (e2e)", () => {
       { agentName: "denial-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const eventTraceHandle = createEventTraceMiddleware({
       store,
       docId,
       agentName: "denial-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -5193,7 +5210,7 @@ describe("Approval trajectory capture (e2e)", () => {
       manifest: { name: "denial-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
