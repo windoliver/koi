@@ -79,7 +79,9 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Clock factory: creates a per-stream monotonic clock so concurrent sessions
   // don't push each other's timestamps into the future (see #1558).
-  const createClock = (): (() => number) => config.clock ?? createMonotonicClock();
+  // When config.clock is provided, it's used as the base clock for each
+  // per-stream monotonic wrapper — never shared directly across streams.
+  const createClock = (): (() => number) => createMonotonicClock(config.clock);
 
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);

@@ -210,9 +210,10 @@ export interface RuntimeConfig {
   readonly credentialPathGuard?: false | undefined;
 
   /**
-   * Injectable clock for trajectory timestamps. When provided, shared across
-   * all trajectory emitters (event-trace, trace-wrapper, hook-observer,
-   * mcp-lifecycle, harness steps). Default: a monotonic clock wrapping Date.now.
+   * Base clock for trajectory timestamps. Each stream creates its own
+   * monotonic wrapper around this base clock, so concurrent sessions
+   * never interfere with each other's timestamp sequences.
+   * Default: Date.now (wrapped in createMonotonicClock per stream).
    */
   readonly clock?: (() => number) | undefined;
 }

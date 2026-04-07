@@ -54,7 +54,7 @@ for (const file of files.sort()) {
     const currTs =
       typeof curr.timestamp === "string" ? new Date(curr.timestamp).getTime() : curr.timestamp;
 
-    if (currTs < prevTs) {
+    if (currTs <= prevTs) {
       if (violations === 0) {
         console.log(`  ❌ ${file}`);
       }
