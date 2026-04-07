@@ -318,7 +318,6 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       };
 
       let deltaText = "";
-      let doneContentText = "";
       // Cap context window to MAX_TRANSCRIPT_MESSAGES to control token costs.
       const contextWindow = [...conversationHistory.slice(-MAX_TRANSCRIPT_MESSAGES), stagedUserMsg];
 
@@ -334,20 +333,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
             deltaText += event.delta;
           }
           if (event.kind === "done") {
-            doneContentText = event.output.content
-              .filter((b) => b.kind === "text")
-              .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-              .join("");
             // Only persist completed turns — aborted/failed turns must not leave
             // orphaned user prompts in history.
             if (event.output.stopReason === "completed") {
-              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
               conversationHistory.push(stagedUserMsg);
-              if (assistantText.length > 0) {
+              // Persist the full assistant response including tool calls and results
+              // so the model has complete context in subsequent turns. Without this,
+              // the model loses tool call/result history and may hallucinate.
+              const fullContent = event.output.content;
+              const hasContent = fullContent.length > 0;
+              if (hasContent) {
                 conversationHistory.push({
                   senderId: "assistant",
                   timestamp: Date.now(),
-                  content: [{ kind: "text", text: assistantText }],
+                  content: fullContent,
+                });
+              } else if (deltaText.length > 0) {
+                // Fallback: if done.output.content is empty, use accumulated deltas
+                conversationHistory.push({
+                  senderId: "assistant",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text", text: deltaText }],
                 });
               }
             }
