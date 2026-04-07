@@ -11,6 +11,8 @@ describe("@koi/skills-runtime public API surface", () => {
     expect(typeof runtime.discover).toBe("function");
     expect(typeof runtime.load).toBe("function");
     expect(typeof runtime.loadAll).toBe("function");
+    expect(typeof runtime.query).toBe("function");
+    expect(typeof runtime.invalidate).toBe("function");
   });
 
   test("createSkillsRuntime with no args uses defaults", () => {
@@ -34,7 +36,6 @@ describe("@koi/skills-runtime public API surface", () => {
     const runtime = skillsRuntime.createSkillsRuntime({ bundledRoot: null });
     const result = runtime.discover();
     expect(result instanceof Promise).toBe(true);
-    // Consume the promise to avoid unhandled rejection warnings
     void result;
   });
 
@@ -50,5 +51,22 @@ describe("@koi/skills-runtime public API surface", () => {
     const result = runtime.loadAll();
     expect(result instanceof Promise).toBe(true);
     void result;
+  });
+
+  test("query() returns a Promise", () => {
+    const runtime = skillsRuntime.createSkillsRuntime({ bundledRoot: null });
+    const result = runtime.query();
+    expect(result instanceof Promise).toBe(true);
+    void result;
+  });
+
+  test("invalidate() with no arg is callable", () => {
+    const runtime = skillsRuntime.createSkillsRuntime({ bundledRoot: null });
+    expect(() => runtime.invalidate()).not.toThrow();
+  });
+
+  test("invalidate() with skill name is callable", () => {
+    const runtime = skillsRuntime.createSkillsRuntime({ bundledRoot: null });
+    expect(() => runtime.invalidate("some-skill")).not.toThrow();
   });
 });

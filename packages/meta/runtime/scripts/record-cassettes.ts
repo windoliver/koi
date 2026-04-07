@@ -1250,7 +1250,9 @@ console.log(`Local-fs golden query: dir=${localFsTmpDir}, seeded golden-local.tx
 
 // ---------------------------------------------------------------------------
 // @koi/skills-runtime — skill discovery + SkillComponent attach
-// Seeded with a single "bullet-points" skill that the agent is asked to follow.
+// Seeded with a "bullet-points" skill (with tags) that the agent is asked to follow.
+// Tests progressive loading: discover() reads frontmatter (name, description, tags)
+// without loading body; load() promotes to SkillDefinition with body + scan.
 // ---------------------------------------------------------------------------
 
 const skillsTmpDir = mkdtempSync(joinPath(tmpDirFn(), "koi-golden-skills-"));
@@ -1262,14 +1264,41 @@ writeFileSync(
     "---",
     "name: bullet-points",
     "description: Respond using bullet points instead of prose.",
+    "tags:",
+    "  - formatting",
+    "  - style",
     "---",
     "",
     "Always respond using bullet point lists. Never use prose paragraphs.",
   ].join("\n"),
 );
-const skillProvider = createSkillProvider(
-  createSkillsRuntime({ bundledRoot: null, userRoot: skillsTmpDir }),
+
+// Verify progressive loading: discover() returns SkillMetadata with tags (no body)
+const skillRuntime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsTmpDir });
+const discoverResult = await skillRuntime.discover();
+if (!discoverResult.ok) throw new Error(`Skill discover failed: ${discoverResult.error.message}`);
+const meta = discoverResult.value.get("bullet-points");
+if (!meta) throw new Error("bullet-points not discovered");
+if (!meta.tags || !meta.tags.includes("formatting")) {
+  throw new Error(`Expected tags to include "formatting", got: ${JSON.stringify(meta.tags)}`);
+}
+console.log(
+  `Skills progressive loading verified: name=${meta.name}, tags=${JSON.stringify(meta.tags)}, body absent=true`,
 );
+
+// Verify registry query: filter by tag
+const queryResult = await skillRuntime.query({ tags: ["formatting"] });
+if (!queryResult.ok) throw new Error(`Skill query failed: ${queryResult.error.message}`);
+if (queryResult.value.length !== 1 || queryResult.value[0]?.name !== "bullet-points") {
+  throw new Error(
+    `Expected query to return bullet-points, got: ${JSON.stringify(queryResult.value.map((s) => s.name))}`,
+  );
+}
+console.log(
+  `Skills registry query verified: tags=["formatting"] → [${queryResult.value.map((s) => s.name).join(", ")}]`,
+);
+
+const skillProvider = createSkillProvider(skillRuntime);
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------

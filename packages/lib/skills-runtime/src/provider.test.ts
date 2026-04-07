@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Agent } from "@koi/core";
 import { isAttachResult, skillToken } from "@koi/core";
@@ -26,7 +27,11 @@ describe("createSkillProvider", () => {
   let userRoot: string;
 
   beforeEach(async () => {
-    userRoot = await mkdtemp("/tmp/koi-provider-test-");
+    userRoot = await mkdtemp(join(tmpdir(), "koi-provider-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(userRoot, { recursive: true, force: true });
   });
 
   test("attaches loaded skills as SkillComponents under skillToken keys", async () => {
@@ -40,7 +45,6 @@ describe("createSkillProvider", () => {
     expect(isAttachResult(result)).toBe(true);
     if (!isAttachResult(result)) return;
 
-    // The skill should be attached under skillToken("my-skill")
     const token = skillToken("my-skill");
     const component = result.components.get(token);
     expect(component).toBeDefined();
@@ -63,10 +67,9 @@ describe("createSkillProvider", () => {
 
     expect(isAttachResult(result)).toBe(true);
     if (!isAttachResult(result)) return;
-    // Blocked skill reported as skipped, not attached
     const token = skillToken("evil-skill");
     expect(result.components.get(token)).toBeUndefined();
-    expect(result.skipped.some((s) => s.name === "evil-skill")).toBe(true);
+    expect(result.skipped.some((s: { name: string }) => s.name === "evil-skill")).toBe(true);
   });
 
   test("attaches multiple skills from the same runtime", async () => {
