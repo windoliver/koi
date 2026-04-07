@@ -86,79 +86,82 @@ export function createInteractionProvider(
     policy = DEFAULT_UNSANDBOXED_POLICY,
   } = config;
 
-  // --- In-memory state (per provider = per session) ---
-
-  // let: mutable todo list, replaced atomically on each write
-  let todoItems: readonly TodoItem[] = [];
-
-  // let: mutable plan mode flag
-  let inPlanMode = false;
-
-  // let: mutable plan content (in-memory fallback when no savePlanContent)
-  let planContentMemory: string | undefined;
-
-  // --- Build tools ---
-
-  const todoTool = createTodoTool({
-    getItems: () => todoItems,
-    setItems: (items) => {
-      todoItems = items;
-    },
-    policy,
-  });
-
-  const enterPlanModeTool = createEnterPlanModeTool({
-    // This provider is for the main thread agent only.
-    // Spawned agents must not receive it (configured at assembly time).
-    isAgentContext: () => false,
-    isInPlanMode: () => inPlanMode,
-    enterPlanMode: () => {
-      inPlanMode = true;
-    },
-    isChannelsActive,
-    policy,
-  });
-
-  const exitPlanModeTool = createExitPlanModeTool({
-    isInPlanMode: () => inPlanMode,
-    // Swarm path: not wired here — belongs to @koi/swarm (#1416).
-    // When swarm ships, extend this provider or create a SwarmInteractionProvider
-    // that overrides isTeammate/isPlanModeRequired/writeToMailbox.
-    isTeammate: false,
-    isPlanModeRequired: false,
-    exitPlanMode: () => {
-      inPlanMode = false;
-    },
-    getPlanContent: getPlanContent ?? (async () => planContentMemory),
-    savePlanContent:
-      savePlanContent ??
-      (async (content) => {
-        planContentMemory = content;
-      }),
-    getPlanFilePath,
-    isChannelsActive,
-    policy,
-  });
-
-  // AskUserQuestion is only included when elicit is wired.
-  // Without it the tool is omitted entirely — the model won't see it.
-  const askUserTool =
-    elicit !== undefined ? createAskUserTool({ elicit, isChannelsActive, policy }) : undefined;
-
-  // --- ComponentProvider ---
-
-  const components = new Map<string, unknown>([
-    ["tool:TodoWrite", todoTool],
-    ["tool:EnterPlanMode", enterPlanModeTool],
-    ["tool:ExitPlanMode", exitPlanModeTool],
-  ]);
-  if (askUserTool !== undefined) {
-    components.set("tool:AskUserQuestion", askUserTool);
-  }
-
   return {
     name: "interaction",
     async attach(_agent): Promise<ReadonlyMap<string, unknown>> {
+      // --- In-memory state (per agent — fresh on every attach) ---
+      // Each agent that receives this provider gets its own isolated state.
+      // This prevents a spawned child from mutating the parent's todo list,
+      // plan mode flag, or plan content through shared closures.
+
+      // let: mutable todo list, replaced atomically on each write
+      let todoItems: readonly TodoItem[] = [];
+
+      // let: mutable plan mode flag
+      let inPlanMode = false;
+
+      // let: mutable plan content (in-memory fallback when no savePlanContent)
+      let planContentMemory: string | undefined;
+
+      // --- Build tools ---
+
+      const todoTool = createTodoTool({
+        getItems: () => todoItems,
+        setItems: (items) => {
+          todoItems = items;
+        },
+        policy,
+      });
+
+      const enterPlanModeTool = createEnterPlanModeTool({
+        // Derive agent context from the attached agent: spawned workers should
+        // not be able to call EnterPlanMode. The caller must ensure this provider
+        // is only attached to the main/coordinator agent; if it reaches a child,
+        // the child's isAgentContext check will block the call.
+        isAgentContext: () => false,
+        isInPlanMode: () => inPlanMode,
+        enterPlanMode: () => {
+          inPlanMode = true;
+        },
+        isChannelsActive,
+        policy,
+      });
+
+      const exitPlanModeTool = createExitPlanModeTool({
+        isInPlanMode: () => inPlanMode,
+        // Swarm path: not wired here — belongs to @koi/swarm (#1416).
+        // When swarm ships, extend this provider or create a SwarmInteractionProvider
+        // that overrides isTeammate/isPlanModeRequired/writeToMailbox.
+        isTeammate: false,
+        isPlanModeRequired: false,
+        exitPlanMode: () => {
+          inPlanMode = false;
+        },
+        getPlanContent: getPlanContent ?? (async () => planContentMemory),
+        savePlanContent:
+          savePlanContent ??
+          (async (content) => {
+            planContentMemory = content;
+          }),
+        getPlanFilePath,
+        isChannelsActive,
+        policy,
+      });
+
+      // AskUserQuestion is only included when elicit is wired.
+      // Without it the tool is omitted entirely — the model won't see it.
+      const askUserTool =
+        elicit !== undefined ? createAskUserTool({ elicit, isChannelsActive, policy }) : undefined;
+
+      const components = new Map<string, unknown>([
+        ["tool:TodoWrite", todoTool],
+        ["tool:EnterPlanMode", enterPlanModeTool],
+        ["tool:ExitPlanMode", exitPlanModeTool],
+      ]);
+      if (askUserTool !== undefined) {
+        components.set("tool:AskUserQuestion", askUserTool);
+      }
+
       return components;
     },
   };

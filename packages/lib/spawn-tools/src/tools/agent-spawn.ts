@@ -18,10 +18,12 @@ const schema = z.object({
     .describe("Clear description of the work this child agent should perform."),
   task_id: z
     .string()
-    .min(1)
+    .optional()
     .describe(
-      "Board task ID to associate with this spawn. " +
-        "Call task_create then task_delegate first — this links the child agent's result back to the board entry.",
+      "Optional board task ID. If provided, the task must already be delegated via task_delegate. " +
+        "Links the spawn to a tracked board entry for result correlation. " +
+        "NOTE: the child's runtime identity is engine-assigned and will not match task.assignedTo — " +
+        "child task_update calls require a separate identity-handoff mechanism (see #1416).",
     ),
   context: z
     .record(z.string(), z.unknown())
@@ -45,10 +47,10 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
     descriptor: {
       name: "agent_spawn",
       description:
-        "Spawn a named child agent for a board-tracked task. " +
+        "Spawn a named child agent to complete a task. " +
         "Returns the child agent's final output as a string. " +
-        "Requires task_delegate to have been called first: the task must already be " +
-        "assigned on the board before spawning so the result can be matched back.",
+        "If task_id is provided, the task must have been delegated via task_delegate first " +
+        "so the spawn can be correlated back to the board entry.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -61,30 +63,37 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
       }
 
       const { agent_name, description, task_id } = parsed.data;
-      const taskId = taskItemId(task_id);
 
-      // Enforce the delegation precondition: task_delegate must have been called first.
-      const task = config.board.snapshot().get(taskId);
-      if (task === undefined) {
-        return {
-          ok: false,
-          error: `Task '${task_id}' not found on the board. Call task_create first.`,
-          code: "NOT_FOUND",
-        };
-      }
-      if (task.assignedTo === undefined) {
-        return {
-          ok: false,
-          error: `Task '${task_id}' has not been delegated. Call task_delegate first.`,
-          code: "PRECONDITION_FAILED",
-        };
+      // When task_id is provided, enforce that task_delegate was called first.
+      // task_id is optional — omit it for ad-hoc spawns that don't need board tracking.
+      if (task_id !== undefined) {
+        const taskId = taskItemId(task_id);
+        const task = config.board.snapshot().get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: `Task '${task_id}' not found on the board. Call task_create first.`,
+            code: "NOT_FOUND",
+          };
+        }
+        if (task.assignedTo === undefined) {
+          return {
+            ok: false,
+            error: `Task '${task_id}' has not been delegated. Call task_delegate first.`,
+            code: "PRECONDITION_FAILED",
+          };
+        }
+        // Known gap: task.assignedTo is the coordinator-chosen agent name/id, but the
+        // child's runtime AgentId is engine-generated and won't match. Child task_update
+        // calls will be rejected by the board's assignedTo ownership check.
+        // Full fix requires engine-level identity handoff — tracked in #1416.
       }
 
       const result = await config.spawnFn({
         agentName: agent_name,
         description,
         signal: config.signal,
-        taskId,
+        ...(task_id !== undefined ? { taskId: taskItemId(task_id) } : {}),
         agentId: config.agentId,
       });
 

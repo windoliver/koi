@@ -185,10 +185,17 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
       name: "ExitPlanMode",
       description:
         "Present your completed plan and request approval to exit plan mode and begin " +
-        "implementation. Call this only after you have written a thorough plan.",
+        "implementation. Call this only after you have written a thorough plan. " +
+        "Pass your plan as plan_content — it is required and must be non-empty.",
       inputSchema: {
         type: "object",
         properties: {
+          plan_content: {
+            type: "string",
+            description:
+              "The full plan text to record and approve. Must be non-empty. " +
+              "Summarize every step you intend to take before calling this tool.",
+          },
           allowedPrompts: {
             type: "array",
             description:
@@ -206,12 +213,12 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
             },
           },
         },
-        required: [],
+        required: ["plan_content"],
       } as JsonObject,
     },
     origin: "primordial",
     policy,
-    execute: async (_args: JsonObject): Promise<unknown> => {
+    execute: async (args: JsonObject): Promise<unknown> => {
       if (isChannelsActive?.() === true) {
         return {
           error: "ExitPlanMode is unavailable in channel mode — the approval dialog requires TUI.",
@@ -226,8 +233,21 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
         };
       }
 
+      // Validate inline plan_content argument — required and must be non-empty.
+      const inlinePlan =
+        typeof args.plan_content === "string" ? args.plan_content.trim() : undefined;
+      if (!inlinePlan) {
+        return {
+          error:
+            "plan_content is required and must be non-empty. " +
+            "Write your plan before calling ExitPlanMode.",
+          code: "VALIDATION",
+        };
+      }
+
       const filePath = getPlanFilePath?.();
-      const plan = await getPlanContent();
+      // Merge: inline plan_content takes precedence over any persisted content.
+      const plan = inlinePlan.length > 0 ? inlinePlan : await getPlanContent();
 
       // --- Swarm teammate path: send plan_approval_request to team lead ---
       if (isTeammate && isPlanModeRequired) {
