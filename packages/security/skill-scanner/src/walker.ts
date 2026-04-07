@@ -141,6 +141,19 @@ export function visitAst(program: Program, callbacks: ScanVisitorCallbacks): voi
 // Node inspection helpers
 // ---------------------------------------------------------------------------
 
+/** Extract string value from a computed member property (`obj["method"]`). */
+function getComputedStringProperty(node: MemberExpression): string | undefined {
+  if (
+    node.computed &&
+    node.property.type === "Literal" &&
+    "value" in node.property &&
+    typeof node.property.value === "string"
+  ) {
+    return node.property.value;
+  }
+  return undefined;
+}
+
 export function getCalleeName(node: CallExpression): string | undefined {
   if (node.callee.type === "Identifier") {
     return node.callee.name;
@@ -149,26 +162,40 @@ export function getCalleeName(node: CallExpression): string | undefined {
 }
 
 export function getMemberPath(node: MemberExpression): string | undefined {
-  // !computed narrows to StaticMemberExpression | PrivateFieldExpression — both have property.name
-  if (!node.computed && node.object.type === "Identifier") {
+  if (node.object.type !== "Identifier") return undefined;
+  // Static: obj.method
+  if (!node.computed) {
     return `${node.object.name}.${node.property.name}`;
+  }
+  // Computed with string literal: obj["method"]
+  const prop = getComputedStringProperty(node);
+  if (prop !== undefined) {
+    return `${node.object.name}.${prop}`;
   }
   return undefined;
 }
 
 export function getStaticMemberProperty(node: MemberExpression): string | undefined {
-  // !computed narrows to StaticMemberExpression | PrivateFieldExpression — both have property.name
+  // Static: obj.method
   if (!node.computed) {
     return node.property.name;
   }
-  return undefined;
+  // Computed with string literal: obj["method"]
+  return getComputedStringProperty(node);
 }
 
 export function getCalleeAsMemberPath(node: CallExpression): string | undefined {
-  if (node.callee.type === "MemberExpression" && !node.callee.computed) {
-    if (node.callee.object.type === "Identifier") {
-      return `${node.callee.object.name}.${node.callee.property.name}`;
-    }
+  if (node.callee.type !== "MemberExpression") return undefined;
+  if (node.callee.object.type !== "Identifier") return undefined;
+  const obj = node.callee.object.name;
+  // Static: obj.method()
+  if (!node.callee.computed) {
+    return `${obj}.${node.callee.property.name}`;
+  }
+  // Computed with string literal: obj["method"]()
+  const prop = getComputedStringProperty(node.callee);
+  if (prop !== undefined) {
+    return `${obj}.${prop}`;
   }
   return undefined;
 }
