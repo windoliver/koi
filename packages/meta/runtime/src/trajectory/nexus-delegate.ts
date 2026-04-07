@@ -55,19 +55,21 @@ function validateBasePath(basePath: string): void {
  * Decode a Nexus read response. Nexus may return:
  *   - A raw JSON string
  *   - A bytes envelope: { __type__: "bytes", data: "base64..." }
+ *   - A structured envelope: { content: string, metadata?: ... }
  *   - An already-parsed object
  */
 function decodeNexusResponse<T>(raw: unknown): T {
   if (typeof raw === "string") return JSON.parse(raw) as T;
-  if (
-    typeof raw === "object" &&
-    raw !== null &&
-    (raw as Record<string, unknown>).__type__ === "bytes"
-  ) {
-    const b64 = (raw as Record<string, unknown>).data;
-    if (typeof b64 === "string") {
-      const decoded = Buffer.from(b64, "base64").toString("utf-8");
+  if (typeof raw === "object" && raw !== null) {
+    const obj = raw as Record<string, unknown>;
+    // Bytes envelope (Nexus NFS binary response)
+    if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+      const decoded = Buffer.from(obj.data, "base64").toString("utf-8");
       return JSON.parse(decoded) as T;
+    }
+    // Structured envelope { content: string, metadata? } from Nexus read
+    if (typeof obj.content === "string" && !("schema_version" in obj)) {
+      return JSON.parse(obj.content) as T;
     }
   }
   return raw as T;
@@ -159,10 +161,7 @@ export function createNexusAtifDelegate(config: NexusTrajectoryConfig): AtifDocu
     async delete(docId: string): Promise<boolean> {
       const path = docPath(docId);
 
-      // Check existence first (like v1 pattern)
-      const exists: Result<unknown, KoiError> = await transport.call("exists", { path });
-      if (!exists.ok || !exists.value) return false;
-
+      // Delete directly — handle NOT_FOUND as "already gone"
       const result: Result<unknown, KoiError> = await transport.call("delete", { path });
       if (!result.ok) {
         if (result.error.code === "NOT_FOUND") return false;

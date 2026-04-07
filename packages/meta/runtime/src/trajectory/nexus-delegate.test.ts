@@ -178,6 +178,26 @@ describe("createNexusAtifDelegate", () => {
     }
   });
 
+  test("decodes structured {content, metadata} envelope response", async () => {
+    // Nexus read may return { content: string, metadata? } instead of raw string
+    const envelopeTransport = createStubTransport({
+      errorInjector(method, params) {
+        if (method === "read" && (params.path as string).includes("envelope-doc")) {
+          return {
+            ok: true,
+            value: { content: JSON.stringify(DOC), metadata: { size: 123 } },
+          };
+        }
+        return undefined;
+      },
+    });
+    const delegate = createNexusAtifDelegate({ transport: envelopeTransport });
+    const result = await delegate.read("envelope-doc");
+    expect(result).toBeDefined();
+    expect(result?.session_id).toBe("test-session");
+    expect(result?.steps).toHaveLength(1);
+  });
+
   test("decodes bytes envelope response", async () => {
     // Create a transport that returns bytes-envelope format on read
     const bytesTransport = createStubTransport({
@@ -237,6 +257,22 @@ describe("createNexusAtifDelegate", () => {
     });
     const delegate = createNexusAtifDelegate({ transport: authTransport });
     await expect(delegate.read("forbidden")).rejects.toThrow("Access denied");
+  });
+
+  test("delete propagates permission errors (not masked as false)", async () => {
+    const permTransport = createStubTransport({
+      errorInjector(method) {
+        if (method === "delete") {
+          return {
+            ok: false,
+            error: { code: "PERMISSION", message: "Access denied", retryable: false },
+          };
+        }
+        return undefined;
+      },
+    });
+    const delegate = createNexusAtifDelegate({ transport: permTransport });
+    await expect(delegate.delete("some-doc")).rejects.toThrow("Access denied");
   });
 
   test("throws on EXTERNAL error (not swallowed as undefined)", async () => {
