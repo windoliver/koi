@@ -77,6 +77,26 @@ export interface InteractionProviderConfig {
    */
   readonly isAgentContext?: (() => boolean) | undefined;
 
+  /**
+   * Called when the agent enters plan mode. Wire this to the harness
+   * permission backend to enforce the read-only gate (e.g., switch the
+   * active permission mode to 'plan' so Write/Edit/Bash calls are denied).
+   *
+   * Default: noop (permission enforcement must be provided by the harness).
+   */
+  readonly onEnterPlanMode?: (() => void) | undefined;
+
+  /**
+   * Called when the agent exits plan mode (plan approved). Wire this to
+   * the harness permission backend to restore pre-plan permissions and
+   * optionally apply the `allowedPrompts` from the approved plan.
+   *
+   * @param allowedPrompts - Semantic Bash-permission requests from the plan.
+   *
+   * Default: noop (permission restoration must be provided by the harness).
+   */
+  readonly onExitPlanMode?: ((allowedPrompts: readonly unknown[]) => void) | undefined;
+
   readonly policy?: ToolPolicy | undefined;
 }
 
@@ -94,6 +114,8 @@ export function createInteractionProvider(
     getPlanContent,
     getPlanFilePath,
     isAgentContext = () => false,
+    onEnterPlanMode,
+    onExitPlanMode,
     policy = DEFAULT_UNSANDBOXED_POLICY,
   } = config;
 
@@ -139,6 +161,9 @@ export function createInteractionProvider(
         isInPlanMode: () => inPlanMode,
         enterPlanMode: () => {
           inPlanMode = true;
+          // Hook: caller can switch the harness permission mode to enforce
+          // the read-only gate (deny Write/Edit/Bash until plan is approved).
+          onEnterPlanMode?.();
         },
         isChannelsActive,
         policy,
@@ -162,6 +187,8 @@ export function createInteractionProvider(
           }),
         getPlanFilePath,
         isChannelsActive,
+        // Hook: caller can restore pre-plan permissions and apply allowedPrompts.
+        onApproved: onExitPlanMode,
         policy,
       });
 

@@ -86,6 +86,16 @@ export interface ExitPlanModeConfig {
   /** True when the AgentTool (swarm) is available — hints at TeamCreateTool. */
   readonly hasTeamCreateTool?: (() => boolean) | undefined;
   readonly isChannelsActive?: (() => boolean) | undefined;
+  /**
+   * Called after plan approval on the main-thread path.
+   * Wire this to the harness to restore pre-plan permissions and apply
+   * `allowedPrompts` (e.g., pre-approve specific Bash commands).
+   *
+   * Note: on the main-thread path ExitPlanMode is policy-gated ('ask'),
+   * so the harness presents the plan to the user before the tool executes.
+   * The tool only reaches this callback after user approval.
+   */
+  readonly onApproved?: ((allowedPrompts: readonly unknown[]) => void) | undefined;
   readonly policy?: ToolPolicy | undefined;
 }
 
@@ -177,6 +187,7 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
     setAwaitingPlanApproval,
     hasTeamCreateTool,
     isChannelsActive,
+    onApproved,
     policy = DEFAULT_UNSANDBOXED_POLICY,
   } = config;
 
@@ -300,10 +311,17 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
       }
 
       // --- Main thread / voluntary teammate path: restore mode ---
+      // Note: on the main-thread path this tool is policy-gated ('ask'),
+      // meaning the harness presents the plan to the user and only allows
+      // execution after user approval. By the time we reach here, the user
+      // has already approved the plan.
       if (savePlanContent !== undefined && plan !== undefined) {
         await savePlanContent(plan);
       }
+      const allowedPrompts = Array.isArray(args.allowedPrompts) ? args.allowedPrompts : [];
       exitPlanMode();
+      // Notify harness: restore pre-plan permissions and apply allowedPrompts.
+      onApproved?.(allowedPrompts);
 
       const teamHint =
         hasTeamCreateTool?.() === true
@@ -313,10 +331,6 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
 
       const planSection =
         plan !== undefined && plan.trim().length > 0 ? `\n\n## Approved Plan:\n${plan}` : "";
-
-      // Pass allowedPrompts through so the harness can wire them into
-      // permission rules (e.g., pre-approve specific Bash commands).
-      const allowedPrompts = Array.isArray(args.allowedPrompts) ? args.allowedPrompts : [];
 
       return {
         approved: true,
