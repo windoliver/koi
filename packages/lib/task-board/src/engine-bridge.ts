@@ -50,7 +50,11 @@ function buildPlanUpdate(
     subject: t.subject,
     status: t.status,
     ...(t.assignedTo !== undefined ? { assignedTo: t.assignedTo } : {}),
-    ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
+    // Only include activeForm for in_progress tasks — prevents stale spinner text
+    // from retry/unassign paths that don't clear activeForm on the board
+    ...(t.activeForm !== undefined && t.status === "in_progress"
+      ? { activeForm: t.activeForm }
+      : {}),
     ...(blockedByMap.has(t.id) ? { blockedBy: blockedByMap.get(t.id) } : {}),
     dependencies: t.dependencies,
   }));

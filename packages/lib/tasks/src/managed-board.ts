@@ -240,25 +240,35 @@ export async function createManagedTaskBoard(
       await persistBoardDiff(store, oldBoard, result.value);
       board = result.value;
       // Flush all observer notifications only after persistence succeeds.
-      // User handler and engine events are isolated — one throwing cannot suppress the other.
+      // Notifications are fire-and-forget — errors never change the mutation result.
       const userEventsToFlush = pendingUserEvents;
       const engineEventsToFlush = pendingEngineEvents;
       pendingUserEvents = [];
       pendingEngineEvents = [];
-      // Flush user handler (isolated — errors swallowed per TaskBoard emit() contract)
+      // Flush user handler (isolated — matches TaskBoard emit() contract with onEventError)
       if (boardConfig?.onEvent !== undefined) {
         for (const { event: ev, board: b } of userEventsToFlush) {
           try {
             boardConfig.onEvent(ev, b);
-          } catch {
-            // Swallow — matches TaskBoard emit() contract
+          } catch (error: unknown) {
+            if (boardConfig.onEventError !== undefined) {
+              try {
+                boardConfig.onEventError(error, ev);
+              } catch {
+                // Double-fault: swallow silently per emit() contract
+              }
+            }
           }
         }
       }
-      // Flush engine events (isolated from user handler failures)
+      // Flush engine events (isolated — errors swallowed, never affect mutation result)
       if (onEngineEvent !== undefined) {
         for (const e of engineEventsToFlush) {
-          onEngineEvent(e);
+          try {
+            onEngineEvent(e);
+          } catch {
+            // Observer failures must not fail committed mutations
+          }
         }
       }
       return result;
