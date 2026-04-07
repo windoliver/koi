@@ -64,6 +64,10 @@ interface ActiveProcess {
   readonly abortController: AbortController;
   /** SIGKILL escalation timer — must be cleared when process exits to avoid killing reused PIDs. */
   killTimer?: ReturnType<typeof setTimeout>;
+  /** Set when the process is aborted (cancel/timeout). Used to route to fail instead of complete. */
+  aborted?: boolean;
+  /** Reason for abort — surfaced in the failure message. */
+  abortReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,43 +174,64 @@ export function createBashBackgroundTool(
         return { error: `Failed to register task: ${addResult.error.message}` };
       }
 
-      // Assign to agent
+      // Assign to agent — fail the task if assignment fails to avoid orphan
       const assignResult = await config.board.assign(taskId, config.agentId);
       if (!assignResult.ok) {
+        await config.board.fail(taskId, {
+          code: "EXTERNAL",
+          message: `Failed to assign: ${assignResult.error.message}`,
+          retryable: false,
+        });
         return { error: `Failed to assign task: ${assignResult.error.message}` };
       }
 
-      // Spawn subprocess
+      // Spawn subprocess — wrapped in try/catch to fail the task on
+      // synchronous spawn errors (bad cwd, invalid argv from wrapCommand, etc.)
+      let proc: ReturnType<typeof spawnChild>;
       const abortController = new AbortController();
-      const baseInput: SpawnTransformInput = {
-        argv: ["bash", "--noprofile", "--norc", "-c", `set -euo pipefail\n${command}`],
-        cwd,
-        env: SAFE_ENV,
-      };
-      const spawnOpts =
-        config.wrapCommand !== undefined ? config.wrapCommand(baseInput) : baseInput;
-      const [cmd, ...cmdArgs] = spawnOpts.argv;
-      if (cmd === undefined) {
+      try {
+        const baseInput: SpawnTransformInput = {
+          argv: ["bash", "--noprofile", "--norc", "-c", `set -euo pipefail\n${command}`],
+          cwd,
+          env: SAFE_ENV,
+        };
+        const spawnOpts =
+          config.wrapCommand !== undefined ? config.wrapCommand(baseInput) : baseInput;
+        const [cmd, ...cmdArgs] = spawnOpts.argv;
+        if (cmd === undefined) {
+          await config.board.fail(taskId, {
+            code: "VALIDATION",
+            message: "SpawnTransform returned empty argv",
+            retryable: false,
+          });
+          return { error: "SpawnTransform returned empty argv" };
+        }
+
+        proc = spawnChild(cmd, cmdArgs, {
+          cwd: spawnOpts.cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: spawnOpts.env,
+          detached: true,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         await config.board.fail(taskId, {
-          code: "VALIDATION",
-          message: "SpawnTransform returned empty argv",
+          code: "EXTERNAL",
+          message: `Spawn failed: ${message}`,
           retryable: false,
         });
-        return { error: "SpawnTransform returned empty argv" };
+        return { error: `Failed to spawn: ${message}` };
       }
-
-      const proc = spawnChild(cmd, cmdArgs, {
-        cwd: spawnOpts.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: spawnOpts.env,
-        detached: true,
-      });
 
       const entry: ActiveProcess = { proc, abortController };
       active.set(String(taskId), entry);
 
-      // Wire timeout
-      const timer = setTimeout(() => abortController.abort(), timeoutMs);
+      // Wire timeout — marks the entry as aborted with reason
+      const timer = setTimeout(() => {
+        entry.aborted = true;
+        entry.abortReason = "timeout";
+        abortController.abort();
+      }, timeoutMs);
 
       // Wire abort signal to process kill — stores SIGKILL escalation timer
       // on the active entry so drainAndComplete can clear it after exit.
@@ -257,15 +282,18 @@ export function createBashBackgroundTool(
   function cancel(taskId: string): void {
     const entry = active.get(taskId);
     if (entry !== undefined) {
+      entry.aborted = true;
+      entry.abortReason = "cancelled";
       entry.abortController.abort();
-      active.delete(taskId);
+      // Don't delete from active — drainAndComplete will do it after cleanup
     }
   }
 
   function dispose(): void {
-    for (const [id, entry] of active) {
+    for (const [, entry] of active) {
+      entry.aborted = true;
+      entry.abortReason = "disposed";
       entry.abortController.abort();
-      active.delete(id);
     }
   }
 
@@ -311,23 +339,24 @@ async function drainAndComplete(
     // Clear SIGKILL escalation timer to prevent killing a reused PID/process group
     const entry = active.get(String(taskId));
     if (entry?.killTimer !== undefined) clearTimeout(entry.killTimer);
+    const wasAborted = entry?.aborted === true;
+    const abortReason = entry?.abortReason ?? "unknown";
     active.delete(String(taskId));
 
     if (spawnError !== undefined) {
-      const failResult = await board.failOwnedTask(taskId, agentId, {
-        code: "EXTERNAL",
-        message: `Spawn failed: ${spawnError.message}`,
-        retryable: false,
-      });
-      // If fail itself failed (ownership conflict, store error), force-fail
-      // so the task doesn't stay stuck in_progress forever.
-      if (!failResult.ok) {
-        await board.fail(taskId, {
-          code: "EXTERNAL",
-          message: `Spawn failed and failOwnedTask rejected: ${failResult.error.message}`,
-          retryable: false,
-        });
-      }
+      await failTask(board, taskId, agentId, `Spawn failed: ${spawnError.message}`);
+      return;
+    }
+
+    // Aborted tasks (cancel, timeout, dispose) are routed to fail — not complete.
+    // This prevents partial execution from being surfaced as successful work.
+    if (wasAborted) {
+      await failTask(
+        board,
+        taskId,
+        agentId,
+        `Background task aborted (${abortReason}), exit code: ${exitCode}`,
+      );
       return;
     }
 
@@ -363,6 +392,30 @@ async function drainAndComplete(
     // Best-effort — if board update fails, the task stays in_progress
     // and can be cleaned up by the coordinator.
     active.delete(String(taskId));
+  }
+}
+
+/**
+ * Mark a task as failed via owned path, falling back to unowned path on conflict.
+ * Consolidates the repeated fail + fallback pattern.
+ */
+async function failTask(
+  board: ManagedTaskBoard,
+  taskId: TaskItemId,
+  agentId: AgentId,
+  message: string,
+): Promise<void> {
+  const result = await board.failOwnedTask(taskId, agentId, {
+    code: "EXTERNAL",
+    message,
+    retryable: false,
+  });
+  if (!result.ok) {
+    await board.fail(taskId, {
+      code: "EXTERNAL",
+      message: `${message} (failOwnedTask rejected: ${result.error.message})`,
+      retryable: false,
+    });
   }
 }
 

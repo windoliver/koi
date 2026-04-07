@@ -74,6 +74,11 @@ export interface BashToolConfig {
   /**
    * Optional spawn transform for OS-level sandboxing. Receives the base
    * argv/cwd/env and returns transformed values. Injected at L3.
+   *
+   * **Note on trackCwd compatibility**: If the transform remaps `cwd` to a
+   * different namespace (e.g. sandbox mount point), `trackCwd` will detect
+   * the mismatch and skip cwd updates for that call, since the shell's
+   * `pwd -P` reports the sandbox-internal path rather than the host path.
    */
   readonly wrapCommand?: SpawnTransform;
 }

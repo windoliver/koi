@@ -510,4 +510,26 @@ describe("createBashTool — trackCwd", () => {
     const tool = createBashTool({ trackCwd: true });
     expect(tool.descriptor.description).toContain("CWD tracking is enabled");
   });
+
+  test("trackCwd with wrapCommand that remaps cwd does not advance tracked cwd", async () => {
+    const wsRoot = realpathSync(process.cwd());
+    const tool = createBashTool({
+      trackCwd: true,
+      workspaceRoot: wsRoot,
+      wrapCommand: (input) => ({
+        // Simulate sandbox: remap cwd to /tmp (outside workspace)
+        // The shell's pwd -P will report /tmp-based paths
+        argv: input.argv,
+        cwd: "/tmp",
+        env: input.env,
+      }),
+    });
+
+    // Command runs in /tmp due to wrapCommand, pwd -P reports /tmp
+    // trackCwd should NOT update because /tmp is outside workspaceRoot
+    const result = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    // Tracked cwd stays at wsRoot because sandbox path is outside workspace
+    expect(result.cwd).toBe(wsRoot);
+  });
 });
