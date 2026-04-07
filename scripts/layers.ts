@@ -30,6 +30,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/redaction",
   "@koi/session-repair",
   "@koi/shutdown",
+  "@koi/skill-scanner",
   "@koi/task-board",
   "@koi/token-estimator",
   "@koi/tools-core",
@@ -45,6 +46,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/sandbox-os",
   "@koi/session",
+  "@koi/skills-runtime",
   "@koi/tools-bash",
 ]);
 

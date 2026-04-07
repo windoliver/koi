@@ -78,3 +78,5 @@ include conversation messages (which change every turn by definition).
 `@koi/core` (L0), `@koi/hash` (L0u). Uses `fetch()` (Bun global) and inline SSE parsing.
 
 > **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.
+
+> **Maintenance note (PR #1560):** Added missing `@koi/hash` project reference to `tsconfig.json`. Required after PR #1554 added `@koi/hash` as a dependency but omitted the TypeScript project reference. No functional changes.
