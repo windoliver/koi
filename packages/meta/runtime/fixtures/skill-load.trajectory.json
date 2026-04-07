@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:22.397Z",
+      "timestamp": "2026-04-07T08:28:12.953Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:22.398Z",
+      "timestamp": "2026-04-07T08:28:12.954Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T08:22:22.424Z",
+      "timestamp": "2026-04-07T08:28:12.970Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What are the primary colors? Answer briefly.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 98,
         "completion_tokens": 8
       },
-      "duration_ms": 988,
+      "duration_ms": 640,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -70,10 +70,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:23.414Z",
+      "timestamp": "2026-04-07T08:28:13.613Z",
       "model_name": "middleware:semantic-retry",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 989.632709,
+      "duration_ms": 642.8480829999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +90,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:23.415Z",
+      "timestamp": "2026-04-07T08:28:13.614Z",
       "model_name": "middleware:hooks",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 990.0504999999998,
+      "duration_ms": 643.2729999999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +110,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:23.416Z",
+      "timestamp": "2026-04-07T08:28:13.615Z",
       "model_name": "middleware:permissions",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 990.8859159999997,
+      "duration_ms": 644.23125,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -130,10 +130,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T08:22:23.417Z",
+      "timestamp": "2026-04-07T08:28:13.616Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 992.2972909999999,
+      "duration_ms": 645.947042,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
