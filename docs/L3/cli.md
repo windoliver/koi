@@ -220,15 +220,16 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 |---------|-------|----------|
 | `@koi/core` | L0 | Types: ContentBlock, EngineInput, EngineAdapter, InboundMessage, TuiAdapter |
 | `@koi/engine` | L1 | `createKoi()` runtime factory |
-| `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge |
+| `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge. Renders `plan_update`/`task_progress` in verbose mode (#1555) |
 | `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
+| `@koi/tasks` | L2 | `createManagedTaskBoard()` — persistent task coordination. Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
-| `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only) |
+| `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555) |
 
 ---
 

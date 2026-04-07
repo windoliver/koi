@@ -179,6 +179,21 @@ import { runTaskBoardStoreContract } from "@koi/tasks/src/task-board-store.contr
 runTaskBoardStoreContract(() => createMyStore());
 ```
 
+## EngineEvent Bridging (#1555)
+
+`ManagedTaskBoardConfig` gains two optional fields for automatic engine event emission:
+
+- `onEngineEvent: (event: EngineEvent) => void` — callback receiving `plan_update` and `task_progress` events
+- `agentId: AgentId` — branded agent ID attached to emitted events
+
+When both are provided, the managed board automatically bridges `TaskBoardEvent` mutations
+to `EngineEvent` kinds via `mapTaskBoardEventToEngineEvents()` (a pure function in
+`@koi/task-board` L0u). Events are buffered during persistence and flushed after the store
+write succeeds, so consumers never observe events for uncommitted state.
+
+On construction, a `plan_update` snapshot is emitted as the initial hydration event so
+downstream consumers (TUI, trajectory) receive the full board state at startup.
+
 ## Relationship to Other Packages
 
 | Package | Relationship |

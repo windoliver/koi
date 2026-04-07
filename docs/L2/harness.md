@@ -38,6 +38,8 @@ interface HarnessRuntime {
 | `tool_call_start` | null | rendered as `[tool: name]` |
 | `tool_call_end` | null | rendered with result summary |
 | `done` | trailing newline | trailing newline |
+| `plan_update` | null | rendered as `[plan] N tasks` |
+| `task_progress` | null | rendered as `[task] id: status` |
 | `permission_attempt` | null (silent) | null (silent) |
 | all others | null | null |
 

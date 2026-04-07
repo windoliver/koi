@@ -54,14 +54,14 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/query-engine` | Model stream consumer + turn runner; `validateToolArgs` recognizes `items`/`properties`/`required` in addition to `type`/`description`/`title`/`default` — tools with array/object parameters now pass schema validation | all queries |
 | `@koi/spawn-tools` | Agent spawn tool + coordinator utilities (TaskCascade, recoverOrphanedTasks) | `spawn-tools` |
 | `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
-| `@koi/tasks` | In-memory task board store | `task-board` |
+| `@koi/tasks` | In-memory task board store. `ManagedTaskBoardConfig` gains `onEngineEvent` + `agentId` for automatic plan/progress engine event bridging with post-persistence flush (#1555) | `task-board` |
 | `@koi/bash-security` | Bash command classifier pipeline — allowlist gate, injection/path/command denylist (L0u) | standalone |
 | `@koi/tools-bash` | Bash execution tool: cwd-contained, env-isolated, process-group kill, exfiltration denylist. Now includes `createBashBackgroundTool()` for fire-and-forget subprocess execution via `ManagedTaskBoard`, shared `exec.ts` spawn/drain layer, `trackCwd` sentinel for directory tracking, and OS sandbox DI (`sandboxAdapter` + `sandboxProfile`) | `bash-exec`, `bash-background`, `bash-track-cwd` |
 | `@koi/tools-builtin` | Built-in tools: Glob, Grep, ToolSearch, Read, FsRead. Credential path guard (`createCredentialPathGuard`) blocks fs tool access to `~/.ssh`, `~/.aws`, etc. — default-on via `RuntimeConfig.credentialPathGuard` | `glob-use` |
 | `@koi/sandbox-os` | OS-level sandbox executor (macOS Seatbelt / Linux bwrap). Sandbox adapter now injected into `createBashTool()` at L3 (DI pattern replaces standalone `run_sandboxed` tool). Seatbelt deny rules fixed: explicit `file-read-data`/`file-read-metadata` instead of invalid `file-read*` wildcard | `sandbox-exec` |
 | `@koi/tools-web` | Web fetch and search tools with SSRF protection | `web-fetch` |
 | `@koi/skills-runtime` | Multi-source skill loader (`bundled < user < project` precedence) with fail-closed AST security gate (`@koi/skill-scanner`). `createSkillProvider()` loads all skills at attach time and inserts each as a `SkillComponent` under `skillToken(name)` in the agent ECS. Blocked/failed skills → `SkippedComponent[]` (partial success). Note: ECS attachment only — skill injection into model context is Phase 2d-4 (#1563) | `skill-load` |
-| `@koi/harness` | CLI harness: single-prompt + interactive REPL wiring, TUI adapter bridge, fail-closed stream guards | standalone |
+| `@koi/harness` | CLI harness: single-prompt + interactive REPL wiring, TUI adapter bridge, fail-closed stream guards. Renders `plan_update` and `task_progress` events in verbose mode (#1555) | standalone |
 
 > **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board` are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/`.
 
