@@ -53,7 +53,7 @@ describe("task:added mapping", () => {
     expect(progress.timestamp).toBe(1000);
   });
 
-  test("added task with activeForm carries it through", () => {
+  test("added task does not carry activeForm (pending status, not in_progress)", () => {
     const { engineEvents, board } = createWiredBoard();
     board.add({
       id: tid("t1"),
@@ -63,7 +63,8 @@ describe("task:added mapping", () => {
     });
 
     const progress = engineEvents[0] as EngineEvent & { readonly kind: "task_progress" };
-    expect(progress.activeForm).toBe("Doing thing");
+    // activeForm is suppressed for non-in_progress tasks to avoid stale spinner text
+    expect(progress.activeForm).toBeUndefined();
   });
 
   test("addAll emits bounded events (no O(N^2) snapshots)", () => {

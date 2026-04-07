@@ -21,6 +21,7 @@ import type {
   Task,
   TaskBoard,
   TaskBoardConfig,
+  TaskBoardEvent,
   TaskBoardStore,
   TaskInput,
   TaskItemId,
@@ -155,25 +156,30 @@ export async function createManagedTaskBoard(
 ): Promise<ManagedTaskBoard> {
   const { store, boardConfig, resultsDir, onEngineEvent, agentId } = config;
 
-  // Buffer engine events during mutation, flush only after persistence succeeds.
-  // This prevents split-brain where the TUI shows committed state but persistence failed.
+  // Buffer all observer notifications during mutation, flush only after persistence
+  // succeeds. This prevents split-brain where observers see committed state but
+  // persistence failed. Both engine events and user onEvent are deferred.
   let pendingEngineEvents: EngineEvent[] = [];
+  let pendingUserEvents: { readonly event: TaskBoardEvent; readonly board: TaskBoard }[] = [];
+  const hasEngineBridge = onEngineEvent !== undefined && agentId !== undefined;
 
-  const resolvedConfig: TaskBoardConfig | undefined =
-    onEngineEvent !== undefined && agentId !== undefined
-      ? {
-          ...boardConfig,
-          onEvent: (event, newBoard) => {
-            // Fire user handler first (if any)
-            boardConfig?.onEvent?.(event, newBoard);
-            // Buffer engine events — flushed by applyMutation after persistence
-            const mapped = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
-            for (const e of mapped) {
-              pendingEngineEvents.push(e);
-            }
-          },
+  const resolvedConfig: TaskBoardConfig = {
+    ...boardConfig,
+    // Capture all events during mutation — flushed by applyMutation after persistence
+    onEvent: (event, newBoard) => {
+      // Buffer user handler notifications (deferred to post-persistence)
+      if (boardConfig?.onEvent !== undefined) {
+        pendingUserEvents.push({ event, board: newBoard });
+      }
+      // Buffer engine events (deferred to post-persistence)
+      if (hasEngineBridge) {
+        const mapped = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
+        for (const e of mapped) {
+          pendingEngineEvents.push(e);
         }
-      : boardConfig;
+      }
+    },
+  };
 
   // Load initial state from store
   const items = await store.list();
@@ -233,17 +239,32 @@ export async function createManagedTaskBoard(
       }
       await persistBoardDiff(store, oldBoard, result.value);
       board = result.value;
-      // Flush engine events only after persistence succeeds
+      // Flush all observer notifications only after persistence succeeds.
+      // User handler and engine events are isolated — one throwing cannot suppress the other.
+      const userEventsToFlush = pendingUserEvents;
+      const engineEventsToFlush = pendingEngineEvents;
+      pendingUserEvents = [];
+      pendingEngineEvents = [];
+      // Flush user handler (isolated — errors swallowed per TaskBoard emit() contract)
+      if (boardConfig?.onEvent !== undefined) {
+        for (const { event: ev, board: b } of userEventsToFlush) {
+          try {
+            boardConfig.onEvent(ev, b);
+          } catch {
+            // Swallow — matches TaskBoard emit() contract
+          }
+        }
+      }
+      // Flush engine events (isolated from user handler failures)
       if (onEngineEvent !== undefined) {
-        const toFlush = pendingEngineEvents;
-        pendingEngineEvents = [];
-        for (const e of toFlush) {
+        for (const e of engineEventsToFlush) {
           onEngineEvent(e);
         }
       }
       return result;
     } catch (err: unknown) {
-      // Discard buffered engine events — persistence failed
+      // Discard all buffered notifications — persistence failed
+      pendingUserEvents = [];
       pendingEngineEvents = [];
       // Translate store-layer exceptions (version conflicts, corrupt files,
       // I/O errors) into typed KoiError results instead of raw rejections.

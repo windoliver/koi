@@ -169,6 +169,10 @@ export function mapTaskBoardEventToEngineEvents(
   const subject = deriveSubject(event, board);
   const activeForm = deriveActiveForm(event, board);
 
+  // Only include activeForm for in_progress tasks — pending/completed/failed/killed
+  // tasks should not carry stale spinner text from a prior active phase.
+  const includeActiveForm = activeForm !== undefined && status === "in_progress";
+
   const progress: EngineEvent = {
     kind: "task_progress",
     agentId,
@@ -176,7 +180,7 @@ export function mapTaskBoardEventToEngineEvents(
     subject,
     previousStatus,
     status,
-    ...(activeForm !== undefined ? { activeForm } : {}),
+    ...(includeActiveForm ? { activeForm } : {}),
     ...(event.kind === "task:failed" ? { detail: event.error.message } : {}),
     timestamp,
   };
