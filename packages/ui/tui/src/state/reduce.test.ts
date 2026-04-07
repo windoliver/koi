@@ -1754,6 +1754,15 @@ describe("reduce — agentStatus", () => {
     expect(next.agentStatus).toBe("idle");
   });
 
+  test("clear_messages resets planTasks to null", () => {
+    const state = stateWith({
+      planTasks: [{ id: "t1", subject: "Thing", status: "in_progress" }],
+      messages: [userMsg("hi")],
+    });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.planTasks).toBeNull();
+  });
+
   test("session-picker modal does not affect agentStatus", () => {
     const state = stateWith({ agentStatus: "processing" });
     const next = reduce(state, { kind: "set_modal", modal: { kind: "session-picker" } });

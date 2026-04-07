@@ -437,8 +437,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "clear_messages":
-      if (state.messages.length === 0 && state.agentStatus === "idle") return state;
-      return { ...state, messages: [], agentStatus: "idle" };
+      if (state.messages.length === 0 && state.agentStatus === "idle" && state.planTasks === null)
+        return state;
+      return { ...state, messages: [], agentStatus: "idle", planTasks: null };
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.

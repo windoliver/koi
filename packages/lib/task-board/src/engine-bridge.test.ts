@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentId, EngineEvent, TaskItemId, TaskStatus } from "@koi/core";
 import { agentId, taskItemId } from "@koi/core";
 import { createTaskBoard } from "./board.js";
-import { mapTaskBoardEventToEngineEvents } from "./engine-bridge.js";
+import { createWiredTaskBoard, mapTaskBoardEventToEngineEvents } from "./engine-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -323,5 +323,53 @@ describe("task:unassigned mapping", () => {
     const progress = engineEvents[0] as EngineEvent & { readonly kind: "task_progress" };
     expect(progress.previousStatus).toBe("in_progress");
     expect(progress.status).toBe("pending");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createWiredTaskBoard convenience factory
+// ---------------------------------------------------------------------------
+
+describe("createWiredTaskBoard", () => {
+  test("emits EngineEvents on mutations without manual wiring", () => {
+    const engineEvents: EngineEvent[] = [];
+    const board = createWiredTaskBoard({
+      agentId: AGENT,
+      onEngineEvent: (e) => engineEvents.push(e),
+      clock: CLOCK,
+    });
+
+    const r1 = board.add({ id: tid("t1"), description: "Do thing", subject: "Thing" });
+    expect(r1.ok).toBe(true);
+    expect(engineEvents).toHaveLength(2);
+    expect(engineEvents[0]?.kind).toBe("task_progress");
+    expect(engineEvents[1]?.kind).toBe("plan_update");
+  });
+
+  test("passes through config options", () => {
+    const engineEvents: EngineEvent[] = [];
+    const board = createWiredTaskBoard({
+      agentId: AGENT,
+      onEngineEvent: (e) => engineEvents.push(e),
+      config: { maxRetries: 0 },
+    });
+
+    const r1 = board.add({ id: tid("t1"), description: "Do thing" });
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(tid("t1"), AGENT);
+    if (!r2.ok) return;
+    // With maxRetries: 0, retryable errors should fail terminally
+    const r3 = r2.value.fail(tid("t1"), {
+      code: "TIMEOUT",
+      message: "timed out",
+      retryable: true,
+    });
+    expect(r3.ok).toBe(true);
+    // Should get task:failed (not task:retried) since maxRetries=0
+    const failProgress = engineEvents.find(
+      (e) =>
+        e.kind === "task_progress" && (e as { readonly status: TaskStatus }).status === "failed",
+    );
+    expect(failProgress).toBeDefined();
   });
 });

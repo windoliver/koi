@@ -10,10 +10,13 @@ import type {
   EngineEvent,
   Task,
   TaskBoard,
+  TaskBoardConfig,
   TaskBoardEvent,
+  TaskBoardSnapshot,
   TaskItemId,
   TaskStatus,
 } from "@koi/core";
+import { createTaskBoard } from "./board.js";
 
 // ---------------------------------------------------------------------------
 // Snapshot builder
@@ -180,4 +183,47 @@ export function mapTaskBoardEventToEngineEvents(
   }
 
   return [progress];
+}
+
+// ---------------------------------------------------------------------------
+// Convenience factory
+// ---------------------------------------------------------------------------
+
+/** Options for creating a task board pre-wired to emit EngineEvents. */
+export interface WiredTaskBoardOptions {
+  readonly agentId: AgentId;
+  readonly onEngineEvent: (event: EngineEvent) => void;
+  readonly config?: Omit<TaskBoardConfig, "onEvent"> | undefined;
+  readonly initial?: TaskBoardSnapshot | undefined;
+  readonly clock?: (() => number) | undefined;
+}
+
+/**
+ * Creates a TaskBoard that automatically emits plan_update / task_progress
+ * EngineEvents on every mutation via the provided callback.
+ *
+ * This is the recommended way to connect a TaskBoard to an engine event stream.
+ *
+ * @example
+ * ```ts
+ * const board = createWiredTaskBoard({
+ *   agentId: myAgentId,
+ *   onEngineEvent: (event) => pendingEvents.push(event),
+ * });
+ * ```
+ */
+export function createWiredTaskBoard(options: WiredTaskBoardOptions): TaskBoard {
+  const { agentId, onEngineEvent, config, initial, clock } = options;
+  return createTaskBoard(
+    {
+      ...config,
+      onEvent: (event, board) => {
+        const engineEvents = mapTaskBoardEventToEngineEvents(event, board, agentId, clock);
+        for (const e of engineEvents) {
+          onEngineEvent(e);
+        }
+      },
+    },
+    initial,
+  );
 }
