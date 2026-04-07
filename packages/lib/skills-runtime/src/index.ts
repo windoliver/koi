@@ -20,6 +20,7 @@ import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
 import type { SkillDefinition, SkillSource, SkillsRuntime, SkillsRuntimeConfig } from "./types.js";
 
+export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
 export type { ValidatedSkillRequires } from "./types.js";
 export type { ValidatedFrontmatter } from "./validate.js";
 export type { SkillDefinition, SkillSource, SkillsRuntime, SkillsRuntimeConfig };
