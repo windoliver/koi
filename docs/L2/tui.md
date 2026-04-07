@@ -362,10 +362,13 @@ prompt replaces palette (known limitation, intentional for v2 scope).
 `Result<TuiAppHandle, TuiStartError>`). Calling `handle.start()` mounts the renderer and
 Solid component tree. `handle.stop()` is idempotent.
 
-**Nav command interception:** `TuiRoot` intercepts `nav:sessions`, `nav:doctor`, `nav:help`
-from the command palette before they reach the CLI's `onCommand` callback. Only engine-affecting
-commands (`agent:*`, `session:*`, `system:*`) bubble up. The pure helper `resolveNavCommand(id)`
-maps command ID → `TuiView | null` and is exported for testing.
+**Nav command interception:** `TuiRoot` intercepts `nav:sessions`, `nav:doctor`, `nav:help`,
+and `nav:trajectory` from the command palette before they reach the CLI's `onCommand` callback.
+Only engine-affecting commands (`agent:*`, `session:*`, `system:*`) bubble up. The pure helper
+`resolveNavCommand(id)` maps command ID → `TuiView | null` and is exported for testing.
+
+**`nav:trajectory` command:** Opens the ATIF execution trace view for the current session.
+Added to `COMMAND_DEFINITIONS` in the `navigation` category.
 
 ### `createTuiApp` flow
 
