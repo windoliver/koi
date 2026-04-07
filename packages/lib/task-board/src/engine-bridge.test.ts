@@ -206,7 +206,7 @@ describe("task:killed mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("task:unreachable mapping", () => {
-  test("emits task_progress + plan_update with blockedBy", () => {
+  test("emits task_progress only (non-structural to avoid cascade O(N))", () => {
     const { engineEvents, board } = createWiredBoard();
     const r1 = board.add({ id: tid("t1"), description: "Parent" });
     if (!r1.ok) return;
@@ -229,7 +229,7 @@ describe("task:unreachable mapping", () => {
     });
     expect(r4.ok).toBe(true);
 
-    // Should have: t1 failed progress + plan_update, t2 unreachable progress + plan_update
+    // t2 gets a task_progress (from task:unreachable)
     const unreachableProgress = engineEvents.find(
       (e) =>
         e.kind === "task_progress" && (e as { readonly taskId: TaskItemId }).taskId === tid("t2"),
@@ -238,12 +238,12 @@ describe("task:unreachable mapping", () => {
     expect(unreachableProgress?.previousStatus).toBe("pending");
     expect(unreachableProgress?.status).toBe("pending");
 
-    // plan_update should show blockedBy
-    const lastPlanUpdate = engineEvents.filter((e) => e.kind === "plan_update").at(-1) as
+    // plan_update from task:failed (structural) includes blockedBy for t2
+    const planUpdate = engineEvents.find((e) => e.kind === "plan_update") as
       | (EngineEvent & { readonly kind: "plan_update" })
       | undefined;
-    expect(lastPlanUpdate).toBeDefined();
-    const t2InPlan = lastPlanUpdate?.tasks.find((t) => t.id === tid("t2"));
+    expect(planUpdate).toBeDefined();
+    const t2InPlan = planUpdate?.tasks.find((t) => t.id === tid("t2"));
     expect(t2InPlan?.blockedBy).toBe(tid("t1"));
   });
 });

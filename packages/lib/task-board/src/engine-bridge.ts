@@ -143,31 +143,48 @@ function deriveActiveForm(event: TaskBoardEvent, board: TaskBoard): string | und
 
 /**
  * Events that trigger a plan_update snapshot in addition to task_progress.
- * task:added is excluded — addAll() emits one per task, producing O(N^2)
- * snapshot traffic. The TUI reducer upserts on task_progress instead.
+ * Excluded from snapshots (upserted via task_progress instead):
+ * - task:added — addAll() emits one per task, producing O(N^2) snapshot traffic
+ * - task:unreachable — fail/kill cascade emits one per descendant, same O(N) problem
+ * - task:assigned, task:unassigned, task:retried — non-structural status changes
  */
 const STRUCTURAL_EVENTS = new Set<TaskBoardEvent["kind"]>([
   "task:completed",
   "task:failed",
   "task:killed",
-  "task:unreachable",
   "task:updated",
 ]);
+
+/**
+ * Derives the acting agent for an event. Prefers per-event/per-task agent
+ * identity over the board-wide default to preserve multi-agent isolation.
+ */
+function deriveAgentId(event: TaskBoardEvent, board: TaskBoard, fallback: AgentId): AgentId {
+  // Assignment events carry the acting agent explicitly
+  if (event.kind === "task:assigned") return event.agentId;
+  // For other events, use the task's current assignee if available
+  const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
+  const task = board.get(taskId);
+  return task?.assignedTo ?? fallback;
+}
 
 /**
  * Maps a TaskBoardEvent + post-mutation board to EngineEvent(s).
  *
  * Always produces at least one `task_progress` event.
  * Structural changes also produce a `plan_update` snapshot.
+ *
+ * @param boardOwner - Default agent ID when no per-task/per-event agent is available
  */
 export function mapTaskBoardEventToEngineEvents(
   event: TaskBoardEvent,
   board: TaskBoard,
-  agentId: AgentId,
+  boardOwner: AgentId,
   clock: () => number = Date.now,
 ): readonly EngineEvent[] {
   const timestamp = clock();
   const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
+  const agentId = deriveAgentId(event, board, boardOwner);
   const previousStatus = derivePreviousStatus(event, board);
   const status = deriveNewStatus(event, board);
   const subject = deriveSubject(event, board);
