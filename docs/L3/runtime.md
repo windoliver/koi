@@ -51,7 +51,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/session` | Session persistence (SQLite/WAL) + JSONL transcript middleware + `resumeFromTranscript()` for crash recovery. Phase 2e-2: `SessionStatus`, `ContentReplacement`, `CompactResult` boundary extension, instance-local queue isolation | standalone — wired via `RuntimeConfig.session.transcriptDir` |
 | `@koi/model-openai-compat` | OpenAI-compatible model adapter (OpenRouter etc.) | all LLM queries |
 | `@koi/permissions` | Permission backend (bypass/default/nexus modes) | `permission-deny` |
-| `@koi/query-engine` | Model stream consumer + turn runner | all queries |
+| `@koi/query-engine` | Model stream consumer + turn runner; `validateToolArgs` recognizes `items`/`properties`/`required` in addition to `type`/`description`/`title`/`default` — tools with array/object parameters now pass schema validation | all queries |
 | `@koi/spawn-tools` | Agent spawn tool + coordinator utilities (TaskCascade, recoverOrphanedTasks) | `spawn-tools` |
 | `@koi/task-tools` | Task board tools (create/get/update/list/stop/output/delegate) | `task-tools` |
 | `@koi/tasks` | In-memory task board store | `task-board` |

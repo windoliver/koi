@@ -24,6 +24,11 @@ export interface StartFlags extends BaseFlags {
   readonly logFormat: "text" | "json";
   /** Force raw-stdout output even when @koi/tui is available. */
   readonly noTui: boolean;
+  /**
+   * Maximum number of transcript messages to include in each model request.
+   * Defaults to 100 (≈50 turns). Lower values reduce token costs for long sessions.
+   */
+  readonly contextWindow: number;
 }
 
 export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartFlags {
@@ -35,6 +40,7 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     readonly "dry-run": boolean | undefined;
     readonly "log-format": string | undefined;
     readonly "no-tui": boolean | undefined;
+    readonly "context-window": string | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -47,6 +53,7 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
         "dry-run": { type: "boolean", default: false },
         "log-format": { type: "string" },
         "no-tui": { type: "boolean", default: false },
+        "context-window": { type: "string" },
       },
       allowPositionals: true,
     },
@@ -75,7 +82,17 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     dryRun: values["dry-run"] ?? false,
     logFormat: resolveLogFormat(values["log-format"]),
     noTui: values["no-tui"] ?? false,
+    contextWindow: resolveContextWindow(values["context-window"]),
   };
+}
+
+const DEFAULT_CONTEXT_WINDOW = 100;
+
+/** Parse --context-window value. Returns default on invalid/missing input. */
+function resolveContextWindow(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_CONTEXT_WINDOW;
+  const parsed = parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CONTEXT_WINDOW;
 }
 
 export function isStartFlags(flags: BaseFlags): flags is StartFlags {

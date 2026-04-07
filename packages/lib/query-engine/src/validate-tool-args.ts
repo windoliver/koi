@@ -25,7 +25,18 @@ const SUPPORTED_ROOT_KEYWORDS = new Set([
   "default",
 ]);
 
-const SUPPORTED_PROPERTY_KEYWORDS = new Set(["type", "description", "title", "default"]);
+const SUPPORTED_PROPERTY_KEYWORDS = new Set([
+  "type",
+  "description",
+  "title",
+  "default",
+  // Structural keywords for arrays/objects — recognized but not deeply validated.
+  // The validator only checks top-level property types; nested schema contents
+  // (item shapes, nested required, nested properties) are not evaluated.
+  "items",
+  "properties",
+  "required",
+]);
 
 /**
  * Validate tool arguments against the descriptor's inputSchema.

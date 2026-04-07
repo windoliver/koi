@@ -16,7 +16,7 @@ import type { TuiState } from "../state/types.js";
 import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
 import { MessageList } from "./message-list.js";
 
-const RENDER_OPTS = { width: 80, height: 24 };
+const RENDER_OPTS = { width: 80, height: 100 };
 
 async function renderList(state: TuiState): Promise<string> {
   const store = createStore(state);
@@ -30,6 +30,9 @@ async function renderList(state: TuiState): Promise<string> {
     ),
     RENDER_OPTS,
   );
+  await renderOnce();
+  // Second pass: recalculateBarProps fires a process.nextTick that requests another
+  // render; the second renderOnce() lets stickyStart settle before capturing.
   await renderOnce();
   const frame = captureCharFrame();
   renderer.destroy();

@@ -229,4 +229,17 @@ export type TuiAction =
       readonly kind: "set_session_list";
       readonly sessions: readonly SessionSummary[];
     }
-  | { readonly kind: "set_slash_query"; readonly query: string | null };
+  | { readonly kind: "set_slash_query"; readonly query: string | null }
+  | {
+      /**
+       * Replays loaded session history into the message list.
+       * Injected by the host after resumeForSession; TUI never performs I/O.
+       * Prepended before any live messages so the conversation reads top-to-bottom.
+       * Only user/assistant messages are shown; tool entries are skipped.
+       */
+      readonly kind: "load_history";
+      readonly messages: readonly {
+        readonly senderId: string;
+        readonly content: readonly ContentBlock[];
+      }[];
+    };

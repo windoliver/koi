@@ -130,6 +130,30 @@ describe("validateToolArgs", () => {
     expect(result).toContain('unsupported keyword "allOf"');
   });
 
+  test("passes array property with items schema keyword (structural, not deeply validated)", () => {
+    // Regression: fs_edit schema uses 'items' on the edits array property.
+    // The validator must accept 'items' without deep-validating its contents.
+    const result = validateToolArgs(
+      { path: "edit-test.txt", edits: [{ oldText: "hello", newText: "goodbye" }] },
+      desc({
+        properties: {
+          path: { type: "string", description: "File path" },
+          edits: {
+            type: "array",
+            description: "Array of hunks",
+            items: {
+              type: "object",
+              properties: { oldText: { type: "string" }, newText: { type: "string" } },
+              required: ["oldText", "newText"],
+            },
+          },
+        },
+        required: ["path", "edits"],
+      }),
+    );
+    expect(result).toBeUndefined();
+  });
+
   test("rejects property with enum keyword", () => {
     const result = validateToolArgs(
       { mode: "fast" },

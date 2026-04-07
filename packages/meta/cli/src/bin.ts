@@ -86,7 +86,7 @@ if (isTuiFlags(flags)) {
   // Re-exec the same command with --conditions browser so both @koi/tui and
   // @opentui/solid resolve solid-js to dist/solid.js (the reactive build).
   // The env marker prevents infinite re-exec loops.
-  if (process.env["KOI_TUI_BROWSER_SOLID"] !== "1") {
+  if (process.env.KOI_TUI_BROWSER_SOLID !== "1") {
     const baseEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") baseEnv[k] = v;

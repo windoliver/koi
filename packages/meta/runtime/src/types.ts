@@ -85,6 +85,17 @@ export interface RuntimeConfig {
       }
     | undefined;
 
+  /**
+   * Fixed session ID threaded into TurnContext.session.sessionId for every
+   * stream() call. When provided, all turns in this runtime share the same
+   * session routing key so middleware (e.g. transcript) writes to a single
+   * persistent file. When omitted, each stream gets a unique UUID (default).
+   *
+   * Use this for multi-turn sessions that need transcript continuity, e.g.:
+   *   createRuntime({ sessionId: mySessionId, middleware: [transcriptMw] })
+   */
+  readonly sessionId?: string | undefined;
+
   /** User identity for tenant-aware middleware. */
   readonly userId?: string | undefined;
 

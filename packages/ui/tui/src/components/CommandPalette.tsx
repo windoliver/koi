@@ -134,8 +134,17 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
       updateQuery(queryRef.slice(0, -1));
       return;
     }
-    // Single printable character (no Ctrl, no Meta modifier)
-    if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+    // Single printable character (no Ctrl, no Meta modifier).
+    // Exclude Enter (\r) and Tab (\t) — those are navigation keys handled
+    // by SelectOverlay and must not be consumed as query characters.
+    if (
+      key.sequence &&
+      key.sequence.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      key.name !== "return" &&
+      key.name !== "tab"
+    ) {
       key.preventDefault();
       updateQuery(queryRef + key.sequence);
     }
