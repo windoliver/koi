@@ -31,7 +31,7 @@ function normalizeModuleId(specifier: string): string {
 }
 
 /** Root objects that alias the global scope — only these are trusted as chain prefixes. */
-const GLOBAL_ROOTS = new Set(["globalThis", "window", "global", "self"]);
+const GLOBAL_ROOTS = new Set(["globalThis", "window", "global"]);
 
 /**
  * Match a dotted member path against a set, allowing known global prefixes.
@@ -54,7 +54,7 @@ function matchWithGlobalPrefix(fullPath: string, set: ReadonlySet<string>): stri
   return undefined;
 }
 
-const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval", "self.eval"]);
+const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval"]);
 
 const DANGEROUS_MEMBER_CALLS = new Set([
   "process.binding",
@@ -99,34 +99,6 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
               : `Direct call to ${resolved}()`,
             location: loc,
           });
-        }
-
-        // Aliased member-expression call: const e = globalThis["eval"]; e()
-        if (resolved.includes(".")) {
-          const dangerousAlias = matchWithGlobalPrefix(resolved, DANGEROUS_MEMBER_CALLS);
-          if (dangerousAlias !== undefined) {
-            const loc = offsetToLocation(ctx.sourceText, node.start);
-            findings.push({
-              rule: `dangerous-api:${dangerousAlias}`,
-              severity: "CRITICAL",
-              confidence: 0.75,
-              category: "DANGEROUS_API",
-              message: `Aliased call to ${resolved}() via variable "${callee}"`,
-              location: loc,
-            });
-          }
-          const evalAlias = matchWithGlobalPrefix(resolved, GLOBAL_EVAL_PATHS);
-          if (evalAlias !== undefined) {
-            const loc = offsetToLocation(ctx.sourceText, node.start);
-            findings.push({
-              rule: "dangerous-api:global-eval",
-              severity: "CRITICAL",
-              confidence: 0.8,
-              category: "DANGEROUS_API",
-              message: `Aliased call to ${resolved}() via variable "${callee}" — global eval access`,
-              location: loc,
-            });
-          }
         }
 
         // setTimeout/setInterval with string argument

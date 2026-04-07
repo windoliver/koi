@@ -38,25 +38,6 @@ describe("buildScopeTracker", () => {
     const result = scope.resolve("a");
     expect(typeof result).toBe("string");
   });
-
-  test("tracks member-expression aliases", () => {
-    const program = parse('const e = globalThis["eval"];');
-    const scope = buildScopeTracker(program);
-    expect(scope.resolve("e")).toBe("globalThis.eval");
-  });
-
-  test("tracks dot-notation member aliases", () => {
-    const program = parse("const x = child_process.execSync;");
-    const scope = buildScopeTracker(program);
-    expect(scope.resolve("x")).toBe("child_process.execSync");
-  });
-
-  test("isDeclared returns true for local variables", () => {
-    const program = parse("const self = {};");
-    const scope = buildScopeTracker(program);
-    expect(scope.isDeclared("self")).toBe(true);
-    expect(scope.isDeclared("globalThis")).toBe(false);
-  });
 });
 
 describe("visitAst", () => {

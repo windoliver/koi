@@ -29,38 +29,27 @@ import { Visitor } from "oxc-parser";
 // ---------------------------------------------------------------------------
 
 /**
- * Tracks `const x = eval` and `const x = obj.method` style aliases.
- * Also tracks locally declared names to distinguish shadowed locals from globals.
+ * Tracks `const x = eval` style aliases in a flat Map.
+ * Not full scope analysis, but catches the most common evasion pattern.
  */
 export interface ScopeTracker {
   readonly aliases: ReadonlyMap<string, string>;
-  /** Resolve an identifier through the alias chain. */
   readonly resolve: (name: string) => string;
-  /** True if the name was declared locally (const/let/var). */
-  readonly isDeclared: (name: string) => boolean;
 }
 
 export function buildScopeTracker(program: Program): ScopeTracker {
   // Map is local to this function; push is the idiomatic way to build it
   const aliases = new Map<string, string>();
-  const declared = new Set<string>();
 
   const visitor: VisitorObject = {
     VariableDeclarator(node: VariableDeclarator) {
-      if (node.id.type !== "Identifier") return;
-      declared.add(node.id.name);
-      if (node.init === null || node.init === undefined) return;
-      // Direct alias: const e = eval
-      if (node.init.type === "Identifier") {
+      if (
+        node.id.type === "Identifier" &&
+        node.init !== null &&
+        node.init !== undefined &&
+        node.init.type === "Identifier"
+      ) {
         aliases.set(node.id.name, node.init.name);
-        return;
-      }
-      // Member-expression alias: const e = obj.method / obj["method"] / obj[`method`]
-      if (node.init.type === "MemberExpression") {
-        const path = flattenMemberChain(node.init);
-        if (path !== undefined) {
-          aliases.set(node.id.name, path);
-        }
       }
     },
   };
@@ -78,9 +67,6 @@ export function buildScopeTracker(program: Program): ScopeTracker {
         resolved = aliases.get(resolved) ?? resolved;
       }
       return resolved;
-    },
-    isDeclared(name: string): boolean {
-      return declared.has(name);
     },
   };
 }

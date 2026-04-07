@@ -208,40 +208,6 @@ describe("bracket-notation bypass detection", () => {
     const report = scanner.scan("process[`binding`]('natives');");
     expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(true);
   });
-
-  test("detects self.eval()", () => {
-    const scanner = createScanner();
-    const report = scanner.scan('self.eval("code");');
-    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
-  });
-
-  test('detects self["eval"]()', () => {
-    const scanner = createScanner();
-    const report = scanner.scan('self["eval"]("code");');
-    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
-  });
-
-  test('detects aliased member: const e = globalThis["eval"]; e()', () => {
-    const scanner = createScanner();
-    const report = scanner.scan('const e = globalThis["eval"]; e("code");');
-    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
-  });
-
-  test("detects aliased member: const x = child_process.execSync; x()", () => {
-    const scanner = createScanner();
-    const report = scanner.scan('const x = child_process.execSync; x("cmd");');
-    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
-      true,
-    );
-  });
-
-  test("conservatively flags shadowed global root: self.eval() even with local self", () => {
-    // Scope-correct analysis would skip this, but the scanner intentionally over-flags
-    // because correct scope tracking requires a full scope walker (future work).
-    const scanner = createScanner();
-    const report = scanner.scan("const self = {}; self.eval();");
-    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
-  });
 });
 
 describe("onFilteredFinding callback", () => {
