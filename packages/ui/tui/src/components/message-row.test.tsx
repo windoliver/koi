@@ -100,7 +100,7 @@ describe("MessageRow — assistant thinking", () => {
 });
 
 describe("MessageRow — assistant tool_call", () => {
-  test("shows tool name with running indicator", async () => {
+  test("shows raw tool name while running (structured display only on completion)", async () => {
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
@@ -108,17 +108,18 @@ describe("MessageRow — assistant tool_call", () => {
         {
           kind: "tool_call",
           callId: "call-1",
-          toolName: "read_file",
+          toolName: "fs_read",
           status: "running",
         },
       ],
       streaming: true,
     };
     const frame = await renderMessage(msg);
-    expect(frame).toContain("read_file");
+    // Decision 7A: raw tool name during streaming, structured on completion
+    expect(frame).toContain("fs_read");
   });
 
-  test("shows tool name with complete indicator", async () => {
+  test("shows mapped title and result on completion", async () => {
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
@@ -126,22 +127,24 @@ describe("MessageRow — assistant tool_call", () => {
         {
           kind: "tool_call",
           callId: "call-1",
-          toolName: "bash",
+          toolName: "Bash",
           status: "complete",
-          args: '{"cmd":"ls"}',
+          args: '{"command":"ls"}',
           result: "file1.ts\nfile2.ts",
         },
       ],
       streaming: false,
     };
     const frame = await renderMessage(msg);
-    expect(frame).toContain("bash");
+    // Structured display: "Shell" title with "ls" subtitle
+    expect(frame).toContain("Shell");
+    expect(frame).toContain("ls");
     expect(frame).toContain("file1.ts");
   });
 
-  test("degrades gracefully with non-serializable result", async () => {
-    const circular: Record<string, unknown> = { name: "test" };
-    circular["self"] = circular;
+  test("renders pre-serialized error sentinel from reducer", async () => {
+    // The reducer's capResult() converts non-serializable values to "[unserializable]".
+    // The component receives `result` as a string — this tests the sentinel display.
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
@@ -151,14 +154,14 @@ describe("MessageRow — assistant tool_call", () => {
           callId: "call-1",
           toolName: "bad_tool",
           status: "complete",
-          result: circular,
+          result: "[unserializable]",
         },
       ],
       streaming: false,
     };
     const frame = await renderMessage(msg);
     expect(frame).toContain("bad_tool");
-    expect(frame).toContain("[result of bad_tool could not be serialized]");
+    expect(frame).toContain("[unserializable]");
   });
 
   test("renders pre-capped tool result from reducer", async () => {
@@ -183,7 +186,7 @@ describe("MessageRow — assistant tool_call", () => {
     expect(frame).toContain("big_tool");
   });
 
-  test("shows tool name with error indicator", async () => {
+  test("shows mapped title with error indicator", async () => {
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
@@ -191,14 +194,17 @@ describe("MessageRow — assistant tool_call", () => {
         {
           kind: "tool_call",
           callId: "call-1",
-          toolName: "write_file",
+          toolName: "fs_write",
           status: "error",
+          args: '{"file_path":"output.txt"}',
         },
       ],
       streaming: false,
     };
     const frame = await renderMessage(msg);
-    expect(frame).toContain("write_file");
+    // Error status still shows structured display (args are available)
+    expect(frame).toContain("Write");
+    expect(frame).toContain("output.txt");
   });
 });
 
@@ -244,7 +250,7 @@ describe("MessageRow — multi-block", () => {
       {
         kind: "tool_call",
         callId: "call-1",
-        toolName: "grep",
+        toolName: "Grep",
         status: "complete",
         args: '{"pattern":"foo"}',
         result: "found in bar.ts",
@@ -259,7 +265,7 @@ describe("MessageRow — multi-block", () => {
     const frame = await renderMessage(msg);
     expect(frame).toContain("Analyzing...");
     expect(frame).toContain("Here is my response.");
-    expect(frame).toContain("grep");
+    expect(frame).toContain("Search");
   });
 });
 
@@ -295,5 +301,95 @@ describe("MessageRow — StatusIndicator characters", () => {
     };
     const frame = await renderMessage(msg);
     expect(frame).toContain("✗");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unknown / MCP tool rendering (Issue 11)
+// ---------------------------------------------------------------------------
+
+describe("MessageRow — unknown/MCP tool rendering", () => {
+  test("unknown tool uses raw name as title on completion", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-mcp",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "my_custom_tool",
+          status: "complete",
+          args: '{"input":"hello","count":3}',
+          result: "done",
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("my_custom_tool");
+    expect(frame).toContain("done");
+  });
+
+  test("MCP tool with server prefix renders raw name", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-mcp-2",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "golden-mcp__weather",
+          status: "complete",
+          args: '{"location":"SF"}',
+          result: "sunny, 72°F",
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("golden-mcp__weather");
+    expect(frame).toContain("sunny");
+  });
+
+  test("structured display with subtitle for known tool", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-structured",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "Glob",
+          status: "complete",
+          args: '{"pattern":"src/**/*.ts"}',
+          result: "src/index.ts\nsrc/app.ts",
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("Glob");
+    expect(frame).toContain("src/**/*.ts");
+  });
+
+  test("fs_edit shows 'Edit' title with file path subtitle", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-edit",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "fs_edit",
+          status: "complete",
+          args: '{"file_path":"src/app.ts","old_string":"x","new_string":"y"}',
+          result: "1 hunk applied",
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("Edit");
+    expect(frame).toContain("src/app.ts");
   });
 });

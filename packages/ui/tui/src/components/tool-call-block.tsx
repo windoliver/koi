@@ -1,16 +1,20 @@
 /**
- * ToolCallBlock — renders a tool call with its lifecycle states.
+ * ToolCallBlock — renders a tool call with structured title/subtitle/chips display.
  *
- * When `syntaxStyle` is provided (tree-sitter available), args and result are
- * rendered with JSON syntax highlighting via OpenTUI's <code> component.
- * Otherwise plain <text> is used as a fallback.
+ * While streaming (status "running"), shows the raw tool name — args are partial
+ * JSON and cannot be parsed. On completion, switches to the structured display:
+ * human-readable title, most-important-arg subtitle, and scalar chips.
+ *
+ * When `syntaxStyle` is provided, the expandable raw args/result sections use
+ * JSON syntax highlighting via OpenTUI's <code> component.
  */
 
 import type { SyntaxStyle } from "@opentui/core";
 import type { Accessor, JSX } from "solid-js";
-import { createMemo, Show } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
 import { COLORS } from "../theme.js";
+import { getToolDisplay, type ToolDisplay } from "../tool-display.js";
 
 type ToolCallData = TuiAssistantBlock & { readonly kind: "tool_call" };
 
@@ -36,53 +40,71 @@ function StatusIndicator(props: {
   }
 }
 
-function formatResult(result: unknown, toolName: string): string {
-  if (result === undefined || result === null) return "";
-  if (typeof result === "string") return result;
-  try {
-    return JSON.stringify(result);
-  } catch {
-    return `[result of ${toolName} could not be serialized]`;
-  }
+/**
+ * Parse args JSON and produce structured display. Gated on status === "complete"
+ * to avoid wasted parses during streaming (Decision 13A).
+ */
+function useToolDisplay(block: ToolCallData): Accessor<ToolDisplay | null> {
+  return createMemo((): ToolDisplay | null => {
+    if (block.status === "running") return null;
+    const raw = block.args;
+    if (raw === undefined || raw === "") return getToolDisplay(block.toolName, {});
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      // Guard: JSON.parse succeeds on strings, numbers, arrays, null — not just objects
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return getToolDisplay(block.toolName, parsed as Readonly<Record<string, unknown>>);
+      }
+      return getToolDisplay(block.toolName, {});
+    } catch {
+      return getToolDisplay(block.toolName, {});
+    }
+  });
 }
 
 export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
-  // createMemo ensures JSON.stringify only runs when result/status change,
-  // not on every spinnerFrame tick.
-  const resultText = createMemo(() =>
-    props.block.status === "complete"
-      ? formatResult(props.block.result, props.block.toolName)
-      : "",
-  );
+  const display = useToolDisplay(props.block);
 
   return (
     <box flexDirection="column" paddingLeft={1}>
+      {/* Title row: status indicator + title + subtitle */}
       <box flexDirection="row" gap={1}>
         <StatusIndicator status={props.block.status} spinnerFrame={props.spinnerFrame} />
-        <text>
-          <b>{props.block.toolName}</b>
-        </text>
+        <Show
+          when={display()}
+          fallback={
+            <text>
+              <b>{props.block.toolName}</b>
+            </text>
+          }
+        >
+          {(d: Accessor<ToolDisplay>) => (
+            <text>
+              <b>{d().title}</b>
+              {d().subtitle !== "" ? `  ${d().subtitle}` : ""}
+            </text>
+          )}
+        </Show>
       </box>
-      <Show when={props.block.args !== undefined && props.block.args !== ""}>
-        <box paddingLeft={2}>
-          <Show
-            when={props.syntaxStyle}
-            fallback={<text fg={COLORS.textMuted}>{props.block.args}</text>}
-          >
-            {(style: () => SyntaxStyle) => (
-              <code content={props.block.args ?? ""} syntaxStyle={style()} filetype="json" />
-            )}
-          </Show>
+
+      {/* Chips row — secondary scalar args */}
+      <Show when={display()?.chips.length}>
+        <box flexDirection="row" gap={1} paddingLeft={2}>
+          <For each={display()?.chips ?? []}>
+            {(chip: string) => <text fg={COLORS.textMuted}>{chip}</text>}
+          </For>
         </box>
       </Show>
-      <Show when={resultText() !== ""}>
+
+      {/* Result — shown on completion */}
+      <Show when={props.block.status === "complete" && props.block.result !== undefined && props.block.result !== ""}>
         <box paddingLeft={2}>
           <Show
             when={props.syntaxStyle}
-            fallback={<text fg={COLORS.textMuted}>{resultText()}</text>}
+            fallback={<text fg={COLORS.textMuted}>{props.block.result}</text>}
           >
-            {(style: () => SyntaxStyle) => (
-              <code content={resultText()} syntaxStyle={style()} filetype="json" />
+            {(style: Accessor<SyntaxStyle>) => (
+              <code content={props.block.result ?? ""} syntaxStyle={style()} filetype="json" />
             )}
           </Show>
         </box>

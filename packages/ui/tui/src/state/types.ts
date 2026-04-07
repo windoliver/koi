@@ -136,8 +136,8 @@ export type TuiAssistantBlock =
       readonly status: ToolCallStatus;
       /** Streamed argument JSON fragments (model generating the function call). */
       readonly args?: string | undefined;
-      /** Tool execution result from tool_call_end (the actual tool response). */
-      readonly result?: unknown;
+      /** Tool execution result — always a string after reducer's capResult(). */
+      readonly result?: string | undefined;
     }
   | {
       readonly kind: "error";
