@@ -197,16 +197,21 @@ async function* streamWithRetry(
 }
 
 // ---------------------------------------------------------------------------
-// Cache fingerprint — deterministic hash of system prompt + tool names for
-// prompt-cache diagnostics. Attached to ModelResponse.metadata so trajectory
-// and TUI can detect cache hit/miss across turns (#1554).
+// Cache fingerprint — deterministic hash of the actual provider-visible prefix
+// (system prompt + sorted tool payload) for prompt-cache diagnostics.
+// Attached to ModelResponse.metadata so trajectory and TUI can detect cache
+// hit/miss across turns (#1554).
 // ---------------------------------------------------------------------------
 
 function computeCacheFingerprint(
   systemPrompt: string | undefined,
-  toolNames: readonly string[] | undefined,
+  tools: readonly ChatCompletionTool[] | undefined,
 ): string {
-  const input = (systemPrompt ?? "") + "\0" + (toolNames ?? []).join("\0");
+  // Hash the exact payload sent on the wire: system prompt + full sorted tool
+  // definitions (name, description, parameters). Using JSON.stringify on the
+  // already-sorted mapped tools ensures schema/description changes are detected.
+  const toolPart = tools !== undefined ? JSON.stringify(tools) : "";
+  const input = `${systemPrompt ?? ""}\0${toolPart}`;
   return computeStringHash(input);
 }
 
@@ -222,10 +227,9 @@ async function* streamOnce(
   const tools =
     request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
-  const cacheFingerprint = computeCacheFingerprint(
-    request.systemPrompt,
-    request.tools?.map((t) => t.name),
-  );
+  // Fingerprint the actual wire payload (sorted tools + system prompt) so
+  // diagnostics accurately reflect provider-visible prefix changes.
+  const cacheFingerprint = computeCacheFingerprint(request.systemPrompt, tools);
   const url = `${config.baseUrl}/chat/completions`;
 
   // Stream idle watchdog — create BEFORE fetch so the signal can cancel

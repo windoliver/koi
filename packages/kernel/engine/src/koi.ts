@@ -386,8 +386,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // stop-gate retries. This replaces the previous skipCapabilityInjection
       // flag: instead of removing the banner on retries (which broke the
       // system-prompt prefix cache), we reuse the identical cached banner.
-      // The stop-gate feedback message (below) already instructs the model
-      // to not parrot capabilities, which prevents the #1493 regression.
+      //
+      // #1493 regression safety: the cached banner is byte-identical to the
+      // initial call — the model does NOT receive new capability text to
+      // fixate on. Combined with the stop-gate feedback message (line ~830)
+      // that explicitly forbids parroting capabilities, this is strictly
+      // safer than recomputing a fresh banner. If a future model consistently
+      // parrots the cached banner despite the instruction, restore the
+      // skipCapabilityInjection guard as a fallback.
       // let justified: mutable cache coordinated between prepareRequest and stop-gate retry
       let cachedCapabilityBanner: string | undefined;
       // let justified: mutable flag — false until first prepareRequest call computes the banner
