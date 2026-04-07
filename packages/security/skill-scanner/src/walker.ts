@@ -141,15 +141,22 @@ export function visitAst(program: Program, callbacks: ScanVisitorCallbacks): voi
 // Node inspection helpers
 // ---------------------------------------------------------------------------
 
-/** Extract string value from a computed member property (`obj["method"]`). */
+/** Extract string value from a computed member property (`obj["method"]` or ``obj[`method`]``). */
 function getComputedStringProperty(node: MemberExpression): string | undefined {
+  if (!node.computed) return undefined;
+  const prop = node.property;
+  // String literal: obj["method"]
+  if (prop.type === "Literal" && "value" in prop && typeof prop.value === "string") {
+    return prop.value;
+  }
+  // No-substitution template literal: obj[`method`]
   if (
-    node.computed &&
-    node.property.type === "Literal" &&
-    "value" in node.property &&
-    typeof node.property.value === "string"
+    prop.type === "TemplateLiteral" &&
+    prop.expressions.length === 0 &&
+    prop.quasis.length === 1
   ) {
-    return node.property.value;
+    const quasi = prop.quasis[0];
+    if (quasi !== undefined && quasi.value.cooked !== null) return quasi.value.cooked;
   }
   return undefined;
 }

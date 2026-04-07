@@ -202,6 +202,24 @@ describe("bracket-notation bypass detection", () => {
       false,
     );
   });
+
+  test("detects template-literal key: process[`binding`]()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("process[`binding`]('natives');");
+    expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(true);
+  });
+
+  test("detects self.eval()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan('self.eval("code");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
+  });
+
+  test('detects self["eval"]()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('self["eval"]("code");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
+  });
 });
 
 describe("onFilteredFinding callback", () => {

@@ -50,7 +50,7 @@ function matchWithGlobalPrefix(fullPath: string, set: ReadonlySet<string>): stri
   return undefined;
 }
 
-const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval"]);
+const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval", "self.eval"]);
 
 const DANGEROUS_MEMBER_CALLS = new Set([
   "process.binding",
