@@ -1,50 +1,50 @@
 {
   "name": "task-board",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775527227257,
+  "recordedAt": 1775531774292,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_n2iB8CmxEkFpsB8VmkuF"
+      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_n2iB8CmxEkFpsB8VmkuF",
+      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_n2iB8CmxEkFpsB8VmkuF",
-      "delta": "{\"description\":\"Review the README for typos\"}"
+      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
+      "delta": "{\"description\":\"Review the README for typos\",\"subject\":\"Review README\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_6HoLQrhsqizbQNimfw8B"
+      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_6HoLQrhsqizbQNimfw8B",
+      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_6HoLQrhsqizbQNimfw8B",
+      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
       "delta": "{}"
     },
     {
       "kind": "usage",
-      "inputTokens": 69,
-      "outputTokens": 12
+      "inputTokens": 811,
+      "outputTokens": 15
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_n2iB8CmxEkFpsB8VmkuF"
+      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_6HoLQrhsqizbQNimfw8B"
+      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF"
     },
     {
       "kind": "done",
@@ -52,26 +52,30 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775527226-VEay6plHHwmH7LAEOLVv",
+        "responseId": "gen-1775531773-Ai4rEdZi5lx2J6sYTQ9Q",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_n2iB8CmxEkFpsB8VmkuF",
+            "id": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
             "name": "task_create",
             "arguments": {
-              "description": "Review the README for typos"
+              "description": "Review the README for typos",
+              "subject": "Review README"
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_6HoLQrhsqizbQNimfw8B",
+            "id": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
             "name": "task_list",
             "arguments": {}
           }
         ],
         "usage": {
-          "inputTokens": 69,
-          "outputTokens": 12
+          "inputTokens": 811,
+          "outputTokens": 15
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "3fb77b2db4b49888f23a9ce3df5fd5ec719431cb471b5f69783fcad9297526ff"
         }
       }
     }

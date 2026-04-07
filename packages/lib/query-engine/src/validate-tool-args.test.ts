@@ -162,12 +162,12 @@ describe("validateToolArgs", () => {
     expect(result).toContain('property "mode" uses unsupported keyword "enum"');
   });
 
-  test("rejects property with pattern keyword", () => {
+  test("accepts property with pattern keyword (recognized, not deeply validated)", () => {
     const result = validateToolArgs(
       { id: "abc" },
       desc({ properties: { id: { type: "string", pattern: "^[0-9]+$" } } }),
     );
-    expect(result).toContain('property "id" uses unsupported keyword "pattern"');
+    expect(result).toBeUndefined();
   });
 
   test("rejects additionalProperties as subschema object", () => {

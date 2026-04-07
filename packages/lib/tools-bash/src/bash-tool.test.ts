@@ -325,3 +325,90 @@ describe("createBashTool — tool descriptor", () => {
     expect((schema as Record<string, unknown>).required).toContain("command");
   });
 });
+
+// ---------------------------------------------------------------------------
+// trackCwd feature tests — real subprocess (cwd sentinel + state persistence)
+// ---------------------------------------------------------------------------
+
+describe("createBashTool — trackCwd", () => {
+  // Use process.cwd() as workspace root — always a valid, fully-resolved path
+  // without macOS symlink surprises that would trip the security classifier.
+  const workspaceRoot = realpathSync(process.cwd());
+
+  test("cwd persists across calls after cd", async () => {
+    const tool = createBashTool({ workspaceRoot, trackCwd: true });
+    // Create a subdirectory to cd into (must be within workspaceRoot)
+    const subdir = `${workspaceRoot}/koi-trackCwd-test-${Date.now()}`;
+    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
+
+    // cd into the subdir
+    const r1 = (await tool.execute({ command: `cd ${subdir}` }, {})) as Record<string, unknown>;
+    expect(r1.exitCode).toBe(0);
+
+    // Second call: pwd should reflect the subdir (cwd tracked)
+    const r2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(r2.exitCode).toBe(0);
+    expect(String(r2.stdout).trim()).toBe(subdir);
+
+    // Cleanup
+    await tool.execute({ command: `rmdir ${subdir}` }, {});
+  });
+
+  test("sentinel is stripped from returned stdout", async () => {
+    const tool = createBashTool({ workspaceRoot, trackCwd: true });
+    const result = (await tool.execute({ command: "echo hello" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    expect(String(result.stdout)).not.toContain("__KOI_CWD__");
+    expect(String(result.stdout).trim()).toBe("hello");
+  });
+
+  test("cwd not updated when command fails", async () => {
+    const tool = createBashTool({ workspaceRoot, trackCwd: true });
+    const subdir = `${workspaceRoot}/koi-trackCwd-fail-${Date.now()}`;
+    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
+    await tool.execute({ command: `cd ${subdir}` }, {});
+
+    // Failing command — cwd should NOT change
+    await tool.execute({ command: "exit 1" }, {});
+
+    // Should still be in subdir
+    const r = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(r.exitCode).toBe(0);
+    expect(String(r.stdout).trim()).toBe(subdir);
+
+    await tool.execute({ command: `rmdir ${subdir}` }, {});
+  });
+
+  test("explicit args.cwd overrides tracked cwd for that call", async () => {
+    const tool = createBashTool({ workspaceRoot, trackCwd: true });
+    const subA = `${workspaceRoot}/koi-cwdA-${Date.now()}`;
+    const subB = `${workspaceRoot}/koi-cwdB-${Date.now()}`;
+    await tool.execute({ command: `mkdir -p ${subA} ${subB}` }, {});
+
+    // Track cwd to subA
+    await tool.execute({ command: `cd ${subA}` }, {});
+
+    // Override to subB for one call
+    const r = (await tool.execute({ command: "pwd", cwd: subB }, {})) as Record<string, unknown>;
+    expect(r.exitCode).toBe(0);
+    expect(String(r.stdout).trim()).toBe(subB);
+
+    // Tracked cwd should still be subA after the override
+    const r2 = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(String(r2.stdout).trim()).toBe(subA);
+
+    await tool.execute({ command: `rmdir ${subA} ${subB}` }, {});
+  });
+
+  test("without trackCwd, cwd does not persist", async () => {
+    const tool = createBashTool({ workspaceRoot });
+    const subdir = `${workspaceRoot}/koi-notrack-${Date.now()}`;
+    await tool.execute({ command: `mkdir -p ${subdir}` }, {});
+    await tool.execute({ command: `cd ${subdir}` }, {});
+    // Next call should be back at workspaceRoot (not subdir)
+    const r = (await tool.execute({ command: "pwd" }, {})) as Record<string, unknown>;
+    expect(r.exitCode).toBe(0);
+    expect(String(r.stdout).trim()).toBe(workspaceRoot);
+    await tool.execute({ command: `rmdir ${subdir}` }, {});
+  });
+});

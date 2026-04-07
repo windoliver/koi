@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.288Z",
+      "timestamp": "2026-04-07T03:16:35.749Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -37,7 +37,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.289Z",
+      "timestamp": "2026-04-07T03:16:35.750Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -54,7 +54,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:48.292Z",
+      "timestamp": "2026-04-07T03:16:35.752Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
       "observation": {
@@ -68,7 +68,7 @@
         "prompt_tokens": 315,
         "completion_tokens": 11
       },
-      "duration_ms": 644,
+      "duration_ms": 654,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -84,16 +84,17 @@
             "description": "Search the web for information. Returns a list of results with title, URL, and snippet. Requires a search backend to be configured in the executor."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "98c01eac0f09ea44c6cb90275a4947a36b3c08fa3058fe9bbb3a21798b59adf7"
       }
     },
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.938Z",
+      "timestamp": "2026-04-07T03:16:36.412Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 645.6884170000012,
+      "duration_ms": 661.8375000000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +111,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.939Z",
+      "timestamp": "2026-04-07T03:16:36.413Z",
       "model_name": "middleware:hooks",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 645.7595000000001,
+      "duration_ms": 661.9896249999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -130,10 +131,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.940Z",
+      "timestamp": "2026-04-07T03:16:36.414Z",
       "model_name": "middleware:permissions",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 645.9043329999986,
+      "duration_ms": 662.1214170000021,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -150,10 +151,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.941Z",
+      "timestamp": "2026-04-07T03:16:36.415Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 645.9260830000021,
+      "duration_ms": 662.1402079999971,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -170,14 +171,14 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:48.942Z",
+      "timestamp": "2026-04-07T03:16:36.416Z",
       "tool_calls": [
         {
           "tool_call_id": "call_web_fetch_7",
           "function_name": "web_fetch",
           "arguments": {
-            "format": "html",
-            "url": "http://example.com"
+            "url": "http://example.com",
+            "format": "html"
           }
         }
       ],
@@ -189,18 +190,18 @@
           }
         ]
       },
-      "duration_ms": 26,
+      "duration_ms": 42,
       "outcome": "success",
       "extra": {
-        "_original_timestamp": 1775527248937
+        "_original_timestamp": 1775531796407
       }
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.964Z",
+      "timestamp": "2026-04-07T03:16:36.450Z",
       "model_name": "middleware:semantic-retry",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -208,7 +209,7 @@
           }
         ]
       },
-      "duration_ms": 27.06654200000048,
+      "duration_ms": 42.215250000001106,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -225,10 +226,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.965Z",
+      "timestamp": "2026-04-07T03:16:36.452Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 1.0462090000000899,
+      "duration_ms": 2.887750000001688,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -245,9 +246,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.966Z",
+      "timestamp": "2026-04-07T03:16:36.453Z",
       "model_name": "middleware:hooks",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -255,7 +256,7 @@
           }
         ]
       },
-      "duration_ms": 28.232749999999214,
+      "duration_ms": 45.32524999999805,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -272,9 +273,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.967Z",
+      "timestamp": "2026-04-07T03:16:36.454Z",
       "model_name": "middleware:permissions",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -282,7 +283,7 @@
           }
         ]
       },
-      "duration_ms": 28.287209000001894,
+      "duration_ms": 45.50245899999936,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -299,9 +300,9 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:48.968Z",
+      "timestamp": "2026-04-07T03:16:36.455Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"url\":\"http://example.com\",\"format\":\"html\"})",
       "observation": {
         "results": [
           {
@@ -309,7 +310,7 @@
           }
         ]
       },
-      "duration_ms": 28.35833299999649,
+      "duration_ms": 45.640417000002344,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -326,7 +327,7 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:48.970Z",
+      "timestamp": "2026-04-07T03:16:36.457Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
       "observation": {
@@ -337,10 +338,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 528,
+        "prompt_tokens": 529,
         "completion_tokens": 8
       },
-      "duration_ms": 552,
+      "duration_ms": 503,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -356,16 +357,17 @@
             "description": "Search the web for information. Returns a list of results with title, URL, and snippet. Requires a search backend to be configured in the executor."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "98c01eac0f09ea44c6cb90275a4947a36b3c08fa3058fe9bbb3a21798b59adf7"
       }
     },
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:49.524Z",
+      "timestamp": "2026-04-07T03:16:36.962Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 558.4333750000005,
+      "duration_ms": 507.75783299999966,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -382,10 +384,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:49.525Z",
+      "timestamp": "2026-04-07T03:16:36.963Z",
       "model_name": "middleware:hooks",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 558.5303330000024,
+      "duration_ms": 507.79458299999897,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -402,10 +404,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:49.526Z",
+      "timestamp": "2026-04-07T03:16:36.964Z",
       "model_name": "middleware:permissions",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 558.7898749999986,
+      "duration_ms": 507.9137090000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -422,10 +424,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:49.527Z",
+      "timestamp": "2026-04-07T03:16:36.965Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.\n\n{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This dom…",
-      "duration_ms": 558.864625000002,
+      "duration_ms": 507.94658400000117,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

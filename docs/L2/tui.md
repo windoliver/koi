@@ -52,6 +52,8 @@ interface TuiState {
   readonly connectionStatus: ConnectionStatus;
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
+  // Plan/progress tracking (#1555)
+  readonly planTasks: readonly PlanTask[] | null;  // latest board snapshot, null until first plan_update
   // Status bar data (Phase 2j-4)
   readonly sessionInfo: SessionInfo | null;       // set by host on session start
   readonly cumulativeMetrics: CumulativeMetrics;  // accumulated across all turns
@@ -61,7 +63,10 @@ interface TuiState {
 }
 ```
 
-Ten flat fields. Rule of Three: group only at 12+ fields.
+Eleven flat fields. Rule of Three: group only at 12+ fields.
+
+`PlanTask` is a rendering-only type with `id`, `description`, and `status` — the TUI
+never imports `TaskItem` from `@koi/core`.
 
 ## Message Model
 
@@ -184,6 +189,8 @@ dispatch skips notification entirely.
 | `done` with `costUsd` after null-cost turns | Treats prior null as 0, begins accumulating |
 | `set_session_list` > 50 items | Truncated to 50 most-recent (`MAX_SESSIONS`) |
 | `set_session_list` out-of-order | Sorted by `lastActivityAt` desc before storage |
+| `plan_update` event | Replaces `planTasks` with mapped snapshot |
+| `task_progress` event | Patches matching task in `planTasks`; no-op if `planTasks` is null |
 
 ## Phase 2k: SolidJS Migration + Worker Infrastructure
 
@@ -362,10 +369,13 @@ prompt replaces palette (known limitation, intentional for v2 scope).
 `Result<TuiAppHandle, TuiStartError>`). Calling `handle.start()` mounts the renderer and
 Solid component tree. `handle.stop()` is idempotent.
 
-**Nav command interception:** `TuiRoot` intercepts `nav:sessions`, `nav:doctor`, `nav:help`
-from the command palette before they reach the CLI's `onCommand` callback. Only engine-affecting
-commands (`agent:*`, `session:*`, `system:*`) bubble up. The pure helper `resolveNavCommand(id)`
-maps command ID → `TuiView | null` and is exported for testing.
+**Nav command interception:** `TuiRoot` intercepts `nav:sessions`, `nav:doctor`, `nav:help`,
+and `nav:trajectory` from the command palette before they reach the CLI's `onCommand` callback.
+Only engine-affecting commands (`agent:*`, `session:*`, `system:*`) bubble up. The pure helper
+`resolveNavCommand(id)` maps command ID → `TuiView | null` and is exported for testing.
+
+**`nav:trajectory` command:** Opens the ATIF execution trace view for the current session.
+Added to `COMMAND_DEFINITIONS` in the `navigation` category.
 
 ### `createTuiApp` flow
 

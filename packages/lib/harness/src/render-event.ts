@@ -29,6 +29,8 @@ export function shouldRender(event: EngineEvent, verbose: boolean): boolean {
     case "agent_spawned":
     case "agent_status_changed":
     case "permission_attempt":
+    case "plan_update":
+    case "task_progress":
       return false;
     default: {
       // Exhaustive — new EngineEvent kinds will cause a compile error here.

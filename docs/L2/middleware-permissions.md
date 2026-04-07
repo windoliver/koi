@@ -749,4 +749,25 @@ L2  @koi/middleware-permissions ◄───────────────
 
 **Dev-only dependencies** (`@koi/engine`, `@koi/engine-loop`, `@koi/engine-pi`, `@koi/test-utils`) are used in tests but are not runtime imports.
 
+## Session-Scoped Approval Cleanup
+
+`PermissionsMiddlewareHandle` exposes `clearSessionApprovals(sessionId)` for external
+callers (e.g. TUI runtime on `agent:clear` / `session:new`). Clears all session-scoped
+state: always-allow grants, decision caches, approval caches, denial trackers, and
+in-flight approval coalesce entries. Without this, prior-session approvals could
+silently carry over into what the user expects to be a fresh conversation.
+
+### In-Flight Approval Tracking
+
+An internal `inflightKeysBySession` index maps each session to its set of in-flight
+dedup keys. This allows `clearSessionApprovals` to evict pending approvals for a
+session on reset, preventing a stale dialog resolution from re-populating the cache.
+
+### Abort-Aware Approval Race
+
+`handleAskDecision` now races the approval handler against `ctx.signal` (the turn/session
+abort signal). If the turn is aborted (Ctrl+C / `agent:clear`) while a permission prompt
+is pending, the approval is cancelled with a `PERMISSION` error instead of silently
+winning and executing the tool in what the user believes is a fresh session.
+
 > **Maintenance note (PR #1506):** Added `biome-ignore lint/style/noNonNullAssertion` annotations with justification comments to bounds-checked index accesses in the batch permission resolver. The `uncachedIndices`/`validated` array indexing invariant (`j < both arrays' lengths`) is preserved; restructuring to remove `!` would break the length-check guard. No functional changes.

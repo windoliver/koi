@@ -1754,9 +1754,223 @@ describe("reduce — agentStatus", () => {
     expect(next.agentStatus).toBe("idle");
   });
 
+  test("clear_messages resets planTasks to null (session reset is clean)", () => {
+    const state = stateWith({
+      planTasks: [{ id: "t1", subject: "Thing", status: "in_progress" }],
+      messages: [userMsg("hi")],
+    });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.planTasks).toBeNull();
+  });
+
   test("session-picker modal does not affect agentStatus", () => {
     const state = stateWith({ agentStatus: "processing" });
     const next = reduce(state, { kind: "set_modal", modal: { kind: "session-picker" } });
     expect(next.agentStatus).toBe("processing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// plan_update / task_progress
+// ---------------------------------------------------------------------------
+
+describe("reduce — plan_update", () => {
+  test("sets planTasks from event", () => {
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "plan_update",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        tasks: [
+          {
+            id: "t1" as import("@koi/core").TaskItemId,
+            subject: "Do thing",
+            status: "pending",
+            dependencies: [],
+          },
+          {
+            id: "t2" as import("@koi/core").TaskItemId,
+            subject: "Other",
+            status: "in_progress",
+            activeForm: "Working",
+            dependencies: [],
+          },
+        ],
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks).toHaveLength(2);
+    expect(next.planTasks?.[0]?.status).toBe("pending");
+    expect(next.planTasks?.[1]?.activeForm).toBe("Working");
+  });
+
+  test("replaces planTasks on subsequent plan_update", () => {
+    const state = stateWith({ planTasks: [{ id: "t1", subject: "Old", status: "pending" }] });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "plan_update",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        tasks: [
+          {
+            id: "t2" as import("@koi/core").TaskItemId,
+            subject: "New",
+            status: "completed",
+            dependencies: [],
+          },
+        ],
+        timestamp: 2000,
+      }),
+    );
+    expect(next.planTasks).toHaveLength(1);
+    expect(next.planTasks?.[0]?.id).toBe("t2");
+  });
+
+  test("includes blockedBy from event", () => {
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "plan_update",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        tasks: [
+          {
+            id: "t1" as import("@koi/core").TaskItemId,
+            subject: "Failed",
+            status: "failed",
+            dependencies: [],
+          },
+          {
+            id: "t2" as import("@koi/core").TaskItemId,
+            subject: "Blocked",
+            status: "pending",
+            blockedBy: "t1" as import("@koi/core").TaskItemId,
+            dependencies: [],
+          },
+        ],
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks?.[1]?.blockedBy).toBe("t1");
+  });
+});
+
+describe("reduce — task_progress", () => {
+  test("updates matching task status", () => {
+    const state = stateWith({
+      planTasks: [
+        { id: "t1", subject: "Thing", status: "pending" },
+        { id: "t2", subject: "Other", status: "pending" },
+      ],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t1" as import("@koi/core").TaskItemId,
+        subject: "Thing",
+        previousStatus: "pending",
+        status: "in_progress",
+        activeForm: "Working",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks?.[0]?.status).toBe("in_progress");
+    expect(next.planTasks?.[0]?.activeForm).toBe("Working");
+    expect(next.planTasks?.[1]?.status).toBe("pending");
+  });
+
+  test("upserts new task when planTasks is null", () => {
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t1" as import("@koi/core").TaskItemId,
+        subject: "New task",
+        previousStatus: "pending",
+        status: "pending",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks).toHaveLength(1);
+    expect(next.planTasks?.[0]?.subject).toBe("New task");
+  });
+
+  test("upserts new task when task ID not found", () => {
+    const state = stateWith({ planTasks: [{ id: "t1", subject: "Existing", status: "pending" }] });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t2" as import("@koi/core").TaskItemId,
+        subject: "New",
+        previousStatus: "pending",
+        status: "pending",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks).toHaveLength(2);
+  });
+
+  test("clears blockedBy when task moves out of pending", () => {
+    const state = stateWith({
+      planTasks: [{ id: "t1", subject: "Blocked", status: "pending", blockedBy: "t0" }],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t1" as import("@koi/core").TaskItemId,
+        subject: "Blocked",
+        previousStatus: "pending",
+        status: "in_progress",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks?.[0]?.blockedBy).toBeUndefined();
+  });
+
+  test("preserves blockedBy when task stays pending", () => {
+    const state = stateWith({
+      planTasks: [{ id: "t1", subject: "Blocked", status: "pending", blockedBy: "t0" }],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t1" as import("@koi/core").TaskItemId,
+        subject: "Blocked",
+        previousStatus: "pending",
+        status: "pending",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks?.[0]?.blockedBy).toBe("t0");
+  });
+
+  test("updates subject from event", () => {
+    const state = stateWith({ planTasks: [{ id: "t1", subject: "Old", status: "in_progress" }] });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "task_progress",
+        agentId: "agent-1" as import("@koi/core/ecs").AgentId,
+        taskId: "t1" as import("@koi/core").TaskItemId,
+        subject: "New Subject",
+        previousStatus: "in_progress",
+        status: "in_progress",
+        activeForm: "Updated",
+        timestamp: 1000,
+      }),
+    );
+    expect(next.planTasks?.[0]?.subject).toBe("New Subject");
+    expect(next.planTasks?.[0]?.activeForm).toBe("Updated");
   });
 });

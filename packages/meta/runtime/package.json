@@ -23,6 +23,7 @@
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
+    "@koi/mcp-server": "workspace:*",
     "@koi/memory": "workspace:*",
     "@koi/memory-fs": "workspace:*",
     "@koi/memory-tools": "workspace:*",
