@@ -63,13 +63,21 @@ export function createLocalShellLifecycle(): TaskKindLifecycle<LocalShellConfig,
     ): Promise<LocalShellTask> => {
       const controller = new AbortController();
 
-      const proc = Bun.spawn(["sh", "-c", config.command], {
-        cwd: config.cwd,
-        env: config.env !== undefined ? { ...process.env, ...config.env } : undefined,
+      const spawnOptions: {
+        cwd?: string;
+        env?: Record<string, string | undefined>;
+        stdout: "pipe";
+        stderr: "pipe";
+        signal: AbortSignal;
+      } = {
         stdout: "pipe",
         stderr: "pipe",
         signal: controller.signal,
-      });
+      };
+      if (config.cwd !== undefined) spawnOptions.cwd = config.cwd;
+      if (config.env !== undefined) spawnOptions.env = { ...process.env, ...config.env };
+
+      const proc = Bun.spawn(["sh", "-c", config.command], spawnOptions);
 
       // Pipe stdout and stderr to the output stream (fire-and-forget)
       void pipeStream(proc.stdout, output);

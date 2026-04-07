@@ -26,7 +26,7 @@ describe("createLocalShellLifecycle", () => {
     runningTasks.push(task);
 
     expect(task.kind).toBe("local_shell");
-    expect(task.taskId).toBe("task_1");
+    expect(task.taskId).toBe(taskItemId("task_1"));
     expect(task.command).toBe("echo hello");
     expect(typeof task.cancel).toBe("function");
     expect(task.startedAt).toBeGreaterThan(0);

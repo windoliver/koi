@@ -20,9 +20,9 @@ function createMockStore(): TaskBoardStore {
     delete: mock(() => {}),
     list: mock(() => []),
     nextId: mock(() => taskItemId("task_1")),
-    watch: (listener) => {
-      listeners.add(listener as (event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void);
-      return () => { listeners.delete(listener as (event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void); };
+    watch: (listener: (event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
     reset: mock(() => {}),
     [Symbol.asyncDispose]: mock(async () => {}),
