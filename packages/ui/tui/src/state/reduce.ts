@@ -333,37 +333,32 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     case "task_progress": {
       const taskId = event.taskId as string;
       const newStatus = event.status as string;
-      if (state.planTasks === null) {
-        // Upsert: create plan with single task (handles task:added without plan_update)
-        const task: PlanTask = {
-          id: taskId,
-          subject: event.subject,
-          status: newStatus,
-          ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
-        };
-        return { ...state, planTasks: [task] };
-      }
-      const idx = state.planTasks.findIndex((t) => t.id === taskId);
-      if (idx < 0) {
-        // Upsert: append new task
-        const task: PlanTask = {
-          id: taskId,
-          subject: event.subject,
-          status: newStatus,
-          ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
-        };
-        return { ...state, planTasks: [...state.planTasks, task] };
-      }
-      // Update existing — only preserve blockedBy if task is still pending
-      const existing = state.planTasks[idx];
-      const keepBlockedBy = existing?.blockedBy !== undefined && newStatus === "pending";
-      const updated: PlanTask = {
+      // Extract blockedBy from detail field (format: "blocked:<taskId>")
+      const detail = event.detail;
+      const blockedBy =
+        detail !== undefined && detail.startsWith("blocked:") ? detail.slice(8) : undefined;
+
+      const buildTask = (existingBlockedBy?: string): PlanTask => ({
         id: taskId,
         subject: event.subject,
         status: newStatus,
         ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
-        ...(keepBlockedBy ? { blockedBy: existing.blockedBy } : {}),
-      };
+        ...(blockedBy !== undefined
+          ? { blockedBy }
+          : existingBlockedBy !== undefined && newStatus === "pending"
+            ? { blockedBy: existingBlockedBy }
+            : {}),
+      });
+
+      if (state.planTasks === null) {
+        return { ...state, planTasks: [buildTask()] };
+      }
+      const idx = state.planTasks.findIndex((t) => t.id === taskId);
+      if (idx < 0) {
+        return { ...state, planTasks: [...state.planTasks, buildTask()] };
+      }
+      const existing = state.planTasks[idx];
+      const updated = buildTask(existing?.blockedBy);
       const planTasks = [
         ...state.planTasks.slice(0, idx),
         updated,

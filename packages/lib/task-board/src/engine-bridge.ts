@@ -189,6 +189,7 @@ export function mapTaskBoardEventToEngineEvents(
     status,
     ...(includeActiveForm ? { activeForm } : {}),
     ...(event.kind === "task:failed" ? { detail: event.error.message } : {}),
+    ...(event.kind === "task:unreachable" ? { detail: `blocked:${event.blockedBy}` } : {}),
     timestamp,
   };
 
