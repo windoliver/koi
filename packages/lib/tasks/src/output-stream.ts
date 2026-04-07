@@ -56,7 +56,7 @@ const encoder = new TextEncoder();
  * total bytes ever written).
  */
 export function createOutputStream(config?: OutputStreamConfig): TaskOutputStream {
-  const maxBytes = config?.maxBytes ?? DEFAULT_MAX_BYTES;
+  const maxBytes = Math.max(config?.maxBytes ?? DEFAULT_MAX_BYTES, 1);
 
   let chunks: OutputChunk[] = [];
   let totalBytes = 0;
@@ -168,8 +168,13 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
 
     evict();
 
+    // Error isolation: one listener throwing must not break others or stop output capture
     for (const listener of listeners) {
-      listener(chunk);
+      try {
+        listener(chunk);
+      } catch {
+        // Swallow — subscriber errors must not disrupt the output pipeline
+      }
     }
   };
 

@@ -72,6 +72,8 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
   // Tracks exit codes for tasks that exited before activeTasks.set() completed
   // (race condition: fast-exiting processes can fire onExit during lifecycle.start())
   const pendingExits = new Map<TaskItemId, number>();
+  // Tasks intentionally stopped — prevents stale pendingExits entries
+  const stoppedTaskIds = new Set<TaskItemId>();
 
   // Subscribe to store events for external reconciliation
   const unsubscribe = store.watch(handleStoreEvent);
@@ -119,6 +121,11 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
    * handles failures so tasks don't remain stuck in_progress.
    */
   async function handleNaturalExit(taskId: TaskItemId, code: number): Promise<void> {
+    // Ignore exits from intentionally stopped tasks
+    if (stoppedTaskIds.has(taskId)) {
+      stoppedTaskIds.delete(taskId);
+      return;
+    }
     const task = activeTasks.get(taskId);
     if (task === undefined) {
       // Task may not be registered yet (fast exit during lifecycle.start()).
@@ -237,6 +244,8 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
       };
     }
 
+    // Mark as intentionally stopped so post-kill onExit doesn't stash a pendingExit
+    stoppedTaskIds.add(taskId);
     // Remove from activeTasks BEFORE board transition to prevent the store
     // watcher from triggering a duplicate lifecycle.stop() call.
     activeTasks.delete(taskId);
