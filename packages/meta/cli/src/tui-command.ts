@@ -330,12 +330,25 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
         callHandlers: childCallHandlers,
         messages: [
           {
+            senderId: "system",
+            timestamp: Date.now(),
+            content: [
+              {
+                kind: "text" as const,
+                text:
+                  "You are a worker agent. Complete the task using your tools. " +
+                  "Actually execute the work (write files, run commands) — do not just describe what you would do. " +
+                  "Be concise in your text output: summarize what you did.",
+              },
+            ],
+          },
+          {
             senderId: "user",
             timestamp: Date.now(),
             content: [{ kind: "text" as const, text: request.description }],
           },
         ],
-        maxTurns: 5,
+        maxTurns: 8,
       })) {
         if (event.kind === "text_delta") {
           output += event.delta;
