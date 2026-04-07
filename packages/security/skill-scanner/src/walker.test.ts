@@ -126,6 +126,30 @@ describe("getCalleeAsMemberPath", () => {
     });
     expect(paths).toEqual([]);
   });
+
+  test("flattens chained member access: globalThis.process.binding()", () => {
+    const program = parse("globalThis.process.binding('natives');");
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["globalThis.process.binding"]);
+  });
+
+  test('flattens mixed static/computed chain: globalThis.child_process["execSync"]()', () => {
+    const program = parse('globalThis.child_process["execSync"]("cmd");');
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["globalThis.child_process.execSync"]);
+  });
 });
 
 describe("offsetToLocation", () => {

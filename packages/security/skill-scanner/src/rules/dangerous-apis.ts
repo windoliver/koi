@@ -30,6 +30,21 @@ function normalizeModuleId(specifier: string): string {
   return specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 }
 
+/**
+ * Check if any two-segment suffix of a dotted path matches a set.
+ * e.g. `"globalThis.process.binding"` checks `"process.binding"` and `"globalThis.process"`.
+ * Returns the matching suffix, or undefined.
+ */
+function matchSuffix(fullPath: string, set: ReadonlySet<string>): string | undefined {
+  if (set.has(fullPath)) return fullPath;
+  const parts = fullPath.split(".");
+  for (let i = 1; i < parts.length - 1; i++) {
+    const suffix = parts.slice(i).join(".");
+    if (set.has(suffix)) return suffix;
+  }
+  return undefined;
+}
+
 const GLOBAL_EVAL_PATHS = new Set(["globalThis.eval", "window.eval", "global.eval"]);
 
 const DANGEROUS_MEMBER_CALLS = new Set([
@@ -124,14 +139,16 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
       }
 
       // Member expression calls: child_process.exec(), process.binding()
+      // Also matches chained access: globalThis.process["binding"]()
       const memberPath = getCalleeAsMemberPath(node);
       if (memberPath !== undefined) {
-        if (DANGEROUS_MEMBER_CALLS.has(memberPath)) {
+        const dangerousMatch = matchSuffix(memberPath, DANGEROUS_MEMBER_CALLS);
+        if (dangerousMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
-            rule: `dangerous-api:${memberPath}`,
+            rule: `dangerous-api:${dangerousMatch}`,
             severity: "CRITICAL",
-            confidence: 0.9,
+            confidence: memberPath === dangerousMatch ? 0.9 : 0.85,
             category: "DANGEROUS_API",
             message: `Call to dangerous API: ${memberPath}()`,
             location: loc,
@@ -139,7 +156,8 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
         }
 
         // globalThis.eval(), window.eval(), global.eval()
-        if (GLOBAL_EVAL_PATHS.has(memberPath)) {
+        const evalMatch = matchSuffix(memberPath, GLOBAL_EVAL_PATHS);
+        if (evalMatch !== undefined) {
           const loc = offsetToLocation(ctx.sourceText, node.start);
           findings.push({
             rule: "dangerous-api:global-eval",

@@ -174,6 +174,20 @@ describe("bracket-notation bypass detection", () => {
     // Variable bracket access is not resolved — no false positive on member path
     expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.exec")).toBe(false);
   });
+
+  test("detects chained: globalThis.process.binding()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("globalThis.process.binding('natives');");
+    expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(true);
+  });
+
+  test('detects mixed chain: globalThis.child_process["execSync"]()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('globalThis.child_process["execSync"]("cmd");');
+    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
+      true,
+    );
+  });
 });
 
 describe("onFilteredFinding callback", () => {

@@ -154,6 +154,35 @@ function getComputedStringProperty(node: MemberExpression): string | undefined {
   return undefined;
 }
 
+/** Resolve the property name of a MemberExpression (static or string-literal computed). */
+function resolvePropertyName(node: MemberExpression): string | undefined {
+  if (!node.computed) return node.property.name;
+  return getComputedStringProperty(node);
+}
+
+/**
+ * Flatten a (possibly nested) MemberExpression into a dot-separated path.
+ * Walks up the chain: `a.b["c"].d` → `"a.b.c.d"`.
+ * Returns undefined if any segment is a non-literal computed property.
+ * Capped at 8 segments to prevent runaway recursion on pathological ASTs.
+ */
+function flattenMemberChain(node: MemberExpression): string | undefined {
+  const segments: string[] = [];
+  // let: walks up the member chain accumulating segments
+  let current: Expression = node;
+  // Cap at 8 to avoid pathological chains
+  for (let depth = 0; depth < 8 && current.type === "MemberExpression"; depth++) {
+    const prop = resolvePropertyName(current);
+    if (prop === undefined) return undefined;
+    segments.push(prop);
+    current = current.object;
+  }
+  if (current.type !== "Identifier") return undefined;
+  segments.push(current.name);
+  segments.reverse();
+  return segments.join(".");
+}
+
 export function getCalleeName(node: CallExpression): string | undefined {
   if (node.callee.type === "Identifier") {
     return node.callee.name;
@@ -186,18 +215,7 @@ export function getStaticMemberProperty(node: MemberExpression): string | undefi
 
 export function getCalleeAsMemberPath(node: CallExpression): string | undefined {
   if (node.callee.type !== "MemberExpression") return undefined;
-  if (node.callee.object.type !== "Identifier") return undefined;
-  const obj = node.callee.object.name;
-  // Static: obj.method()
-  if (!node.callee.computed) {
-    return `${obj}.${node.callee.property.name}`;
-  }
-  // Computed with string literal: obj["method"]()
-  const prop = getComputedStringProperty(node.callee);
-  if (prop !== undefined) {
-    return `${obj}.${prop}`;
-  }
-  return undefined;
+  return flattenMemberChain(node.callee);
 }
 
 export function isStringLiteralNode(node: Expression | Argument): node is StringLiteral {
