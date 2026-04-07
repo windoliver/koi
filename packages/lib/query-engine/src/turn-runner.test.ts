@@ -1318,7 +1318,7 @@ describe("runTurn", () => {
       await collect(runTurn({ callHandlers: handlers, messages: [] }));
 
       // Second model call transcript should have both assistant intents and
-      // two tool results (one real, one synthetic dedup) for callId pairing
+      // two tool results (real + replicated) for callId pairing
       expect(receivedRequests.length).toBe(2);
       const secondRequest = receivedRequests[1];
       expect(secondRequest).toBeDefined();
@@ -1327,8 +1327,15 @@ describe("runTurn", () => {
         const toolMsgs = secondRequest.messages.filter((m) => m.senderId === "tool");
         // 2 assistant intents (one per tool call, including skipped)
         expect(assistantMsgs.length).toBe(2);
-        // 2 tool results (one real execution + one synthetic dedup)
+        // 2 tool results (real execution + replicated real output)
         expect(toolMsgs.length).toBe(2);
+        // Both tool results should contain the real output, not a placeholder
+        for (const msg of toolMsgs) {
+          const text = msg.content[0];
+          if (text?.kind === "text") {
+            expect(text.text).toContain('"created"');
+          }
+        }
       }
     });
   });

@@ -365,25 +365,24 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       // every tool_call_* event the model emitted has a matching intent.
       appendAssistantTurn(transcript, turnText, validToolCalls);
 
-      // Append synthetic results for skipped duplicates so the in-memory
-      // transcript has a result for every intent. Note: the durable session
-      // transcript middleware (wrapToolCall) will not persist these synthetic
-      // results — if the process crashes between this turn and the next model
-      // call, resume may inject synthetic error results for skipped callIds.
-      // This is acceptable: dedup-skipped calls had no side effects, so
-      // re-prompting the model with a synthetic error is safe and self-healing.
+      // Build a map from dedup key → skipped callIds for result replication.
+      const skippedByKey = new Map<string, typeof skippedToolCalls>();
       for (const tc of skippedToolCalls) {
-        appendToolResult(transcript, {
-          callId: tc.callId,
-          toolName: tc.toolName,
-          output:
-            "[dedup] duplicate tool call skipped — identical call already executed in this turn",
-        });
+        const canonicalArgs =
+          tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+        const key = `${tc.toolName}\0${canonicalArgs}`;
+        const existing = skippedByKey.get(key);
+        if (existing !== undefined) {
+          existing.push(tc);
+        } else {
+          skippedByKey.set(key, [tc]);
+        }
       }
 
-      // Execute deduped tool calls sequentially to preserve model-emitted
-      // order and avoid racing side effects between dependent operations.
-      // Check abort before each tool call to stop dispatching on cancellation.
+      // Execute deduped tool calls sequentially. On success, replicate the
+      // real result to any skipped duplicates so the model sees consistent
+      // output for every callId. On failure (throw), the duplicates remain
+      // without a result — the error propagates and the turn fails.
       try {
         const results: ToolResult[] = [];
         for (const tc of dedupedToolCalls) {
@@ -406,6 +405,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
           results.push(result);
           appendToolResult(transcript, result);
+
+          // Replicate the real result to skipped duplicates so the model
+          // sees the actual output for every callId, not a placeholder.
+          const canonicalArgs =
+            tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${canonicalArgs}`;
+          const duplicates = skippedByKey.get(key);
+          if (duplicates !== undefined) {
+            for (const dup of duplicates) {
+              const dupResult: ToolResult = {
+                callId: dup.callId,
+                toolName: dup.toolName,
+                output: response.output,
+              };
+              results.push(dupResult);
+              appendToolResult(transcript, dupResult);
+            }
+          }
+
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
