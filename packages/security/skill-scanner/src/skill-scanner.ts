@@ -23,15 +23,15 @@ export interface CodeBlock {
 // spaces as allowed by CommonMark), optionally followed by a lang/info-string.
 // We capture the fence char (group 1) and the first word of the info-string (group 2).
 const OPENING_FENCE_RE = /^ {0,3}([`~]{3,})\s*(\S*)/;
-// Closing fence helper: same char repeated at least `openLen` times, no trailing content.
+// Closing fence: same char repeated at least `openLen` times, no trailing content.
 // Per CommonMark §6.1, the closing fence must use the same character with length ≥ opener.
+const CLOSING_FENCE_RE = /^ {0,3}([`~]{3,})\s*$/;
 function isClosingFence(line: string, fenceChar: string, openLen: number): boolean {
   const match = CLOSING_FENCE_RE.exec(line);
   if (match === null) return false;
   const fence = match[1] ?? "";
   return fence[0] === fenceChar && fence.length >= openLen;
 }
-const CLOSING_FENCE_RE = /^ {0,3}([`~]{3,})\s*$/;
 
 const LANG_TO_EXT: Readonly<Record<string, string>> = {
   js: ".js",

@@ -61,4 +61,17 @@ describe("extractCodeBlocks — fence length enforcement (CommonMark §6.1)", ()
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.code).toContain('eval("deeper")');
   });
+
+  test("unclosed 4-backtick block at EOF is silently dropped", () => {
+    const md = ["````ts", 'eval("never closed");', "```"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(0);
+  });
+
+  test("indented closing fence respects length enforcement", () => {
+    const md = ["````ts", 'eval("indented close");', "   ````"].join("\n");
+    const blocks = extractCodeBlocks(md);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.code).toContain('eval("indented close")');
+  });
 });
