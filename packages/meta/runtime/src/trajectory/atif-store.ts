@@ -146,12 +146,12 @@ export function createAtifDocumentStore(
         const doc = existing ?? createEmptyDoc(docId);
 
         // Reassign stepIndex to be globally unique across the document.
-        // Enforce monotonic timestamps: each step's timestamp is at least
-        // max(previous_step_timestamp, current_timestamp). This is a safety net
-        // for L1 engine-compose emitters that lack clock injection. The primary
-        // fix is per-stream monotonic clocks at emission time (#1558).
-        // Note: this preserves write order, not causal order — async appends
-        // that arrive out of order will be serialized by mutex acquisition time.
+        // Enforce monotonic timestamps as a safety net for L1 emitters that
+        // lack clock injection (#1558). When a step's timestamp goes backward
+        // (concurrent Date.now() race), the original timestamp is preserved
+        // in metadata._original_timestamp so auditors can reconstruct true
+        // chronology. The per-stream monotonic clock handles most cases;
+        // this only fires for engine-compose instrumentation timestamps.
         const baseIndex = doc.steps.length;
         const lastExistingTs =
           doc.steps.length > 0
@@ -166,9 +166,23 @@ export function createAtifDocumentStore(
         // let: mutable — tracks the running maximum timestamp for monotonicity
         let prevTs = lastExistingTs;
         const reindexedSteps = steps.map((s, i) => {
-          const ts = s.timestamp > prevTs ? s.timestamp : prevTs + 1;
-          prevTs = ts;
-          return { ...s, stepIndex: baseIndex + i, timestamp: ts };
+          const ts = s.timestamp;
+          if (ts > prevTs) {
+            prevTs = ts;
+            return { ...s, stepIndex: baseIndex + i };
+          }
+          // Timestamp went backward — adjust but preserve original
+          const adjusted = prevTs + 1;
+          prevTs = adjusted;
+          return {
+            ...s,
+            stepIndex: baseIndex + i,
+            timestamp: adjusted,
+            metadata: {
+              ...(s.metadata ?? {}),
+              _original_timestamp: ts,
+            },
+          };
         });
 
         const newAtifDoc = mapRichTrajectoryToAtif(reindexedSteps, {

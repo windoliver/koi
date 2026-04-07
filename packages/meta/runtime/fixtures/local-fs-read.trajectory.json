@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.094Z",
+      "timestamp": "2026-04-07T02:00:56.572Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.095Z",
+      "timestamp": "2026-04-07T02:00:56.573Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T01:26:12.097Z",
+      "timestamp": "2026-04-07T02:00:56.575Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 196,
         "completion_tokens": 11
       },
-      "duration_ms": 650,
+      "duration_ms": 635,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -82,10 +82,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.750Z",
+      "timestamp": "2026-04-07T02:00:57.212Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 653.2902079999985,
+      "duration_ms": 639.6698329999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,10 +102,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.751Z",
+      "timestamp": "2026-04-07T02:00:57.213Z",
       "model_name": "middleware:hooks",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 653.5662499999999,
+      "duration_ms": 639.7356670000008,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -122,10 +122,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.752Z",
+      "timestamp": "2026-04-07T02:00:57.214Z",
       "model_name": "middleware:permissions",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 653.7002919999977,
+      "duration_ms": 639.8713329999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -142,10 +142,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.753Z",
+      "timestamp": "2026-04-07T02:00:57.215Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.",
-      "duration_ms": 653.7289579999997,
+      "duration_ms": 639.8862090000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -162,7 +162,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-07T01:26:12.754Z",
+      "timestamp": "2026-04-07T02:00:57.216Z",
       "tool_calls": [
         {
           "tool_call_id": "call_local_fs_read_7",
@@ -181,12 +181,15 @@
         ]
       },
       "duration_ms": 5,
-      "outcome": "success"
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775527257211
+      }
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.755Z",
+      "timestamp": "2026-04-07T02:00:57.217Z",
       "model_name": "middleware:semantic-retry",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -196,7 +199,7 @@
           }
         ]
       },
-      "duration_ms": 2.708999999998923,
+      "duration_ms": 2.0722080000014103,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -213,10 +216,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.756Z",
+      "timestamp": "2026-04-07T02:00:57.218Z",
       "model_name": "hook:on-local-fs-tool",
       "message": "tool.succeeded → on-local-fs-tool",
-      "duration_ms": 1.777749999997468,
+      "duration_ms": 3.772499999999127,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -233,7 +236,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.757Z",
+      "timestamp": "2026-04-07T02:00:57.219Z",
       "model_name": "middleware:hooks",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -243,7 +246,7 @@
           }
         ]
       },
-      "duration_ms": 5.3883329999989655,
+      "duration_ms": 6.195834000001923,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -260,7 +263,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.758Z",
+      "timestamp": "2026-04-07T02:00:57.220Z",
       "model_name": "middleware:permissions",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -270,7 +273,7 @@
           }
         ]
       },
-      "duration_ms": 5.560999999997875,
+      "duration_ms": 6.357749999999214,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -287,7 +290,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:12.759Z",
+      "timestamp": "2026-04-07T02:00:57.221Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "local_fs_read({\"path\":\"golden-local.txt\"})",
       "observation": {
@@ -297,7 +300,7 @@
           }
         ]
       },
-      "duration_ms": 5.6738750000004075,
+      "duration_ms": 6.520458999999391,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -314,21 +317,21 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-07T01:26:12.761Z",
+      "timestamp": "2026-04-07T02:00:57.223Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
       "observation": {
         "results": [
           {
-            "content": "The file says: \"The local filesystem answer is 7.\""
+            "content": "The file says \"The local filesystem answer is 7.\"."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 246,
-        "completion_tokens": 13
+        "prompt_tokens": 245,
+        "completion_tokens": 12
       },
-      "duration_ms": 467,
+      "duration_ms": 503,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -346,10 +349,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:13.230Z",
+      "timestamp": "2026-04-07T02:00:57.728Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 475.1804170000032,
+      "duration_ms": 509.71662500000093,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -366,10 +369,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:13.231Z",
+      "timestamp": "2026-04-07T02:00:57.729Z",
       "model_name": "middleware:hooks",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 475.3111250000002,
+      "duration_ms": 509.8260839999966,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -386,10 +389,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:13.232Z",
+      "timestamp": "2026-04-07T02:00:57.730Z",
       "model_name": "middleware:permissions",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 475.5116250000028,
+      "duration_ms": 510.0786249999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -406,10 +409,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T01:26:13.233Z",
+      "timestamp": "2026-04-07T02:00:57.731Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the local_fs_read tool to read the file at path \"golden-local.txt\". Tell me what the file says.\n\n{\"content\":\"The local filesystem answer is 7.\",\"path\":\"golden-local.txt\",\"size\":33}",
-      "duration_ms": 475.62666700000045,
+      "duration_ms": 510.22704200000226,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
