@@ -123,6 +123,9 @@ so the key is not forwarded to OpenRouter.
 
 **Behaviour:**
 - Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
+- Tree-sitter client is initialized at startup (`getTreeSitterClient()` + `initialize()`), enabling `<markdown>` rendering with full prose, headings, code fences, and tables in assistant text blocks.
+- Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten) are extracted from JSON results via `getResultDisplay()`.
+- Engine events are batch-dispatched via `store.dispatchBatch()` — the EventBatcher flushes all events in one pass with a single store notification, avoiding N signal invalidations per 16ms window.
 - A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
