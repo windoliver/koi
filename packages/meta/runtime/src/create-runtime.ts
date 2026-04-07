@@ -321,13 +321,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
-      // Close trajectory Nexus transport (abort pending requests)
-      trajectoryTransport?.close();
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
         filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
+      // Close trajectory Nexus transport AFTER other dispose steps complete,
+      // giving in-flight trajectory writes time to drain before aborting.
+      trajectoryTransport?.close();
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failures.length > 0) {
         throw new Error(

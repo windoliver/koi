@@ -90,8 +90,11 @@ export function createNexusAtifDelegate(config: NexusTrajectoryConfig): AtifDocu
 
   const { transport } = config;
 
+  // Nexus NFS expects absolute paths with leading slash
+  const normalizedBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
+
   function docPath(docId: string): string {
-    return `${basePath}/${docIdToFilename(docId)}`;
+    return `${normalizedBase}/${docIdToFilename(docId)}`;
   }
 
   /** Throw a KoiError as an Error with the original attached as cause. */
@@ -136,7 +139,7 @@ export function createNexusAtifDelegate(config: NexusTrajectoryConfig): AtifDocu
 
     async list(): Promise<readonly string[]> {
       const result: Result<unknown, KoiError> = await transport.call("glob", {
-        pattern: `${basePath}/*.atif.json`,
+        pattern: `${normalizedBase}/*.atif.json`,
       });
       if (!result.ok) {
         if (result.error.code === "NOT_FOUND") return [];

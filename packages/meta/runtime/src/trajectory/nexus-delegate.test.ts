@@ -291,6 +291,25 @@ describe("createNexusAtifDelegate", () => {
     await expect(delegate.read("broken")).rejects.toThrow("Server error");
   });
 
+  test("paths are normalized with leading slash for Nexus NFS", async () => {
+    // Track paths sent to the transport
+    const paths: string[] = [];
+    const trackingTransport = createStubTransport({
+      errorInjector(method, params) {
+        if (method === "write" || method === "read") {
+          paths.push(params.path as string);
+        }
+        return undefined;
+      },
+    });
+    const delegate = createNexusAtifDelegate({ transport: trackingTransport });
+    await delegate.write("test-doc", DOC);
+    await delegate.read("test-doc");
+    for (const p of paths) {
+      expect(p.startsWith("/")).toBe(true);
+    }
+  });
+
   test("custom basePath is used in file paths", async () => {
     const delegate = createNexusAtifDelegate({
       transport,
