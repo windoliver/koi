@@ -291,25 +291,35 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
-    // Dedup: within this turn, skip tool calls with identical (toolName + rawArgs).
+    // Dedup: within this turn, skip tool calls with identical (toolName + args).
     // Models occasionally emit the same call twice in one response (e.g. Sonnet
     // via OpenRouter). Keep the first occurrence; record skipped duplicates for
-    // observability. Uses rawArgs (raw JSON text) — within a single generation,
-    // duplicate calls always have identical serialization.
+    // observability. Uses canonicalized JSON of parsed args (sorted keys) to
+    // catch semantically identical calls even with different key ordering.
     const seen = new Set<string>();
     const dedupedToolCalls: typeof validToolCalls = [];
-    const skippedDuplicates: Array<{ readonly toolName: string; readonly callId: string }> = [];
+    const skippedToolCalls: typeof validToolCalls = [];
     for (const tc of validToolCalls) {
-      const key = `${tc.toolName}\0${tc.rawArgs}`;
+      const canonicalArgs =
+        tc.parsedArgs !== undefined
+          ? JSON.stringify(tc.parsedArgs, Object.keys(tc.parsedArgs).sort())
+          : tc.rawArgs;
+      const key = `${tc.toolName}\0${canonicalArgs}`;
       if (seen.has(key)) {
-        skippedDuplicates.push({ toolName: tc.toolName, callId: tc.callId });
+        skippedToolCalls.push(tc);
       } else {
         seen.add(key);
         dedupedToolCalls.push(tc);
       }
     }
-    if (skippedDuplicates.length > 0) {
-      yield { kind: "custom", type: "dedup_skipped", data: { skipped: skippedDuplicates } };
+    if (skippedToolCalls.length > 0) {
+      yield {
+        kind: "custom",
+        type: "dedup_skipped",
+        data: {
+          skipped: skippedToolCalls.map((tc) => ({ toolName: tc.toolName, callId: tc.callId })),
+        },
+      };
     }
 
     // Transition based on model response
@@ -352,11 +362,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     if (state.phase === "tool_execution") {
-      // Append assistant message (text + tool call intents) to transcript
-      appendAssistantTurn(transcript, turnText, dedupedToolCalls);
+      // Append ALL tool call intents (including skipped duplicates) to the
+      // transcript so session-repair's callId pairing stays consistent —
+      // every tool_call_* event the model emitted has a matching intent.
+      appendAssistantTurn(transcript, turnText, validToolCalls);
 
-      // Execute tool calls sequentially to preserve model-emitted order
-      // and avoid racing side effects between dependent operations.
+      // Append synthetic results for skipped duplicates so the transcript
+      // has a result for every intent (prevents dangling-call detection
+      // on session resume).
+      for (const tc of skippedToolCalls) {
+        appendToolResult(transcript, {
+          callId: tc.callId,
+          toolName: tc.toolName,
+          output:
+            "[dedup] duplicate tool call skipped — identical call already executed in this turn",
+        });
+      }
+
+      // Execute deduped tool calls sequentially to preserve model-emitted
+      // order and avoid racing side effects between dependent operations.
       // Check abort before each tool call to stop dispatching on cancellation.
       try {
         const results: ToolResult[] = [];

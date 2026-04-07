@@ -1204,5 +1204,92 @@ describe("runTurn", () => {
       const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
       expect(dedupEvent).toBeUndefined();
     });
+
+    test("semantically identical args with different key order are deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* reorderedKeysStream(): AsyncIterable<ModelChunk> {
+        // Same args but different JSON key order
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-1"),
+          delta: '{"subject":"X","desc":"Y"}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-2"),
+          delta: '{"desc":"Y","subject":"X"}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => reorderedKeysStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "created" };
+        },
+        tools: [toolDesc("task_create")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Should dedup despite different key order
+      expect(callCount.value).toBe(1);
+
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeDefined();
+    });
+
+    test("skipped duplicate has synthetic tool result in transcript", async () => {
+      const receivedRequests: ModelRequest[] = [];
+      // let justified: mutable call counter for cycling through responses
+      let modelCallIndex = 0;
+
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (_request: ModelRequest): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+          receivedRequests.push(request);
+          const index = modelCallIndex;
+          modelCallIndex += 1;
+          if (index === 0) {
+            return (async function* (): AsyncIterable<ModelChunk> {
+              yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+              yield { kind: "tool_call_delta", callId: callId("tc-1"), delta: '{"s":"X"}' };
+              yield { kind: "tool_call_end", callId: callId("tc-1") };
+              yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+              yield { kind: "tool_call_delta", callId: callId("tc-2"), delta: '{"s":"X"}' };
+              yield { kind: "tool_call_end", callId: callId("tc-2") };
+              yield { kind: "done", response: DONE_RESPONSE };
+            })();
+          }
+          return textStream("done");
+        },
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => ({
+          output: "created",
+        }),
+        tools: [toolDesc("task_create")],
+      };
+
+      await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Second model call transcript should have both assistant intents and
+      // two tool results (one real, one synthetic dedup) for callId pairing
+      expect(receivedRequests.length).toBe(2);
+      const secondRequest = receivedRequests[1];
+      expect(secondRequest).toBeDefined();
+      if (secondRequest !== undefined) {
+        const assistantMsgs = secondRequest.messages.filter((m) => m.senderId === "assistant");
+        const toolMsgs = secondRequest.messages.filter((m) => m.senderId === "tool");
+        // 2 assistant intents (one per tool call, including skipped)
+        expect(assistantMsgs.length).toBe(2);
+        // 2 tool results (one real execution + one synthetic dedup)
+        expect(toolMsgs.length).toBe(2);
+      }
+    });
   });
 });
