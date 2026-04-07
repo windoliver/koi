@@ -80,7 +80,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 
 **Wiring (as of PR #1518):**
 
-- Model: `google/gemini-2.0-flash-001` via OpenRouter (`OPENROUTER_API_KEY` required)
+- Model: `anthropic/claude-sonnet-4-6` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
 - **No tools / no Spawn**: `koi start` runs without any tool inventory. `Spawn` is not registered because built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that are not available in this bare CLI path. Agent spawn support will land with manifest/tool wiring (#1264).
@@ -111,7 +111,7 @@ koi tui
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | one of these | — | Key for OpenRouter (default provider) |
 | `OPENAI_API_KEY` | one of these | — | Key for OpenAI (`api.openai.com/v1`) |
-| `KOI_MODEL` | no | `google/gemini-2.0-flash-001` | Model name passed to the provider |
+| `KOI_MODEL` | no | `anthropic/claude-sonnet-4-6` | Model name passed to the provider |
 | `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
@@ -123,6 +123,8 @@ so the key is not forwarded to OpenRouter.
 
 **Behaviour:**
 - Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
+- A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
+- The exfiltration guard middleware is disabled (`exfiltrationGuard: false`) for the local TUI session; it is not needed in a single-user interactive terminal and was previously blocking tool results that matched common dev-file patterns.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
 - `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.

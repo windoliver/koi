@@ -21,7 +21,7 @@ describe("resolveApiConfig", () => {
     if (result.ok) {
       expect(result.value.apiKey).toBe("sk-or-test");
       expect(result.value.baseUrl).toBeUndefined();
-      expect(result.value.model).toBe("google/gemini-2.0-flash-001");
+      expect(result.value.model).toBe("anthropic/claude-sonnet-4-6");
     }
   });
 
@@ -64,7 +64,7 @@ describe("resolveApiConfig", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.model).toBe("google/gemini-2.0-flash-001");
+      expect(result.value.model).toBe("anthropic/claude-sonnet-4-6");
     }
   });
 
