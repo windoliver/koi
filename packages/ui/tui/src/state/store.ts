@@ -17,6 +17,12 @@ export type StateListener = () => void;
 export interface TuiStore {
   readonly getState: () => TuiState;
   readonly dispatch: (action: TuiAction) => void;
+  /**
+   * Reduce an array of actions in one pass and notify listeners once.
+   * Avoids N state updates + N signal invalidations for batched events
+   * (e.g., 10 text_delta events flushed by EventBatcher in one 16ms window).
+   */
+  readonly dispatchBatch: (actions: readonly TuiAction[]) => void;
   readonly subscribe: (listener: StateListener) => () => void;
 }
 
@@ -55,6 +61,18 @@ export function createStore(initialState: TuiState): TuiStore {
     }
   }
 
+  function dispatchBatch(actions: readonly TuiAction[]): void {
+    // Reduce all actions in one pass — O(n) state transitions, 0 notifications
+    let current = state;
+    for (const action of actions) {
+      current = reduce(current, action);
+    }
+    if (current === state) return; // entire batch was no-ops
+    state = current;
+    // Notify synchronously — caller (EventBatcher flush) already rate-limits
+    notifySubscribers();
+  }
+
   function getState(): TuiState {
     return state;
   }
@@ -66,5 +84,5 @@ export function createStore(initialState: TuiState): TuiStore {
     };
   }
 
-  return { getState, dispatch, subscribe };
+  return { getState, dispatch, dispatchBatch, subscribe };
 }

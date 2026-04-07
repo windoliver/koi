@@ -65,7 +65,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
-import { SyntaxStyle } from "@opentui/core";
+import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { resolveApiConfig } from "./env.js";
 
@@ -395,11 +395,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const store = createStore(createInitialState());
   const permissionBridge = createPermissionBridge({ store });
 
-  // Flush callback extracted so it can be reused when recreating the batcher.
+  // Flush callback: reduces entire batch in one pass, single notification.
+  // Avoids N state updates + N signal invalidations per 16ms flush window.
   const dispatchBatch = (batch: readonly EngineEvent[]): void => {
-    for (const event of batch) {
-      store.dispatch({ kind: "engine_event", event });
-    }
+    store.dispatchBatch(batch.map((event) => ({ kind: "engine_event" as const, event })));
   };
 
   // Event batcher: coalesces rapid engine events into 16ms flush windows
@@ -457,7 +456,14 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   };
 
   // ---------------------------------------------------------------------------
-  // 5. Create TUI app
+  // 5. Initialize tree-sitter for markdown rendering
+  // ---------------------------------------------------------------------------
+
+  const treeSitterClient = getTreeSitterClient();
+  await treeSitterClient.initialize();
+
+  // ---------------------------------------------------------------------------
+  // 6. Create TUI app
   // ---------------------------------------------------------------------------
 
   const result = createTuiApp({
@@ -521,6 +527,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       })();
     },
     syntaxStyle: SyntaxStyle.create(),
+    treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
       // Guard against overlapping submits: reject while a stream is in flight.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
