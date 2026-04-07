@@ -39,7 +39,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:11.808Z",
+      "timestamp": "2026-04-07T03:11:51.477Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -57,7 +57,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:11.809Z",
+      "timestamp": "2026-04-07T03:11:51.477Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -74,7 +74,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:01:11.811Z",
+      "timestamp": "2026-04-07T03:11:51.478Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.",
       "observation": {
@@ -86,9 +86,9 @@
       },
       "metrics": {
         "prompt_tokens": 911,
-        "completion_tokens": 25
+        "completion_tokens": 22
       },
-      "duration_ms": 775,
+      "duration_ms": 675,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -130,14 +130,14 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-07T02:01:12.587Z",
+      "timestamp": "2026-04-07T03:11:52.153Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_create_3",
           "function_name": "task_create",
           "arguments": {
-            "description": "Build OAuth2",
-            "subject": "Implement login flow"
+            "subject": "Implement login flow",
+            "description": "Build OAuth2"
           }
         }
       ],
@@ -149,15 +149,15 @@
           }
         ]
       },
-      "duration_ms": 1,
+      "duration_ms": 2,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.589Z",
+      "timestamp": "2026-04-07T03:11:52.155Z",
       "model_name": "middleware:semantic-retry",
-      "message": "task_create({\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"})",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build OAuth2\"})",
       "observation": {
         "results": [
           {
@@ -165,7 +165,7 @@
           }
         ]
       },
-      "duration_ms": 1.1315840000024764,
+      "duration_ms": 1.7373339999976452,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -182,10 +182,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.590Z",
+      "timestamp": "2026-04-07T03:11:52.156Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.",
-      "duration_ms": 778.4197910000003,
+      "duration_ms": 677.2196249999979,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -202,10 +202,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.591Z",
+      "timestamp": "2026-04-07T03:11:52.156Z",
       "model_name": "middleware:hooks",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.",
-      "duration_ms": 778.5177499999991,
+      "duration_ms": 677.3087499999965,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -222,10 +222,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.592Z",
+      "timestamp": "2026-04-07T03:11:52.156Z",
       "model_name": "middleware:permissions",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.",
-      "duration_ms": 778.5835829999996,
+      "duration_ms": 677.3763330000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -242,10 +242,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.593Z",
+      "timestamp": "2026-04-07T03:11:52.156Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.",
-      "duration_ms": 778.5956670000014,
+      "duration_ms": 677.4068340000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -262,10 +262,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.594Z",
+      "timestamp": "2026-04-07T03:11:52.157Z",
       "model_name": "hook:on-task-tool",
       "message": "tool.succeeded → on-task-tool",
-      "duration_ms": 1.743291999999201,
+      "duration_ms": 2.3622919999979786,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -282,9 +282,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.595Z",
+      "timestamp": "2026-04-07T03:11:52.158Z",
       "model_name": "middleware:hooks",
-      "message": "task_create({\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"})",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build OAuth2\"})",
       "observation": {
         "results": [
           {
@@ -292,7 +292,7 @@
           }
         ]
       },
-      "duration_ms": 3.0233749999970314,
+      "duration_ms": 4.305082999999286,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -309,9 +309,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.596Z",
+      "timestamp": "2026-04-07T03:11:52.158Z",
       "model_name": "middleware:permissions",
-      "message": "task_create({\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"})",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build OAuth2\"})",
       "observation": {
         "results": [
           {
@@ -319,7 +319,7 @@
           }
         ]
       },
-      "duration_ms": 3.0732910000006086,
+      "duration_ms": 4.392040999999153,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -336,9 +336,9 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.597Z",
+      "timestamp": "2026-04-07T03:11:52.158Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "task_create({\"description\":\"Build OAuth2\",\"subject\":\"Implement login flow\"})",
+      "message": "task_create({\"subject\":\"Implement login flow\",\"description\":\"Build OAuth2\"})",
       "observation": {
         "results": [
           {
@@ -346,7 +346,7 @@
           }
         ]
       },
-      "duration_ms": 3.1370420000021113,
+      "duration_ms": 4.522207999994862,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -363,14 +363,14 @@
     {
       "step_id": 13,
       "source": "tool",
-      "timestamp": "2026-04-07T02:01:12.598Z",
+      "timestamp": "2026-04-07T03:11:52.158Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_create_13",
           "function_name": "task_create",
           "arguments": {
-            "description": "Add integration tests",
-            "subject": "Write API tests"
+            "subject": "Write API tests",
+            "description": "Add integration tests"
           }
         }
       ],
@@ -382,15 +382,15 @@
           }
         ]
       },
-      "duration_ms": 1,
+      "duration_ms": 0,
       "outcome": "success"
     },
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.600Z",
+      "timestamp": "2026-04-07T03:11:52.158Z",
       "model_name": "middleware:semantic-retry",
-      "message": "task_create({\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"})",
+      "message": "task_create({\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"})",
       "observation": {
         "results": [
           {
@@ -398,7 +398,7 @@
           }
         ]
       },
-      "duration_ms": 0.09320900000602705,
+      "duration_ms": 0.10558300000411691,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -415,10 +415,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.601Z",
+      "timestamp": "2026-04-07T03:11:52.160Z",
       "model_name": "hook:on-task-tool",
       "message": "tool.succeeded → on-task-tool",
-      "duration_ms": 1.0982909999947879,
+      "duration_ms": 2.4256249999962165,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -435,9 +435,9 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.602Z",
+      "timestamp": "2026-04-07T03:11:52.160Z",
       "model_name": "middleware:hooks",
-      "message": "task_create({\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"})",
+      "message": "task_create({\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"})",
       "observation": {
         "results": [
           {
@@ -445,7 +445,7 @@
           }
         ]
       },
-      "duration_ms": 1.254041000000143,
+      "duration_ms": 2.668207999995502,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -462,9 +462,9 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.603Z",
+      "timestamp": "2026-04-07T03:11:52.160Z",
       "model_name": "middleware:permissions",
-      "message": "task_create({\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"})",
+      "message": "task_create({\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"})",
       "observation": {
         "results": [
           {
@@ -472,7 +472,7 @@
           }
         ]
       },
-      "duration_ms": 1.2900409999929252,
+      "duration_ms": 2.722542000003159,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -489,9 +489,9 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.604Z",
+      "timestamp": "2026-04-07T03:11:52.160Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "task_create({\"description\":\"Add integration tests\",\"subject\":\"Write API tests\"})",
+      "message": "task_create({\"subject\":\"Write API tests\",\"description\":\"Add integration tests\"})",
       "observation": {
         "results": [
           {
@@ -499,7 +499,7 @@
           }
         ]
       },
-      "duration_ms": 1.3340000000025611,
+      "duration_ms": 2.772624999997788,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -515,11 +515,67 @@
     },
     {
       "step_id": 19,
+      "source": "agent",
+      "timestamp": "2026-04-07T03:11:52.161Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1001,
+        "completion_tokens": 3
+      },
+      "duration_ms": 676,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 7,
+        "tools": [
+          {
+            "name": "task_create",
+            "description": "Create a new task on the task board. Returns the created task. Use task_list to see all tasks, task_update to mark progress."
+          },
+          {
+            "name": "task_get",
+            "description": "Retrieve full details for a specific task by ID, including metadata and timestamps. Use task_list to find task IDs."
+          },
+          {
+            "name": "task_update",
+            "description": "Update a task's status, description, or progress text. Set status to 'in_progress' when starting work (only one task may be in_progress at a time). Set status to 'completed' with an output summary when done. Set status to 'failed' with a reason if the task errored. Set status to 'killed' to cancel. Update active_form to change the live progress text shown in the spinner."
+          },
+          {
+            "name": "task_list",
+            "description": "List tasks on the board with optional status or assignee filters. Returns TaskSummary objects (use task_get for full details including metadata and timestamps). Results are ordered: in_progress first, then pending, then terminal states."
+          },
+          {
+            "name": "task_stop",
+            "description": "Stop (kill) a currently in-progress task. Returns an error if the task is not in_progress (pending tasks do not need stopping — just don't start them). Downstream tasks that depend on this task will become unreachable."
+          },
+          {
+            "name": "task_output",
+            "description": "Retrieve the output or current status of a task. Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, and error details for failed/killed tasks."
+          },
+          {
+            "name": "task_delegate",
+            "description": "Delegate a pending task to a child agent for execution. Unlike task_update, this allows multiple tasks to be delegated simultaneously — use it when coordinating parallel work across multiple agents. The child agent's ID is recorded as assignedTo on the task."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 20,
       "source": "tool",
-      "timestamp": "2026-04-07T02:01:12.605Z",
+      "timestamp": "2026-04-07T03:11:52.838Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_task_list_19",
+          "tool_call_id": "call_task_list_20",
           "function_name": "task_list",
           "arguments": {}
         }
@@ -527,18 +583,18 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_task_list_19",
+            "source_call_id": "call_task_list_20",
             "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]},{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":2}"
           }
         ]
       },
-      "duration_ms": 1,
+      "duration_ms": 0,
       "outcome": "success"
     },
     {
-      "step_id": 20,
+      "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.607Z",
+      "timestamp": "2026-04-07T03:11:52.838Z",
       "model_name": "middleware:semantic-retry",
       "message": "task_list({})",
       "observation": {
@@ -548,7 +604,7 @@
           }
         ]
       },
-      "duration_ms": 0.4199579999985872,
+      "duration_ms": 0.5783339999979944,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -563,12 +619,92 @@
       }
     },
     {
-      "step_id": 21,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.608Z",
+      "timestamp": "2026-04-07T03:11:52.839Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 678.3382500000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-07T03:11:52.839Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 678.3698749999967,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-07T03:11:52.839Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 678.4559999999983,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-07T03:11:52.839Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 678.4769589999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-07T03:11:52.840Z",
       "model_name": "hook:on-task-tool",
       "message": "tool.succeeded → on-task-tool",
-      "duration_ms": 2.375292000004265,
+      "duration_ms": 1.633332999997947,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -583,9 +719,9 @@
       }
     },
     {
-      "step_id": 22,
+      "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.609Z",
+      "timestamp": "2026-04-07T03:11:52.840Z",
       "model_name": "middleware:hooks",
       "message": "task_list({})",
       "observation": {
@@ -595,7 +731,7 @@
           }
         ]
       },
-      "duration_ms": 2.8615419999987353,
+      "duration_ms": 2.3186249999998836,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -610,9 +746,9 @@
       }
     },
     {
-      "step_id": 23,
+      "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.610Z",
+      "timestamp": "2026-04-07T03:11:52.840Z",
       "model_name": "middleware:permissions",
       "message": "task_list({})",
       "observation": {
@@ -622,7 +758,7 @@
           }
         ]
       },
-      "duration_ms": 2.9020000000018626,
+      "duration_ms": 2.375541000001249,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -637,9 +773,9 @@
       }
     },
     {
-      "step_id": 24,
+      "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:12.611Z",
+      "timestamp": "2026-04-07T03:11:52.840Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "task_list({})",
       "observation": {
@@ -649,7 +785,7 @@
           }
         ]
       },
-      "duration_ms": 2.936667000001762,
+      "duration_ms": 2.4247079999986454,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -664,9 +800,9 @@
       }
     },
     {
-      "step_id": 25,
+      "step_id": 30,
       "source": "agent",
-      "timestamp": "2026-04-07T02:01:12.613Z",
+      "timestamp": "2026-04-07T03:11:52.840Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]},{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":2}",
       "observation": {
@@ -677,10 +813,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 1047,
+        "prompt_tokens": 1052,
         "completion_tokens": 5
       },
-      "duration_ms": 463,
+      "duration_ms": 555,
       "outcome": "success",
       "extra": {
         "totalMessages": 7,
@@ -720,12 +856,12 @@
       }
     },
     {
-      "step_id": 26,
+      "step_id": 31,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.078Z",
+      "timestamp": "2026-04-07T03:11:53.396Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task…",
-      "duration_ms": 483.72412500000064,
+      "duration_ms": 555.3066669999971,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -740,12 +876,12 @@
       }
     },
     {
-      "step_id": 27,
+      "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.079Z",
+      "timestamp": "2026-04-07T03:11:53.396Z",
       "model_name": "middleware:hooks",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task…",
-      "duration_ms": 483.9280839999992,
+      "duration_ms": 555.4041250000009,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -760,12 +896,12 @@
       }
     },
     {
-      "step_id": 28,
+      "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.080Z",
+      "timestamp": "2026-04-07T03:11:53.396Z",
       "model_name": "middleware:permissions",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task…",
-      "duration_ms": 484.17287500000384,
+      "duration_ms": 555.5393330000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -780,12 +916,12 @@
       }
     },
     {
-      "step_id": 29,
+      "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.081Z",
+      "timestamp": "2026-04-07T03:11:53.396Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the task_create tool to create two tasks: one with subject 'Implement login flow' and description 'Build OAuth2', and another with subject 'Write API tests' and description 'Add integration tests'. Then use task_list to show all tasks. Report how many tasks were created.\n\n{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Implement login flow\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task\":{\"id\":\"task_2\",\"subject\":\"Write API tests\",\"status\":\"pending\",\"dependencies\":[]}}\n\n{\"ok\":true,\"task…",
-      "duration_ms": 484.23758299999463,
+      "duration_ms": 555.5875000000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

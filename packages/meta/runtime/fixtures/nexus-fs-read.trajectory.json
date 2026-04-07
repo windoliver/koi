@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.116Z",
+      "timestamp": "2026-04-07T03:11:27.980Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.117Z",
+      "timestamp": "2026-04-07T03:11:27.980Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:55.119Z",
+      "timestamp": "2026-04-07T03:11:27.983Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 190,
         "completion_tokens": 10
       },
-      "duration_ms": 759,
+      "duration_ms": 615,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -82,10 +82,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.881Z",
+      "timestamp": "2026-04-07T03:11:28.601Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 764.6172079999997,
+      "duration_ms": 617.5540419999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,10 +102,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.882Z",
+      "timestamp": "2026-04-07T03:11:28.601Z",
       "model_name": "middleware:hooks",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 764.7440839999981,
+      "duration_ms": 617.715666,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -122,10 +122,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.883Z",
+      "timestamp": "2026-04-07T03:11:28.601Z",
       "model_name": "middleware:permissions",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 764.9269170000007,
+      "duration_ms": 617.8375000000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -142,10 +142,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.884Z",
+      "timestamp": "2026-04-07T03:11:28.601Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.",
-      "duration_ms": 764.9465410000012,
+      "duration_ms": 617.8642910000017,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -162,7 +162,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:55.885Z",
+      "timestamp": "2026-04-07T03:11:28.600Z",
       "tool_calls": [
         {
           "tool_call_id": "call_nexus_read_7",
@@ -180,16 +180,13 @@
           }
         ]
       },
-      "duration_ms": 16,
-      "outcome": "success",
-      "extra": {
-        "_original_timestamp": 1775527255880
-      }
+      "duration_ms": 9,
+      "outcome": "success"
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.897Z",
+      "timestamp": "2026-04-07T03:11:28.609Z",
       "model_name": "middleware:semantic-retry",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -199,7 +196,7 @@
           }
         ]
       },
-      "duration_ms": 16.09204100000352,
+      "duration_ms": 9.715667000000394,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -216,10 +213,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.898Z",
+      "timestamp": "2026-04-07T03:11:28.611Z",
       "model_name": "hook:on-fs-tool",
       "message": "tool.succeeded → on-fs-tool",
-      "duration_ms": 1.386040999997931,
+      "duration_ms": 1.3619159999980184,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -236,7 +233,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.899Z",
+      "timestamp": "2026-04-07T03:11:28.611Z",
       "model_name": "middleware:hooks",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -246,7 +243,7 @@
           }
         ]
       },
-      "duration_ms": 17.700417000000016,
+      "duration_ms": 11.481917000000976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -263,7 +260,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.900Z",
+      "timestamp": "2026-04-07T03:11:28.611Z",
       "model_name": "middleware:permissions",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -273,7 +270,7 @@
           }
         ]
       },
-      "duration_ms": 17.846332999997685,
+      "duration_ms": 11.732041999999637,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -290,7 +287,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:55.901Z",
+      "timestamp": "2026-04-07T03:11:28.611Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "nexus_read({\"path\":\"/golden-test.txt\"})",
       "observation": {
@@ -300,7 +297,7 @@
           }
         ]
       },
-      "duration_ms": 17.976375000002008,
+      "duration_ms": 11.93358299999818,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -317,7 +314,7 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:55.903Z",
+      "timestamp": "2026-04-07T03:11:28.611Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
       "observation": {
@@ -328,10 +325,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 242,
+        "prompt_tokens": 241,
         "completion_tokens": 17
       },
-      "duration_ms": 564,
+      "duration_ms": 603,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -349,10 +346,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:56.469Z",
+      "timestamp": "2026-04-07T03:11:29.215Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 570.3081249999996,
+      "duration_ms": 603.4894589999967,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -369,10 +366,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:56.470Z",
+      "timestamp": "2026-04-07T03:11:29.215Z",
       "model_name": "middleware:hooks",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 570.4269590000004,
+      "duration_ms": 603.5766249999979,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -389,10 +386,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:56.471Z",
+      "timestamp": "2026-04-07T03:11:29.215Z",
       "model_name": "middleware:permissions",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 570.630083,
+      "duration_ms": 603.775416000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -409,10 +406,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:56.472Z",
+      "timestamp": "2026-04-07T03:11:29.215Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the nexus_read tool to read the file at path \"/golden-test.txt\". Tell me what the file says.\n\n{\"content\":\"The answer to the golden query is 42.\",\"path\":\"/golden-test.txt\",\"size\":37}",
-      "duration_ms": 570.6890840000015,
+      "duration_ms": 603.880250000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

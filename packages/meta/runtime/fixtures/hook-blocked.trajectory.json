@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.629Z",
+      "timestamp": "2026-04-07T03:11:16.401Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.630Z",
+      "timestamp": "2026-04-07T03:11:16.401Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,10 +43,10 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.634Z",
+      "timestamp": "2026-04-07T03:11:16.404Z",
       "model_name": "hook:budget-guard",
       "message": "compact.before → budget-guard",
-      "duration_ms": 3.922083000001294,
+      "duration_ms": 2.4076249999998254,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -64,10 +64,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.635Z",
+      "timestamp": "2026-04-07T03:11:16.404Z",
       "model_name": "middleware:hooks",
       "message": "What is 2+2?",
-      "duration_ms": 4.171500000000378,
+      "duration_ms": 2.6215420000007725,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -84,10 +84,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.637Z",
+      "timestamp": "2026-04-07T03:11:16.404Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2?",
-      "duration_ms": 4.239125000000058,
+      "duration_ms": 2.672792000001209,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -104,10 +104,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:43.638Z",
+      "timestamp": "2026-04-07T03:11:16.404Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2?",
-      "duration_ms": 4.260042000001704,
+      "duration_ms": 2.6907089999986056,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
