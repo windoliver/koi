@@ -6466,3 +6466,115 @@ describe("Golden: @koi/mcp-server", () => {
     expect(String(resultContent)).toContain("msg-");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — standalone progressive loading + registry
+// No LLM needed. Exercises discover(), query(), invalidate() directly.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
+  test("discover() returns SkillMetadata with description and tags — no body loaded", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-progressive-"));
+    trajDirs.push(skillsDir);
+
+    mkdirSync(join(skillsDir, "refactor-skill"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "refactor-skill", "SKILL.md"),
+      [
+        "---",
+        "name: refactor-skill",
+        "description: Helps refactor code.",
+        "tags:",
+        "  - refactor",
+        "  - typescript",
+        "allowed-tools: read_file write_file",
+        "---",
+        "",
+        "# Refactor Skill",
+        "",
+        "This is the skill body with detailed instructions.",
+      ].join("\n"),
+    );
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const result = await runtime.discover();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // discover() returns SkillMetadata — frontmatter fields available
+    const meta = result.value.get("refactor-skill");
+    expect(meta).toBeDefined();
+    expect(meta?.name).toBe("refactor-skill");
+    expect(meta?.description).toBe("Helps refactor code.");
+    expect(meta?.tags).toEqual(["refactor", "typescript"]);
+    expect(meta?.allowedTools).toEqual(["read_file", "write_file"]);
+    expect(meta?.source).toBe("user");
+
+    // SkillMetadata has no 'body' field — body is only on SkillDefinition
+    expect(Object.keys(meta ?? {})).not.toContain("body");
+  });
+
+  test("query() filters by tags (AND semantics) and source without loading bodies", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const userDir = mkdtempSync(join(tmpdir(), "koi-golden-query-user-"));
+    const projectDir = mkdtempSync(join(tmpdir(), "koi-golden-query-project-"));
+    trajDirs.push(userDir, projectDir);
+
+    // user: skill with both tags
+    mkdirSync(join(userDir, "ts-refactor"), { recursive: true });
+    writeFileSync(
+      join(userDir, "ts-refactor", "SKILL.md"),
+      "---\nname: ts-refactor\ndescription: TS refactor.\ntags:\n  - refactor\n  - typescript\n---\n\nBody.",
+    );
+
+    // user: skill with one tag
+    mkdirSync(join(userDir, "generic-refactor"), { recursive: true });
+    writeFileSync(
+      join(userDir, "generic-refactor", "SKILL.md"),
+      "---\nname: generic-refactor\ndescription: Generic refactor.\ntags:\n  - refactor\n---\n\nBody.",
+    );
+
+    // project: skill with both tags (different source)
+    mkdirSync(join(projectDir, "project-ts"), { recursive: true });
+    writeFileSync(
+      join(projectDir, "project-ts", "SKILL.md"),
+      "---\nname: project-ts\ndescription: Project TS.\ntags:\n  - refactor\n  - typescript\n---\n\nBody.",
+    );
+
+    const runtime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot: userDir,
+      projectRoot: projectDir,
+    });
+
+    // AND semantics: both tags required → excludes generic-refactor
+    const bothTags = await runtime.query({ tags: ["refactor", "typescript"] });
+    expect(bothTags.ok).toBe(true);
+    if (!bothTags.ok) return;
+    expect(bothTags.value).toHaveLength(2);
+    const names = bothTags.value.map((m) => m.name);
+    expect(names).toContain("ts-refactor");
+    expect(names).toContain("project-ts");
+    expect(names).not.toContain("generic-refactor");
+
+    // Source filter: user only + both tags → just ts-refactor
+    const userOnly = await runtime.query({ source: "user", tags: ["refactor", "typescript"] });
+    expect(userOnly.ok).toBe(true);
+    if (!userOnly.ok) return;
+    expect(userOnly.value).toHaveLength(1);
+    expect(userOnly.value[0]?.name).toBe("ts-refactor");
+
+    // invalidate() preserves metadata but clears body cache
+    runtime.invalidate("ts-refactor");
+    const afterInvalidate = await runtime.query({ tags: ["typescript"] });
+    expect(afterInvalidate.ok).toBe(true);
+    if (!afterInvalidate.ok) return;
+    expect(afterInvalidate.value).toHaveLength(2); // metadata still available
+  });
+});

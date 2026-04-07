@@ -6,24 +6,39 @@
  * Usage:
  *   import { createSkillsRuntime } from "@koi/skills-runtime";
  *   const runtime = createSkillsRuntime({ blockOnSeverity: "HIGH" });
- *   const result = await runtime.load("code-review");
+ *   const meta = await runtime.discover();   // frontmatter only, no body
+ *   const result = await runtime.load("code-review");  // full body + scan
+ *   const filtered = await runtime.query({ tags: ["typescript"] });
  */
 
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
-import type { DiscoverConfig } from "./discover.js";
+import type { Severity } from "@koi/validation";
+import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills } from "./discover.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
-import type { SkillDefinition, SkillSource, SkillsRuntime, SkillsRuntimeConfig } from "./types.js";
+import type {
+  SkillDefinition,
+  SkillMetadata,
+  SkillQuery,
+  SkillSource,
+  SkillsRuntime,
+  SkillsRuntimeConfig,
+} from "./types.js";
 
 export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
 export type { ValidatedSkillRequires } from "./types.js";
 export type { ValidatedFrontmatter } from "./validate.js";
-export type { SkillDefinition, SkillSource, SkillsRuntime, SkillsRuntimeConfig };
+export type {
+  SkillDefinition,
+  SkillMetadata,
+  SkillQuery,
+  SkillSource,
+  SkillsRuntime,
+  SkillsRuntimeConfig,
+};
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -32,16 +47,20 @@ export type { SkillDefinition, SkillSource, SkillsRuntime, SkillsRuntimeConfig }
 /**
  * Creates an instance-scoped SkillsRuntime.
  *
- * The scanner, cache, and resolved base paths all live inside this instance —
+ * The scanner, body cache, and discovered entries all live inside this instance —
  * no global state (Decision 2A, 13A).
+ *
+ * Concurrency safety (Issue 2A): discover() and load() both use inflight promise
+ * deduplication — concurrent calls for the same resource join a single in-flight
+ * operation rather than triggering duplicate filesystem scans or loads.
  */
 export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime {
   const resolvedConfig: {
-    readonly blockOnSeverity: string;
+    readonly blockOnSeverity: Severity;
     readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
     readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
   } = {
-    blockOnSeverity: config?.blockOnSeverity ?? "HIGH",
+    blockOnSeverity: (config?.blockOnSeverity ?? "HIGH") as Severity,
     ...(config?.onShadowedSkill !== undefined ? { onShadowedSkill: config.onShadowedSkill } : {}),
     ...(config?.onSecurityFinding !== undefined
       ? { onSecurityFinding: config.onSecurityFinding }
@@ -51,12 +70,22 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Decision 13A: instance-scoped scanner (no module-level global)
   const scanner = createScanner();
 
-  // Decision 2A: instance-scoped cache
+  // Decision 2A: instance-scoped body cache
   const cache = new Map<string, Result<SkillDefinition, KoiError>>();
 
-  // Lazily computed discovered skills map
-  let discoveredSkills: ReadonlyMap<string, SkillSource> | undefined;
-  let discoveredDirPaths: ReadonlyMap<string, string> | undefined;
+  // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
+  // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
+  let discoveredEntry: ReadonlyMap<string, DiscoveredSkillEntry> | undefined;
+  // Projected metadata map cached to preserve reference identity across discover() calls
+  let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
+
+  // Issue 2A: inflight deduplication for discover()
+  let discoverInflight:
+    | Promise<Result<ReadonlyMap<string, DiscoveredSkillEntry>, KoiError>>
+    | undefined;
+
+  // Issue 2A: inflight deduplication for load() — one promise per skill name
+  const loadInflight = new Map<string, Promise<Result<SkillDefinition, KoiError>>>();
 
   const discoverConfig: DiscoverConfig = {
     ...(config?.projectRoot !== undefined ? { projectRoot: config.projectRoot } : {}),
@@ -69,21 +98,78 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   };
 
   // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  function buildMetaMap(
+    entries: ReadonlyMap<string, DiscoveredSkillEntry>,
+  ): ReadonlyMap<string, SkillMetadata> {
+    return new Map([...entries.entries()].map(([k, v]) => [k, v.metadata]));
+  }
+
+  // ---------------------------------------------------------------------------
   // discover()
   // ---------------------------------------------------------------------------
 
-  const discover = async (): Promise<Result<ReadonlyMap<string, SkillSource>, KoiError>> => {
-    if (discoveredSkills !== undefined) {
-      return { ok: true, value: discoveredSkills };
+  const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
+    // Cache hit: return the same map reference (reference identity preserved)
+    if (discoveredEntry !== undefined && discoveredMetaMap !== undefined) {
+      return { ok: true, value: discoveredMetaMap };
     }
 
-    const result = await discoverSkills(discoverConfig);
+    // Inflight dedup: join the in-flight promise if discovery is already running.
+    // This check + the assignment below are both synchronous — no interleave possible.
+    if (discoverInflight !== undefined) {
+      const result = await discoverInflight;
+      if (!result.ok) return result;
+      // discoveredMetaMap was set by the in-flight promise's then() handler.
+      // If result.ok is true, the .then() handler already assigned discoveredMetaMap.
+      if (discoveredMetaMap === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: "Discovery succeeded but metadata map was not built",
+            retryable: false,
+            context: {},
+          },
+        };
+      }
+      return { ok: true, value: discoveredMetaMap };
+    }
+
+    // No cache, no in-flight — start discovery. Set discoverInflight synchronously
+    // before any await so concurrent callers see it immediately.
+    discoverInflight = discoverSkills(discoverConfig).then(
+      (result) => {
+        if (result.ok) {
+          discoveredEntry = result.value;
+          discoveredMetaMap = buildMetaMap(result.value);
+        }
+        discoverInflight = undefined;
+        return result;
+      },
+      (err: unknown) => {
+        discoverInflight = undefined;
+        throw err;
+      },
+    );
+
+    const result = await discoverInflight;
     if (!result.ok) return result;
-
-    discoveredSkills = result.value.skills;
-    discoveredDirPaths = result.value.dirPaths;
-
-    return { ok: true, value: discoveredSkills };
+    // After successful discovery, discoveredMetaMap is guaranteed to be set by the .then() handler.
+    if (discoveredMetaMap === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: "Discovery succeeded but metadata map was not built",
+          retryable: false,
+          context: {},
+        },
+      };
+    }
+    return { ok: true, value: discoveredMetaMap };
   };
 
   // ---------------------------------------------------------------------------
@@ -91,71 +177,68 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // ---------------------------------------------------------------------------
 
   const load = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
-    // Ensure discovery has run
-    const discoverResult = await discover();
-    if (!discoverResult.ok) return discoverResult;
+    // 1. Body cache hit
+    const cached = cache.get(name);
+    if (cached !== undefined) return cached;
 
-    const source = discoveredSkills?.get(name);
-    if (source === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "NOT_FOUND",
-          message: `Skill "${name}" not found. Run discover() first or check that the skill directory exists with a SKILL.md file.`,
-          retryable: false,
-          context: { name },
-        },
+    // 2. Inflight dedup: join if this skill is already loading.
+    // Both checks below are synchronous — no interleave between check and registration.
+    const inflight = loadInflight.get(name);
+    if (inflight !== undefined) return inflight;
+
+    // 3. Create the load promise and register it synchronously before any await.
+    //    This closes the race window: any concurrent caller arriving after this
+    //    point will find the promise in loadInflight and join it.
+    const promise: Promise<Result<SkillDefinition, KoiError>> = (async () => {
+      // Ensure discovery has run
+      const discoverResult = await discover();
+      if (!discoverResult.ok) return discoverResult;
+
+      const entry = discoveredEntry?.get(name);
+      if (entry === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Skill "${name}" not found. Run discover() first or check that the skill directory exists with a SKILL.md file.`,
+            retryable: false,
+            context: { name },
+          },
+        } satisfies Result<SkillDefinition, KoiError>;
+      }
+
+      const ctx: LoaderContext = {
+        cache,
+        scanner,
+        skillsRoot: entry.skillsRoot, // pre-resolved at discovery time (Decision 6A)
+        config: resolvedConfig,
       };
-    }
 
-    const dirPath = discoveredDirPaths?.get(name);
-    if (dirPath === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: `Internal error: skill "${name}" has source but no dirPath`,
-          retryable: false,
-          context: { name, source },
-        },
-      };
-    }
+      return loadSkill(name, entry.dirPath, entry.source, ctx);
+    })().finally(() => {
+      loadInflight.delete(name);
+    });
 
-    // Decision 15A: pre-resolve skillsRoot once
-    const skillsRoot = await resolveSkillsRoot(dirPath);
-
-    const ctx: LoaderContext = {
-      cache,
-      scanner,
-      skillsRoot,
-      config: resolvedConfig,
-    };
-
-    return loadSkill(name, dirPath, source, ctx);
+    loadInflight.set(name, promise);
+    return promise;
   };
 
   // ---------------------------------------------------------------------------
   // loadAll()
   // ---------------------------------------------------------------------------
 
-  const loadAll = async (): Promise<ReadonlyMap<string, Result<SkillDefinition, KoiError>>> => {
+  const loadAll = async (): Promise<
+    Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
+  > => {
     const discoverResult = await discover();
     if (!discoverResult.ok) {
-      // Can't load anything if discovery failed
-      return new Map([
-        [
-          "__discover__",
-          {
-            ok: false as const,
-            error: discoverResult.error,
-          },
-        ],
-      ]);
+      // Discovery failed — surface as outer Result error (Issue 3A)
+      return { ok: false, error: discoverResult.error };
     }
 
-    const names = Array.from(discoveredSkills?.keys() ?? []);
+    const names = Array.from(discoveredEntry?.keys() ?? []);
 
-    // Decision 6A: Promise.allSettled rejections → skipped entries
+    // Promise.allSettled — partial failures don't block other skills
     const settled = await Promise.allSettled(names.map((name) => load(name)));
 
     const resultMap = new Map<string, Result<SkillDefinition, KoiError>>();
@@ -180,27 +263,69 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       }
     }
 
-    return resultMap;
+    return { ok: true, value: resultMap };
   };
 
-  return { discover, load, loadAll };
-}
+  // ---------------------------------------------------------------------------
+  // query()
+  // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+  const query = async (
+    filter?: SkillQuery,
+  ): Promise<Result<readonly SkillMetadata[], KoiError>> => {
+    const discoverResult = await discover();
+    if (!discoverResult.ok) return discoverResult;
 
-/**
- * Decision 15A: pre-resolve the skillsRoot from a dirPath.
- * We use the parent of the skill's directory as the root boundary.
- */
-async function resolveSkillsRoot(dirPath: string): Promise<string> {
-  // dirPath is like /home/user/.claude/skills/my-skill
-  // skillsRoot should be /home/user/.claude/skills
-  const parent = resolve(dirPath, "..");
-  try {
-    return await realpath(parent);
-  } catch {
-    return parent;
-  }
+    // Linear scan over metadata (Issue 16A: no secondary indexes needed at N ≤ 50)
+    let entries =
+      discoveredEntry !== undefined ? [...discoveredEntry.values()].map((e) => e.metadata) : [];
+
+    if (filter === undefined) {
+      return { ok: true, value: entries };
+    }
+
+    if (filter.source !== undefined) {
+      const src = filter.source;
+      entries = entries.filter((m) => m.source === src);
+    }
+
+    if (filter.tags !== undefined && filter.tags.length > 0) {
+      // AND semantics: skill must have ALL specified tags (Issue 9A)
+      const requiredTags = filter.tags;
+      entries = entries.filter((m) => {
+        if (m.tags === undefined) return false;
+        const skillTags = m.tags;
+        return requiredTags.every((tag) => skillTags.includes(tag));
+      });
+    }
+
+    if (filter.capability !== undefined) {
+      const cap = filter.capability;
+      entries = entries.filter((m) => m.allowedTools?.includes(cap) ?? false);
+    }
+
+    return { ok: true, value: entries };
+  };
+
+  // ---------------------------------------------------------------------------
+  // invalidate()
+  // ---------------------------------------------------------------------------
+
+  const invalidate = (name?: string): void => {
+    if (name === undefined) {
+      // Full reset: clear discovery cache + all body caches (Issue 14A)
+      discoveredEntry = undefined;
+      discoveredMetaMap = undefined;
+      discoverInflight = undefined;
+      cache.clear();
+      loadInflight.clear();
+    } else {
+      // Skill-only reset: clear just this skill's body entry (Issue 14A)
+      // Discovery metadata is preserved — re-discover not needed.
+      cache.delete(name);
+      loadInflight.delete(name);
+    }
+  };
+
+  return { discover, load, loadAll, query, invalidate };
 }

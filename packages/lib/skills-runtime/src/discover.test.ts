@@ -8,9 +8,13 @@
  *   4. User shadows bundled (user wins, shadow warning fired)
  *   5. Project shadows user (project wins, shadow warning fired)
  *   6. Project shadows bundled (project wins, shadow warning fired)
+ *
+ * Updated for Issue 4A: discoverSkills() now returns ReadonlyMap<string, DiscoveredSkillEntry>
+ * instead of the previous DiscoveredSkills shape with separate .skills and .dirPaths maps.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverSkills } from "./discover.js";
 import type { SkillSource } from "./types.js";
@@ -34,9 +38,15 @@ describe("discoverSkills", () => {
   let projectRoot: string;
 
   beforeEach(async () => {
-    bundledRoot = await mkdtemp("/tmp/koi-bundled-");
-    userRoot = await mkdtemp("/tmp/koi-user-");
-    projectRoot = await mkdtemp("/tmp/koi-project-");
+    bundledRoot = await mkdtemp(join(tmpdir(), "koi-bundled-"));
+    userRoot = await mkdtemp(join(tmpdir(), "koi-user-"));
+    projectRoot = await mkdtemp(join(tmpdir(), "koi-project-"));
+  });
+
+  afterEach(async () => {
+    await rm(bundledRoot, { recursive: true, force: true });
+    await rm(userRoot, { recursive: true, force: true });
+    await rm(projectRoot, { recursive: true, force: true });
   });
 
   // 1. Only bundled
@@ -45,8 +55,8 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("alpha")).toBe("bundled");
-    expect(result.value.dirPaths.get("alpha")).toContain("alpha");
+    expect(result.value.get("alpha")?.source).toBe("bundled");
+    expect(result.value.get("alpha")?.dirPath).toContain("alpha");
   });
 
   // 2. Only user
@@ -55,7 +65,7 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("beta")).toBe("user");
+    expect(result.value.get("beta")?.source).toBe("user");
   });
 
   // 3. Only project
@@ -64,7 +74,7 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("gamma")).toBe("project");
+    expect(result.value.get("gamma")?.source).toBe("project");
   });
 
   // 4. User shadows bundled
@@ -82,7 +92,7 @@ describe("discoverSkills", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("shared")).toBe("user");
+    expect(result.value.get("shared")?.source).toBe("user");
     expect(shadowedWarnings.some((w) => w.name === "shared" && w.by === "user")).toBe(true);
   });
 
@@ -101,7 +111,7 @@ describe("discoverSkills", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("shared2")).toBe("project");
+    expect(result.value.get("shared2")?.source).toBe("project");
     expect(shadowedWarnings.some((w) => w.name === "shared2" && w.by === "project")).toBe(true);
   });
 
@@ -120,7 +130,7 @@ describe("discoverSkills", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("shared3")).toBe("project");
+    expect(result.value.get("shared3")?.source).toBe("project");
     expect(shadowedWarnings.length).toBeGreaterThan(0);
   });
 
@@ -132,7 +142,7 @@ describe("discoverSkills", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.size).toBe(0);
+    expect(result.value.size).toBe(0);
   });
 
   test("null bundledRoot disables bundled tier", async () => {
@@ -140,7 +150,7 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot: null, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("alpha")).toBeUndefined();
+    expect(result.value.get("alpha")).toBeUndefined();
   });
 
   test("discovers skills from all three tiers simultaneously", async () => {
@@ -150,17 +160,16 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("only-bundled")).toBe("bundled");
-    expect(result.value.skills.get("only-user")).toBe("user");
-    expect(result.value.skills.get("only-project")).toBe("project");
-    expect(result.value.skills.size).toBe(3);
+    expect(result.value.get("only-bundled")?.source).toBe("bundled");
+    expect(result.value.get("only-user")?.source).toBe("user");
+    expect(result.value.get("only-project")?.source).toBe("project");
+    expect(result.value.size).toBe(3);
   });
 
   test("ignores invalid skill names (non-lowercase, numbers-only, etc.)", async () => {
     // Valid name: lowercase alphanumeric + hyphens
     await writeSkillDir(bundledRoot, "valid-name");
     // Simulate an invalid name by creating a dir with an invalid name
-    // (on most filesystems these are valid directory names but invalid skill names)
     const invalidDir = join(bundledRoot, "InvalidName");
     await Bun.write(join(invalidDir, "SKILL.md"), "---\nname: x\ndescription: y\n---\n", {
       createPath: true,
@@ -169,7 +178,46 @@ describe("discoverSkills", () => {
     const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.skills.get("valid-name")).toBe("bundled");
-    expect(result.value.skills.get("InvalidName")).toBeUndefined();
+    expect(result.value.get("valid-name")?.source).toBe("bundled");
+    expect(result.value.get("InvalidName")).toBeUndefined();
+  });
+
+  test("DiscoveredSkillEntry includes pre-resolved skillsRoot (Decision 6A)", async () => {
+    await writeSkillDir(userRoot, "my-skill");
+    const result = await discoverSkills({ bundledRoot: null, userRoot, projectRoot });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.get("my-skill");
+    expect(entry?.skillsRoot).toBeDefined();
+    expect(entry?.dirPath).toContain("my-skill");
+    // skillsRoot should be the parent directory containing the skill
+    expect(entry?.dirPath).toContain(entry?.skillsRoot ?? "");
+  });
+
+  test("DiscoveredSkillEntry includes metadata with description (progressive loading)", async () => {
+    await writeSkillDir(userRoot, "meta-skill");
+    const result = await discoverSkills({ bundledRoot: null, userRoot, projectRoot });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.get("meta-skill");
+    expect(entry?.metadata.description).toBe("Test skill.");
+    expect(entry?.metadata.name).toBe("meta-skill");
+  });
+
+  test("entry with invalid frontmatter gets minimal metadata fallback", async () => {
+    // Write a SKILL.md with no name/description (will fail Zod validation)
+    const invalidContent = `---\nbad_field: only\n---\n\nBody.`;
+    await Bun.write(join(bundledRoot, "broken-skill", "SKILL.md"), invalidContent, {
+      createPath: true,
+    });
+
+    const result = await discoverSkills({ bundledRoot, userRoot, projectRoot });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Skill is still discovered (it exists on disk) but with fallback metadata
+    const entry = result.value.get("broken-skill");
+    expect(entry).toBeDefined();
+    expect(entry?.metadata.name).toBe("broken-skill"); // dirName fallback
+    expect(entry?.metadata.description).toBe(""); // empty fallback
   });
 });

@@ -35,6 +35,7 @@ const frontmatterSchema = z
     compatibility: z.string().optional(),
     // YAML key uses hyphen: `allowed-tools`
     "allowed-tools": z.union([z.string(), z.array(z.string())]).optional(),
+    tags: z.array(z.string()).optional(),
     requires: requiresSchema.optional(),
     // Catch-all for extra string fields (e.g., version, author)
     // Handled separately after base parse
@@ -48,11 +49,17 @@ const frontmatterSchema = z
     if (typeof rawAllowedTools === "string") {
       allowedTools = rawAllowedTools
         .split(/\s+/)
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
+        .map((t: string) => t.trim())
+        .filter((t: string) => t.length > 0);
     } else if (Array.isArray(rawAllowedTools)) {
-      allowedTools = rawAllowedTools.filter((t) => typeof t === "string");
+      allowedTools = rawAllowedTools.filter((t: unknown): t is string => typeof t === "string");
     }
+
+    // Normalize tags: filter to strings
+    const rawTags = raw.tags;
+    const tags: readonly string[] | undefined = Array.isArray(rawTags)
+      ? rawTags.filter((t: unknown): t is string => typeof t === "string")
+      : undefined;
 
     // Collect extra string metadata fields (exclude known keys)
     const knownKeys = new Set([
@@ -61,6 +68,7 @@ const frontmatterSchema = z
       "license",
       "compatibility",
       "allowed-tools",
+      "tags",
       "requires",
       "includes",
     ]);
@@ -77,6 +85,7 @@ const frontmatterSchema = z
       license: raw.license,
       compatibility: raw.compatibility,
       allowedTools: allowedTools,
+      tags: tags,
       requires: raw.requires as ValidatedSkillRequires | undefined,
       metadata:
         Object.keys(metadata).length > 0
@@ -95,6 +104,7 @@ export interface ValidatedFrontmatter {
   readonly license?: string;
   readonly compatibility?: string;
   readonly allowedTools?: readonly string[];
+  readonly tags?: readonly string[];
   readonly requires?: ValidatedSkillRequires;
   readonly metadata?: Readonly<Record<string, string>>;
 }
