@@ -53,7 +53,7 @@ export function MessageList(props: MessageListProps): JSX.Element {
   });
 
   return (
-    <scrollbox flexGrow={1} stickyScroll>
+    <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
       <box flexDirection="column" gap={1}>
         <For each={messages()}>
           {(msg) => (

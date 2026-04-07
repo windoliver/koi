@@ -734,7 +734,6 @@ function composeMiddlewareIntoAdapter(
       const streamSignal = input.signal;
       const ctxOpts: MinimalContextOptions = {
         streamId,
-        ...(fixedSessionId !== undefined ? { sessionId: fixedSessionId } : {}),
       };
       if (streamSignal !== undefined) (ctxOpts as Record<string, unknown>).signal = streamSignal;
       if (requestApproval !== undefined)

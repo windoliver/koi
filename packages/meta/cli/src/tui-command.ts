@@ -19,6 +19,12 @@
  * Sessions are recorded to JSONL transcripts at ~/.koi/sessions/<sessionId>.jsonl.
  * The session ID is generated once per TUI process launch; agent:clear / session:new
  * resets the conversation history but continues writing to the same transcript file.
+ *
+ * Tools wired:
+ *   Glob, Grep           — codebase search (cwd-rooted)
+ *   web_fetch            — HTTP fetch via @koi/tools-web
+ *   Bash                 — shell execution via @koi/tools-bash
+ *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
  */
 
 import { readdir } from "node:fs/promises";
@@ -30,16 +36,22 @@ import type {
   EngineInput,
   InboundMessage,
   SessionTranscript,
+  Tool,
+  ToolDescriptor,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
+import { createSystemPromptMiddleware } from "@koi/engine";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
-import { createRuntime } from "@koi/runtime";
+import { createRuntime, createToolDispatcher } from "@koi/runtime";
 import {
   createJsonlTranscript,
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createBashTool } from "@koi/tools-bash";
+import { createGlobTool, createGrepTool } from "@koi/tools-builtin";
+import { createWebExecutor, createWebFetchTool } from "@koi/tools-web";
 import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
 import {
   createEventBatcher,
@@ -57,6 +69,18 @@ import { resolveApiConfig } from "./env.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_TURNS = 10;
+/**
+ * Default system prompt for the TUI agent.
+ * Tells the model it has tools available and should use them.
+ * Without this, models (especially Gemini) default to chatbot mode and
+ * refuse tool use even when tools are wired in the API request.
+ */
+const DEFAULT_SYSTEM_PROMPT =
+  "You are a helpful AI coding assistant with access to tools. " +
+  "Use your available tools (Bash for shell commands, Glob/Grep for search, " +
+  "fs_read/fs_write/fs_edit for files, web_fetch for HTTP) to complete tasks. " +
+  "Always prefer using tools to gather accurate real-time information rather than " +
+  "answering from memory.";
 /**
  * Maximum number of transcript messages sent in each model request.
  * Caps context window to control token costs in long sessions.
@@ -205,12 +229,41 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     model: modelName,
   });
 
+  // Build search, web, and bash tool instances.
+  // fs_read/write/edit are handled by createRuntime({ filesystem }) below.
+  const cwd = process.cwd();
+  const globTool = createGlobTool({ cwd });
+  const grepTool = createGrepTool({ cwd });
+  const webExecutor = createWebExecutor({ allowHttps: true });
+  const webFetchTool = createWebFetchTool(webExecutor, "web", DEFAULT_UNSANDBOXED_POLICY);
+  const bashTool = createBashTool({ workspaceRoot: cwd });
+
+  // Inline tool registry for the toolCall terminal.
+  // fs tools are not in this map — createRuntime wraps them on top via its
+  // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
+  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>([
+    [globTool.descriptor.name, globTool],
+    [grepTool.descriptor.name, grepTool],
+    [webFetchTool.descriptor.name, webFetchTool],
+    [bashTool.descriptor.name, bashTool],
+  ]);
+
+  const localToolDescriptors: readonly ToolDescriptor[] = [
+    globTool.descriptor,
+    grepTool.descriptor,
+    webFetchTool.descriptor,
+    bashTool.descriptor,
+  ];
+
   const rawEngineAdapter: EngineAdapter = {
     engineId: "koi-tui",
     capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
+      // Route tool calls to the local registry.
+      // createRuntime stacks fs tools on top of this via createToolDispatcher(fsMap, this).
+      toolCall: createToolDispatcher(localTools),
     },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const handlers = input.callHandlers;
@@ -275,12 +328,19 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
 
   const runtime = createRuntime({
     adapter: rawEngineAdapter,
-    // Pin all streams to the same session ID so the transcript middleware
-    // appends every turn to one file instead of creating a new file per submit.
-    sessionId: String(tuiSessionId),
     middleware: [
       createSessionTranscriptMiddleware({ transcript: jsonlTranscript, sessionId: tuiSessionId }),
+      createSystemPromptMiddleware(DEFAULT_SYSTEM_PROMPT),
     ],
+    // Wire fs_read, fs_write, fs_edit via the meta-runtime filesystem facility.
+    // createRuntime stacks these on top of rawEngineAdapter.terminals.toolCall
+    // via createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall).
+    filesystem: { backend: "local", operations: ["read", "write", "edit"] },
+    cwd,
+    // Advertise local tools to the model (fs tools are added by createRuntime internally).
+    toolDescriptors: localToolDescriptors,
+    // Local TUI runs on the user's machine — no exfiltration risk.
+    exfiltrationGuard: false,
   });
 
   // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
  * when selecting the model provider from env vars.
  */
 
-const DEFAULT_MODEL = "google/gemini-2.0-flash-001";
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
 export interface ApiConfig {

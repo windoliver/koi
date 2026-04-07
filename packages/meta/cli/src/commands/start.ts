@@ -5,16 +5,44 @@
  * with @koi/channel-cli for I/O. Sessions are persisted to JSONL transcripts
  * at ~/.koi/sessions/<sessionId>.jsonl and can be resumed with --resume.
  *
+ * Tools wired by default (all from ~/.koi/ or cwd):
+ *   Glob, Grep           — @koi/tools-builtin (builtin-search provider)
+ *   web_fetch            — @koi/tools-web (requires network)
+ *   Bash                 — @koi/tools-bash (workspace-rooted)
+ *   fs_read/write/edit   — @koi/tools-builtin + @koi/runtime (filesystem provider)
+ *   MCP tools            — .mcp.json in cwd (optional, skipped if absent)
+ *   Hooks                — ~/.koi/hooks.json (optional, skipped if absent)
+ *   Permissions          — auto-allow (allow:['*']); gates can be tightened later
+ *
  * API key resolution: OPENROUTER_API_KEY or OPENAI_API_KEY (see env.ts).
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type { EngineAdapter, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
-import { sessionId } from "@koi/core";
+import type {
+  ComponentProvider,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  InboundMessage,
+  KoiMiddleware,
+} from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createCliHarness } from "@koi/harness";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import {
+  createMcpComponentProvider,
+  createMcpConnection,
+  createMcpResolver,
+  loadMcpJsonFile,
+  resolveServerConfig,
+} from "@koi/mcp";
+import {
+  createPatternPermissionBackend,
+  createPermissionsMiddleware,
+} from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
 import {
@@ -22,6 +50,9 @@ import {
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createBashTool } from "@koi/tools-bash";
+import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
@@ -35,6 +66,92 @@ const DEFAULT_MAX_TURNS = 10;
 const MAX_INTERACTIVE_TURNS = 50;
 /** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
+/** Optional hooks config path — loaded if present, silently skipped otherwise. */
+const HOOKS_CONFIG_PATH = join(homedir(), ".koi", "hooks.json");
+
+// ---------------------------------------------------------------------------
+// Tool / middleware builders
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a single Tool as a ComponentProvider so it can be passed to createKoi.
+ * The provider name matches the tool name for debug clarity.
+ */
+function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
+  const name = tool.descriptor.name;
+  return {
+    name,
+    attach: async (): Promise<ReadonlyMap<string, unknown>> =>
+      new Map([[toolToken(name) as unknown as string, tool]]),
+  };
+}
+
+/**
+ * Build the static ComponentProviders wired into every session:
+ *   - builtin search (Glob, Grep)
+ *   - web_fetch
+ *   - Bash
+ */
+function buildStaticProviders(cwd: string): ComponentProvider[] {
+  const searchProvider = createBuiltinSearchProvider({ cwd });
+  const webExecutor = createWebExecutor({ allowHttps: true });
+  const webProvider = createWebProvider({
+    executor: webExecutor,
+    policy: DEFAULT_UNSANDBOXED_POLICY,
+    operations: ["fetch"],
+  });
+  const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
+  return [searchProvider, webProvider, bashProvider];
+}
+
+/**
+ * Load an optional MCP ComponentProvider from `.mcp.json` in `cwd`.
+ * Returns undefined (no error) when the file is absent or unreadable.
+ */
+async function loadMcpProvider(cwd: string): Promise<ComponentProvider | undefined> {
+  const mcpConfigPath = join(cwd, ".mcp.json");
+  const result = await loadMcpJsonFile(mcpConfigPath);
+  if (!result.ok) return undefined; // absent or unreadable — silently skip
+  if (result.value.servers.length === 0) return undefined;
+
+  const connections = result.value.servers.map((server) =>
+    createMcpConnection(resolveServerConfig(server)),
+  );
+  const resolver = createMcpResolver(connections);
+  return createMcpComponentProvider({ resolver });
+}
+
+/**
+ * Load an optional hooks middleware from `~/.koi/hooks.json`.
+ * Returns undefined when absent, invalid, or empty.
+ */
+async function loadHookMiddleware(): Promise<KoiMiddleware | undefined> {
+  let raw: unknown;
+  try {
+    raw = await Bun.file(HOOKS_CONFIG_PATH).json();
+  } catch {
+    return undefined;
+  }
+  const result = loadHooks(raw);
+  if (!result.ok || result.value.length === 0) return undefined;
+  return createHookMiddleware({ hooks: result.value });
+}
+
+/**
+ * Build permissions middleware with auto-allow rules (allow everything by default).
+ * This wires the permissions infrastructure without blocking any tools.
+ * Users can tighten rules by providing a manifest or custom backend.
+ */
+function buildPermissionsMiddleware(): KoiMiddleware {
+  const backend = createPatternPermissionBackend({
+    rules: { allow: ["*"], deny: [], ask: [] },
+  });
+  return createPermissionsMiddleware({ backend });
+}
+
+// ---------------------------------------------------------------------------
+// Command entry point
+// ---------------------------------------------------------------------------
 
 export async function run(flags: StartFlags): Promise<ExitCode> {
   // Dry-run not yet implemented — fail closed so no live API calls are made.
@@ -187,23 +304,44 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   };
 
   // ---------------------------------------------------------------------------
-  // 5. Runtime assembly
+  // 5. Tool and middleware assembly (parallel async loading)
   // ---------------------------------------------------------------------------
+
+  const cwd = process.cwd();
+  const [mcpProvider, hookMiddleware] = await Promise.all([
+    loadMcpProvider(cwd),
+    loadHookMiddleware(),
+  ]);
+
+  const staticProviders = buildStaticProviders(cwd);
+  const providers: ComponentProvider[] = [
+    ...staticProviders,
+    ...(mcpProvider !== undefined ? [mcpProvider] : []),
+  ];
 
   const sessionTranscriptMiddleware = createSessionTranscriptMiddleware({
     transcript: jsonlTranscript,
     sessionId: sid,
   });
 
+  const middleware: KoiMiddleware[] = [
+    sessionTranscriptMiddleware,
+    buildPermissionsMiddleware(),
+    ...(hookMiddleware !== undefined ? [hookMiddleware] : []),
+    ...(manifestInstructions !== undefined
+      ? [createSystemPromptMiddleware(manifestInstructions)]
+      : []),
+  ];
+
+  // ---------------------------------------------------------------------------
+  // 6. Runtime assembly
+  // ---------------------------------------------------------------------------
+
   const runtime = await createKoi({
     manifest: { name: "koi", version: "0.0.1", model: { name: model } },
     adapter: engineAdapter,
-    middleware: [
-      sessionTranscriptMiddleware,
-      ...(manifestInstructions !== undefined
-        ? [createSystemPromptMiddleware(manifestInstructions)]
-        : []),
-    ],
+    middleware,
+    providers,
   });
 
   const channel = createCliChannel({ theme: "default" });
@@ -223,7 +361,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   });
 
   // ---------------------------------------------------------------------------
-  // 6. Execute
+  // 7. Execute
   // ---------------------------------------------------------------------------
 
   switch (flags.mode.kind) {
