@@ -233,32 +233,24 @@ export function createExitPlanModeTool(config: ExitPlanModeConfig): Tool {
         };
       }
 
-      // Validate inline plan_content argument — required and must be non-empty.
+      // Resolve plan: inline plan_content arg takes precedence over persisted state.
       const inlinePlan =
         typeof args.plan_content === "string" ? args.plan_content.trim() : undefined;
-      if (!inlinePlan) {
+      const filePath = getPlanFilePath?.();
+      const plan = inlinePlan ?? (await getPlanContent());
+
+      // Require non-empty plan on all paths — teammate and main-thread alike.
+      if (!plan || plan.trim().length === 0) {
         return {
           error:
-            "plan_content is required and must be non-empty. " +
-            "Write your plan before calling ExitPlanMode.",
-          code: "VALIDATION",
+            `No plan content found${filePath !== undefined ? ` at ${filePath}` : ""}. ` +
+            "Pass your plan as plan_content or write it to the plan file before calling ExitPlanMode.",
+          code: "NOT_FOUND",
         };
       }
 
-      const filePath = getPlanFilePath?.();
-      // Merge: inline plan_content takes precedence over any persisted content.
-      const plan = inlinePlan.length > 0 ? inlinePlan : await getPlanContent();
-
       // --- Swarm teammate path: send plan_approval_request to team lead ---
       if (isTeammate && isPlanModeRequired) {
-        if (!plan) {
-          return {
-            error:
-              `No plan content found${filePath !== undefined ? ` at ${filePath}` : ""}. ` +
-              "Write your plan before calling ExitPlanMode.",
-            code: "NOT_FOUND",
-          };
-        }
         if (!writeToMailbox) {
           return {
             error: "Mailbox not configured — cannot send plan approval request.",

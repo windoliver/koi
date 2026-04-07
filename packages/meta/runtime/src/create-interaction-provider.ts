@@ -67,6 +67,16 @@ export interface InteractionProviderConfig {
    */
   readonly getPlanFilePath?: (() => string | undefined) | undefined;
 
+  /**
+   * Returns true when the provider is attached to a spawned agent context.
+   * When true, EnterPlanMode calls are blocked with FORBIDDEN.
+   *
+   * Default: `() => false` (main-thread assumed).
+   * Callers that supply this provider to child agents MUST override this
+   * to return true, otherwise children can incorrectly enter plan mode.
+   */
+  readonly isAgentContext?: (() => boolean) | undefined;
+
   readonly policy?: ToolPolicy | undefined;
 }
 
@@ -83,6 +93,7 @@ export function createInteractionProvider(
     savePlanContent,
     getPlanContent,
     getPlanFilePath,
+    isAgentContext = () => false,
     policy = DEFAULT_UNSANDBOXED_POLICY,
   } = config;
 
@@ -114,11 +125,10 @@ export function createInteractionProvider(
       });
 
       const enterPlanModeTool = createEnterPlanModeTool({
-        // Derive agent context from the attached agent: spawned workers should
-        // not be able to call EnterPlanMode. The caller must ensure this provider
-        // is only attached to the main/coordinator agent; if it reaches a child,
-        // the child's isAgentContext check will block the call.
-        isAgentContext: () => false,
+        // Use caller-supplied isAgentContext — defaults to () => false (main thread).
+        // Callers that wire this provider to spawned agents MUST pass
+        // isAgentContext: () => true to block plan-mode entry in children.
+        isAgentContext,
         isInPlanMode: () => inPlanMode,
         enterPlanMode: () => {
           inPlanMode = true;
