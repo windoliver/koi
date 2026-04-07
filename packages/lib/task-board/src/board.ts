@@ -94,10 +94,10 @@ function inputToTask(input: TaskInput, now: number): Task {
  * Safe event emission — consumer errors cannot crash board mutations.
  * Follows CC pattern: "task mutations must not fail due to notification issues."
  */
-function emit(config: TaskBoardConfig, event: TaskBoardEvent): void {
+function emit(config: TaskBoardConfig, event: TaskBoardEvent, board: TaskBoard): void {
   if (config.onEvent !== undefined) {
     try {
-      config.onEvent(event);
+      config.onEvent(event, board);
     } catch (error: unknown) {
       if (config.onEventError !== undefined) {
         try {
@@ -305,7 +305,7 @@ function createBoardFromState(
       }
 
       const newBoard = createBoardFromState(newItems, results, newUnreachable, config);
-      emit(config, { kind: "task:added", task: newTask });
+      emit(config, { kind: "task:added", task: newTask }, newBoard);
       if (newUnreachable.has(input.id)) {
         const blockingDep = deps.find((dep) => {
           const depTask = items.get(dep);
@@ -316,7 +316,11 @@ function createBoardFromState(
           );
         });
         if (blockingDep !== undefined) {
-          emit(config, { kind: "task:unreachable", taskId: input.id, blockedBy: blockingDep });
+          emit(
+            config,
+            { kind: "task:unreachable", taskId: input.id, blockedBy: blockingDep },
+            newBoard,
+          );
         }
       }
       return ok(newBoard);
@@ -360,7 +364,7 @@ function createBoardFromState(
       const newUnreachable = computeUnreachableSet(newItems);
       const newBoard = createBoardFromState(newItems, results, newUnreachable, config);
       for (const entry of newEntries) {
-        emit(config, { kind: "task:added", task: entry });
+        emit(config, { kind: "task:added", task: entry }, newBoard);
       }
       // Emit task:unreachable for batch-added tasks that are immediately dead
       for (const entry of newEntries) {
@@ -375,7 +379,11 @@ function createBoardFromState(
           );
         });
         if (blockingDep !== undefined) {
-          emit(config, { kind: "task:unreachable", taskId: entry.id, blockedBy: blockingDep });
+          emit(
+            config,
+            { kind: "task:unreachable", taskId: entry.id, blockedBy: blockingDep },
+            newBoard,
+          );
         }
       }
       return ok(newBoard);
@@ -423,7 +431,7 @@ function createBoardFromState(
       const result = transitionTask(taskId, "in_progress", { assignedTo: agentId });
       if (!result.ok) return { ok: false, error: result.error };
       const newBoard = createBoardFromState(result.value.items, results, unreachableIds, config);
-      emit(config, { kind: "task:assigned", taskId, agentId });
+      emit(config, { kind: "task:assigned", taskId, agentId }, newBoard);
       return ok(newBoard);
     },
 
@@ -452,7 +460,7 @@ function createBoardFromState(
       const newItems = new Map(items);
       newItems.set(taskId, updated);
       const newBoard = createBoardFromState(newItems, results, unreachableIds, config);
-      emit(config, { kind: "task:unassigned", taskId });
+      emit(config, { kind: "task:unassigned", taskId }, newBoard);
       return ok(newBoard);
     },
 
@@ -469,7 +477,7 @@ function createBoardFromState(
       const newResults = new Map(results);
       newResults.set(taskId, taskResult);
       const newBoard = createBoardFromState(result.value.items, newResults, unreachableIds, config);
-      emit(config, { kind: "task:completed", taskId, result: taskResult });
+      emit(config, { kind: "task:completed", taskId, result: taskResult }, newBoard);
       return ok(newBoard);
     },
 
@@ -504,7 +512,7 @@ function createBoardFromState(
         const newItems = new Map(items);
         newItems.set(taskId, updated);
         const newBoard = createBoardFromState(newItems, results, unreachableIds, config);
-        emit(config, { kind: "task:retried", taskId, retries: task.retries + 1 });
+        emit(config, { kind: "task:retried", taskId, retries: task.retries + 1 }, newBoard);
         return ok(newBoard);
       }
 
@@ -525,14 +533,16 @@ function createBoardFromState(
       }
 
       const newBoard = createBoardFromState(result.value.items, results, newUnreachable, config);
-      emit(config, { kind: "task:failed", taskId, error });
+      emit(config, { kind: "task:failed", taskId, error }, newBoard);
       for (const id of newlyUnreachable) {
-        emit(config, { kind: "task:unreachable", taskId: id, blockedBy: taskId });
+        emit(config, { kind: "task:unreachable", taskId: id, blockedBy: taskId }, newBoard);
       }
       return ok(newBoard);
     },
 
     kill(taskId: TaskItemId): Result<TaskBoard, KoiError> {
+      const task = items.get(taskId);
+      const prevStatus = task?.status ?? ("pending" as TaskStatus);
       const result = transitionTask(taskId, "killed");
       if (!result.ok) return { ok: false, error: result.error };
 
@@ -549,9 +559,9 @@ function createBoardFromState(
       }
 
       const newBoard = createBoardFromState(result.value.items, results, newUnreachable, config);
-      emit(config, { kind: "task:killed", taskId });
+      emit(config, { kind: "task:killed", taskId, previousStatus: prevStatus }, newBoard);
       for (const id of newlyUnreachable) {
-        emit(config, { kind: "task:unreachable", taskId: id, blockedBy: taskId });
+        emit(config, { kind: "task:unreachable", taskId: id, blockedBy: taskId }, newBoard);
       }
       return ok(newBoard);
     },
@@ -576,7 +586,9 @@ function createBoardFromState(
       };
       const newItems = new Map(items);
       newItems.set(taskId, updated);
-      return ok(createBoardFromState(newItems, results, unreachableIds, config));
+      const newBoard = createBoardFromState(newItems, results, unreachableIds, config);
+      emit(config, { kind: "task:updated", taskId, patch }, newBoard);
+      return ok(newBoard);
     },
 
     result(taskId: TaskItemId): TaskResult | undefined {

@@ -1,0 +1,183 @@
+/**
+ * Pure bridge: maps TaskBoardEvent + post-mutation board snapshot → EngineEvent[].
+ *
+ * Produces `task_progress` for every transition, plus `plan_update` snapshots
+ * on structural changes (add, complete, fail, kill, unreachable, update).
+ */
+
+import type {
+  AgentId,
+  EngineEvent,
+  Task,
+  TaskBoard,
+  TaskBoardEvent,
+  TaskItemId,
+  TaskStatus,
+} from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Snapshot builder
+// ---------------------------------------------------------------------------
+
+/** Builds a lightweight plan_update snapshot from the post-mutation board. */
+function buildPlanUpdate(
+  board: TaskBoard,
+  agentId: AgentId,
+  timestamp: number,
+): EngineEvent & { readonly kind: "plan_update" } {
+  const unreachableSet = new Set<TaskItemId>(board.unreachable().map((t) => t.id));
+  // Build a blockedBy index from unreachable tasks' dependencies
+  const blockedByMap = new Map<TaskItemId, TaskItemId>();
+  for (const task of board.unreachable()) {
+    for (const dep of task.dependencies) {
+      const depTask = board.get(dep);
+      if (depTask !== undefined && (depTask.status === "failed" || depTask.status === "killed")) {
+        blockedByMap.set(task.id, dep);
+        break;
+      }
+      if (unreachableSet.has(dep)) {
+        blockedByMap.set(task.id, dep);
+        break;
+      }
+    }
+  }
+
+  const tasks = board.all().map((t: Task) => ({
+    id: t.id,
+    subject: t.subject,
+    status: t.status,
+    ...(t.assignedTo !== undefined ? { assignedTo: t.assignedTo } : {}),
+    ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
+    ...(blockedByMap.has(t.id) ? { blockedBy: blockedByMap.get(t.id) } : {}),
+    dependencies: t.dependencies,
+  }));
+
+  return {
+    kind: "plan_update",
+    agentId,
+    tasks,
+    timestamp,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Previous status derivation
+// ---------------------------------------------------------------------------
+
+/** Derives previousStatus from event kind. Deterministic for all except task:killed. */
+function derivePreviousStatus(event: TaskBoardEvent, board: TaskBoard): TaskStatus {
+  switch (event.kind) {
+    case "task:added":
+      return "pending";
+    case "task:assigned":
+      return "pending";
+    case "task:unassigned":
+      return "in_progress";
+    case "task:completed":
+      return "in_progress";
+    case "task:failed":
+      return "in_progress";
+    case "task:retried":
+      return "in_progress";
+    case "task:killed":
+      return event.previousStatus;
+    case "task:unreachable":
+      return "pending";
+    case "task:updated": {
+      const task = board.get(event.taskId);
+      return task?.status ?? "pending";
+    }
+  }
+}
+
+/** Derives the new status after the event. */
+function deriveNewStatus(event: TaskBoardEvent, board: TaskBoard): TaskStatus {
+  switch (event.kind) {
+    case "task:added":
+      return "pending";
+    case "task:assigned":
+      return "in_progress";
+    case "task:unassigned":
+      return "pending";
+    case "task:completed":
+      return "completed";
+    case "task:failed":
+      return "failed";
+    case "task:retried":
+      return "pending";
+    case "task:killed":
+      return "killed";
+    case "task:unreachable":
+      return "pending";
+    case "task:updated": {
+      const task = board.get(event.taskId);
+      return task?.status ?? "pending";
+    }
+  }
+}
+
+/** Gets the subject for an event's task. */
+function deriveSubject(event: TaskBoardEvent, board: TaskBoard): string {
+  if (event.kind === "task:added") return event.task.subject;
+  const task = board.get(event.taskId);
+  return task?.subject ?? "";
+}
+
+/** Gets the activeForm for an event's task. */
+function deriveActiveForm(event: TaskBoardEvent, board: TaskBoard): string | undefined {
+  if (event.kind === "task:added") return event.task.activeForm;
+  const task = board.get(event.taskId);
+  return task?.activeForm;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/** Events that trigger a plan_update snapshot in addition to task_progress. */
+const STRUCTURAL_EVENTS = new Set<TaskBoardEvent["kind"]>([
+  "task:added",
+  "task:completed",
+  "task:failed",
+  "task:killed",
+  "task:unreachable",
+  "task:updated",
+]);
+
+/**
+ * Maps a TaskBoardEvent + post-mutation board to EngineEvent(s).
+ *
+ * Always produces at least one `task_progress` event.
+ * Structural changes also produce a `plan_update` snapshot.
+ */
+export function mapTaskBoardEventToEngineEvents(
+  event: TaskBoardEvent,
+  board: TaskBoard,
+  agentId: AgentId,
+  clock: () => number = Date.now,
+): readonly EngineEvent[] {
+  const timestamp = clock();
+  const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
+  const previousStatus = derivePreviousStatus(event, board);
+  const status = deriveNewStatus(event, board);
+  const subject = deriveSubject(event, board);
+  const activeForm = deriveActiveForm(event, board);
+
+  const progress: EngineEvent = {
+    kind: "task_progress",
+    agentId,
+    taskId,
+    subject,
+    previousStatus,
+    status,
+    ...(activeForm !== undefined ? { activeForm } : {}),
+    ...(event.kind === "task:failed" ? { detail: event.error.message } : {}),
+    timestamp,
+  };
+
+  if (STRUCTURAL_EVENTS.has(event.kind)) {
+    return [progress, buildPlanUpdate(board, agentId, timestamp)];
+  }
+
+  return [progress];
+}

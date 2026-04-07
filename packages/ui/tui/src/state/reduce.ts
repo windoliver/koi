@@ -8,6 +8,7 @@
 import type { EngineEvent } from "@koi/core/engine";
 import type {
   CumulativeMetrics,
+  PlanTask,
   SessionInfo,
   SessionSummary,
   TuiAction,
@@ -315,6 +316,39 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
       };
+    }
+
+    // ----- Plan/progress events -----
+    case "plan_update": {
+      const planTasks = event.tasks.map((t) => ({
+        id: t.id as string,
+        subject: t.subject,
+        status: t.status as string,
+        ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
+        ...(t.blockedBy !== undefined ? { blockedBy: t.blockedBy as string } : {}),
+      }));
+      return { ...state, planTasks };
+    }
+
+    case "task_progress": {
+      if (state.planTasks === null) return state;
+      const taskId = event.taskId as string;
+      const idx = state.planTasks.findIndex((t) => t.id === taskId);
+      const existing = idx >= 0 ? state.planTasks[idx] : undefined;
+      if (existing === undefined) return state;
+      const updated: PlanTask = {
+        id: existing.id,
+        subject: event.subject,
+        status: event.status as string,
+        ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
+        ...(existing.blockedBy !== undefined ? { blockedBy: existing.blockedBy } : {}),
+      };
+      const planTasks = [
+        ...state.planTasks.slice(0, idx),
+        updated,
+        ...state.planTasks.slice(idx + 1),
+      ];
+      return { ...state, planTasks };
     }
 
     // ----- Events the TUI ignores -----

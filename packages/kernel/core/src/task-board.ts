@@ -186,11 +186,22 @@ export type TaskBoardEvent =
   | { readonly kind: "task:completed"; readonly taskId: TaskItemId; readonly result: TaskResult }
   | { readonly kind: "task:failed"; readonly taskId: TaskItemId; readonly error: KoiError }
   | { readonly kind: "task:retried"; readonly taskId: TaskItemId; readonly retries: number }
-  | { readonly kind: "task:killed"; readonly taskId: TaskItemId }
+  | {
+      readonly kind: "task:killed";
+      readonly taskId: TaskItemId;
+      /** Pre-transition status — "pending" or "in_progress". */
+      readonly previousStatus: TaskStatus;
+    }
   | {
       readonly kind: "task:unreachable";
       readonly taskId: TaskItemId;
       readonly blockedBy: TaskItemId;
+    }
+  | {
+      /** Emitted when a task's subject, description, or activeForm is patched. */
+      readonly kind: "task:updated";
+      readonly taskId: TaskItemId;
+      readonly patch: TaskPatch;
     };
 
 // ---------------------------------------------------------------------------
@@ -214,7 +225,7 @@ export interface TaskBoardConfig {
    * do not coordinate on this limit.
    */
   readonly maxInProgressPerOwner?: number | undefined;
-  readonly onEvent?: ((event: TaskBoardEvent) => void) | undefined;
+  readonly onEvent?: ((event: TaskBoardEvent, board: TaskBoard) => void) | undefined;
   /** Called when onEvent throws. Errors still swallowed — mutations never fail from handlers. */
   readonly onEventError?: ((error: unknown, event: TaskBoardEvent) => void) | undefined;
 }

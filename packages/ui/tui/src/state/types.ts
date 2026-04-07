@@ -165,6 +165,19 @@ export type TuiMessage =
     };
 
 // ---------------------------------------------------------------------------
+// Plan progress
+// ---------------------------------------------------------------------------
+
+/** Lightweight projection of a task for the progress display. */
+export interface PlanTask {
+  readonly id: string;
+  readonly subject: string;
+  readonly status: string;
+  readonly activeForm?: string | undefined;
+  readonly blockedBy?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
@@ -187,6 +200,8 @@ export interface TuiState {
   /** Saved sessions, sorted most-recent-first, capped at MAX_SESSIONS. */
   readonly sessions: readonly SessionSummary[];
   readonly slashQuery: string | null;
+  /** Task board progress — null before first plan_update event. */
+  readonly planTasks: readonly PlanTask[] | null;
 }
 
 // ---------------------------------------------------------------------------
