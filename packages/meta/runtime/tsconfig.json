@@ -38,6 +38,7 @@
     { "path": "../../sandbox/sandbox-os" },
     { "path": "../../lib/session" },
     { "path": "../../security/permissions" },
+    { "path": "../../lib/skills-runtime" },
     { "path": "../../lib/validation" }
   ]
 }

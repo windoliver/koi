@@ -8,12 +8,18 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../args.js";
 import { ExitCode } from "../types.js";
-import { listSessionSummaries, loadSessionSummary, run } from "./sessions.js";
+import {
+  isValidJsonlEntry,
+  listSessionSummaries,
+  loadSessionSummary,
+  readJsonlLines,
+  run,
+} from "./sessions.js";
 
 // ---------------------------------------------------------------------------
 // Test fixture setup
@@ -38,6 +44,95 @@ async function writeSession(chatDir: string, id: string, lines: string[]): Promi
   await mkdir(chatDir, { recursive: true });
   await writeFile(join(chatDir, `${id}.jsonl`), `${lines.join("\n")}\n`);
 }
+
+/**
+ * Create a ReadableStream<Uint8Array> that delivers exactly the given string
+ * chunks in order. Allows testing chunk-boundary behavior without real file I/O.
+ */
+function makeChunkedStream(chunks: readonly string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// readJsonlLines
+// ---------------------------------------------------------------------------
+
+describe("readJsonlLines", () => {
+  async function collect(stream: ReadableStream<Uint8Array>): Promise<string[]> {
+    const lines: string[] = [];
+    for await (const line of readJsonlLines(stream)) {
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  test("yields complete line when it spans two chunks", async () => {
+    const stream = makeChunkedStream(['{"kind":"us', 'er","text":"hi"}\n']);
+    const lines = await collect(stream);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({ kind: "user", text: "hi" });
+  });
+
+  test("yields final line with no trailing newline", async () => {
+    const stream = makeChunkedStream(['{"a":1}']);
+    const lines = await collect(stream);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({ a: 1 });
+  });
+
+  test("handles \\r\\n line endings — strips trailing \\r", async () => {
+    const stream = makeChunkedStream(['{"a":1}\r\n', '{"b":2}\r\n']);
+    const lines = await collect(stream);
+    expect(lines).toHaveLength(2);
+    // JSON.parse would throw on '{"a":1}\r' if \r was not stripped
+    expect(() => JSON.parse(lines[0] ?? "")).not.toThrow();
+    expect(() => JSON.parse(lines[1] ?? "")).not.toThrow();
+  });
+
+  test("yields nothing for an empty stream", async () => {
+    const stream = makeChunkedStream([]);
+    const lines = await collect(stream);
+    expect(lines).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isValidJsonlEntry
+// ---------------------------------------------------------------------------
+
+describe("isValidJsonlEntry", () => {
+  test("accepts a valid entry with all fields", () => {
+    expect(isValidJsonlEntry({ kind: "user", text: "hi", timestamp: 1000 })).toBe(true);
+  });
+
+  test("accepts empty object — all fields are optional", () => {
+    expect(isValidJsonlEntry({})).toBe(true);
+  });
+
+  test("rejects null", () => {
+    expect(isValidJsonlEntry(null)).toBe(false);
+  });
+
+  test("rejects kind: 42 — wrong type", () => {
+    expect(isValidJsonlEntry({ kind: 42 })).toBe(false);
+  });
+
+  test("rejects timestamp: 'bad' — wrong type", () => {
+    expect(isValidJsonlEntry({ timestamp: "bad" })).toBe(false);
+  });
+
+  test("rejects text: [] — wrong type", () => {
+    expect(isValidJsonlEntry({ text: [] })).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // loadSessionSummary
@@ -108,6 +203,23 @@ describe("loadSessionSummary", () => {
     const result = await loadSessionSummary(path, "a");
     expect(result).toBeUndefined();
   });
+
+  test("uses mtimeMs for createdAt and lastActiveAt when file has no timestamps", async () => {
+    const path = join(tmpDir, "no-ts.jsonl");
+    await writeFile(path, `${JSON.stringify({ kind: "user", text: "hi" })}\n`);
+    const result = await loadSessionSummary(path, "a", 1_234_567_890);
+    expect(result?.createdAt).toBe(1_234_567_890);
+    expect(result?.lastActiveAt).toBe(1_234_567_890);
+  });
+
+  test("falls back to Date.now() for createdAt when mtimeMs is not provided", async () => {
+    const before = Date.now();
+    const path = join(tmpDir, "no-ts2.jsonl");
+    await writeFile(path, `${JSON.stringify({ kind: "user", text: "hi" })}\n`);
+    const result = await loadSessionSummary(path, "a");
+    expect(result?.createdAt).toBeGreaterThanOrEqual(before);
+    expect(result?.createdAt).toBeLessThanOrEqual(Date.now());
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -134,9 +246,25 @@ describe("listSessionSummaries", () => {
     await writeSession(chatDir, "old-session", [makeLine("user", "first", 1000)]);
     await writeSession(chatDir, "new-session", [makeLine("user", "latest", 9000)]);
 
+    // listSessionSummaries sorts by filesystem mtime, not by JSONL timestamps.
+    // On CI (Linux, ext4), both files written in rapid succession can get the
+    // same mtime — making the sort non-deterministic. Set mtimes explicitly so
+    // the expected order is always enforced.
+    const oldPath = join(chatDir, "old-session.jsonl");
+    const newPath = join(chatDir, "new-session.jsonl");
+    const oldMtime = new Date(1_000_000);
+    const newMtime = new Date(2_000_000);
+    await utimes(oldPath, oldMtime, oldMtime);
+    await utimes(newPath, newMtime, newMtime);
+
     const result = await listSessionSummaries(tmpDir, 20);
     expect(result).toHaveLength(2);
-    expect(result[0]?.lastActiveAt).toBeGreaterThanOrEqual(result[1]?.lastActiveAt ?? 0);
+    const first = result[0];
+    const second = result[1];
+    if (first === undefined || second === undefined) throw new Error("expected 2 sessions");
+    // new-session has the higher mtime → must sort first
+    expect(first.sessionId).toBe("new-session");
+    expect(second.sessionId).toBe("old-session");
   });
 
   test("respects limit — returns at most limit sessions", async () => {
@@ -148,7 +276,7 @@ describe("listSessionSummaries", () => {
     }
 
     const result = await listSessionSummaries(tmpDir, 3);
-    expect(result.length).toBeLessThanOrEqual(3);
+    expect(result).toHaveLength(3);
   });
 
   test("aggregates sessions across multiple agents", async () => {

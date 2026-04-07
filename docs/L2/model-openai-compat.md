@@ -56,8 +56,27 @@ before any name arrives, the parser emits a deferred `tool_call_start` with `too
 followed by a `VALIDATION` error, ensuring `consumeModelStream` always has an accumulator
 entry for that call ID (prevents the `"unknown"` fallback in downstream consumers).
 
+## Prompt cache stability (#1554)
+
+### Deterministic tool ordering
+
+`mapToolDescriptors()` sorts tools alphabetically by name before mapping to
+OpenAI format. This ensures the tools section of the request body is identical
+across turns regardless of component attach order or forge changes, preserving
+the provider's KV cache prefix.
+
+### Prompt prefix fingerprint
+
+Each model response includes `promptPrefixFingerprint` in `ModelResponse.metadata`.
+This is a SHA-256 hash of the system prompt + sorted tool payload (name, description,
+schema) — the static portion of the provider-visible prefix. It detects unexpected
+prefix drift from tool reordering, banner changes, or schema mutations. It does NOT
+include conversation messages (which change every turn by definition).
+
 ## Dependencies
 
-Zero external dependencies. Uses `fetch()` (Bun global) and inline SSE parsing.
+`@koi/core` (L0), `@koi/hash` (L0u). Uses `fetch()` (Bun global) and inline SSE parsing.
 
 > **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.
+
+> **Maintenance note (PR #1560):** Added missing `@koi/hash` project reference to `tsconfig.json`. Required after PR #1554 added `@koi/hash` as a dependency but omitted the TypeScript project reference. No functional changes.

@@ -37,7 +37,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-04T07:18:18.659Z",
+      "timestamp": "2026-04-04T07:18:18.660Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -110,7 +110,7 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-04T07:18:19.522Z",
+      "timestamp": "2026-04-04T07:18:19.523Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the memory_fs_create tool to create a memory with name \"design patterns\", description \"Patterns for extensibility\", type \"feedback\", and content \"Rule: prefer composition over inheritance.\\n**Why:** decoupled, testable modules.\\n**How to apply:** use factory functions an…",
       "duration_ms": 830.7257919999975,
@@ -174,7 +174,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-04T07:18:19.521Z",
+      "timestamp": "2026-04-04T07:18:19.534Z",
       "tool_calls": [
         {
           "tool_call_id": "call_memory_fs_create_7",
@@ -299,7 +299,7 @@
     {
       "step_id": 12,
       "source": "tool",
-      "timestamp": "2026-04-04T07:18:19.536Z",
+      "timestamp": "2026-04-04T07:18:19.541Z",
       "tool_calls": [
         {
           "tool_call_id": "call_memory_fs_list_12",
@@ -348,7 +348,7 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-04T07:18:19.543Z",
+      "timestamp": "2026-04-04T07:18:19.544Z",
       "model_name": "middleware:permissions",
       "message": "memory_fs_list({})",
       "observation": {
@@ -375,7 +375,7 @@
     {
       "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-04T07:18:19.543Z",
+      "timestamp": "2026-04-04T07:18:19.545Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"memories\":[{\"id\":\"design_patterns\",\"name\":\"design patterns\",\"type\":\"feedback\"}]}",
       "observation": {
@@ -431,7 +431,7 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-04T07:18:20.438Z",
+      "timestamp": "2026-04-04T07:18:20.439Z",
       "model_name": "middleware:permissions",
       "message": "[Active Capabilities]\n- **permissions**: bypass (allow all)\n- **hooks**: Active hooks: on-tool-exec\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Dispatch**: 1 hook(s) configured for event-driven execution\nUse the memory_fs_create tool to create a memory with name \"design patterns\", description \"Patterns for extensibility\", type \"feedback\", and content \"Rule: prefer composition over inheritance.\\n**Why:** decoupled, testable modules.\\n**How to apply:** use factory functions an…",
       "duration_ms": 894.8119999999981,

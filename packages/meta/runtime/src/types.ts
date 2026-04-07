@@ -85,6 +85,17 @@ export interface RuntimeConfig {
       }
     | undefined;
 
+  /**
+   * Fixed session ID threaded into TurnContext.session.sessionId for every
+   * stream() call. When provided, all turns in this runtime share the same
+   * session routing key so middleware (e.g. transcript) writes to a single
+   * persistent file. When omitted, each stream gets a unique UUID (default).
+   *
+   * Use this for multi-turn sessions that need transcript continuity, e.g.:
+   *   createRuntime({ sessionId: mySessionId, middleware: [transcriptMw] })
+   */
+  readonly sessionId?: string | undefined;
+
   /** User identity for tenant-aware middleware. */
   readonly userId?: string | undefined;
 
@@ -208,6 +219,14 @@ export interface RuntimeConfig {
    * Pass `false` to disable (e.g., for testing or trusted environments).
    */
   readonly credentialPathGuard?: false | undefined;
+
+  /**
+   * Base clock for trajectory timestamps. Each stream creates its own
+   * monotonic wrapper around this base clock, so concurrent sessions
+   * never interfere with each other's timestamp sequences.
+   * Default: Date.now (wrapped in createMonotonicClock per stream).
+   */
+  readonly clock?: (() => number) | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

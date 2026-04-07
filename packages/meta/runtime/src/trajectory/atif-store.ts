@@ -145,12 +145,45 @@ export function createAtifDocumentStore(
         const existing = await delegate.read(docId);
         const doc = existing ?? createEmptyDoc(docId);
 
-        // Reassign stepIndex to be globally unique across the document
+        // Reassign stepIndex to be globally unique across the document.
+        // Enforce monotonic timestamps as a safety net for L1 emitters that
+        // lack clock injection (#1558). When a step's timestamp goes backward
+        // (concurrent Date.now() race), the original timestamp is preserved
+        // in metadata._original_timestamp so auditors can reconstruct true
+        // chronology. The per-stream monotonic clock handles most cases;
+        // this only fires for engine-compose instrumentation timestamps.
         const baseIndex = doc.steps.length;
-        const reindexedSteps = steps.map((s, i) => ({
-          ...s,
-          stepIndex: baseIndex + i,
-        }));
+        const lastExistingTs =
+          doc.steps.length > 0
+            ? (() => {
+                const lastStep = doc.steps[doc.steps.length - 1];
+                if (lastStep === undefined) return 0;
+                return typeof lastStep.timestamp === "string"
+                  ? new Date(lastStep.timestamp).getTime()
+                  : (lastStep.timestamp as number);
+              })()
+            : 0;
+        // let: mutable — tracks the running maximum timestamp for monotonicity
+        let prevTs = lastExistingTs;
+        const reindexedSteps = steps.map((s, i) => {
+          const ts = s.timestamp;
+          if (ts > prevTs) {
+            prevTs = ts;
+            return { ...s, stepIndex: baseIndex + i };
+          }
+          // Timestamp went backward — adjust but preserve original
+          const adjusted = prevTs + 1;
+          prevTs = adjusted;
+          return {
+            ...s,
+            stepIndex: baseIndex + i,
+            timestamp: adjusted,
+            metadata: {
+              ...(s.metadata ?? {}),
+              _original_timestamp: ts,
+            },
+          };
+        });
 
         const newAtifDoc = mapRichTrajectoryToAtif(reindexedSteps, {
           sessionId: docId,

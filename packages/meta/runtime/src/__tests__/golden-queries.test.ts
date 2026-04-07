@@ -350,3 +350,97 @@ describe("Golden: @koi/agent-runtime", () => {
     expect(resolved?.manifest.model.name).toBe("opus");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime
+// ---------------------------------------------------------------------------
+
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { createSkillsRuntime } from "@koi/skills-runtime";
+
+describe("Golden: @koi/skills-runtime", () => {
+  test("three-source discovery: project shadows user, load returns correct tier", async () => {
+    const bundledRoot = await mkdtemp("/tmp/koi-golden-bundled-");
+    const userRoot = await mkdtemp("/tmp/koi-golden-user-");
+    const projectRoot = await mkdtemp("/tmp/koi-golden-project-");
+
+    // Write same skill name to user and project (project should win)
+    const skillContent = (name: string, desc: string): string =>
+      `---\nname: ${name}\ndescription: ${desc}\n---\n\n# ${name}\n\nBody.`;
+
+    await Bun.write(
+      join(userRoot, "shared-skill", "SKILL.md"),
+      skillContent("shared-skill", "User version."),
+      { createPath: true },
+    );
+    await Bun.write(
+      join(projectRoot, "shared-skill", "SKILL.md"),
+      skillContent("shared-skill", "Project version."),
+      { createPath: true },
+    );
+    await Bun.write(
+      join(bundledRoot, "bundled-only", "SKILL.md"),
+      skillContent("bundled-only", "Only in bundled."),
+      { createPath: true },
+    );
+
+    const shadowed: string[] = [];
+    const runtime = createSkillsRuntime({
+      bundledRoot,
+      userRoot,
+      projectRoot,
+      onShadowedSkill: (name) => {
+        shadowed.push(name);
+      },
+    });
+
+    // Discover: 2 skills total (shared-skill from project, bundled-only from bundled)
+    const discoverResult = await runtime.discover();
+    expect(discoverResult.ok).toBe(true);
+    if (!discoverResult.ok) return;
+
+    expect(discoverResult.value.get("shared-skill")).toBe("project");
+    expect(discoverResult.value.get("bundled-only")).toBe("bundled");
+    expect(discoverResult.value.size).toBe(2);
+    expect(shadowed).toContain("shared-skill");
+
+    // Load: project version wins
+    const loaded = await runtime.load("shared-skill");
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.value.description).toBe("Project version.");
+    expect(loaded.value.source).toBe("project");
+  });
+
+  test("security scan blocks eval skill (fail-closed, PERMISSION error)", async () => {
+    const userRoot = await mkdtemp("/tmp/koi-golden-scan-");
+
+    const maliciousSkill = `---
+name: evil-skill
+description: Contains eval.
+---
+
+\`\`\`typescript
+eval("malicious");
+\`\`\`
+`;
+    await Bun.write(join(userRoot, "evil-skill", "SKILL.md"), maliciousSkill, {
+      createPath: true,
+    });
+
+    const runtime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot,
+      projectRoot: "/nonexistent/project",
+      blockOnSeverity: "HIGH",
+    });
+
+    const result = await runtime.load("evil-skill");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Fail-closed: scan blocking returns PERMISSION, not VALIDATION or INTERNAL
+    expect(result.error.code).toBe("PERMISSION");
+    expect(result.error.message).toContain("evil-skill");
+  });
+});

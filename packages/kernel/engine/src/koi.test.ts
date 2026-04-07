@@ -3879,6 +3879,32 @@ describe("createKoi stop gate", () => {
     expect(capturedMessages[1]?.length).toBe(2);
     expect(JSON.stringify(capturedMessages[1])).toContain("[Stop hook feedback]");
   });
+
+  test("stop-gate retry feedback forbids capability parroting (#1493 regression guard)", async () => {
+    // Regression guard for #1493: stop-gate retry feedback must explicitly
+    // instruct the model to not describe tools/capabilities. This instruction
+    // is the primary defense against chatty models echoing the [Active
+    // Capabilities] banner after a blocked completion.
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter, injectedMessages } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    expect(injectedMessages.length).toBe(1);
+    const feedbackText = JSON.stringify(injectedMessages[0]);
+    // The feedback must contain the anti-parroting instruction
+    expect(feedbackText).toContain("do not describe your tools");
+    expect(feedbackText).toContain("your active capabilities");
+  });
 });
 
 // ---------------------------------------------------------------------------

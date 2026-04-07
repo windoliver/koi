@@ -278,7 +278,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 | `ToolCallBlock` | Tool lifecycle | Spinner while running, checkmark on complete, X on error |
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
-| `MessageList` | Conversation | `<scrollbox>` with stickyScroll, uses `useTuiStore(s => s.messages)` |
+| `MessageList` | Conversation | `<scrollbox stickyScroll stickyStart="bottom">` — new messages always scroll into view; `stickyStart="bottom"` sets `_stickyScrollBottom=true` on init so the scrollbox follows the bottom rather than the top |
 | `InputArea` | Text input | `<textarea>` with slash detection; Enter submits, Ctrl+J for newline |
 | `SlashOverlay` | Slash completion | Fuzzy-filtered `<select>` dropdown; Escape dismisses |
 | `PermissionPrompt` | HITL approval | Single-key (y/n/a/Esc) with risk-level color coding |

@@ -14,7 +14,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/hash": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

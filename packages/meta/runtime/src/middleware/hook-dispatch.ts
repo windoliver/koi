@@ -32,6 +32,8 @@ export interface HookObserverConfig {
   readonly docId?: string;
   /** Session-level abort signal for cancellation. */
   readonly signal?: AbortSignal;
+  /** Injectable clock for deterministic timestamps. Default: Date.now. */
+  readonly clock?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,13 +138,14 @@ export function createHookObserver(config: HookObserverConfig): {
   readonly middleware: KoiMiddleware;
 } {
   const { store, docId } = config;
+  const clock = config.clock ?? Date.now;
 
   function recordHookResults(results: readonly HookExecutionResult[], triggerEvent: string): void {
     if (store === undefined || docId === undefined || results.length === 0) return;
 
     const steps: RichTrajectoryStep[] = results.map((result, index) => ({
       stepIndex: index,
-      timestamp: Date.now(),
+      timestamp: clock(),
       source: "system" as const,
       kind: "model_call" as const,
       identifier: `hook:${result.hookName}`,
@@ -178,7 +181,7 @@ export function createHookObserver(config: HookObserverConfig): {
         if (store !== undefined && docId !== undefined) {
           const step: RichTrajectoryStep = {
             stepIndex: 0,
-            timestamp: Date.now(),
+            timestamp: clock(),
             source: "system" as const,
             kind: "model_call" as const,
             identifier: "stop-gate:block",

@@ -25,6 +25,7 @@
  *   @koi/tools-core           — buildTool()
  *   @koi/tools-builtin        — Glob/Grep/ToolSearch + TodoWrite/plan-mode interaction tools
  *   @koi/fs-local             — local filesystem backend
+ *   @koi/skills-runtime       — skill discovery + SkillComponent attach
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
@@ -48,7 +49,7 @@ import type {
 } from "@koi/core";
 import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -79,6 +80,7 @@ import {
   createSessionTranscriptMiddleware,
   resumeFromTranscript,
 } from "@koi/session";
+import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -736,6 +738,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     { agentName: `golden-${name}` },
     createFsAtifDelegate(trajDir),
   );
+  const clock = createMonotonicClock();
 
   // @koi/middleware-semantic-retry — broker created early so event-trace can read signals
   const retryBroker = createRetrySignalBroker();
@@ -745,6 +748,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     store,
     docId,
     agentName: `golden-${name}`,
+    clock,
     signalReader: retryBroker,
   });
 
@@ -876,6 +880,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
   const { onExecuted: hookObserverTap, middleware: hookObserverMw } = createHookObserver({
     store,
     docId,
+    clock,
   });
 
   // coreHookMw owns all hooks (including agent hooks). spawnFn is required
@@ -907,6 +912,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     store,
     docId,
     serverName: "test-mcp-server",
+    clock,
   });
   mcpSm.transition({ kind: "connecting", attempt: 1 });
   mcpSm.transition({ kind: "connected" });
@@ -1068,7 +1074,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     permHandle,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
-  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId }));
+  ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
 
   // Resolve providers: factory takes precedence when present (e.g., spawn-inheritance
   // needs to inject a child-scoped eventTrace into spawnToolProvider.inheritedMiddleware
@@ -1376,6 +1382,30 @@ const localFsProvider = createSingleToolProvider({
 });
 
 console.log(`Local-fs golden query: dir=${localFsTmpDir}, seeded golden-local.txt`);
+
+// ---------------------------------------------------------------------------
+// @koi/skills-runtime — skill discovery + SkillComponent attach
+// Seeded with a single "bullet-points" skill that the agent is asked to follow.
+// ---------------------------------------------------------------------------
+
+const skillsTmpDir = mkdtempSync(joinPath(tmpDirFn(), "koi-golden-skills-"));
+const { mkdirSync, writeFileSync } = await import("node:fs");
+mkdirSync(joinPath(skillsTmpDir, "bullet-points"), { recursive: true });
+writeFileSync(
+  joinPath(skillsTmpDir, "bullet-points", "SKILL.md"),
+  [
+    "---",
+    "name: bullet-points",
+    "description: Respond using bullet points instead of prose.",
+    "---",
+    "",
+    "Always respond using bullet point lists. Never use prose paragraphs.",
+  ].join("\n"),
+);
+const skillProvider = createSkillProvider(
+  createSkillsRuntime({ bundledRoot: null, userRoot: skillsTmpDir }),
+);
+console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2598,6 +2628,20 @@ const queries: readonly QueryConfig[] = [
       ],
     };
   })(),
+
+  // skill-load: @koi/skills-runtime — loads skills from filesystem, attaches as SkillComponents
+  //   createSkillProvider discovers the "bullet-points" skill from skillsTmpDir,
+  //   attaches it under skillToken("bullet-points") in the agent ECS.
+  //   Trajectory proves: skill provider wires into createKoi, attach succeeds, agent runs.
+  {
+    name: "skill-load",
+    prompt: "What are the primary colors? Answer briefly.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [skillProvider],
+  },
 ];
 
 // =========================================================================
@@ -2977,6 +3021,19 @@ await recordCassette("mcp-tool-use", () =>
       },
     ],
     tools: mcpTools,
+  }),
+);
+
+// skill-load: @koi/skills-runtime — no tools, text-only response
+await recordCassette("skill-load", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text: "What are the primary colors? Answer briefly." }],
+      },
+    ],
   }),
 );
 

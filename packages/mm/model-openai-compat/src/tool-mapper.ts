@@ -9,7 +9,11 @@ export function mapToolDescriptors(
   tools: readonly ToolDescriptor[],
   compat: ResolvedCompat,
 ): readonly ChatCompletionTool[] {
-  return tools.map((tool) => ({
+  // Sort alphabetically for prompt-cache stability: deterministic tool order
+  // means the tools section of the request body is identical across turns,
+  // preserving the provider's KV cache prefix (#1554).
+  const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name));
+  return sorted.map((tool) => ({
     type: "function" as const,
     function: {
       name: tool.name,

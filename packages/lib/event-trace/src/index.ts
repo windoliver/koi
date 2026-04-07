@@ -41,5 +41,8 @@ export { ATIF_SCHEMA_VERSION } from "./atif-types.js";
 export type { EventTraceConfig, EventTraceHandle } from "./event-trace.js";
 export { createEventTraceMiddleware } from "./event-trace.js";
 
+// Monotonic clock
+export { createMonotonicClock } from "./monotonic-clock.js";
+
 // Utilities
 export { pickDefined, sumOptional, truncateContent } from "./utils.js";

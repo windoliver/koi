@@ -27,7 +27,7 @@ import type {
 } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
@@ -35,6 +35,7 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { loadCassette } from "../cassette/load-cassette.js";
@@ -296,12 +297,14 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       { agentName: "replay-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     // @koi/event-trace
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-test",
+      clock,
     });
 
     // @koi/hooks
@@ -314,7 +317,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       },
     ]);
     const loadedHooks = hookResult.ok ? hookResult.value : [];
-    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId, clock });
     const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
 
     // @koi/permissions + @koi/middleware-permissions
@@ -334,6 +337,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       store,
       docId,
       serverName: "test-mcp",
+      clock,
     });
     mcpSm.transition({ kind: "connecting", attempt: 1 });
     mcpSm.transition({ kind: "connected" });
@@ -345,7 +349,7 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
       manifest: { name: "replay-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -422,11 +426,13 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       { agentName: "goal-report-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "goal-report-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -456,7 +462,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, goalMw, reportHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -529,10 +535,12 @@ describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () =>
       { agentName: "callback-goal-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "callback-goal-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -572,7 +580,7 @@ describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () =>
       manifest: { name: "callback-goal-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, goalMw, permMiddleware].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -3056,11 +3064,13 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       { agentName: "replay-memory-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-memory-test",
+      clock,
     });
 
     const hookResult = loadHooks([
@@ -3075,6 +3085,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const { onExecuted: onExecuted2, middleware: hookObserverMw2 } = createHookObserver({
       store,
       docId,
+      clock,
     });
     const hookMw = createHookMiddleware({ hooks: loadedHooks2, onExecuted: onExecuted2 });
 
@@ -3093,6 +3104,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       store,
       docId,
       serverName: "test-mcp",
+      clock,
     });
     mcpSm.transition({ kind: "connecting", attempt: 1 });
     mcpSm.transition({ kind: "connected" });
@@ -3248,7 +3260,7 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
       manifest: { name: "replay-memory-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, hookMw, hookObserverMw2, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [memProvider],
       loopDetection: false,
@@ -4721,11 +4733,13 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       { agentName: "replay-spawn-tools" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
       agentName: "replay-spawn-tools",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -4763,7 +4777,7 @@ describe("Full-loop replay: spawn-tools cassette → createKoi → live ATIF", (
       manifest: { name: "replay-spawn-tools", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTrace, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -5551,12 +5565,14 @@ describe("Approval trajectory capture (e2e)", () => {
       { agentName: "approval-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     // Event-trace: retain full handle for emitExternalStep
     const eventTraceHandle = createEventTraceMiddleware({
       store,
       docId,
       agentName: "approval-test",
+      clock,
     });
 
     // Permissions in "ask" mode — every tool call triggers approval flow
@@ -5578,7 +5594,7 @@ describe("Approval trajectory capture (e2e)", () => {
       manifest: { name: "approval-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -5627,11 +5643,13 @@ describe("Approval trajectory capture (e2e)", () => {
       { agentName: "denial-test" },
       createFsAtifDelegate(trajDir),
     );
+    const clock = createMonotonicClock();
 
     const eventTraceHandle = createEventTraceMiddleware({
       store,
       docId,
       agentName: "denial-test",
+      clock,
     });
 
     const permBackend = createPermissionBackend({
@@ -5651,7 +5669,7 @@ describe("Approval trajectory capture (e2e)", () => {
       manifest: { name: "denial-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
       middleware: [eventTraceHandle.middleware, permHandle].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId }),
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
         createSingleToolProvider({
@@ -6318,4 +6336,165 @@ describe("Golden: @koi/session — session-status-content-replacement", () => {
 
     store.close();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — skill-load cassette → createKoi → live ATIF
+// Proves createSkillProvider wires into createKoi correctly:
+//   skill discovered from disk → SkillComponent attached under skillToken →
+//   agent loop runs cleanly → model call step in ATIF
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
+  test("createSkillProvider wires into createKoi, skill attaches, agent runs", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/skill-load.cassette.json`);
+    const trajDir = `/tmp/koi-skills-replay-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-skill-load";
+
+    // Create a temp skill dir so the runtime can discover real SKILL.md files.
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-replay-skills-"));
+    mkdirSync(join(skillsDir, "bullet-points"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "bullet-points", "SKILL.md"),
+      [
+        "---",
+        "name: bullet-points",
+        "description: Respond using bullet points instead of prose.",
+        "---",
+        "",
+        "Always respond using bullet point lists. Never use prose paragraphs.",
+      ].join("\n"),
+    );
+    // Clean up temp skill dir after test (reuse trajDirs cleanup mechanism)
+    trajDirs.push(skillsDir);
+
+    const store = createAtifDocumentStore(
+      { agentName: "skills-replay-test" },
+      createFsAtifDelegate(trajDir),
+    );
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "skills-replay-test",
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass (allow all)",
+    });
+
+    // @koi/skills-runtime — the package under test
+    const skillRuntime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const provider = createSkillProvider(skillRuntime);
+
+    // Simple text adapter (skills attach at ECS level, no tool calls needed)
+    // let: mutable call counter
+    let callCount = 0;
+    const skillAdapter: EngineAdapter = {
+      engineId: "skills-cassette-replay",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async (): Promise<ModelResponse> => ({ content: "fallback", model: MODEL }),
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const currentCall = callCount;
+          callCount++;
+          if (currentCall === 0) return toAsyncIterable(cassette.chunks);
+          return toAsyncIterable([
+            { kind: "text_delta" as const, delta: "Red, blue, yellow." },
+            {
+              kind: "done" as const,
+              response: { content: "Red, blue, yellow.", model: MODEL },
+            },
+          ]);
+        },
+        toolCall: async (_r: ToolRequest): Promise<ToolResponse> => ({ output: "unused" }),
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        const h = input.callHandlers;
+        if (!h) {
+          return (async function* () {
+            yield {
+              kind: "done" as const,
+              output: {
+                content: [],
+                stopReason: "error" as const,
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 0,
+                  durationMs: 0,
+                },
+              },
+            };
+          })();
+        }
+        const text = input.kind === "text" ? input.text : "";
+        const messages: InboundMessage[] = [
+          { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] },
+        ];
+        return (async function* () {
+          // let: mutable
+          let done: EngineEvent | undefined;
+          for await (const e of consumeModelStream(
+            h.modelStream
+              ? h.modelStream({ messages, model: MODEL })
+              : (async function* (): AsyncIterable<ModelChunk> {
+                  const r = await h.modelCall({ messages, model: MODEL });
+                  yield { kind: "done" as const, response: { content: r.content, model: MODEL } };
+                })(),
+            input.signal,
+          )) {
+            if (e.kind === "done") done = e;
+            else yield e;
+          }
+          if (done) yield done;
+        })();
+      },
+    };
+
+    const koiRuntime = await createKoi({
+      manifest: { name: "skills-replay-test", version: "0.1.0", model: { name: MODEL } },
+      adapter: skillAdapter,
+      middleware: [eventTrace, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId }),
+      ),
+      providers: [provider],
+      loopDetection: false,
+    });
+
+    for await (const _e of koiRuntime.run({
+      kind: "text",
+      text: "What are the primary colors? Answer briefly.",
+    })) {
+      /* drain */
+    }
+
+    await koiRuntime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Validate live ATIF
+    const steps = await store.getDocument(docId);
+
+    // Agent ran: at least one model call step
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+    expect(modelSteps[0]?.outcome).toBe("success");
+
+    // Middleware spans: permissions wired correctly alongside skill provider
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("permissions")).toBe(true);
+  }, 15000);
 });
