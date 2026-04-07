@@ -19,9 +19,12 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import * as readline from "node:readline";
 import { createCliChannel } from "@koi/channel-cli";
 import type {
   ComponentProvider,
+  ElicitationQuestion,
+  ElicitationResult,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -87,12 +90,44 @@ function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
 }
 
 /**
+ * Readline-based elicitation for AskUserQuestion in CLI mode.
+ * Presents each question with numbered options, reads the user's selection.
+ */
+async function cliElicit(
+  questions: readonly ElicitationQuestion[],
+): Promise<readonly ElicitationResult[]> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
+
+  const results: ElicitationResult[] = [];
+  for (const q of questions) {
+    process.stdout.write(`\n${q.question}\n`);
+    for (const [i, opt] of q.options.entries()) {
+      process.stdout.write(
+        `  ${String(i + 1)}. ${opt.label}${opt.description ? ` — ${opt.description}` : ""}\n`,
+      );
+    }
+    const answer = await ask("Your choice (number or text): ");
+    const idx = parseInt(answer, 10) - 1;
+    const selected = idx >= 0 ? q.options[idx] : undefined;
+    if (selected !== undefined) {
+      results.push({ selected: [selected.label] });
+    } else {
+      results.push({ selected: [], freeText: answer });
+    }
+  }
+  rl.close();
+  return results;
+}
+
+/**
  * Build the static ComponentProviders wired into every session:
  *   - builtin search (Glob, Grep)
  *   - web_fetch
  *   - Bash
+ *   - interaction (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion)
  */
-function buildStaticProviders(cwd: string): ComponentProvider[] {
+async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
   const searchProvider = createBuiltinSearchProvider({ cwd });
   const webExecutor = createWebExecutor({ allowHttps: true });
   const webProvider = createWebProvider({
@@ -101,7 +136,14 @@ function buildStaticProviders(cwd: string): ComponentProvider[] {
     operations: ["fetch"],
   });
   const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
-  return [searchProvider, webProvider, bashProvider];
+  // Dynamic import: @koi/runtime re-exports from @koi/query-engine which causes
+  // a worktree dist resolution issue in Bun's test runner (ESM named export
+  // detection fails on stale dist). Lazy loading avoids the test-time crash.
+  const { createInteractionProvider } = await import("@koi/runtime");
+  const interactionProvider = createInteractionProvider({
+    elicit: cliElicit,
+  });
+  return [searchProvider, webProvider, bashProvider, interactionProvider];
 }
 
 /**
@@ -308,12 +350,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // ---------------------------------------------------------------------------
 
   const cwd = process.cwd();
-  const [mcpProvider, hookMiddleware] = await Promise.all([
+  const [mcpProvider, hookMiddleware, staticProviders] = await Promise.all([
     loadMcpProvider(cwd),
     loadHookMiddleware(),
+    buildStaticProviders(cwd),
   ]);
-
-  const staticProviders = buildStaticProviders(cwd);
   const providers: ComponentProvider[] = [
     ...staticProviders,
     ...(mcpProvider !== undefined ? [mcpProvider] : []),

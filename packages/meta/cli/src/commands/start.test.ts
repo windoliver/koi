@@ -79,6 +79,13 @@ mock.module("@koi/query-engine", () => ({
   runTurn: mock(async function* () {}),
 }));
 
+mock.module("@koi/runtime", () => ({
+  createInteractionProvider: mock(() => ({
+    name: "interaction",
+    attach: mock(async () => new Map()),
+  })),
+}));
+
 // Mock loadManifestConfig — typed as the full union so mockImplementation can return either branch
 type ManifestResult =
   | {
