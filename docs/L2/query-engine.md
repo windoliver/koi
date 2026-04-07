@@ -68,6 +68,20 @@ This ensures `fixTranscriptOrdering` in the request-mapper correctly pairs tool 
 their originating tool calls. Splitting them into separate messages would cause the mapper to
 clear `pendingCallIds` between the text and tool-call messages, dropping tool results as orphaned.
 
+## Within-Turn Tool Call Dedup
+
+`runTurn` deduplicates identical tool calls within a single model response (#1580).
+When a model emits multiple tool calls with the same `toolName` and canonicalized
+arguments (recursively sorted keys), only the first is executed. Subsequent duplicates
+receive a replicated copy of the first call's real output in the transcript, keeping
+callId pairing consistent for session-repair.
+
+- **Scope**: within-turn only. Cross-turn duplicates are not deduped (preserves retry semantics).
+- **Canonicalization**: `stableStringify` recursively sorts object keys at every nesting level.
+- **Observability**: emits `{ kind: "custom", type: "dedup_skipped", data: { skipped } }` event.
+- **Transcript**: all tool call intents (including skipped) appear in the assistant message;
+  skipped calls get the real tool output replicated under their callId.
+
 ## Not in scope
 
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.

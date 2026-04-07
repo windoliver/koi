@@ -22,6 +22,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  ToolCallId,
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
@@ -6646,6 +6647,108 @@ describe("Golden: @koi/skill-scanner", () => {
     // All findings should be CRITICAL severity
     for (const f of report.findings) {
       expect(f.severity).toBe("CRITICAL");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/query-engine within-turn dedup (#1580)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/query-engine within-turn dedup", () => {
+  test("duplicate tool calls deduped with correct transcript pairing", async () => {
+    const toolExecCount = { value: 0 };
+    const capturedRequests: ModelRequest[] = [];
+
+    async function* dupToolStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "tool_call_start", toolName: "add_numbers", callId: "tc-dup-1" as ToolCallId };
+      yield { kind: "tool_call_delta", callId: "tc-dup-1" as ToolCallId, delta: '{"a":3,"b":4}' };
+      yield { kind: "tool_call_end", callId: "tc-dup-1" as ToolCallId };
+      yield { kind: "tool_call_start", toolName: "add_numbers", callId: "tc-dup-2" as ToolCallId };
+      yield { kind: "tool_call_delta", callId: "tc-dup-2" as ToolCallId, delta: '{"a":3,"b":4}' };
+      yield { kind: "tool_call_end", callId: "tc-dup-2" as ToolCallId };
+      yield {
+        kind: "done",
+        response: { content: "", model: MODEL, usage: { inputTokens: 10, outputTokens: 5 } },
+      };
+    }
+
+    async function* textStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "done" };
+      yield {
+        kind: "done",
+        response: { content: "done", model: MODEL, usage: { inputTokens: 10, outputTokens: 1 } },
+      };
+    }
+
+    // let: mutable stream call counter
+    let streamCallIndex = 0;
+    const handlers = {
+      modelCall: async (_r: ModelRequest): Promise<ModelResponse> => ({
+        content: "",
+        model: MODEL,
+      }),
+      modelStream: (r: ModelRequest): AsyncIterable<ModelChunk> => {
+        capturedRequests.push(r);
+        const idx = streamCallIndex;
+        streamCallIndex += 1;
+        return idx === 0 ? dupToolStream() : textStream();
+      },
+      toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+        toolExecCount.value += 1;
+        const a = (request.input as { a: number }).a;
+        const b = (request.input as { b: number }).b;
+        return { output: JSON.stringify({ result: a + b }) };
+      },
+      tools: [{ name: "add_numbers", description: "Add two numbers", inputSchema: {} }],
+    };
+
+    const events: EngineEvent[] = [];
+    for await (const e of runTurn({ callHandlers: handlers, messages: [] })) {
+      events.push(e);
+    }
+
+    // 1. Tool executed exactly once — duplicate skipped
+    expect(toolExecCount.value).toBe(1);
+
+    // 2. dedup_skipped custom event with correct payload
+    const dedupEvent = events.find(
+      (e) => e.kind === "custom" && (e as { type?: string }).type === "dedup_skipped",
+    );
+    expect(dedupEvent).toBeDefined();
+    if (dedupEvent?.kind === "custom") {
+      const data = dedupEvent.data as {
+        skipped: ReadonlyArray<{ toolName: string; callId: string }>;
+      };
+      expect(data.skipped).toHaveLength(1);
+      expect(data.skipped[0]?.toolName).toBe("add_numbers");
+      expect(data.skipped[0]?.callId).toBe("tc-dup-2");
+    }
+
+    // 3. Second model request has correct transcript pairing:
+    //    2 assistant intents (both callIds) + 2 tool results (real + replicated)
+    expect(capturedRequests.length).toBe(2);
+    const secondReq = capturedRequests[1];
+    expect(secondReq).toBeDefined();
+    if (secondReq !== undefined) {
+      const assistantMsgs = secondReq.messages.filter((m) => m.senderId === "assistant");
+      const toolMsgs = secondReq.messages.filter((m) => m.senderId === "tool");
+      expect(assistantMsgs.length).toBe(1);
+      expect(toolMsgs.length).toBe(2);
+      // Both tool results contain the real output (replicated, not placeholder)
+      for (const msg of toolMsgs) {
+        const text = msg.content[0];
+        if (text?.kind === "text") {
+          expect(text.text).toContain("result");
+        }
+      }
+    }
+
+    // 4. Completes successfully
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind === "done") {
+      expect(done.output.stopReason).toBe("completed");
     }
   });
 });

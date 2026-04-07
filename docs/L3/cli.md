@@ -57,6 +57,9 @@ Interactive REPL or single-prompt mode backed by a live OpenRouter model. Wires
 `@koi/model-openai-compat` → `EngineAdapter` (via `@koi/query-engine` `runTurn`) →
 `@koi/engine` `createKoi` → `@koi/harness` `createCliHarness`.
 
+`runTurn` provides within-turn tool call dedup (#1580) — identical tool calls in a
+single model response are collapsed to one execution, preventing duplicate side effects.
+
 ```bash
 koi start                           # Interactive REPL (stdin/stdout)
 koi start --prompt "list files"     # Single-prompt mode, then exit
