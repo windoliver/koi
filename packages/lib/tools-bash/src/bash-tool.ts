@@ -1,5 +1,4 @@
 import { spawn as spawnChild } from "node:child_process";
-import { createHmac } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -247,16 +246,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
         }
 
         const cwdFile = join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`);
-        // Per-execution secret for HMAC integrity — the command cannot
-        // forge the cwd file because it doesn't have the secret. Even if
-        // the command discovers the file path via `trap -p EXIT`, writing
-        // a forged path will fail HMAC verification.
-        const cwdSecret = crypto.randomUUID();
+        // Per-execution nonce for integrity verification. The trap writes
+        // <nonce>\n<cwd> to the temp file. On read, we verify the nonce
+        // matches before accepting the cwd. No external dependencies
+        // (no openssl/sha256sum) — works on any platform with bash.
+        const cwdNonce = crypto.randomUUID();
         const quotedCwdFile = shellQuote(cwdFile);
-        const quotedSecret = shellQuote(cwdSecret);
-        // The trap writes: <cwd>\n<hmac> so we can verify integrity.
-        // printf is used to avoid trailing newlines from echo.
-        const wrappedCommand = `trap '__koi_d=$(pwd -P); printf "%s\\n%s" "$__koi_d" "$(printf "%s" "$__koi_d" | openssl dgst -sha256 -hmac ${quotedSecret} -r | cut -d" " -f1)" > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
+        const quotedNonce = shellQuote(cwdNonce);
+        const wrappedCommand = `trap 'printf "%s\\n%s" ${quotedNonce} "$(pwd -P)" > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
 
         const result = await spawnBash(
           wrappedCommand,
@@ -270,7 +267,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         // Read cwd from temp file and update tracked state (success-only)
         try {
           if ("exitCode" in result && result.exitCode === 0) {
-            const newCwd = readCwdFile(cwdFile, cwdSecret);
+            const newCwd = readCwdFile(cwdFile, cwdNonce);
             if (newCwd !== undefined && isWithinWorkspace(newCwd, workspaceRoot)) {
               trackedCwd = newCwd;
             }
@@ -296,21 +293,20 @@ function shellQuote(s: string): string {
 }
 
 /**
- * Read the cwd temp file and verify HMAC integrity.
- * Format: `<cwd>\n<hmac>`. Returns undefined if missing, empty, or HMAC mismatch.
+ * Read the cwd temp file and verify nonce integrity.
+ * Format: `<nonce>\n<cwd>`. Returns undefined if missing, empty, or nonce mismatch.
  */
-function readCwdFile(path: string, secret: string): string | undefined {
+function readCwdFile(path: string, expectedNonce: string): string | undefined {
   try {
     const content = readFileSync(path, "utf-8").trim();
     if (content.length === 0) return undefined;
     const newlineIdx = content.indexOf("\n");
     if (newlineIdx === -1) return undefined;
-    const cwdValue = content.slice(0, newlineIdx);
-    const hmacValue = content.slice(newlineIdx + 1).trim();
-    // Verify HMAC — prevents the command from forging the tracked cwd
-    const expected = createHmac("sha256", secret).update(cwdValue).digest("hex");
-    if (hmacValue !== expected) return undefined;
-    return cwdValue;
+    const nonce = content.slice(0, newlineIdx);
+    const cwdValue = content.slice(newlineIdx + 1).trim();
+    // Verify nonce — rejects forged cwd files
+    if (nonce !== expectedNonce) return undefined;
+    return cwdValue.length > 0 ? cwdValue : undefined;
   } catch {
     return undefined;
   }
