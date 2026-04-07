@@ -4867,7 +4867,7 @@ describe("Golden: @koi/middleware-exfiltration-guard", () => {
     const guardToolSpan = steps.find((s) => {
       if (s.source !== "system") return false;
       const extra = s.extra as Record<string, unknown> | undefined;
-      return extra?.middlewareName === "exfiltration-guard" && extra?.hook === "wrapToolCall";
+      return extra?.middlewareName === "exfiltration-guard";
     });
     if (guardToolSpan !== undefined) {
       const extra = guardToolSpan.extra as Record<string, unknown>;

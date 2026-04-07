@@ -1,80 +1,72 @@
 {
   "name": "hook-redaction",
   "model": "anthropic/claude-sonnet-4-6",
-  "recordedAt": 1775531470100,
+  "recordedAt": 1775530222675,
   "chunks": [
     {
       "kind": "text_delta",
-      "delta": "Sure"
+      "delta": "I'll retrieve the database credentials right"
     },
     {
       "kind": "text_delta",
-      "delta": "!"
-    },
-    {
-      "kind": "text_delta",
-      "delta": " Let me retrieve the database credentials right"
-    },
-    {
-      "kind": "text_delta",
-      "delta": " away."
+      "delta": " away!"
     },
     {
       "kind": "tool_call_start",
       "toolName": "get_credentials",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1"
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w",
       "delta": "{}"
     },
     {
       "kind": "usage",
       "inputTokens": 565,
-      "outputTokens": 48
+      "outputTokens": 46
     },
     {
       "kind": "tool_call_end",
-      "callId": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1"
+      "callId": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w"
     },
     {
       "kind": "done",
       "response": {
-        "content": "Sure! Let me retrieve the database credentials right away.",
+        "content": "I'll retrieve the database credentials right away!",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531467-xLwKzcUNlRsD0xEDpcZh",
+        "responseId": "gen-1775530221-bAqomNHavzFvyDN43w0d",
         "richContent": [
           {
             "kind": "text",
-            "text": "Sure! Let me retrieve the database credentials right away."
+            "text": "I'll retrieve the database credentials right away!"
           },
           {
             "kind": "tool_call",
-            "id": "toolu_bdrk_0189Lt8sSyrpcKYcUootHcu1",
+            "id": "toolu_vrtx_015PZHPvCsgC8zTtmYD5EL1w",
             "name": "get_credentials",
             "arguments": {}
           }
         ],
         "usage": {
           "inputTokens": 565,
-          "outputTokens": 48
+          "outputTokens": 46
         }
       }
     }
