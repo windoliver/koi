@@ -248,12 +248,18 @@ export function createBashTool(config?: BashToolConfig): Tool {
         const cwdFile = join(tmpdir(), `koi-cwd-${crypto.randomUUID()}`);
         // Per-execution nonce for integrity verification. The trap writes
         // <nonce>\n<cwd> to the temp file. On read, we verify the nonce
-        // matches before accepting the cwd. No external dependencies
-        // (no openssl/sha256sum) — works on any platform with bash.
+        // matches before accepting the cwd. No external dependencies —
+        // works on any platform with bash.
+        //
+        // Variables are set before the trap so the trap body uses variable
+        // references — avoids single-quote nesting issues in the trap string.
         const cwdNonce = crypto.randomUUID();
-        const quotedCwdFile = shellQuote(cwdFile);
-        const quotedNonce = shellQuote(cwdNonce);
-        const wrappedCommand = `trap 'printf "%s\\n%s" ${quotedNonce} "$(pwd -P)" > ${quotedCwdFile} 2>/dev/null' EXIT\n${command}`;
+        const wrappedCommand = [
+          `__kn=${shellQuote(cwdNonce)}`,
+          `__kf=${shellQuote(cwdFile)}`,
+          `trap 'printf "%s\\n%s" "$__kn" "$(pwd -P)" > "$__kf" 2>/dev/null' EXIT`,
+          command,
+        ].join("\n");
 
         const result = await spawnBash(
           wrappedCommand,
