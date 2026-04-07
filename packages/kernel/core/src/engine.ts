@@ -17,6 +17,7 @@ import type {
   ToolResponse,
 } from "./middleware.js";
 import type { SpawnRequest } from "./spawn.js";
+import type { TaskItemId, TaskStatus } from "./task-board.js";
 
 export type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
 
@@ -159,6 +160,35 @@ export type EngineEvent =
       readonly decision: "approved" | "rejected" | "expired";
       readonly grantedGrants?: readonly string[] | undefined;
       readonly reason?: string | undefined;
+    }
+  | {
+      /** Full snapshot of the task board — emitted on structural changes. */
+      readonly kind: "plan_update";
+      readonly agentId: AgentId;
+      readonly tasks: readonly {
+        readonly id: TaskItemId;
+        readonly subject: string;
+        readonly status: TaskStatus;
+        readonly assignedTo?: AgentId | undefined;
+        readonly activeForm?: string | undefined;
+        readonly blockedBy?: TaskItemId | undefined;
+        readonly dependencies: readonly TaskItemId[];
+      }[];
+      readonly timestamp: number;
+    }
+  | {
+      /** Individual task state transition — emitted on every task mutation. */
+      readonly kind: "task_progress";
+      readonly agentId: AgentId;
+      readonly taskId: TaskItemId;
+      readonly subject: string;
+      readonly previousStatus: TaskStatus;
+      readonly status: TaskStatus;
+      readonly activeForm?: string | undefined;
+      readonly detail?: string | undefined;
+      /** First incomplete dependency blocking this task (for unreachable events). */
+      readonly blockedBy?: TaskItemId | undefined;
+      readonly timestamp: number;
     };
 
 // ---------------------------------------------------------------------------

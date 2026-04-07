@@ -52,6 +52,8 @@ interface TuiState {
   readonly connectionStatus: ConnectionStatus;
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
+  // Plan/progress tracking (#1555)
+  readonly planTasks: readonly PlanTask[] | null;  // latest board snapshot, null until first plan_update
   // Status bar data (Phase 2j-4)
   readonly sessionInfo: SessionInfo | null;       // set by host on session start
   readonly cumulativeMetrics: CumulativeMetrics;  // accumulated across all turns
@@ -61,7 +63,10 @@ interface TuiState {
 }
 ```
 
-Ten flat fields. Rule of Three: group only at 12+ fields.
+Eleven flat fields. Rule of Three: group only at 12+ fields.
+
+`PlanTask` is a rendering-only type with `id`, `description`, and `status` — the TUI
+never imports `TaskItem` from `@koi/core`.
 
 ## Message Model
 
@@ -184,6 +189,8 @@ dispatch skips notification entirely.
 | `done` with `costUsd` after null-cost turns | Treats prior null as 0, begins accumulating |
 | `set_session_list` > 50 items | Truncated to 50 most-recent (`MAX_SESSIONS`) |
 | `set_session_list` out-of-order | Sorted by `lastActivityAt` desc before storage |
+| `plan_update` event | Replaces `planTasks` with mapped snapshot |
+| `task_progress` event | Patches matching task in `planTasks`; no-op if `planTasks` is null |
 
 ## Phase 2k: SolidJS Migration + Worker Infrastructure
 

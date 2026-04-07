@@ -51,6 +51,10 @@ function engineEventLabel(event: EngineEvent): string {
       return "status";
     case "permission_attempt":
       return "permission";
+    case "plan_update":
+      return "plan";
+    case "task_progress":
+      return "progress";
     default: {
       const _exhaustive: never = event;
       return String(_exhaustive);
@@ -166,6 +170,82 @@ describe("EngineEvent exhaustiveness", () => {
       previousStatus: "created",
     };
     expect(engineEventLabel(event)).toBe("status");
+  });
+
+  test("plan_update variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "plan_update",
+      agentId: agentId("main"),
+      tasks: [
+        {
+          id: "task-1" as import("./task-board.js").TaskItemId,
+          subject: "Research auth options",
+          status: "in_progress",
+          assignedTo: agentId("main"),
+          dependencies: [],
+        },
+        {
+          id: "task-2" as import("./task-board.js").TaskItemId,
+          subject: "Implement login",
+          status: "pending",
+          dependencies: ["task-1" as import("./task-board.js").TaskItemId],
+        },
+      ],
+      timestamp: Date.now(),
+    };
+    expect(engineEventLabel(event)).toBe("plan");
+  });
+
+  test("plan_update with blockedBy is handled", () => {
+    const event: EngineEvent = {
+      kind: "plan_update",
+      agentId: agentId("main"),
+      tasks: [
+        {
+          id: "task-1" as import("./task-board.js").TaskItemId,
+          subject: "Failed task",
+          status: "failed",
+          dependencies: [],
+        },
+        {
+          id: "task-2" as import("./task-board.js").TaskItemId,
+          subject: "Blocked task",
+          status: "pending",
+          blockedBy: "task-1" as import("./task-board.js").TaskItemId,
+          dependencies: ["task-1" as import("./task-board.js").TaskItemId],
+        },
+      ],
+      timestamp: Date.now(),
+    };
+    expect(engineEventLabel(event)).toBe("plan");
+  });
+
+  test("task_progress variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "task_progress",
+      agentId: agentId("main"),
+      taskId: "task-1" as import("./task-board.js").TaskItemId,
+      subject: "Research auth options",
+      previousStatus: "pending",
+      status: "in_progress",
+      activeForm: "Researching auth options",
+      timestamp: Date.now(),
+    };
+    expect(engineEventLabel(event)).toBe("progress");
+  });
+
+  test("task_progress with detail is handled", () => {
+    const event: EngineEvent = {
+      kind: "task_progress",
+      agentId: agentId("main"),
+      taskId: "task-1" as import("./task-board.js").TaskItemId,
+      subject: "Research auth options",
+      previousStatus: "in_progress",
+      status: "failed",
+      detail: "API returned 500",
+      timestamp: Date.now(),
+    };
+    expect(engineEventLabel(event)).toBe("progress");
   });
 });
 

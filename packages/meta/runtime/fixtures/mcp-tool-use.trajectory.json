@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:51.203Z",
+      "timestamp": "2026-04-07T03:11:23.782Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:51.204Z",
+      "timestamp": "2026-04-07T03:11:23.782Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:51.208Z",
+      "timestamp": "2026-04-07T03:11:23.784Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 141,
         "completion_tokens": 8
       },
-      "duration_ms": 815,
+      "duration_ms": 605,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -82,7 +82,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:52.024Z",
+      "timestamp": "2026-04-07T03:11:24.390Z",
       "tool_calls": [
         {
           "tool_call_id": "call_golden-mcp__weather_3",
@@ -100,7 +100,7 @@
           }
         ]
       },
-      "duration_ms": 3,
+      "duration_ms": 2,
       "outcome": "success",
       "extra": {
         "provenance": {
@@ -112,10 +112,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.028Z",
+      "timestamp": "2026-04-07T03:11:24.392Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 819.8504580000008,
+      "duration_ms": 607.760291999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -132,7 +132,7 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.029Z",
+      "timestamp": "2026-04-07T03:11:24.392Z",
       "model_name": "middleware:semantic-retry",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -142,7 +142,7 @@
           }
         ]
       },
-      "duration_ms": 3.1644999999989523,
+      "duration_ms": 1.7064169999976002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -159,10 +159,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.030Z",
+      "timestamp": "2026-04-07T03:11:24.393Z",
       "model_name": "middleware:hooks",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 820.641166999998,
+      "duration_ms": 608.5110830000012,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -179,10 +179,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.031Z",
+      "timestamp": "2026-04-07T03:11:24.393Z",
       "model_name": "middleware:permissions",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 820.8814999999995,
+      "duration_ms": 608.9721669999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -199,10 +199,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.032Z",
+      "timestamp": "2026-04-07T03:11:24.393Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.",
-      "duration_ms": 820.9542910000018,
+      "duration_ms": 609.0057500000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -219,10 +219,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.033Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "model_name": "hook:on-mcp-tool",
       "message": "tool.succeeded → on-mcp-tool",
-      "duration_ms": 2.3624170000002778,
+      "duration_ms": 1.9593329999988782,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -239,7 +239,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.034Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "model_name": "middleware:hooks",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -249,7 +249,7 @@
           }
         ]
       },
-      "duration_ms": 6.011458000000857,
+      "duration_ms": 3.9165409999986878,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -266,7 +266,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.035Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "model_name": "middleware:permissions",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -276,7 +276,7 @@
           }
         ]
       },
-      "duration_ms": 6.276917000002868,
+      "duration_ms": 4.063583999999537,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -293,7 +293,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.036Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "golden-mcp__weather({\"city\":\"Tokyo\"})",
       "observation": {
@@ -303,7 +303,7 @@
           }
         ]
       },
-      "duration_ms": 6.471709000001283,
+      "duration_ms": 4.42725000000064,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -320,7 +320,7 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.037Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "tool_calls": [
         {
           "tool_call_id": "call_provenance:turn_summary_13",
@@ -349,21 +349,21 @@
     {
       "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:52.039Z",
+      "timestamp": "2026-04-07T03:11:24.394Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
       "observation": {
         "results": [
           {
-            "content": "The weather in Tokyo is 22°C, partly cloudy.\n"
+            "content": "Weather in Tokyo: 22°C, partly cloudy.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 186,
-        "completion_tokens": 15
+        "prompt_tokens": 184,
+        "completion_tokens": 14
       },
-      "duration_ms": 658,
+      "duration_ms": 471,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -381,10 +381,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.699Z",
+      "timestamp": "2026-04-07T03:11:24.866Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 667.5357079999994,
+      "duration_ms": 471.6412089999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -401,10 +401,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.700Z",
+      "timestamp": "2026-04-07T03:11:24.866Z",
       "model_name": "middleware:hooks",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 667.6302910000013,
+      "duration_ms": 471.77200000000084,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -421,10 +421,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.701Z",
+      "timestamp": "2026-04-07T03:11:24.866Z",
       "model_name": "middleware:permissions",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 667.8207909999983,
+      "duration_ms": 471.96954200000255,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -441,10 +441,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:52.702Z",
+      "timestamp": "2026-04-07T03:11:24.866Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the golden-mcp__weather tool to get the weather in Tokyo. Report the result.\n\n[{\"type\":\"text\",\"text\":\"Weather in Tokyo: 22°C, partly cloudy\"}]",
-      "duration_ms": 667.8869159999995,
+      "duration_ms": 472.0594999999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
