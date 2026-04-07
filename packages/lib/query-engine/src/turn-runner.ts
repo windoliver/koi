@@ -445,9 +445,14 @@ function buildModelRequest(
 /**
  * Append assistant turn messages to the transcript.
  *
- * Text-only content is a single message with no callId.
- * Each tool-use intent is a separate message with `metadata.callId`
- * matching the session-repair pairing contract.
+ * Combines text content and tool-call intents into a SINGLE assistant message
+ * with `metadata.toolCalls` so the request-mapper can reconstruct the OpenAI
+ * `tool_calls` array. Splitting them into separate messages causes
+ * `fixTranscriptOrdering` to clear `pendingCallIds` between the text message
+ * and tool-call messages, which drops all subsequent tool results as orphaned.
+ *
+ * When there are no tool calls, the message has just text content and no
+ * tool-call metadata.
  */
 function appendAssistantTurn(
   transcript: InboundMessage[],
@@ -455,28 +460,36 @@ function appendAssistantTurn(
   toolCalls: readonly AccumulatedToolCall[],
 ): void {
   const text = textParts.join("");
-  if (text.length > 0) {
-    transcript.push({
-      senderId: "assistant",
-      content: [{ kind: "text", text }],
-      timestamp: Date.now(),
-    });
+
+  // No tool calls — simple text-only assistant message
+  if (toolCalls.length === 0) {
+    if (text.length > 0) {
+      transcript.push({
+        senderId: "assistant",
+        content: [{ kind: "text", text }],
+        timestamp: Date.now(),
+      });
+    }
+    return;
   }
-  // Each tool-use intent gets its own message with metadata.callId
-  // so session-repair can pair it with the corresponding tool result.
-  for (const tc of toolCalls) {
-    transcript.push({
-      senderId: "assistant",
-      content: [
-        {
-          kind: "text",
-          text: JSON.stringify({ toolCall: tc.toolName, args: tc.parsedArgs }),
-        },
-      ],
-      timestamp: Date.now(),
-      metadata: { callId: tc.callId, toolName: tc.toolName },
-    });
-  }
+
+  // Build OpenAI-compatible tool_calls metadata so the request-mapper
+  // reconstructs the full assistant message with tool_calls array.
+  const toolCallsMeta = toolCalls.map((tc) => ({
+    id: tc.callId,
+    type: "function" as const,
+    function: {
+      name: tc.toolName,
+      arguments: tc.rawArgs,
+    },
+  }));
+
+  transcript.push({
+    senderId: "assistant",
+    content: [{ kind: "text", text: text.length > 0 ? text : "" }],
+    timestamp: Date.now(),
+    metadata: { toolCalls: toolCallsMeta },
+  });
 }
 
 /**
