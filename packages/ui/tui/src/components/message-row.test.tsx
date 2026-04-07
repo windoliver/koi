@@ -392,4 +392,56 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
     expect(frame).toContain("Edit");
     expect(frame).toContain("src/app.ts");
   });
+
+  test("Bash JSON result extracts exitCode chip and stdout body", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-bash-json",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "Bash",
+          status: "complete",
+          args: '{"command":"echo hi"}',
+          result: JSON.stringify({ stdout: "hi", stderr: "", exitCode: 0, durationMs: 5 }),
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("Shell");
+    expect(frame).toContain("exitCode=0");
+    expect(frame).toContain("hi");
+  });
+
+  test("web_fetch result shows status chip", async () => {
+    const msg: TuiMessage = {
+      kind: "assistant",
+      id: "assistant-fetch",
+      blocks: [
+        {
+          kind: "tool_call",
+          callId: "call-1",
+          toolName: "web_fetch",
+          status: "complete",
+          args: '{"url":"https://example.com"}',
+          result: JSON.stringify({
+            status: 200,
+            statusText: "OK",
+            contentType: "text/html",
+            body: "Example Domain",
+            format: "text",
+            truncated: false,
+            finalUrl: "https://example.com",
+          }),
+        },
+      ],
+      streaming: false,
+    };
+    const frame = await renderMessage(msg);
+    expect(frame).toContain("Fetch");
+    expect(frame).toContain("status=200");
+    expect(frame).toContain("Example Domain");
+  });
 });

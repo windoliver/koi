@@ -19,6 +19,13 @@ export interface ToolDisplay {
   readonly chips: readonly string[];
 }
 
+export interface ResultDisplay {
+  /** Scalar metadata chips extracted from the result (e.g., "exitCode=0"). */
+  readonly chips: readonly string[];
+  /** Main content body to render (stdout, file content, paths, etc.). */
+  readonly body: string;
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -176,5 +183,120 @@ export function getToolDisplay(
     title: toolName,
     subtitle: extractSubtitle(args, undefined),
     chips: extractChips(args, undefined),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Result display — Phase 3
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys that carry the main content body per tool result shape.
+ * Checked in priority order; first match becomes the body.
+ */
+const BODY_KEYS = ["stdout", "content", "result", "body", "paths"] as const;
+
+/**
+ * Keys to extract as result chips (scalar metadata).
+ * Order determines chip display order.
+ */
+const RESULT_CHIP_KEYS = [
+  "exitCode",
+  "status",
+  "contentType",
+  "durationMs",
+  "bytesWritten",
+  "modified",
+  "truncated",
+  "timedOut",
+  "total",
+  "mode",
+  "format",
+  "code",
+] as const;
+
+/** Keys that are content bodies or metadata — never shown as generic chips. */
+const RESULT_CONSUMED_KEYS = new Set<string>([
+  ...BODY_KEYS,
+  ...RESULT_CHIP_KEYS,
+  // Large string fields that should not appear as chips
+  "stderr",
+  "error",
+  "statusText",
+  "finalUrl",
+  "truncatedNote",
+  "warnings",
+  "category",
+  "reason",
+  "pattern",
+  "path",
+]);
+
+function extractResultChips(obj: Readonly<Record<string, unknown>>): readonly string[] {
+  const chips: string[] = [];
+  for (const key of RESULT_CHIP_KEYS) {
+    if (chips.length >= MAX_CHIPS) break;
+    const value = obj[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      chips.push(`${key}=${String(value)}`);
+    }
+  }
+  return chips;
+}
+
+function extractResultBody(obj: Readonly<Record<string, unknown>>): string {
+  // Check for error shape first
+  const error = obj.error;
+  if (typeof error === "string" && error !== "") return error;
+
+  // Check body keys in priority order
+  for (const key of BODY_KEYS) {
+    const value = obj[key];
+    if (typeof value === "string" && value !== "") return value;
+    if (Array.isArray(value)) return value.filter((v) => typeof v === "string").join("\n");
+  }
+
+  // Fallback: collect remaining scalar values
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (RESULT_CONSUMED_KEYS.has(key)) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      parts.push(`${key}: ${String(value)}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Extract structured result display from a tool result string.
+ *
+ * Results are stored as JSON-stringified strings by the reducer's capResult().
+ * This function parses them back and extracts scalar metadata chips (exitCode,
+ * status, bytesWritten, etc.) and a main content body (stdout, content, paths).
+ *
+ * Falls back to raw result string when parsing fails or result is not an object.
+ */
+export function getResultDisplay(result: string): ResultDisplay {
+  if (result === "" || result === "[unserializable]") {
+    return { chips: [], body: result };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    // Not JSON — plain string result (e.g., pre-formatted text)
+    return { chips: [], body: result };
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { chips: [], body: result };
+  }
+
+  const obj = parsed as Readonly<Record<string, unknown>>;
+  return {
+    chips: extractResultChips(obj),
+    body: extractResultBody(obj),
   };
 }

@@ -5,8 +5,8 @@
  * JSON and cannot be parsed. On completion, switches to the structured display:
  * human-readable title, most-important-arg subtitle, and scalar chips.
  *
- * When `syntaxStyle` is provided, the expandable raw args/result sections use
- * JSON syntax highlighting via OpenTUI's <code> component.
+ * Result rendering (Phase 3): extracts scalar metadata chips (exitCode, status,
+ * bytesWritten, etc.) and displays the main content body separately.
  */
 
 import type { SyntaxStyle } from "@opentui/core";
@@ -14,7 +14,12 @@ import type { Accessor, JSX } from "solid-js";
 import { createMemo, For, Show } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
 import { COLORS } from "../theme.js";
-import { getToolDisplay, type ToolDisplay } from "../tool-display.js";
+import {
+  getResultDisplay,
+  getToolDisplay,
+  type ResultDisplay,
+  type ToolDisplay,
+} from "../tool-display.js";
 
 type ToolCallData = TuiAssistantBlock & { readonly kind: "tool_call" };
 
@@ -51,7 +56,6 @@ function useToolDisplay(block: ToolCallData): Accessor<ToolDisplay | null> {
     if (raw === undefined || raw === "") return getToolDisplay(block.toolName, {});
     try {
       const parsed: unknown = JSON.parse(raw);
-      // Guard: JSON.parse succeeds on strings, numbers, arrays, null — not just objects
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         return getToolDisplay(block.toolName, parsed as Readonly<Record<string, unknown>>);
       }
@@ -62,8 +66,46 @@ function useToolDisplay(block: ToolCallData): Accessor<ToolDisplay | null> {
   });
 }
 
+/** Parse result string into chips + body. Only runs on completion. */
+function useResultDisplay(block: ToolCallData): Accessor<ResultDisplay | null> {
+  return createMemo((): ResultDisplay | null => {
+    if (block.status !== "complete") return null;
+    const result = block.result;
+    if (result === undefined || result === "") return null;
+    return getResultDisplay(result);
+  });
+}
+
+/** Renders highlighted or plain text, deduplicating the Show pattern (Decision 5A). */
+function HighlightedText(props: {
+  readonly content: string;
+  readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly filetype?: string | undefined;
+}): JSX.Element {
+  return (
+    <Show
+      when={props.syntaxStyle}
+      fallback={<text fg={COLORS.textMuted}>{props.content}</text>}
+    >
+      {(style: Accessor<SyntaxStyle>) => (
+        <code content={props.content} syntaxStyle={style()} filetype={props.filetype ?? "json"} />
+      )}
+    </Show>
+  );
+}
+
 export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   const display = useToolDisplay(props.block);
+  const resultDisplay = useResultDisplay(props.block);
+
+  /** Merge arg chips and result chips for the chips row. */
+  const allChips = createMemo((): readonly string[] => {
+    const argChips = display()?.chips ?? [];
+    const resChips = resultDisplay()?.chips ?? [];
+    if (resChips.length === 0) return argChips;
+    if (argChips.length === 0) return resChips;
+    return [...argChips, ...resChips];
+  });
 
   return (
     <box flexDirection="column" paddingLeft={1}>
@@ -87,27 +129,22 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
         </Show>
       </box>
 
-      {/* Chips row — secondary scalar args */}
-      <Show when={display()?.chips.length}>
+      {/* Chips row — arg chips + result chips merged */}
+      <Show when={allChips().length > 0}>
         <box flexDirection="row" gap={1} paddingLeft={2}>
-          <For each={display()?.chips ?? []}>
+          <For each={allChips()}>
             {(chip: string) => <text fg={COLORS.textMuted}>{chip}</text>}
           </For>
         </box>
       </Show>
 
-      {/* Result — shown on completion */}
-      <Show when={props.block.status === "complete" && props.block.result !== undefined && props.block.result !== ""}>
-        <box paddingLeft={2}>
-          <Show
-            when={props.syntaxStyle}
-            fallback={<text fg={COLORS.textMuted}>{props.block.result}</text>}
-          >
-            {(style: Accessor<SyntaxStyle>) => (
-              <code content={props.block.result ?? ""} syntaxStyle={style()} filetype="json" />
-            )}
-          </Show>
-        </box>
+      {/* Result body — shown on completion */}
+      <Show when={resultDisplay()?.body}>
+        {(body: Accessor<string>) => (
+          <box paddingLeft={2}>
+            <HighlightedText content={body()} syntaxStyle={props.syntaxStyle} />
+          </box>
+        )}
       </Show>
     </box>
   );

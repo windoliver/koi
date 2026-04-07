@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getToolDisplay } from "./tool-display.js";
+import { getResultDisplay, getToolDisplay } from "./tool-display.js";
 
 // ---------------------------------------------------------------------------
 // Known tools — unprefixed built-ins
@@ -267,5 +267,184 @@ describe("getToolDisplay — non-object args guard", () => {
     const d = getToolDisplay("Bash", { command: "echo hi" });
     expect(d.title).toBe("Shell");
     expect(d.subtitle).toBe("echo hi");
+  });
+});
+
+// ===========================================================================
+// getResultDisplay — Phase 3: result chip extraction
+// ===========================================================================
+
+describe("getResultDisplay — Bash result", () => {
+  test("extracts exitCode and durationMs chips, stdout as body", () => {
+    const r = getResultDisplay(
+      JSON.stringify({ stdout: "hello world", stderr: "", exitCode: 0, durationMs: 42 }),
+    );
+    expect(r.chips).toEqual(["exitCode=0", "durationMs=42"]);
+    expect(r.body).toBe("hello world");
+  });
+
+  test("extracts timedOut chip when present", () => {
+    const r = getResultDisplay(
+      JSON.stringify({
+        stdout: "",
+        stderr: "killed",
+        exitCode: 137,
+        durationMs: 5000,
+        timedOut: true,
+      }),
+    );
+    expect(r.chips).toContain("exitCode=137");
+    expect(r.chips).toContain("timedOut=true");
+  });
+
+  test("extracts truncated chip", () => {
+    const r = getResultDisplay(
+      JSON.stringify({
+        stdout: "long output...",
+        stderr: "",
+        exitCode: 0,
+        durationMs: 10,
+        truncated: true,
+      }),
+    );
+    expect(r.chips).toContain("truncated=true");
+  });
+
+  test("security block error shows error as body", () => {
+    const r = getResultDisplay(
+      JSON.stringify({
+        error: "Command blocked",
+        category: "security",
+        reason: "rm -rf",
+        pattern: "rm",
+      }),
+    );
+    expect(r.body).toBe("Command blocked");
+    expect(r.chips).toEqual([]);
+  });
+});
+
+describe("getResultDisplay — web_fetch result", () => {
+  test("extracts status and contentType chips, body as body", () => {
+    const r = getResultDisplay(
+      JSON.stringify({
+        status: 200,
+        statusText: "OK",
+        contentType: "text/html",
+        body: "Example Domain",
+        format: "markdown",
+        truncated: false,
+        finalUrl: "https://example.com",
+      }),
+    );
+    // Chip order follows RESULT_CHIP_KEYS priority; truncated comes before format
+    expect(r.chips).toEqual(["status=200", "contentType=text/html", "truncated=false"]);
+    expect(r.body).toBe("Example Domain");
+  });
+
+  test("shows error body for failed fetch", () => {
+    const r = getResultDisplay(
+      JSON.stringify({ error: "Connection refused", code: "ECONNREFUSED" }),
+    );
+    expect(r.body).toBe("Connection refused");
+    expect(r.chips).toEqual(["code=ECONNREFUSED"]);
+  });
+});
+
+describe("getResultDisplay — Glob result", () => {
+  test("extracts total and truncated chips, paths as body", () => {
+    const r = getResultDisplay(
+      JSON.stringify({ paths: ["src/a.ts", "src/b.ts"], truncated: false, total: 2 }),
+    );
+    expect(r.chips).toContain("total=2");
+    expect(r.body).toBe("src/a.ts\nsrc/b.ts");
+  });
+
+  test("truncated glob shows truncated chip", () => {
+    const r = getResultDisplay(JSON.stringify({ paths: ["a.ts"], truncated: true }));
+    expect(r.chips).toContain("truncated=true");
+  });
+});
+
+describe("getResultDisplay — Grep result", () => {
+  test("extracts mode chip, result string as body", () => {
+    const r = getResultDisplay(
+      JSON.stringify({ result: "src/foo.ts:10:match", mode: "rg", truncated: false, warnings: [] }),
+    );
+    expect(r.chips).toContain("mode=rg");
+    expect(r.body).toBe("src/foo.ts:10:match");
+  });
+});
+
+describe("getResultDisplay — fs_edit result", () => {
+  test("extracts modified chip", () => {
+    const r = getResultDisplay(JSON.stringify({ path: "src/app.ts", modified: true }));
+    expect(r.chips).toContain("modified=true");
+  });
+
+  test("edit error shows error body with code chip", () => {
+    const r = getResultDisplay(JSON.stringify({ error: "Hunk not found", code: "NOT_FOUND" }));
+    expect(r.body).toBe("Hunk not found");
+    expect(r.chips).toEqual(["code=NOT_FOUND"]);
+  });
+});
+
+describe("getResultDisplay — fs_write result", () => {
+  test("extracts bytesWritten chip", () => {
+    const r = getResultDisplay(JSON.stringify({ path: "output.txt", bytesWritten: 1234 }));
+    expect(r.chips).toContain("bytesWritten=1234");
+  });
+});
+
+describe("getResultDisplay — edge cases", () => {
+  test("empty string returns empty chips and body", () => {
+    const r = getResultDisplay("");
+    expect(r.chips).toEqual([]);
+    expect(r.body).toBe("");
+  });
+
+  test("[unserializable] sentinel passes through", () => {
+    const r = getResultDisplay("[unserializable]");
+    expect(r.chips).toEqual([]);
+    expect(r.body).toBe("[unserializable]");
+  });
+
+  test("plain text result returns no chips", () => {
+    const r = getResultDisplay("file1.ts\nfile2.ts");
+    expect(r.chips).toEqual([]);
+    expect(r.body).toBe("file1.ts\nfile2.ts");
+  });
+
+  test("non-object JSON returns raw string", () => {
+    const r = getResultDisplay('"just a string"');
+    expect(r.chips).toEqual([]);
+    expect(r.body).toBe('"just a string"');
+  });
+
+  test("array JSON returns raw string", () => {
+    const r = getResultDisplay("[1,2,3]");
+    expect(r.chips).toEqual([]);
+    expect(r.body).toBe("[1,2,3]");
+  });
+
+  test("chips capped at 3 even with many metadata fields", () => {
+    const r = getResultDisplay(
+      JSON.stringify({
+        exitCode: 0,
+        status: 200,
+        durationMs: 10,
+        bytesWritten: 100,
+        modified: true,
+        truncated: false,
+        total: 5,
+      }),
+    );
+    expect(r.chips).toHaveLength(3);
+  });
+
+  test("generic unknown result extracts scalars not in consumed set", () => {
+    const r = getResultDisplay(JSON.stringify({ customField: "value", count: 42 }));
+    expect(r.body).toContain("customField: value");
+    expect(r.body).toContain("count: 42");
   });
 });
