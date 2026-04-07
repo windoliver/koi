@@ -291,10 +291,31 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
+    // Dedup: within this turn, skip tool calls with identical (toolName + rawArgs).
+    // Models occasionally emit the same call twice in one response (e.g. Sonnet
+    // via OpenRouter). Keep the first occurrence; record skipped duplicates for
+    // observability. Uses rawArgs (raw JSON text) — within a single generation,
+    // duplicate calls always have identical serialization.
+    const seen = new Set<string>();
+    const dedupedToolCalls: typeof validToolCalls = [];
+    const skippedDuplicates: Array<{ readonly toolName: string; readonly callId: string }> = [];
+    for (const tc of validToolCalls) {
+      const key = `${tc.toolName}\0${tc.rawArgs}`;
+      if (seen.has(key)) {
+        skippedDuplicates.push({ toolName: tc.toolName, callId: tc.callId });
+      } else {
+        seen.add(key);
+        dedupedToolCalls.push(tc);
+      }
+    }
+    if (skippedDuplicates.length > 0) {
+      yield { kind: "custom", type: "dedup_skipped", data: { skipped: skippedDuplicates } };
+    }
+
     // Transition based on model response
     state = transitionTurn(state, {
       kind: "model_done",
-      hasToolCalls: validToolCalls.length > 0,
+      hasToolCalls: dedupedToolCalls.length > 0,
     });
 
     // Stop gate: when model completes (no tool calls), check if any hook
@@ -332,14 +353,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
     if (state.phase === "tool_execution") {
       // Append assistant message (text + tool call intents) to transcript
-      appendAssistantTurn(transcript, turnText, validToolCalls);
+      appendAssistantTurn(transcript, turnText, dedupedToolCalls);
 
       // Execute tool calls sequentially to preserve model-emitted order
       // and avoid racing side effects between dependent operations.
       // Check abort before each tool call to stop dispatching on cancellation.
       try {
         const results: ToolResult[] = [];
-        for (const tc of validToolCalls) {
+        for (const tc of dedupedToolCalls) {
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
