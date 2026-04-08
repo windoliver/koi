@@ -1,0 +1,114 @@
+/**
+ * Skills-MCP bridge — connects McpResolver tool discovery to SkillsRuntime.
+ *
+ * Maps MCP ToolDescriptor[] → SkillMetadata[] with source: "mcp" and registers
+ * them via registerExternal(). Subscribes to resolver onChange for live updates.
+ *
+ * Race-safe: serialized sync with disposed/dirty guards prevents stale writes.
+ */
+
+import type { ToolDescriptor } from "@koi/core";
+import type { McpResolver } from "@koi/mcp";
+import type { SkillMetadata, SkillsRuntime } from "@koi/skills-runtime";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface SkillsMcpBridgeConfig {
+  readonly resolver: McpResolver;
+  readonly runtime: SkillsRuntime;
+}
+
+export interface SkillsMcpBridge {
+  /** Perform initial discovery, register MCP tools as skills, and subscribe to changes. */
+  readonly sync: () => Promise<void>;
+  /** Unsubscribe from change notifications and clear all MCP skills. */
+  readonly dispose: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Mapping
+// ---------------------------------------------------------------------------
+
+/** Maps a single MCP ToolDescriptor to a SkillMetadata entry. */
+export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): SkillMetadata {
+  const server = descriptor.server ?? undefined;
+  const baseTags: readonly string[] = server !== undefined ? ["mcp", server] : ["mcp"];
+  const tags: readonly string[] =
+    descriptor.tags !== undefined ? [...baseTags, ...descriptor.tags] : baseTags;
+
+  return {
+    name: descriptor.name,
+    description: descriptor.description,
+    source: "mcp",
+    dirPath: `mcp://${server ?? "unknown"}`,
+    tags,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bridge factory
+// ---------------------------------------------------------------------------
+
+export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpBridge {
+  const { resolver, runtime } = config;
+
+  let disposed = false;
+  let syncInFlight = false;
+  let dirty = false;
+  let version = 0;
+  let unsubChange: (() => void) | undefined;
+
+  const syncFromResolver = async (): Promise<void> => {
+    if (disposed || syncInFlight) {
+      if (syncInFlight) {
+        dirty = true;
+      }
+      return;
+    }
+
+    syncInFlight = true;
+    const capturedVersion = ++version;
+
+    try {
+      const descriptors = await resolver.discover();
+
+      // Only apply if still current and not disposed
+      if (!disposed && capturedVersion === version) {
+        const skills = descriptors.map(mapToolDescriptorToSkillMetadata);
+        runtime.registerExternal(skills);
+      }
+    } catch {
+      // Swallow — resolver.failures exposes server-level errors
+    } finally {
+      syncInFlight = false;
+    }
+
+    // Re-sync if onChange fired during our discover()
+    if (dirty && !disposed) {
+      dirty = false;
+      await syncFromResolver();
+    }
+  };
+
+  const sync = async (): Promise<void> => {
+    // Subscribe before first discover so changes during sync set dirty flag
+    if (unsubChange === undefined && !disposed) {
+      unsubChange = resolver.onChange(() => {
+        void syncFromResolver();
+      });
+    }
+
+    await syncFromResolver();
+  };
+
+  const dispose = (): void => {
+    disposed = true;
+    unsubChange?.();
+    unsubChange = undefined;
+    runtime.registerExternal([]);
+  };
+
+  return { sync, dispose };
+}

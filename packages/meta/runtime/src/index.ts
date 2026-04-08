@@ -29,6 +29,9 @@ export {
   resolveFileSystemAsync,
   validateFileSystemConfig,
 } from "./resolve-filesystem.js";
+// Skills-MCP bridge
+export type { SkillsMcpBridge, SkillsMcpBridgeConfig } from "./skills-mcp-bridge.js";
+export { createSkillsMcpBridge, mapToolDescriptorToSkillMetadata } from "./skills-mcp-bridge.js";
 
 // Stubs (for direct use in tests)
 export { createStubAdapter } from "./stubs/stub-adapter.js";
