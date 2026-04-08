@@ -42,6 +42,7 @@ import {
   sortMiddlewareByPhase,
 } from "@koi/engine-compose";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
@@ -60,6 +61,7 @@ import {
 } from "./stubs/index.js";
 import { createAtifDocumentStore } from "./trajectory/atif-store.js";
 import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
+import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
 import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
@@ -173,8 +175,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     );
   }
 
-  // Create trajectory store if directory provided
-  const trajectoryStore = resolveTrajectoryStore(config);
+  // Create trajectory store (filesystem or Nexus-backed)
+  const trajectoryResolution = resolveTrajectoryStore(config);
+  const trajectoryStore = trajectoryResolution?.store;
+  const trajectoryTransport = trajectoryResolution?.transport;
+
+  // Track active stream flush promises so dispose() can drain before closing transport.
+  const activeFlushes = new Set<Promise<void>>();
+  // Track active stream finalizations (the full finally block, not just flush).
+  // dispose() awaits these so transport is not closed under a stream still flushing.
+  const activeStreamFinalizations = new Set<Promise<void>>();
 
   // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
   // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
@@ -236,6 +246,9 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     config.retrySignalReader,
     config.agentName ?? DEFAULT_AGENT_NAME,
     createClock,
+    config.onTrajectoryFlushError,
+    activeFlushes,
+    activeStreamFinalizations,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -317,11 +330,30 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
+      // Step 1: Dispose adapter first — this terminates active model streams,
+      // which triggers their finally blocks (where flush + afterFlush run).
+      // Without this, awaiting stream finalizations would deadlock because
+      // only adapter disposal can abort a live model stream.
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
         filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
+      // Step 2: Drain stream finalizations (flush + afterFlush) with a bounded
+      // timeout. Adapters without dispose() or that don't cancel streams would
+      // cause an indefinite hang without this bound. 5s is generous for I/O.
+      const DRAIN_TIMEOUT_MS = 5000;
+      const drainWithTimeout = (promises: Set<Promise<void>>): Promise<unknown> => {
+        if (promises.size === 0) return Promise.resolve();
+        return Promise.race([
+          Promise.allSettled([...promises]),
+          new Promise<void>((r) => setTimeout(r, DRAIN_TIMEOUT_MS)),
+        ]);
+      };
+      await drainWithTimeout(activeStreamFinalizations);
+      await drainWithTimeout(activeFlushes);
+      // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
+      trajectoryTransport?.close();
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failures.length > 0) {
         throw new Error(
@@ -369,15 +401,55 @@ function resolveMiddleware(provided: readonly KoiMiddleware[] | undefined): {
   };
 }
 
-function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryDocumentStore | undefined {
-  if (config.trajectoryDir === undefined) return undefined;
-  const delegate = createFsAtifDelegate(config.trajectoryDir);
+interface TrajectoryResolution {
+  readonly store: TrajectoryDocumentStore;
+  /** Nexus transport to close on dispose. Undefined for filesystem delegate. */
+  readonly transport?: NexusTransport | undefined;
+}
+
+function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryResolution | undefined {
+  if (config.trajectoryDir !== undefined && config.trajectoryNexus !== undefined) {
+    throw new Error(
+      "Cannot provide both trajectoryDir and trajectoryNexus — pick one trajectory backend",
+    );
+  }
+
   const agentVersion = config.agentVersion;
   const storeConfig =
     agentVersion !== undefined
       ? { agentName: config.agentName ?? DEFAULT_AGENT_NAME, agentVersion }
       : { agentName: config.agentName ?? DEFAULT_AGENT_NAME };
-  return createAtifDocumentStore(storeConfig, delegate);
+
+  if (config.trajectoryNexus !== undefined) {
+    const { apiKey } = config.trajectoryNexus;
+    const rawUrl = config.trajectoryNexus.url;
+    if (typeof rawUrl !== "string" || rawUrl.trim() === "") {
+      throw new Error("trajectoryNexus.url must be a non-empty string");
+    }
+    const url = rawUrl.trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`trajectoryNexus.url is not a valid URL: ${url}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`trajectoryNexus.url must use http:// or https:// (got ${parsed.protocol})`);
+    }
+    const transport = createHttpTransport({ url, apiKey });
+    const delegate = createNexusAtifDelegate({
+      transport,
+      basePath: config.trajectoryNexus.basePath,
+    });
+    return { store: createAtifDocumentStore(storeConfig, delegate), transport };
+  }
+
+  if (config.trajectoryDir !== undefined) {
+    const delegate = createFsAtifDelegate(config.trajectoryDir);
+    return { store: createAtifDocumentStore(storeConfig, delegate) };
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +529,11 @@ function createStepBuffer(store: TrajectoryDocumentStore, docId: string): StepBu
     flush: async () => {
       if (steps.length === 0) return;
       const batch = [...steps];
+      // Clear before write (at-most-once): prevents duplicate steps on ambiguous
+      // transport failures where the remote write committed but the ack was lost.
+      // Worst case: one batch of steps lost on a rare transport failure.
+      // This is safer than at-least-once (duplicate steps corrupt trajectories).
+      // Phase 2 OCC (#1469) will enable exactly-once via etag/if_match.
       steps.length = 0;
       await store.append(docId, batch);
     },
@@ -702,6 +779,9 @@ function composeMiddlewareIntoAdapter(
   retrySignalReader?: RetrySignalReader,
   agentName?: string,
   createClock: () => () => number = () => Date.now,
+  onFlushError?: (error: unknown) => void,
+  flushTracker?: Set<Promise<void>>,
+  streamFinalizationTracker?: Set<Promise<void>>,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -1084,6 +1164,9 @@ function composeMiddlewareIntoAdapter(
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
         },
+        onFlushError,
+        flushTracker,
+        streamFinalizationTracker,
       );
     },
   };
@@ -1182,13 +1265,50 @@ async function* wrapStreamWithFlush(
   buffer: StepBuffer | undefined,
   beforeFlush?: () => void,
   afterFlush?: () => Promise<void>,
+  onFlushError?: (error: unknown) => void,
+  flushTracker?: Set<Promise<void>>,
+  streamFinalizationTracker?: Set<Promise<void>>,
 ): AsyncIterable<EngineEvent> {
+  // Deferred resolve: the finalization promise is created immediately and tracked
+  // so dispose() can await it even if the stream hasn't reached its finally block yet.
+  // let: mutable — set once by the finally block's deferred executor.
+  let resolveFinalization: (() => void) | undefined;
+  const finalizationPromise = new Promise<void>((r) => {
+    resolveFinalization = r;
+  });
+  streamFinalizationTracker?.add(finalizationPromise);
+
   try {
     yield* inner;
   } finally {
-    beforeFlush?.();
-    await buffer?.flush().catch(noop);
-    await afterFlush?.().catch(noop);
+    try {
+      beforeFlush?.();
+      // Surface trajectory flush failures so remote persistence errors are observable.
+      // Prior to Nexus backends this was always in-memory and couldn't fail meaningfully.
+      // Cleanup (flushTracker removal + afterFlush) is unconditional via try/finally
+      // so a throwing onFlushError callback cannot leak per-session state.
+      const flushPromise = (async () => {
+        try {
+          await buffer?.flush();
+        } catch (e: unknown) {
+          if (onFlushError !== undefined) {
+            onFlushError(e);
+          } else {
+            console.error("[koi:runtime] trajectory flush failed:", e);
+          }
+        }
+      })();
+      flushTracker?.add(flushPromise);
+      try {
+        await flushPromise;
+      } finally {
+        flushTracker?.delete(flushPromise);
+        await afterFlush?.().catch(noop);
+      }
+    } finally {
+      streamFinalizationTracker?.delete(finalizationPromise);
+      resolveFinalization?.();
+    }
   }
 }
 

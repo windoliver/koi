@@ -15,6 +15,9 @@ export { createLocalTransport } from "./local-transport.js";
 export type { NexusFileSystemFullConfig } from "./nexus-filesystem-backend.js";
 export { createNexusFileSystem } from "./nexus-filesystem-backend.js";
 
+// Transport — TODO(#1469): extract to @koi/nexus-client when 3rd consumer exists
+export { createHttpTransport } from "./transport.js";
+
 // Config & types
 export type { BridgeNotification, NexusFileSystemConfig, NexusTransport } from "./types.js";
 

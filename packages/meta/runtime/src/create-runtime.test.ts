@@ -432,6 +432,34 @@ describe("createRuntime", () => {
     expect(runtime.trajectoryStore).toBeUndefined();
   });
 
+  test("trajectoryStore is created when trajectoryNexus is provided", () => {
+    const runtime = createRuntime({
+      trajectoryNexus: {
+        url: "http://localhost:3100",
+      },
+    });
+    expect(runtime.trajectoryStore).toBeDefined();
+  });
+
+  test("throws when both trajectoryDir and trajectoryNexus are provided", () => {
+    expect(() =>
+      createRuntime({
+        trajectoryDir: `/tmp/koi-traj-test-${Date.now()}`,
+        trajectoryNexus: { url: "http://localhost:3100" },
+      }),
+    ).toThrow("Cannot provide both trajectoryDir and trajectoryNexus");
+  });
+
+  test("dispose closes Nexus trajectory transport", async () => {
+    const runtime = createRuntime({
+      trajectoryNexus: {
+        url: "http://localhost:3100",
+      },
+    });
+    // dispose should not throw (transport.close() is called internally)
+    await runtime.dispose();
+  });
+
   test("retrySignalReader is accepted and threads to event-trace", () => {
     const fakeReader: import("@koi/core").RetrySignalReader = {
       getRetrySignal: () => undefined,

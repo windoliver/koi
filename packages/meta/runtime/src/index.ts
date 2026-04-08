@@ -41,6 +41,8 @@ export type { AtifDocumentDelegate, AtifDocumentStoreConfig } from "./trajectory
 export { createAtifDocumentStore } from "./trajectory/atif-store.js";
 export type { AtifDocument } from "./trajectory/atif-types.js";
 export { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
+export type { NexusTrajectoryConfig } from "./trajectory/nexus-delegate.js";
+export { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 
 // Types
 export type {

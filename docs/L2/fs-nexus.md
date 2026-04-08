@@ -78,6 +78,7 @@ interface NexusTransport {
   readonly mounts?: readonly string[];
 }
 
+/** Create an HTTP JSON-RPC transport to a Nexus server. Exported for reuse by non-filesystem consumers (e.g. trajectory persistence). TODO(#1469): extract to @koi/nexus-client when 3rd consumer exists. */
 function createHttpTransport(config: NexusFileSystemConfig): NexusTransport;
 /** Spawns bridge.py subprocess for local/OAuth-gated mounts. */
 function createLocalTransport(config: LocalTransportConfig): Promise<NexusTransport>;

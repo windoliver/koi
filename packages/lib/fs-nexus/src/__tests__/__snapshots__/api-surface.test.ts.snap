@@ -116,13 +116,22 @@ interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
 declare function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend;
 
 /**
+ * Inline JSON-RPC 2.0 transport for Nexus server.
+ *
+ * Will be extracted to @koi/nexus-client when a second consumer exists.
+ */
+
+/** Create an HTTP JSON-RPC transport to a Nexus server. */
+declare function createHttpTransport(config: NexusFileSystemConfig): NexusTransport;
+
+/**
  * Config validation for NexusFileSystemConfig.
  */
 
 /** Validate NexusFileSystemConfig at the system boundary. */
 declare function validateNexusFileSystemConfig(config: unknown): Result<NexusFileSystemConfig, KoiError>;
 
-export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
+export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createHttpTransport, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
 "
 `;
 

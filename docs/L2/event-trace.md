@@ -204,7 +204,11 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
   middleware. Both per-middleware spans and event-trace steps feed into the same
   `TrajectoryDocumentStore` for ACE and the TUI debug waterfall.
 - Trajectory analysis / reflection / curation (Phase 3: ACE middleware)
-- Persistent storage backends (Phase 3: Nexus trajectory store)
+- Persistent storage backends: **Nexus trajectory store implemented** (#1469 Phase 1).
+  Configure `RuntimeConfig.trajectoryNexus` with `{ url, apiKey?, basePath? }` to persist
+  ATIF documents to a Nexus server. Falls back to filesystem (`trajectoryDir`) or in-memory.
+  Single-writer-per-docId assumption applies (process-level mutex, no OCC). See
+  `packages/meta/runtime/src/trajectory/nexus-delegate.ts`.
 - OpenTelemetry span export (Phase 3: @koi/observability)
 - TUI waterfall rendering (Phase 2j: @koi/tui debug view consumes this data)
 - Harbor framework runtime — zero dependency, types only

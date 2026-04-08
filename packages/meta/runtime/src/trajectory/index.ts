@@ -14,3 +14,6 @@ export type {
   AtifToolDefinition,
 } from "./atif-types.js";
 export { createFsAtifDelegate } from "./fs-delegate.js";
+export type { NexusTrajectoryConfig } from "./nexus-delegate.js";
+export { createNexusAtifDelegate } from "./nexus-delegate.js";
+export { decodeDocId, docIdToFilename, encodeDocId, filenameToDocId } from "./path-encoding.js";
