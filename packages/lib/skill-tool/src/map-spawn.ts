@@ -45,18 +45,12 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
     };
   }
 
-  if (skill.allowedTools !== undefined) {
-    // fork: true and toolAllowlist are mutually exclusive in SpawnRequest.
-    // Since fork: true is required for safety (recursion guard + turn cap),
-    // we cannot enforce allowedTools restrictions. Fail closed.
+  if (skill.allowedTools !== undefined && skill.allowedTools.length === 0) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message:
-          skill.allowedTools.length === 0
-            ? `Skill "${skill.name}" has an empty allowed-tools list — ambiguous for spawn mode`
-            : `Skill "${skill.name}" declares allowed-tools but fork mode cannot enforce tool restrictions (fork and toolAllowlist are mutually exclusive). Remove allowed-tools or use inline mode`,
+        message: `Skill "${skill.name}" has an empty allowed-tools list — ambiguous for spawn mode`,
         retryable: false,
         context: { skillName: skill.name },
       },
@@ -70,6 +64,7 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
     ok: true,
     value: {
       agentName: resolvedAgentName,
+      ...(skill.allowedTools !== undefined ? { allowedTools: skill.allowedTools } : {}),
     },
   };
 }
@@ -79,11 +74,22 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
 // ---------------------------------------------------------------------------
 
 /**
+ * Fork turn cap applied when using toolAllowlist instead of fork: true.
+ * Matches the engine's DEFAULT_FORK_MAX_TURNS (200).
+ */
+const FORK_MAX_TURNS = 200;
+
+/**
  * Maps a loaded skill with validated spawn config into a SpawnRequest.
  *
- * Always uses `fork: true` to preserve the engine's recursion guard
- * (strips agent_spawn from child) and default fork turn cap. This is
- * critical for safety — plain `toolAllowlist` without `fork` loses both.
+ * Two spawn strategies depending on whether the skill restricts tools:
+ *
+ * 1. **No allowedTools**: `fork: true` — inherits all parent tools, engine
+ *    strips `agent_spawn` (recursion guard) and applies default turn cap.
+ *
+ * 2. **With allowedTools**: `toolAllowlist` + `toolDenylist: ["agent_spawn"]`
+ *    + explicit `maxTurns`. Cannot use `fork: true` (mutually exclusive with
+ *    `toolAllowlist`), so we replicate the safety guards manually.
  */
 export function mapSkillToSpawnRequest(
   skill: LoadedSkill,
@@ -97,12 +103,25 @@ export function mapSkillToSpawnRequest(
     ...(config.sessionId !== undefined ? { sessionId: config.sessionId } : {}),
   });
 
-  return {
+  const base = {
     agentName: spawnConfig.agentName,
     description: args ?? `Execute skill: ${skill.name}`,
     signal: config.signal,
     systemPrompt,
     nonInteractive: true,
-    fork: true as const,
-  };
+  } as const;
+
+  if (spawnConfig.allowedTools !== undefined) {
+    // Restricted fork: use toolAllowlist + explicit turn cap.
+    // agent_spawn is excluded by not being in the allowlist (allowlists
+    // are explicit — only listed tools are available to the child).
+    return {
+      ...base,
+      toolAllowlist: [...spawnConfig.allowedTools],
+      maxTurns: FORK_MAX_TURNS,
+    };
+  }
+
+  // Unrestricted fork: engine handles recursion guard + turn cap
+  return { ...base, fork: true as const };
 }

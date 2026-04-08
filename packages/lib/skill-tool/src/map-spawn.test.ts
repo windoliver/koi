@@ -85,16 +85,15 @@ describe("extractSpawnConfig", () => {
     }
   });
 
-  test("returns VALIDATION when fork skill has non-empty allowedTools", () => {
+  test("includes allowedTools when present on fork skill", () => {
     const skill = makeSkill({
       executionMode: "fork",
       allowedTools: ["Bash", "Read"],
     });
     const result = extractSpawnConfig(skill);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("mutually exclusive");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.allowedTools).toEqual(["Bash", "Read"]);
     }
   });
 });
@@ -132,6 +131,20 @@ describe("mapSkillToSpawnRequest", () => {
     const request = mapSkillToSpawnRequest(skill, "test", spawnConfig, { signal });
 
     expect(request.signal).toBe(signal);
+  });
+
+  test("uses toolAllowlist with maxTurns when allowedTools present", () => {
+    const skill = makeSkill();
+    const spawnConfig: SpawnConfig = {
+      agentName: "agent-restricted",
+      allowedTools: ["Bash", "Read"],
+    };
+    const request = mapSkillToSpawnRequest(skill, "run", spawnConfig, baseConfig);
+
+    expect(request.toolAllowlist).toEqual(["Bash", "Read"]);
+    expect(request.fork).toBeUndefined();
+    expect(request.maxTurns).toBe(200);
+    expect(request.nonInteractive).toBe(true);
   });
 
   test("uses skill name as default description", () => {

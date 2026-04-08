@@ -126,7 +126,20 @@ export async function createSkillTool(config: SkillToolConfig): Promise<Result<T
   const discoverResult = await config.resolver.discover();
   if (!discoverResult.ok) return discoverResult;
 
-  const skills = [...discoverResult.value.values()];
+  // Filter to only skills executable under the current config.
+  // Fork skills require spawnFn and valid spawn config to be executable.
+  const allSkills = [...discoverResult.value.values()];
+  const skills = allSkills.filter((skill) => {
+    const spawnResult = extractSpawnConfig(skill);
+    if (!spawnResult.ok && spawnResult.error.code === "NOT_FOUND") {
+      return true; // Inline-only skill — always executable
+    }
+    if (!spawnResult.ok) {
+      return false; // Spawn config validation failed — not executable
+    }
+    // Fork skill — only executable if spawnFn is configured
+    return config.spawnFn !== undefined;
+  });
   const skillListing = formatSkillDescription(skills);
   const description = buildDescription(skillListing);
 

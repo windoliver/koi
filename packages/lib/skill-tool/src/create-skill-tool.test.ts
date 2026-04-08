@@ -104,6 +104,19 @@ describe("createSkillTool", () => {
     }
   });
 
+  test("filters fork skills from description when spawnFn is absent", async () => {
+    const inlineSkill = makeSkill("inline-ok");
+    const forkSkill = makeSkill("fork-only", { executionMode: "fork" });
+    const resolver = makeResolver([inlineSkill, forkSkill]);
+    // No spawnFn — fork skills should be filtered out
+    const result = await createSkillTool(makeConfig(resolver));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.descriptor.description).toContain("inline-ok");
+      expect(result.value.descriptor.description).not.toContain("fork-only");
+    }
+  });
+
   test("returns Tool with empty skills message when no skills", async () => {
     const resolver = makeResolver([]);
     const result = await createSkillTool(makeConfig(resolver));
