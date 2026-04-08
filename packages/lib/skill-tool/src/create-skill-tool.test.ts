@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError, Result, SpawnFn, SpawnRequest, SpawnResult } from "@koi/core";
-import { createSkillTool } from "./create-skill-tool.js";
+import { createSkillTool, createSkillToolProvider } from "./create-skill-tool.js";
 import type { LoadedSkill, SkillMeta, SkillResolver, SkillToolConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -316,5 +316,46 @@ describe("SkillTool.execute — cancellation", () => {
     expect(execResult.ok).toBe(false);
     expect(execResult.error.code).toBe("INTERNAL");
     expect(execResult.error.context).toEqual({ reason: "aborted" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createSkillToolProvider
+// ---------------------------------------------------------------------------
+
+describe("createSkillToolProvider", () => {
+  test("attaches Skill tool under toolToken key", async () => {
+    const resolver = makeResolver([makeSkill("alpha")]);
+    const provider = createSkillToolProvider(makeConfig(resolver));
+
+    expect(provider.name).toBe("skill-tool");
+    expect(provider.priority).toBe(100); // COMPONENT_PRIORITY.BUNDLED
+
+    const result = await provider.attach({} as never);
+    if ("components" in result) {
+      expect(result.components.size).toBe(1);
+      expect(result.skipped.length).toBe(0);
+      const key = [...result.components.keys()][0];
+      expect(key).toContain("tool:Skill");
+    }
+  });
+
+  test("skips tool when discover fails", async () => {
+    const resolver = makeResolver([], {
+      discoverError: {
+        code: "INTERNAL",
+        message: "Filesystem error",
+        retryable: false,
+        context: {},
+      },
+    });
+    const provider = createSkillToolProvider(makeConfig(resolver));
+
+    const result = await provider.attach({} as never);
+    if ("components" in result) {
+      expect(result.components.size).toBe(0);
+      expect(result.skipped.length).toBe(1);
+      expect(result.skipped[0]?.reason).toContain("Filesystem error");
+    }
   });
 });
