@@ -260,6 +260,8 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory` |
 
+> **Outcome linkage (#1465):** `@koi/event-trace` allowlist updated with `decisionCorrelationId` for decision-outcome correlation. No CLI-facing changes — the correlation ID is internal trajectory metadata set by upstream middleware.
+
 ---
 
 ## Nexus Resolution
