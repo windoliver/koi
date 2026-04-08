@@ -1369,7 +1369,7 @@ describe("runTurn", () => {
       expect(doomEvent).toBeDefined();
       if (doomEvent?.kind === "custom") {
         const data = doomEvent.data as { toolName: string; consecutiveTurns: number };
-        expect(data.toolName).toBe("readFile");
+        expect(data.toolNames).toEqual(["readFile"]);
         expect(data.consecutiveTurns).toBe(3);
       }
 

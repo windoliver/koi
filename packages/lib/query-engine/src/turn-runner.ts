@@ -368,13 +368,16 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       if (hasRepeated && allRepeated && doomLoopInterventions < maxDoomLoopInterventions) {
         // ALL calls are repeated — full intervention: re-prompt the model.
-        const { toolName } = parseDoomLoopKey([...repeatedKeys][0] as string);
+        const blockedToolNames = [
+          ...new Set([...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName)),
+        ];
+        const toolNameList = blockedToolNames.join(", ");
 
         yield {
           kind: "custom",
           type: "doom_loop_detected",
           data: {
-            toolName,
+            toolNames: blockedToolNames,
             consecutiveTurns: doomLoopThreshold,
             turnIndex: state.turnIndex,
           },
@@ -384,14 +387,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         // paired — every streamed tool_call event has a matching intent.
         appendAssistantTurn(transcript, turnText, validToolCalls);
 
-        // Append synthetic blocked results for every call (including
-        // within-turn duplicates) so callId pairing is complete.
-        const blockedOutput = `[Doom loop]: Blocked — "${toolName}" called with identical arguments ${doomLoopThreshold} turns in a row.`;
+        // Append per-call synthetic blocked results (including within-turn
+        // duplicates) so callId pairing is complete.
         for (const tc of validToolCalls) {
           appendToolResult(transcript, {
             callId: tc.callId,
             toolName: tc.toolName,
-            output: blockedOutput,
+            output: `[Doom loop]: Blocked — "${tc.toolName}" called with identical arguments ${doomLoopThreshold} turns in a row.`,
           });
         }
 
@@ -400,7 +402,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           content: [
             {
               kind: "text",
-              text: `[Doom loop detected]: You have called "${toolName}" with the same arguments ${doomLoopThreshold} turns in a row. Stop repeating this call and try a different approach.`,
+              text: `[Doom loop detected]: You have called ${toolNameList} with the same arguments ${doomLoopThreshold} turns in a row. Stop repeating and try a different approach.`,
             },
           ],
           timestamp: Date.now(),
@@ -574,18 +576,6 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             break;
           }
         }
-        // Append synthetic results for doom-loop-blocked calls AFTER live
-        // execution succeeds — ensures no partial state on failure.
-        for (const blocked of doomLoopBlockedCalls) {
-          const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
-          appendToolResult(transcript, {
-            callId: blocked.callId,
-            toolName: blocked.toolName,
-            output: syntheticOutput,
-          });
-        }
-        doomLoopBlockedCalls = [];
-
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
         }
@@ -595,6 +585,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           errorMetadata = { source: "tool_execution", message: msg };
           state = transitionTurn(state, { kind: "error", message: msg });
         }
+      } finally {
+        // Append synthetic results for doom-loop-blocked calls regardless of
+        // whether live tools succeeded or threw. Every emitted tool_call intent
+        // must have a matching tool result for transcript pairing.
+        for (const blocked of doomLoopBlockedCalls) {
+          const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
+          appendToolResult(transcript, {
+            callId: blocked.callId,
+            toolName: blocked.toolName,
+            output: syntheticOutput,
+          });
+        }
+        doomLoopBlockedCalls = [];
       }
     } else if (turnText.length > 0) {
       // Text-only turn — append assistant message to transcript
