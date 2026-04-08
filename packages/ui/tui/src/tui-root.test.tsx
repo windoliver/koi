@@ -33,7 +33,7 @@ async function renderRoot(overrideState?: Partial<ReturnType<typeof createInitia
     : createInitialState();
   const store = createStore(state);
   const props = makeProps();
-  // TuiRoot creates TuiStateContext internally — only StoreContext.Provider needed
+  // Only StoreContext.Provider needed — the SolidJS store provides reactivity directly
   const utils = await testRender(
     () => (
       <StoreContext.Provider value={store}>

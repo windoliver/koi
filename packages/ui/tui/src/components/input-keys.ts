@@ -27,6 +27,8 @@ export type InputKeyResult =
   | { readonly kind: "backspace" }
   | { readonly kind: "delete-word" }
   | { readonly kind: "clear-line" }
+  | { readonly kind: "history-up" }
+  | { readonly kind: "history-down" }
   | { readonly kind: "noop" };
 
 // ---------------------------------------------------------------------------
@@ -80,9 +82,13 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
     return { kind: "clear-line" };
   }
 
-  // Up/Down: no-op (history navigation not yet implemented)
-  if (key.name === "up" || key.name === "down") {
-    return { kind: "noop" };
+  // Up/Down: prompt history navigation (bare keys only, not Ctrl/Meta modified)
+  // Ctrl+Up/Down are reserved for other bindings (not consumed here).
+  if (key.name === "up" && !key.ctrl && !key.meta) {
+    return { kind: "history-up" };
+  }
+  if (key.name === "down" && !key.ctrl && !key.meta) {
+    return { kind: "history-down" };
   }
 
   // Tab — do nothing in normal input (slash overlay handles tab)

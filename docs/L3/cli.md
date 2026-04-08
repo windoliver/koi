@@ -101,8 +101,16 @@ koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 
 ### `koi tui`
 
-Interactive terminal console. Opens a full-screen OpenTUI terminal UI with real model streaming,
+Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
 conversation history, command palette (Ctrl+P), and view switching (sessions, doctor, help).
+
+**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with frame-rate-limited
+yielding (flush + yield every 16ms for text/thinking/tool events) so OpenTUI can paint intermediate
+frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store uses `reconcile()` for
+fine-grained signal updates.
+
+**Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
+(session-scoped); PageUp/PageDown pauses auto-scroll.
 
 ```bash
 koi tui
@@ -130,7 +138,7 @@ so the key is not forwarded to OpenRouter.
 - Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten) are extracted from JSON results via `getResultDisplay()`.
 - Engine events are batch-dispatched via `store.dispatchBatch()` — the EventBatcher flushes all events in one pass with a single store notification, avoiding N signal invalidations per 16ms window.
 - A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
-- **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled).
+- **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt via `createSkillInjectorMiddleware()` so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp). Non-filesystem skills (e.g., MCP-derived) can be injected via `registerExternal()`. Skills may declare `execution: fork` in frontmatter for isolated sub-agent execution.
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.

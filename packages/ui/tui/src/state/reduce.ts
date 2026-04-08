@@ -71,27 +71,33 @@ function closeActiveAssistant(messages: readonly TuiMessage[]): readonly TuiMess
  * Called on terminal `done` events where the engine has finished but tool calls
  * may not have received their `tool_call_end`.
  */
-function finalizeAssistant(messages: readonly TuiMessage[]): readonly TuiMessage[] {
+function finalizeAssistant(messages: readonly TuiMessage[]): {
+  readonly messages: readonly TuiMessage[];
+  readonly finalized: number;
+} {
   const found = findLastAssistant(messages);
-  if (!found) return messages;
+  if (!found) return { messages, finalized: 0 };
 
   // Mark any "running" tool blocks as "error" — they won't get a tool_call_end
-  const hasRunningTools = found.msg.blocks.some(
-    (b) => b.kind === "tool_call" && b.status === "running",
-  );
-  const updatedBlocks = hasRunningTools
-    ? found.msg.blocks.map((b) =>
-        b.kind === "tool_call" && b.status === "running" ? { ...b, status: "error" as const } : b,
-      )
-    : found.msg.blocks;
-
-  const needsUpdate = found.msg.streaming || hasRunningTools;
-  if (!needsUpdate) return messages;
-
-  return updateAssistant(messages, found, {
-    streaming: false,
-    blocks: updatedBlocks,
+  let finalized = 0;
+  const updatedBlocks = found.msg.blocks.map((b) => {
+    if (b.kind === "tool_call" && b.status === "running") {
+      finalized++;
+      return { ...b, status: "error" as const };
+    }
+    return b;
   });
+
+  const needsUpdate = found.msg.streaming || finalized > 0;
+  if (!needsUpdate) return { messages, finalized: 0 };
+
+  return {
+    messages: updateAssistant(messages, found, {
+      streaming: false,
+      blocks: updatedBlocks,
+    }),
+    finalized,
+  };
 }
 
 /** Apply hysteresis compaction if messages reach or exceed threshold. */
@@ -198,14 +204,19 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     // ----- Turn lifecycle -----
     case "turn_start": {
       // Finalize (not just close) — stranded tool calls from the prior turn become "error"
-      const closed = finalizeAssistant(state.messages);
+      const { messages: closed, finalized } = finalizeAssistant(state.messages);
       const newMsg: TuiMessage = {
         kind: "assistant",
         id: `assistant-${event.turnIndex}`,
         blocks: [],
         streaming: true,
       };
-      return { ...state, messages: maybeCompact([...closed, newMsg]), agentStatus: "processing" };
+      return {
+        ...state,
+        messages: maybeCompact([...closed, newMsg]),
+        agentStatus: "processing",
+        runningToolCount: state.runningToolCount - finalized,
+      };
     }
 
     case "turn_end": {
@@ -215,25 +226,23 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "done": {
-      const messages = finalizeAssistant(state.messages);
+      const { messages, finalized } = finalizeAssistant(state.messages);
       const m = event.output.metrics;
       const prev = state.cumulativeMetrics;
       const cumulativeMetrics: CumulativeMetrics = {
         totalTokens: prev.totalTokens + m.totalTokens,
         inputTokens: prev.inputTokens + m.inputTokens,
         outputTokens: prev.outputTokens + m.outputTokens,
-        // Count as a user round trip only when the engine actually ran at least one
-        // model call. Interrupted/no-op completions emit done with m.turns === 0
-        // and should not inflate the session counter.
         turns: m.turns > 0 ? prev.turns + 1 : prev.turns,
-        // Default prev.engineTurns to prev.turns (conservative floor): each
-        // historical user turn required at least one model call, so engineTurns
-        // should never migrate below the existing turn count. This keeps the
-        // status bar amplification signal honest for restored legacy sessions.
         engineTurns: (prev.engineTurns ?? prev.turns) + m.turns,
         costUsd: m.costUsd !== undefined ? (prev.costUsd ?? 0) + m.costUsd : prev.costUsd,
       };
-      const base = { ...state, cumulativeMetrics, agentStatus: "idle" as const };
+      const base = {
+        ...state,
+        cumulativeMetrics,
+        agentStatus: "idle" as const,
+        runningToolCount: state.runningToolCount - finalized,
+      };
       return messages === state.messages ? base : { ...base, messages };
     }
 
@@ -262,6 +271,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       };
 
       let updatedBlocks: readonly TuiAssistantBlock[];
+      const isNew = !existing;
       if (existing) {
         updatedBlocks = replaceAt(found.msg.blocks, existing.blockIdx, newBlock);
       } else {
@@ -271,6 +281,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       return {
         ...state,
         messages: updateAssistant(messages, found, { blocks: updatedBlocks }),
+        runningToolCount: isNew ? state.runningToolCount + 1 : state.runningToolCount,
       };
     }
 
@@ -315,6 +326,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       return {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+        runningToolCount: state.runningToolCount - 1,
       };
     }
 
@@ -426,13 +438,14 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       // Check BEFORE finalization so completed turns are never mutated.
       const active = findLastAssistant(state.messages);
       if (active?.msg.streaming) {
-        const finalized = finalizeAssistant(state.messages);
-        const found = findLastAssistant(finalized);
+        const { messages: finMsgs, finalized: finCount } = finalizeAssistant(state.messages);
+        const found = findLastAssistant(finMsgs);
         if (found) {
           return {
             ...state,
             agentStatus: "error",
-            messages: updateAssistant(finalized, found, {
+            runningToolCount: state.runningToolCount - finCount,
+            messages: updateAssistant(finMsgs, found, {
               blocks: [...found.msg.blocks, errorBlock],
               streaming: false,
             }),
@@ -452,7 +465,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "clear_messages":
       if (state.messages.length === 0 && state.agentStatus === "idle" && state.planTasks === null)
         return state;
-      return { ...state, messages: [], agentStatus: "idle", planTasks: null };
+      return { ...state, messages: [], agentStatus: "idle", planTasks: null, runningToolCount: 0 };
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.
@@ -485,6 +498,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "set_slash_query":
       return action.query === state.slashQuery ? state : { ...state, slashQuery: action.query };
+
+    case "toggle_tools_expanded":
+      return { ...state, toolsExpanded: !state.toolsExpanded };
 
     case "load_history": {
       if (action.messages.length === 0) return state;

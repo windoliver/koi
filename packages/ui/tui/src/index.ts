@@ -47,14 +47,11 @@ export type { GlobalKeyCallbacks } from "./keyboard.js";
 export { createKeyboardHandler, handleGlobalKey } from "./keyboard.js";
 // State management
 export * from "./state/index.js";
-// Store context — required providers + selector hook
-// Components that use useTuiStore must be rendered inside both
-// StoreContext.Provider and TuiStateContext.Provider (or inside TuiRoot,
-// which provides TuiStateContext automatically).
+// Store context — the SolidJS store provides reactivity directly through StoreContext.
+// Components that use useTuiStore must be rendered inside StoreContext.Provider
+// (or inside TuiRoot, which provides it automatically).
 export {
-  createStoreSignal,
   StoreContext,
-  TuiStateContext,
   useTuiStore,
 } from "./store-context.js";
 // Theme — color tokens + layout helpers (Phase 2j-5)

@@ -18,12 +18,12 @@ import { join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
+import { mapFrontmatterToDefinition } from "./map-frontmatter.js";
 import type { ParsedSkillMd } from "./parse.js";
 import { parseSkillMd } from "./parse.js";
 import type { ResolvedInclude } from "./resolve-includes.js";
 import { resolveIncludes } from "./resolve-includes.js";
 import type { SkillDefinition, SkillSource } from "./types.js";
-import type { ValidatedFrontmatter } from "./validate.js";
 import { validateFrontmatter } from "./validate.js";
 
 // ---------------------------------------------------------------------------
@@ -63,30 +63,6 @@ function makeFindingCallback(
     }
 
     return { blocked: blocking.length > 0 };
-  };
-}
-
-/**
- * Decision 5A: DRY optional-field spreading for SkillDefinition construction.
- */
-function buildSkillDefinition(
-  fm: ValidatedFrontmatter,
-  body: string,
-  source: SkillSource,
-  dirPath: string,
-): SkillDefinition {
-  return {
-    name: fm.name,
-    description: fm.description,
-    body,
-    source,
-    dirPath,
-    ...(fm.tags !== undefined ? { tags: fm.tags } : {}),
-    ...(fm.license !== undefined ? { license: fm.license } : {}),
-    ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
-    ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
-    ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
-    ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
   };
 }
 
@@ -326,5 +302,5 @@ async function loadSkillUncached(
   }
 
   // 7. Build and return
-  return { ok: true, value: buildSkillDefinition(fm, body, source, realDir) };
+  return { ok: true, value: mapFrontmatterToDefinition(fm, body, source, realDir) };
 }

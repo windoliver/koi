@@ -202,6 +202,10 @@ export interface TuiState {
   readonly slashQuery: string | null;
   /** Task board progress — null before first plan event. */
   readonly planTasks: readonly PlanTask[] | null;
+  /** Count of tool calls currently in "running" state (avoids O(n) scan). */
+  readonly runningToolCount: number;
+  /** Whether tool result bodies are expanded (Ctrl+E toggle). */
+  readonly toolsExpanded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +249,7 @@ export type TuiAction =
       readonly sessions: readonly SessionSummary[];
     }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
+  | { readonly kind: "toggle_tools_expanded" }
   | {
       /**
        * Replays loaded session history into the message list.

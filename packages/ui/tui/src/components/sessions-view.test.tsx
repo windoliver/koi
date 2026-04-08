@@ -2,7 +2,7 @@
  * SessionsView tests — written before implementation (test-first).
  *
  * Rendered through TuiRoot with activeView="sessions" to exercise the full
- * context chain (StoreContext → TuiStateContext → useTuiStore).
+ * context chain (StoreContext → useTuiStore).
  */
 
 import { testRender } from "@opentui/solid";

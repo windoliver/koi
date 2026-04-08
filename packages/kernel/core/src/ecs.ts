@@ -312,10 +312,15 @@ export interface Tool {
   readonly execute: (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown>;
 }
 
+/** Execution mode for skills: inline (context injection) or fork (sub-agent spawn). */
+export type SkillExecutionMode = "inline" | "fork";
+
 export interface SkillMetadata {
   readonly name: string;
   readonly description: string;
   readonly tags?: readonly string[];
+  /** How this skill should execute. Defaults to "inline" (context injection). */
+  readonly executionMode?: SkillExecutionMode | undefined;
 }
 
 /**

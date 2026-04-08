@@ -28,5 +28,7 @@ export function createInitialState(): TuiState {
     sessions: [],
     slashQuery: null,
     planTasks: null,
+    runningToolCount: 0,
+    toolsExpanded: false,
   };
 }

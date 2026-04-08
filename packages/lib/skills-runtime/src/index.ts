@@ -28,11 +28,13 @@ import type {
   SkillsRuntimeConfig,
 } from "./types.js";
 
+export type { SkillSpawnRequest } from "./execution.js";
+export { mapSkillToSpawnRequest } from "./execution.js";
+export { mapFrontmatterToDefinition, mapFrontmatterToMetadata } from "./map-frontmatter.js";
 export type { SkillInjectorConfig } from "./middleware.js";
 export { createSkillInjectorMiddleware } from "./middleware.js";
 export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
-export type { ValidatedSkillRequires } from "./types.js";
-export type { ValidatedFrontmatter } from "./validate.js";
+export type { ValidatedFrontmatter, ValidatedSkillRequires } from "./types.js";
 export type {
   SkillDefinition,
   SkillMetadata,
@@ -78,8 +80,13 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
   // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
   let discoveredEntry: ReadonlyMap<string, DiscoveredSkillEntry> | undefined;
-  // Projected metadata map cached to preserve reference identity across discover() calls
+  // Projected metadata map cached to preserve reference identity across discover() calls.
+  // Rebuilt whenever filesystem or external entries change.
   let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
+
+  // External (non-filesystem) skills — separate lifecycle from filesystem cache.
+  // Replaced atomically by registerExternal(). Not cleared by filesystem re-scan.
+  let externalSkills: ReadonlyMap<string, SkillMetadata> = new Map();
 
   // Issue 2A: inflight deduplication for discover()
   let discoverInflight:
@@ -103,29 +110,52 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  function buildMetaMap(
-    entries: ReadonlyMap<string, DiscoveredSkillEntry>,
+  /**
+   * Builds the merged metadata map: external (lowest priority) + filesystem entries.
+   * Filesystem entries always shadow external entries of the same name.
+   */
+  function buildMergedMetaMap(
+    fsEntries: ReadonlyMap<string, DiscoveredSkillEntry>,
+    external: ReadonlyMap<string, SkillMetadata>,
   ): ReadonlyMap<string, SkillMetadata> {
-    return new Map([...entries.entries()].map(([k, v]) => [k, v.metadata]));
+    // Start with external (lowest priority)
+    const merged = new Map<string, SkillMetadata>(external);
+    // Overwrite with filesystem entries (higher priority)
+    for (const [k, v] of fsEntries) {
+      merged.set(k, v.metadata);
+    }
+    return merged;
   }
 
   // ---------------------------------------------------------------------------
   // discover()
   // ---------------------------------------------------------------------------
 
+  // Track the external map version that was used to build discoveredMetaMap.
+  // When registerExternal() replaces the map, this goes stale and triggers a rebuild.
+  let lastExternalRef: ReadonlyMap<string, SkillMetadata> = externalSkills;
+
   const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
-    // Cache hit: return the same map reference (reference identity preserved)
-    if (discoveredEntry !== undefined && discoveredMetaMap !== undefined) {
+    // Fast path: filesystem cache valid AND external map unchanged → return cached merge
+    if (
+      discoveredEntry !== undefined &&
+      discoveredMetaMap !== undefined &&
+      lastExternalRef === externalSkills
+    ) {
+      return { ok: true, value: discoveredMetaMap };
+    }
+
+    // If filesystem is cached but external changed, just rebuild the merged map
+    if (discoveredEntry !== undefined && lastExternalRef !== externalSkills) {
+      discoveredMetaMap = buildMergedMetaMap(discoveredEntry, externalSkills);
+      lastExternalRef = externalSkills;
       return { ok: true, value: discoveredMetaMap };
     }
 
     // Inflight dedup: join the in-flight promise if discovery is already running.
-    // This check + the assignment below are both synchronous — no interleave possible.
     if (discoverInflight !== undefined) {
       const result = await discoverInflight;
       if (!result.ok) return result;
-      // discoveredMetaMap was set by the in-flight promise's then() handler.
-      // If result.ok is true, the .then() handler already assigned discoveredMetaMap.
       if (discoveredMetaMap === undefined) {
         return {
           ok: false,
@@ -140,13 +170,13 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       return { ok: true, value: discoveredMetaMap };
     }
 
-    // No cache, no in-flight — start discovery. Set discoverInflight synchronously
-    // before any await so concurrent callers see it immediately.
+    // No cache, no in-flight — start filesystem discovery.
     discoverInflight = discoverSkills(discoverConfig).then(
       (result) => {
         if (result.ok) {
           discoveredEntry = result.value;
-          discoveredMetaMap = buildMetaMap(result.value);
+          discoveredMetaMap = buildMergedMetaMap(result.value, externalSkills);
+          lastExternalRef = externalSkills;
         }
         discoverInflight = undefined;
         return result;
@@ -159,7 +189,6 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
 
     const result = await discoverInflight;
     if (!result.ok) return result;
-    // After successful discovery, discoveredMetaMap is guaranteed to be set by the .then() handler.
     if (discoveredMetaMap === undefined) {
       return {
         ok: false,
@@ -196,27 +225,41 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       const discoverResult = await discover();
       if (!discoverResult.ok) return discoverResult;
 
+      // Check filesystem entries first (higher priority)
       const entry = discoveredEntry?.get(name);
-      if (entry === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "NOT_FOUND",
-            message: `Skill "${name}" not found. Run discover() first or check that the skill directory exists with a SKILL.md file.`,
-            retryable: false,
-            context: { name },
-          },
-        } satisfies Result<SkillDefinition, KoiError>;
+      if (entry !== undefined) {
+        const ctx: LoaderContext = {
+          cache,
+          scanner,
+          skillsRoot: entry.skillsRoot,
+          config: resolvedConfig,
+        };
+        return loadSkill(name, entry.dirPath, entry.source, ctx);
       }
 
-      const ctx: LoaderContext = {
-        cache,
-        scanner,
-        skillsRoot: entry.skillsRoot, // pre-resolved at discovery time (Decision 6A)
-        config: resolvedConfig,
-      };
+      // Check external entries (MCP-derived skills)
+      const extSkill = externalSkills.get(name);
+      if (extSkill !== undefined) {
+        // External skills have no filesystem body — generate a minimal SkillDefinition.
+        // Body is the description (MCP tools don't have SKILL.md files).
+        const definition: SkillDefinition = {
+          ...extSkill,
+          body: extSkill.description,
+        };
+        const result: Result<SkillDefinition, KoiError> = { ok: true, value: definition };
+        cache.set(name, result);
+        return result;
+      }
 
-      return loadSkill(name, entry.dirPath, entry.source, ctx);
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Skill "${name}" not found. Run discover() first or check that the skill directory exists with a SKILL.md file.`,
+          retryable: false,
+          context: { name },
+        },
+      } satisfies Result<SkillDefinition, KoiError>;
     })().finally(() => {
       loadInflight.delete(name);
     });
@@ -238,7 +281,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       return { ok: false, error: discoverResult.error };
     }
 
-    const names = Array.from(discoveredEntry?.keys() ?? []);
+    // Collect all skill names from both filesystem and external sources
+    const nameSet = new Set<string>([...(discoveredEntry?.keys() ?? []), ...externalSkills.keys()]);
+    const names = Array.from(nameSet);
 
     // Promise.allSettled — partial failures don't block other skills
     const settled = await Promise.allSettled(names.map((name) => load(name)));
@@ -278,9 +323,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     const discoverResult = await discover();
     if (!discoverResult.ok) return discoverResult;
 
-    // Linear scan over metadata (Issue 16A: no secondary indexes needed at N ≤ 50)
-    let entries =
-      discoveredEntry !== undefined ? [...discoveredEntry.values()].map((e) => e.metadata) : [];
+    // Linear scan over merged metadata (filesystem + external)
+    // Uses the merged map from discover() which already has correct precedence
+    let entries = discoveredMetaMap !== undefined ? [...discoveredMetaMap.values()] : [];
 
     if (filter === undefined) {
       return { ok: true, value: entries };
@@ -315,19 +360,51 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
 
   const invalidate = (name?: string): void => {
     if (name === undefined) {
-      // Full reset: clear discovery cache + all body caches (Issue 14A)
+      // Full reset: clear filesystem + external + all body caches
       discoveredEntry = undefined;
       discoveredMetaMap = undefined;
       discoverInflight = undefined;
+      externalSkills = new Map();
+      lastExternalRef = externalSkills;
       cache.clear();
       loadInflight.clear();
     } else {
-      // Skill-only reset: clear just this skill's body entry (Issue 14A)
+      // Skill-only reset: clear just this skill's body entry
       // Discovery metadata is preserved — re-discover not needed.
       cache.delete(name);
       loadInflight.delete(name);
     }
   };
 
-  return { discover, load, loadAll, query, invalidate };
+  // ---------------------------------------------------------------------------
+  // registerExternal()
+  // ---------------------------------------------------------------------------
+
+  const registerExternal = (skills: readonly SkillMetadata[]): void => {
+    const oldExternal = externalSkills;
+    // Full replacement: build a new map from the provided skills.
+    const newExternal = new Map(skills.map((s) => [s.name, s]));
+
+    // Evict cached/inflight definitions for names that changed or were removed.
+    // Without this, load() returns stale definitions after MCP reconnect.
+    for (const [name] of oldExternal) {
+      if (!newExternal.has(name) || newExternal.get(name) !== oldExternal.get(name)) {
+        cache.delete(name);
+        loadInflight.delete(name);
+      }
+    }
+    // Also evict newly added names in case they shadow a previously-loaded filesystem skill
+    for (const [name] of newExternal) {
+      if (!oldExternal.has(name)) {
+        cache.delete(name);
+        loadInflight.delete(name);
+      }
+    }
+
+    externalSkills = newExternal;
+    // Invalidate the merged meta map so discover() rebuilds it
+    discoveredMetaMap = undefined;
+  };
+
+  return { discover, load, loadAll, query, invalidate, registerExternal };
 }

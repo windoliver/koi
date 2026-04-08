@@ -180,8 +180,32 @@ export async function drainEngineStream(
 ): Promise<void> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
   try {
+    // `let` justified: tracks last yield time for frame-rate-limited yielding
+    let lastYieldAt = Date.now();
     for await (const event of stream) {
       batcher.enqueue(event);
+      // Yield to the event loop at most once per frame (~16ms) during any
+      // consumer-visible streaming event so OpenTUI can paint progressively.
+      //
+      // Without yielding, HTTP response body chunks contain many SSE events
+      // which are all consumed synchronously, starving the render loop.
+      // This covers text_delta, thinking_delta, and tool_call lifecycle —
+      // not just text — so the thinking spinner and tool status animate
+      // during tool-first or reasoning-first turns.
+      if (
+        event.kind === "text_delta" ||
+        event.kind === "thinking_delta" ||
+        event.kind === "tool_call_start" ||
+        event.kind === "tool_call_delta" ||
+        event.kind === "tool_call_end"
+      ) {
+        const now = Date.now();
+        if (now - lastYieldAt >= 16) {
+          batcher.flushSync();
+          await new Promise<void>((r) => setTimeout(r, 0));
+          lastYieldAt = Date.now();
+        }
+      }
     }
     batcher.flushSync();
   } catch (e: unknown) {
