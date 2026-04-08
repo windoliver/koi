@@ -114,15 +114,48 @@ export function healMarkdown(text: string): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Close unclosed code fences by counting fence lines on the FULL text. */
+/**
+ * Close unclosed code fences by tracking opener widths on the FULL text.
+ * CommonMark requires the closing fence to be at least as wide as the opener.
+ * Always emits a closer matching the unmatched opener's width.
+ */
 function healCodeFences(text: string): string {
   FENCE_RE.lastIndex = 0;
-  let count = 0;
-  while (FENCE_RE.exec(text) !== null) {
-    count++;
+  // Stack of unmatched opener widths
+  const openerWidths: number[] = [];
+  let fenceMatch = FENCE_RE.exec(text);
+  while (fenceMatch !== null) {
+    const fenceStr = fenceMatch[0];
+    // Count leading backticks (the fence width)
+    let width = 0;
+    for (const ch of fenceStr) {
+      if (ch === "`") width++;
+      else break;
+    }
+    if (openerWidths.length > 0) {
+      const topWidth = openerWidths[openerWidths.length - 1];
+      if (topWidth !== undefined && width >= topWidth) {
+        // This fence closes the current opener
+        openerWidths.pop();
+      } else {
+        // Narrower fence inside an open block — treated as content by CommonMark.
+        // Or this is a new opener (no open block with wider fence).
+        // If no open block, it's a new opener.
+        if (openerWidths.length === 0) {
+          openerWidths.push(width);
+        }
+        // Otherwise it's content inside the open block — skip
+      }
+    } else {
+      // No open block — this is an opener
+      openerWidths.push(width);
+    }
+    fenceMatch = FENCE_RE.exec(text);
   }
-  if (count % 2 === 1) {
-    return `${text}\n\`\`\``;
+  if (openerWidths.length > 0) {
+    // Close the last unmatched opener with matching width
+    const width = openerWidths[openerWidths.length - 1] ?? 3;
+    return `${text}\n${"`".repeat(width)}`;
   }
   return text;
 }

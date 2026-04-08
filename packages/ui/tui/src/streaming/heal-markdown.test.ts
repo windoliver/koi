@@ -217,4 +217,23 @@ describe("healMarkdown — code-aware (no false healing)", () => {
     // Should close the fence, but NOT add ** or _ (they're inside code)
     expect(result).toBe("```\n**bold inside\n_italic inside\n```");
   });
+
+  test("4-backtick fence is closed with 4 backticks", () => {
+    const text = "````\nsome code with ``` inside";
+    const result = healMarkdown(text);
+    expect(result).toBe("````\nsome code with ``` inside\n````");
+  });
+
+  test("5-backtick fence is closed with 5 backticks", () => {
+    const text = "`````\nnested example";
+    const result = healMarkdown(text);
+    expect(result).toBe("`````\nnested example\n`````");
+  });
+
+  test("3-backtick inside 4-backtick block is content, not a closer", () => {
+    const text = "````\n```\ninner fence\n```\nstill inside";
+    const result = healMarkdown(text);
+    // The ``` inside is content; the ```` is still unclosed
+    expect(result).toBe("````\n```\ninner fence\n```\nstill inside\n````");
+  });
 });
