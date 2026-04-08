@@ -86,20 +86,17 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
       }
 
       // Legacy fallback: engine streams that haven't migrated to tool_result
-      // still carry executed output on tool_call_end.result.
+      // still carry executed output on tool_call_end.result. Store the output
+      // but do NOT finalize — a subsequent tool_result will overwrite with
+      // real execution output. Only finalize on tool_result to avoid
+      // capturing AccumulatedToolCall metadata as the verdict.
       if (event.kind === "tool_call_end") {
         const isVerdictTool =
           requiredToolName !== undefined && currentToolCallName === requiredToolName;
         currentToolCallName = undefined;
         const serialized = safeSerialize(event.result);
 
-        if (isVerdictTool) {
-          verdictCaptured = true;
-          verdictOutput = serialized;
-          return;
-        }
-
-        if (requiredToolName === undefined) {
+        if (isVerdictTool || requiredToolName === undefined) {
           verdictOutput = serialized;
         }
         return;
