@@ -4,7 +4,7 @@
  */
 
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 
 /**
@@ -37,7 +37,9 @@ export async function assertContained(
   }
 
   const normalizedRoot = await realpath(rootDir).catch(() => rootDir);
-  if (!resolved.startsWith(`${normalizedRoot}/`) && resolved !== normalizedRoot) {
+  const rel = relative(normalizedRoot, resolved);
+  // Reject if relative path escapes root (starts with ..) or is absolute (different drive on Windows)
+  if (rel.startsWith("..") || isAbsolute(rel)) {
     return {
       ok: false,
       error: {

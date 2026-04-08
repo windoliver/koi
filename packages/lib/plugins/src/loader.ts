@@ -3,7 +3,7 @@
  */
 
 import { readdir, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { pluginId } from "./plugin-id.js";
 import { validatePluginManifest } from "./schema.js";
@@ -20,6 +20,10 @@ import { SOURCE_PRIORITY as PRIORITY } from "./types.js";
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function isEnoent(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as { code: unknown }).code === "ENOENT";
+}
 
 interface SourceRoot {
   readonly path: string;
@@ -47,9 +51,25 @@ async function scanRoot(
   let entries: readonly string[];
   try {
     entries = await readdir(root.path);
-  } catch {
-    // Missing root directory — silently skip
-    return { plugins: [], errors: [] };
+  } catch (err: unknown) {
+    // ENOENT = root doesn't exist yet — silently skip
+    if (isEnoent(err)) return { plugins: [], errors: [] };
+    // Other errors (EACCES, EIO, etc.) — surface so higher-tier failures are visible
+    return {
+      plugins: [],
+      errors: [
+        {
+          dirPath: root.path,
+          source: root.source,
+          error: {
+            code: "INTERNAL" as const,
+            message: `Cannot read plugin root: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: true,
+            context: { rootPath: root.path },
+          },
+        },
+      ],
+    };
   }
 
   const plugins: PluginMeta[] = [];
@@ -59,8 +79,23 @@ async function scanRoot(
   let resolvedRoot: string;
   try {
     resolvedRoot = await realpath(root.path);
-  } catch {
-    return { plugins: [], errors: [] };
+  } catch (err: unknown) {
+    if (isEnoent(err)) return { plugins: [], errors: [] };
+    return {
+      plugins: [],
+      errors: [
+        {
+          dirPath: root.path,
+          source: root.source,
+          error: {
+            code: "INTERNAL" as const,
+            message: `Cannot resolve plugin root: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: true,
+            context: { rootPath: root.path },
+          },
+        },
+      ],
+    };
   }
 
   await Promise.all(
@@ -71,10 +106,23 @@ async function scanRoot(
       let resolvedDir: string;
       try {
         resolvedDir = await realpath(dirPath);
-      } catch {
+      } catch (err: unknown) {
+        if (!isEnoent(err)) {
+          errors.push({
+            dirPath,
+            source: root.source,
+            error: {
+              code: "INTERNAL" as const,
+              message: `Cannot resolve plugin directory: ${err instanceof Error ? err.message : String(err)}`,
+              retryable: true,
+              context: { dirPath },
+            },
+          });
+        }
         return;
       }
-      if (!resolvedDir.startsWith(`${resolvedRoot}/`) && resolvedDir !== resolvedRoot) {
+      const rel = relative(resolvedRoot, resolvedDir);
+      if (rel.startsWith("..") || isAbsolute(rel)) {
         errors.push({
           dirPath,
           source: root.source,
