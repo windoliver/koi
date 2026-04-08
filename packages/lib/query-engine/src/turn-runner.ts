@@ -291,10 +291,39 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
+    // Dedup: within this turn, skip tool calls with identical (toolName + args).
+    // Models occasionally emit the same call twice in one response (e.g. Sonnet
+    // via OpenRouter). Keep the first occurrence; record skipped duplicates for
+    // observability. Uses canonicalized JSON of parsed args (recursively sorted
+    // keys) to catch semantically identical calls even with different key ordering.
+    const seen = new Set<string>();
+    const dedupedToolCalls: typeof validToolCalls = [];
+    const skippedToolCalls: typeof validToolCalls = [];
+    for (const tc of validToolCalls) {
+      const canonicalArgs =
+        tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+      const key = `${tc.toolName}\0${canonicalArgs}`;
+      if (seen.has(key)) {
+        skippedToolCalls.push(tc);
+      } else {
+        seen.add(key);
+        dedupedToolCalls.push(tc);
+      }
+    }
+    if (skippedToolCalls.length > 0) {
+      yield {
+        kind: "custom",
+        type: "dedup_skipped",
+        data: {
+          skipped: skippedToolCalls.map((tc) => ({ toolName: tc.toolName, callId: tc.callId })),
+        },
+      };
+    }
+
     // Transition based on model response
     state = transitionTurn(state, {
       kind: "model_done",
-      hasToolCalls: validToolCalls.length > 0,
+      hasToolCalls: dedupedToolCalls.length > 0,
     });
 
     // Stop gate: when model completes (no tool calls), check if any hook
@@ -331,15 +360,32 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     if (state.phase === "tool_execution") {
-      // Append assistant message (text + tool call intents) to transcript
+      // Append ALL tool call intents (including skipped duplicates) to the
+      // transcript so session-repair's callId pairing stays consistent —
+      // every tool_call_* event the model emitted has a matching intent.
       appendAssistantTurn(transcript, turnText, validToolCalls);
 
-      // Execute tool calls sequentially to preserve model-emitted order
-      // and avoid racing side effects between dependent operations.
-      // Check abort before each tool call to stop dispatching on cancellation.
+      // Build a map from dedup key → skipped callIds for result replication.
+      const skippedByKey = new Map<string, typeof skippedToolCalls>();
+      for (const tc of skippedToolCalls) {
+        const canonicalArgs =
+          tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+        const key = `${tc.toolName}\0${canonicalArgs}`;
+        const existing = skippedByKey.get(key);
+        if (existing !== undefined) {
+          existing.push(tc);
+        } else {
+          skippedByKey.set(key, [tc]);
+        }
+      }
+
+      // Execute deduped tool calls sequentially. On success, replicate the
+      // real result to any skipped duplicates so the model sees consistent
+      // output for every callId. On failure (throw), the duplicates remain
+      // without a result — the error propagates and the turn fails.
       try {
         const results: ToolResult[] = [];
-        for (const tc of validToolCalls) {
+        for (const tc of dedupedToolCalls) {
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
@@ -359,6 +405,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
           results.push(result);
           appendToolResult(transcript, result);
+
+          // Replicate the real result to skipped duplicates so the model
+          // sees the actual output for every callId, not a placeholder.
+          const canonicalArgs =
+            tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${canonicalArgs}`;
+          const duplicates = skippedByKey.get(key);
+          if (duplicates !== undefined) {
+            for (const dup of duplicates) {
+              const dupResult: ToolResult = {
+                callId: dup.callId,
+                toolName: dup.toolName,
+                output: response.output,
+              };
+              results.push(dupResult);
+              appendToolResult(transcript, dupResult);
+            }
+          }
+
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
@@ -445,9 +510,14 @@ function buildModelRequest(
 /**
  * Append assistant turn messages to the transcript.
  *
- * Text-only content is a single message with no callId.
- * Each tool-use intent is a separate message with `metadata.callId`
- * matching the session-repair pairing contract.
+ * Combines text content and tool-call intents into a SINGLE assistant message
+ * with `metadata.toolCalls` so the request-mapper can reconstruct the OpenAI
+ * `tool_calls` array. Splitting them into separate messages causes
+ * `fixTranscriptOrdering` to clear `pendingCallIds` between the text message
+ * and tool-call messages, which drops all subsequent tool results as orphaned.
+ *
+ * When there are no tool calls, the message has just text content and no
+ * tool-call metadata.
  */
 function appendAssistantTurn(
   transcript: InboundMessage[],
@@ -455,28 +525,36 @@ function appendAssistantTurn(
   toolCalls: readonly AccumulatedToolCall[],
 ): void {
   const text = textParts.join("");
-  if (text.length > 0) {
-    transcript.push({
-      senderId: "assistant",
-      content: [{ kind: "text", text }],
-      timestamp: Date.now(),
-    });
+
+  // No tool calls — simple text-only assistant message
+  if (toolCalls.length === 0) {
+    if (text.length > 0) {
+      transcript.push({
+        senderId: "assistant",
+        content: [{ kind: "text", text }],
+        timestamp: Date.now(),
+      });
+    }
+    return;
   }
-  // Each tool-use intent gets its own message with metadata.callId
-  // so session-repair can pair it with the corresponding tool result.
-  for (const tc of toolCalls) {
-    transcript.push({
-      senderId: "assistant",
-      content: [
-        {
-          kind: "text",
-          text: JSON.stringify({ toolCall: tc.toolName, args: tc.parsedArgs }),
-        },
-      ],
-      timestamp: Date.now(),
-      metadata: { callId: tc.callId, toolName: tc.toolName },
-    });
-  }
+
+  // Build OpenAI-compatible tool_calls metadata so the request-mapper
+  // reconstructs the full assistant message with tool_calls array.
+  const toolCallsMeta = toolCalls.map((tc) => ({
+    id: tc.callId,
+    type: "function" as const,
+    function: {
+      name: tc.toolName,
+      arguments: tc.rawArgs,
+    },
+  }));
+
+  transcript.push({
+    senderId: "assistant",
+    content: [{ kind: "text", text: text.length > 0 ? text : "" }],
+    timestamp: Date.now(),
+    metadata: { toolCalls: toolCallsMeta },
+  });
 }
 
 /**
@@ -519,6 +597,24 @@ function safeStringify(value: unknown): string {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+/**
+ * Recursively sort object keys and serialize to JSON for stable comparison.
+ * Arrays preserve order; nested objects are sorted at every level.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortDeep(value));
+}
+
+function sortDeep(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortDeep);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortDeep((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
 }
 
 /**

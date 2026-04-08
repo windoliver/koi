@@ -362,9 +362,9 @@ const PKG = "@koi/middleware-permissions";
 
 /**
  * Extended middleware returned by {@link createPermissionsMiddleware}.
+ *
  * This IS a KoiMiddleware (backward compatible — can be passed directly
- * into `middleware: [...]`) with an additional method for wiring the
- * approval trajectory sink at runtime.
+ * into `middleware: [...]`) with additional methods for runtime wiring.
  */
 export interface PermissionsMiddlewareHandle extends KoiMiddleware {
   /**
@@ -377,6 +377,14 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
   readonly setApprovalStepSink: (
     sink: (sessionId: string, step: RichTrajectoryStep) => void,
   ) => () => void;
+  /**
+   * Clear all session-scoped approval state (always-allow grants, decision
+   * caches, approval caches, denial trackers) for the given session ID.
+   *
+   * Call on `agent:clear` / `session:new` so prior-session approvals do not
+   * silently carry over into the next conversation.
+   */
+  readonly clearSessionApprovals: (sessionId: string) => void;
 }
 
 export function createPermissionsMiddleware(
@@ -475,6 +483,12 @@ export function createPermissionsMiddleware(
   // In-flight approval deduplication: concurrent identical ask calls
   // coalesce onto a single pending approval instead of double-prompting
   const inflightApprovals = new Map<string, Promise<unknown>>();
+
+  // Per-session index of in-flight dedup keys — used by clearSessionApprovals
+  // to evict all pending approvals for a session on agent:clear / session:new.
+  // Without this, a stale dialog approval can still resolve and re-populate
+  // the approval cache for what the user expects to be a fresh session.
+  const inflightKeysBySession = new Map<string, Set<string>>();
 
   // Denial trackers scoped per session (keyed by sessionId)
   const trackersBySession = new Map<string, DenialTracker>();
@@ -940,6 +954,33 @@ export function createPermissionsMiddleware(
   // Middleware + Handle
   // -----------------------------------------------------------------------
 
+  function clearSessionApprovals(sessionId: string): void {
+    // Mirror the cleanup performed by onSessionEnd, but callable externally
+    // so the TUI runtime can clear per-session state on agent:clear / session:new
+    // without disposing the runtime (which would call onSessionEnd internally).
+    const sid = sessionId;
+    trackersBySession.get(sid)?.clear();
+    trackersBySession.delete(sid);
+    decisionCachesBySession.get(sid)?.clear();
+    decisionCachesBySession.delete(sid);
+    approvalCachesBySession.get(sid)?.clear();
+    approvalCachesBySession.delete(sid);
+    alwaysAllowedBySession.delete(sid);
+    // Evict all in-flight approval coalesce entries for this session so that
+    // a stale dialog approval resolved after reset cannot re-populate the cache
+    // or cause new callers to coalesce onto an old pending promise.
+    // Note: the underlying approvalHandler promise itself is not cancellable here
+    // (that requires disposing the permissionBridge), but removing the dedup entry
+    // prevents any new callers from inheriting the stale approval decision.
+    const keys = inflightKeysBySession.get(sid);
+    if (keys !== undefined) {
+      for (const key of keys) {
+        inflightApprovals.delete(key);
+      }
+      inflightKeysBySession.delete(sid);
+    }
+  }
+
   const middleware: KoiMiddleware = {
     name: "permissions",
     priority: 100,
@@ -1033,6 +1074,7 @@ export function createPermissionsMiddleware(
         if (idx >= 0) runtimeSinks.splice(idx, 1);
       };
     },
+    clearSessionApprovals,
   }) as PermissionsMiddlewareHandle;
 
   // -----------------------------------------------------------------------
@@ -1218,14 +1260,57 @@ export function createPermissionsMiddleware(
         }, approvalTimeoutMs);
         ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
       }),
+      // Race against the turn/session abort signal so an aborted turn
+      // (Ctrl+C / agent:clear) cannot win approval and execute the tool
+      // in what the user now believes is a fresh session.
+      ...(ctx.signal !== undefined
+        ? [
+            new Promise<never>((_, reject) => {
+              if (ctx.signal!.aborted) {
+                reject(
+                  new KoiRuntimeError({
+                    code: "PERMISSION",
+                    message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
+                    retryable: false,
+                  }),
+                );
+                return;
+              }
+              ctx.signal!.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new KoiRuntimeError({
+                      code: "PERMISSION",
+                      message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
+                      retryable: false,
+                    }),
+                  ),
+                { once: true },
+              );
+            }),
+          ]
+        : []),
     ]).finally(() => {
       ac.abort();
-      if (dedupKey !== undefined) inflightApprovals.delete(dedupKey);
+      if (dedupKey !== undefined) {
+        inflightApprovals.delete(dedupKey);
+        // Also remove from per-session index
+        inflightKeysBySession.get(ctx.session.sessionId as string)?.delete(dedupKey);
+      }
     });
 
     // Register in-flight so concurrent callers coalesce
     if (dedupKey !== undefined) {
       inflightApprovals.set(dedupKey, approvalPromise);
+      // Track under session so clearSessionApprovals can evict on reset
+      const sid = ctx.session.sessionId as string;
+      let keys = inflightKeysBySession.get(sid);
+      if (keys === undefined) {
+        keys = new Set();
+        inflightKeysBySession.set(sid, keys);
+      }
+      keys.add(dedupKey);
     }
 
     // let: tracks whether an approval step was already emitted in the try block

@@ -25,12 +25,14 @@
  *   web_fetch            — HTTP fetch via @koi/tools-web
  *   Bash                 — shell execution via @koi/tools-bash
  *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
+ *   task_create/get/update/list/stop/output/delegate — task management via @koi/task-tools
  */
 
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
+  AgentId,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -44,11 +46,14 @@ import { createSystemPromptMiddleware } from "@koi/engine";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
 import { createRuntime, createToolDispatcher } from "@koi/runtime";
+import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import {
   createJsonlTranscript,
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createSkillsRuntime } from "@koi/skills-runtime";
+import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashTool } from "@koi/tools-bash";
 import type { TodoItem } from "@koi/tools-builtin";
@@ -69,7 +74,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
-import { SyntaxStyle } from "@opentui/core";
+import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { resolveApiConfig } from "./env.js";
 
@@ -87,7 +92,9 @@ const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful AI coding assistant with access to tools. " +
   "Use your available tools (Bash for shell commands, Glob/Grep for search, " +
-  "fs_read/fs_write/fs_edit for files, web_fetch for HTTP) to complete tasks. " +
+  "fs_read/fs_write/fs_edit for files, web_fetch for HTTP, " +
+  "task_create/task_list/task_get/task_update/task_stop/task_output for task management) " +
+  "to complete tasks. " +
   "Always prefer using tools to gather accurate real-time information rather than " +
   "answering from memory.\n\n" +
   "For complex tasks that need exploration before implementation:\n" +
@@ -250,7 +257,35 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const grepTool = createGrepTool({ cwd });
   const webExecutor = createWebExecutor({ allowHttps: true });
   const webFetchTool = createWebFetchTool(webExecutor, "web", DEFAULT_UNSANDBOXED_POLICY);
-  const bashTool = createBashTool({ workspaceRoot: cwd });
+
+  // --- OS sandbox: seatbelt (macOS) / bubblewrap (Linux) ---
+  // When available, all Bash commands run inside the OS sandbox automatically.
+  // Falls back gracefully to the unsandboxed path with only denylist guard.
+  // Profile: restrictive base + network + write paths for workspace/tmp/cache.
+  const osSandboxResult = createOsAdapter();
+  const sandboxAdapter = osSandboxResult.ok ? osSandboxResult.value : undefined;
+  const sandboxProfile = osSandboxResult.ok
+    ? mergeProfile(restrictiveProfile(), {
+        network: { allow: true },
+        filesystem: {
+          allowWrite: [cwd, "/tmp", "/var/folders"],
+        },
+      })
+    : undefined;
+  const bashTool = createBashTool({
+    workspaceRoot: cwd,
+    ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
+      ? { sandboxAdapter, sandboxProfile }
+      : {}),
+  });
+
+  // --- Task tools: in-memory board for this session ---
+  const taskStore = createMemoryTaskBoardStore();
+  const taskBoard = await createManagedTaskBoard({ store: taskStore });
+  const taskTools = createTaskTools({
+    board: taskBoard,
+    agentId: "tui-agent" as AgentId,
+  });
 
   // --- Interaction tools (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion) ---
   // let: mutable interaction state (per session, reset on agent:clear)
@@ -294,13 +329,9 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     },
   });
 
-  // --- Task + spawn tools (task_create, task_delegate, agent_spawn) ---
-  const { createTaskTools } = await import("@koi/task-tools");
+  // --- Spawn tools (agent_spawn) — reuses taskBoard from above ---
   const { createSpawnTools } = await import("@koi/spawn-tools");
-  const taskBoardStore = createMemoryTaskBoardStore();
-  const taskBoard = await createManagedTaskBoard({ store: taskBoardStore });
   const coordinatorId = agentId("tui-coordinator");
-  const taskTools = createTaskTools({ board: taskBoard, agentId: coordinatorId });
   // Real spawn: runs a child agent via runTurn with the same model adapter.
   // The child gets the coordinator's tools and produces output as a string.
   // This is a lightweight in-process spawn — no process registry or lifecycle,
@@ -430,7 +461,6 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       };
 
       let deltaText = "";
-      let doneContentText = "";
       // Cap context window to MAX_TRANSCRIPT_MESSAGES to control token costs.
       const contextWindow = [...conversationHistory.slice(-MAX_TRANSCRIPT_MESSAGES), stagedUserMsg];
 
@@ -446,20 +476,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
             deltaText += event.delta;
           }
           if (event.kind === "done") {
-            doneContentText = event.output.content
-              .filter((b) => b.kind === "text")
-              .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-              .join("");
             // Only persist completed turns — aborted/failed turns must not leave
             // orphaned user prompts in history.
             if (event.output.stopReason === "completed") {
-              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
               conversationHistory.push(stagedUserMsg);
-              if (assistantText.length > 0) {
+              // Persist the full assistant response including tool calls and results
+              // so the model has complete context in subsequent turns. Without this,
+              // the model loses tool call/result history and may hallucinate.
+              const fullContent = event.output.content;
+              const hasContent = fullContent.length > 0;
+              if (hasContent) {
                 conversationHistory.push({
                   senderId: "assistant",
                   timestamp: Date.now(),
-                  content: [{ kind: "text", text: assistantText }],
+                  content: fullContent,
+                });
+              } else if (deltaText.length > 0) {
+                // Fallback: if done.output.content is empty, use accumulated deltas
+                conversationHistory.push({
+                  senderId: "assistant",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text", text: deltaText }],
                 });
               }
             }
@@ -475,11 +512,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
+  // --- @koi/skills-runtime: discover + load user skills for system prompt injection ---
+  // Skills are loaded once at startup and prepended to the system prompt.
+  // Discovery follows standard tier precedence: project > user > bundled.
+  const skillRuntime = createSkillsRuntime();
+  const skillContent = await (async (): Promise<string> => {
+    const outer = await skillRuntime.loadAll();
+    if (!outer.ok) return "";
+    const parts: string[] = [];
+    for (const [, result] of outer.value) {
+      if (result.ok) parts.push(result.value.body);
+    }
+    return parts.sort().join("\n\n---\n\n");
+  })();
+  const systemPrompt =
+    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+
   const runtime = createRuntime({
     adapter: rawEngineAdapter,
     middleware: [
       createSessionTranscriptMiddleware({ transcript: jsonlTranscript, sessionId: tuiSessionId }),
-      createSystemPromptMiddleware(DEFAULT_SYSTEM_PROMPT),
+      createSystemPromptMiddleware(systemPrompt),
     ],
     // Wire fs_read, fs_write, fs_edit via the meta-runtime filesystem facility.
     // createRuntime stacks these on top of rawEngineAdapter.terminals.toolCall
@@ -488,8 +541,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     cwd,
     // Advertise local tools to the model (fs tools are added by createRuntime internally).
     toolDescriptors: localToolDescriptors,
-    // Local TUI runs on the user's machine — no exfiltration risk.
-    exfiltrationGuard: false,
+    // Enable exfiltration guard: block known secret patterns (API keys, tokens)
+    // from reaching shell commands or web_fetch — prevents accidental credential
+    // leakage even on the user's own machine.
+    exfiltrationGuard: {},
   });
 
   // ---------------------------------------------------------------------------
@@ -499,11 +554,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const store = createStore(createInitialState());
   const permissionBridge = createPermissionBridge({ store });
 
-  // Flush callback extracted so it can be reused when recreating the batcher.
+  // Flush callback: reduces entire batch in one pass, single notification.
+  // Avoids N state updates + N signal invalidations per 16ms flush window.
   const dispatchBatch = (batch: readonly EngineEvent[]): void => {
-    for (const event of batch) {
-      store.dispatch({ kind: "engine_event", event });
-    }
+    store.dispatchBatch(batch.map((event) => ({ kind: "engine_event" as const, event })));
   };
 
   // Event batcher: coalesces rapid engine events into 16ms flush windows
@@ -553,6 +607,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     try {
       await appHandle?.stop();
       batcher.dispose();
+      await taskBoard[Symbol.asyncDispose]();
       await runtime.dispose();
     } finally {
       process.exit(0);
@@ -560,7 +615,14 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   };
 
   // ---------------------------------------------------------------------------
-  // 5. Create TUI app
+  // 5. Initialize tree-sitter for markdown rendering
+  // ---------------------------------------------------------------------------
+
+  const treeSitterClient = getTreeSitterClient();
+  await treeSitterClient.initialize();
+
+  // ---------------------------------------------------------------------------
+  // 6. Create TUI app
   // ---------------------------------------------------------------------------
 
   const result = createTuiApp({
@@ -624,6 +686,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       })();
     },
     syntaxStyle: SyntaxStyle.create(),
+    treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
       // Guard against overlapping submits: reject while a stream is in flight.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.

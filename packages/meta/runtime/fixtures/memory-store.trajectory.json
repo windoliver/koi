@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:57.833Z",
+      "timestamp": "2026-04-07T03:16:45.045Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:57.834Z",
+      "timestamp": "2026-04-07T03:16:45.046Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:57.836Z",
+      "timestamp": "2026-04-07T03:16:45.050Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.",
       "observation": {
@@ -76,7 +76,7 @@
         "prompt_tokens": 487,
         "completion_tokens": 55
       },
-      "duration_ms": 1113,
+      "duration_ms": 1335,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -100,22 +100,23 @@
             "description": "Store a new memory record. Checks for duplicates by name and type. Use force: true to overwrite an existing memory with the same name."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "573cdd1054370422642a528f5f17a07adaa338692920839ad2b2245eb88881cd"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:58.951Z",
+      "timestamp": "2026-04-07T03:16:46.387Z",
       "tool_calls": [
         {
           "tool_call_id": "call_memory_store_3",
           "function_name": "memory_store",
           "arguments": {
-            "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
-            "description": "always write failing tests first",
             "name": "testing approach",
-            "type": "feedback"
+            "type": "feedback",
+            "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
+            "description": "always write failing tests first"
           }
         }
       ],
@@ -127,15 +128,15 @@
           }
         ]
       },
-      "duration_ms": 1,
+      "duration_ms": 2,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.953Z",
+      "timestamp": "2026-04-07T03:16:46.390Z",
       "model_name": "middleware:semantic-retry",
-      "message": "memory_store({\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"})",
+      "message": "memory_store({\"name\":\"testing approach\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\"})",
       "observation": {
         "results": [
           {
@@ -143,7 +144,7 @@
           }
         ]
       },
-      "duration_ms": 1.4393750000017462,
+      "duration_ms": 2.6179579999952693,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -160,10 +161,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.955Z",
+      "timestamp": "2026-04-07T03:16:46.393Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.",
-      "duration_ms": 1120.735458999996,
+      "duration_ms": 1342.7623749999984,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -180,10 +181,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.956Z",
+      "timestamp": "2026-04-07T03:16:46.394Z",
       "model_name": "middleware:hooks",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.",
-      "duration_ms": 1120.8242920000048,
+      "duration_ms": 1342.9809170000008,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -200,10 +201,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.957Z",
+      "timestamp": "2026-04-07T03:16:46.395Z",
       "model_name": "middleware:permissions",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.",
-      "duration_ms": 1120.93275,
+      "duration_ms": 1343.7596660000054,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,10 +221,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.958Z",
+      "timestamp": "2026-04-07T03:16:46.396Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.",
-      "duration_ms": 1120.9543329999942,
+      "duration_ms": 1343.8302909999984,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -240,10 +241,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.959Z",
+      "timestamp": "2026-04-07T03:16:46.403Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 5.111583000005339,
+      "duration_ms": 12.765083999998751,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -260,9 +261,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.960Z",
+      "timestamp": "2026-04-07T03:16:46.404Z",
       "model_name": "middleware:hooks",
-      "message": "memory_store({\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"})",
+      "message": "memory_store({\"name\":\"testing approach\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\"})",
       "observation": {
         "results": [
           {
@@ -270,7 +271,7 @@
           }
         ]
       },
-      "duration_ms": 6.8272910000014235,
+      "duration_ms": 16.277750000001106,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -287,9 +288,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.961Z",
+      "timestamp": "2026-04-07T03:16:46.405Z",
       "model_name": "middleware:permissions",
-      "message": "memory_store({\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"})",
+      "message": "memory_store({\"name\":\"testing approach\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\"})",
       "observation": {
         "results": [
           {
@@ -297,7 +298,7 @@
           }
         ]
       },
-      "duration_ms": 7.055333000003884,
+      "duration_ms": 16.52158399999462,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -314,9 +315,9 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.962Z",
+      "timestamp": "2026-04-07T03:16:46.406Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "memory_store({\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"})",
+      "message": "memory_store({\"name\":\"testing approach\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\"})",
       "observation": {
         "results": [
           {
@@ -324,7 +325,7 @@
           }
         ]
       },
-      "duration_ms": 7.246832999997423,
+      "duration_ms": 16.84533399999782,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -341,7 +342,7 @@
     {
       "step_id": 13,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:58.963Z",
+      "timestamp": "2026-04-07T03:16:46.407Z",
       "tool_calls": [
         {
           "tool_call_id": "call_memory_recall_13",
@@ -355,7 +356,7 @@
         "results": [
           {
             "source_call_id": "call_memory_recall_13",
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
@@ -365,17 +366,17 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.965Z",
+      "timestamp": "2026-04-07T03:16:46.409Z",
       "model_name": "middleware:semantic-retry",
       "message": "memory_recall({\"query\":\"testing\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 0.8050829999992857,
+      "duration_ms": 1.039333999993687,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -392,10 +393,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.966Z",
+      "timestamp": "2026-04-07T03:16:46.410Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 1.8243749999965075,
+      "duration_ms": 5.426832999997714,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -412,17 +413,17 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.967Z",
+      "timestamp": "2026-04-07T03:16:46.411Z",
       "model_name": "middleware:hooks",
       "message": "memory_recall({\"query\":\"testing\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 2.7933329999941634,
+      "duration_ms": 6.867125000004307,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -439,17 +440,17 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.968Z",
+      "timestamp": "2026-04-07T03:16:46.412Z",
       "model_name": "middleware:permissions",
       "message": "memory_recall({\"query\":\"testing\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 2.930166999998619,
+      "duration_ms": 7.077332999993814,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -466,17 +467,17 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.969Z",
+      "timestamp": "2026-04-07T03:16:46.413Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "memory_recall({\"query\":\"testing\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 3.0385000000023865,
+      "duration_ms": 7.293249999995169,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -493,7 +494,7 @@
     {
       "step_id": 19,
       "source": "tool",
-      "timestamp": "2026-04-07T02:00:58.970Z",
+      "timestamp": "2026-04-07T03:16:46.414Z",
       "tool_calls": [
         {
           "tool_call_id": "call_memory_search_19",
@@ -507,7 +508,7 @@
         "results": [
           {
             "source_call_id": "call_memory_search_19",
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
@@ -517,17 +518,17 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.972Z",
+      "timestamp": "2026-04-07T03:16:46.416Z",
       "model_name": "middleware:semantic-retry",
       "message": "memory_search({\"type\":\"feedback\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 0.3362919999999576,
+      "duration_ms": 1.1580420000027516,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -544,10 +545,10 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.973Z",
+      "timestamp": "2026-04-07T03:16:46.417Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 1.0377499999958673,
+      "duration_ms": 5.462790999998106,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -564,17 +565,17 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.974Z",
+      "timestamp": "2026-04-07T03:16:46.418Z",
       "model_name": "middleware:hooks",
       "message": "memory_search({\"type\":\"feedback\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 1.4359160000021802,
+      "duration_ms": 6.836457999997947,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -591,17 +592,17 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.975Z",
+      "timestamp": "2026-04-07T03:16:46.419Z",
       "model_name": "middleware:permissions",
       "message": "memory_search({\"type\":\"feedback\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 1.4672090000021853,
+      "duration_ms": 6.968790999999328,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -618,17 +619,17 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-07T02:00:58.976Z",
+      "timestamp": "2026-04-07T03:16:46.420Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "memory_search({\"type\":\"feedback\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}"
+            "content": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}"
           }
         ]
       },
-      "duration_ms": 1.5102499999993597,
+      "duration_ms": 7.091707999999926,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -645,21 +646,21 @@
     {
       "step_id": 25,
       "source": "agent",
-      "timestamp": "2026-04-07T02:00:58.978Z",
+      "timestamp": "2026-04-07T03:16:46.422Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775527258952,\"updatedAt\":1775527258952}],\"count\":1}",
+      "message": "{\"results\":[{\"id\":\"mem-1\",\"name\":\"testing approach\",\"description\":\"always write failing tests first\",\"type\":\"feedback\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"filePath\":\"testing_approach.md\",\"createdAt\":1775531806389,\"updatedAt\":1775531806389}],\"count\":1}",
       "observation": {
         "results": [
           {
-            "content": "I have stored a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". I then retrieved it using the memory_recall tool with query \"testing\" and the memory_search tool with type \"feedback\". All operations were successful.\n"
+            "content": "I have successfully stored the feedback memory, recalled it using a query, and searched for it by type.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 738,
-        "completion_tokens": 89
+        "prompt_tokens": 737,
+        "completion_tokens": 22
       },
-      "duration_ms": 1051,
+      "duration_ms": 697,
       "outcome": "success",
       "extra": {
         "totalMessages": 7,
@@ -683,16 +684,17 @@
             "description": "Store a new memory record. Checks for duplicates by name and type. Use force: true to overwrite an existing memory with the same name."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "573cdd1054370422642a528f5f17a07adaa338692920839ad2b2245eb88881cd"
       }
     },
     {
       "step_id": 26,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:00.031Z",
+      "timestamp": "2026-04-07T03:16:47.121Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.\n\n{\"stored\":true,\"id\":\"mem-1\",\"filePath\"…",
-      "duration_ms": 1068.286082999999,
+      "duration_ms": 702.1631249999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -709,10 +711,10 @@
     {
       "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:00.032Z",
+      "timestamp": "2026-04-07T03:16:47.122Z",
       "model_name": "middleware:hooks",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.\n\n{\"stored\":true,\"id\":\"mem-1\",\"filePath\"…",
-      "duration_ms": 1068.331542,
+      "duration_ms": 702.3013330000031,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -729,10 +731,10 @@
     {
       "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:00.033Z",
+      "timestamp": "2026-04-07T03:16:47.123Z",
       "model_name": "middleware:permissions",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.\n\n{\"stored\":true,\"id\":\"mem-1\",\"filePath\"…",
-      "duration_ms": 1068.435666999998,
+      "duration_ms": 702.7169579999972,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -749,10 +751,10 @@
     {
       "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:00.034Z",
+      "timestamp": "2026-04-07T03:16:47.124Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the memory_store tool to store a feedback memory with name \"testing approach\", description \"always write failing tests first\", type \"feedback\", and content \"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\". Then use the memory_recall tool with query \"testing\" to retrieve it. Finally use the memory_search tool with type \"feedback\" to search for feedback memories.\n\n{\"stored\":true,\"id\":\"mem-1\",\"filePath\"…",
-      "duration_ms": 1068.468624999994,
+      "duration_ms": 702.898500000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",

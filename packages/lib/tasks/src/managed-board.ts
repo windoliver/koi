@@ -14,19 +14,25 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   AgentId,
+  EngineEvent,
   KoiError,
   ManagedTaskBoard,
   Result,
   Task,
   TaskBoard,
   TaskBoardConfig,
+  TaskBoardEvent,
   TaskBoardStore,
   TaskInput,
   TaskItemId,
   TaskPatch,
   TaskResult,
 } from "@koi/core";
-import { createTaskBoard } from "@koi/task-board";
+import {
+  buildPlanUpdate,
+  createTaskBoard,
+  mapTaskBoardEventToEngineEvents,
+} from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +47,14 @@ export interface ManagedTaskBoardConfig {
    * will not survive process restart.
    */
   readonly resultsDir?: string | undefined;
+  /**
+   * When provided with `agentId`, automatically bridges task board events
+   * to EngineEvents (`plan_update` / `task_progress`) via the callback.
+   * Composes with any existing `boardConfig.onEvent` handler.
+   */
+  readonly onEngineEvent?: ((event: EngineEvent) => void) | undefined;
+  /** Agent ID for EngineEvent attribution. Required when `onEngineEvent` is set. */
+  readonly agentId?: AgentId | undefined;
 }
 
 // ManagedTaskBoard interface is defined in @koi/core so L2 packages can
@@ -144,7 +158,32 @@ async function persistBoardDiff(
 export async function createManagedTaskBoard(
   config: ManagedTaskBoardConfig,
 ): Promise<ManagedTaskBoard> {
-  const { store, boardConfig, resultsDir } = config;
+  const { store, boardConfig, resultsDir, onEngineEvent, agentId } = config;
+
+  // Buffer all observer notifications during mutation, flush only after persistence
+  // succeeds. This prevents split-brain where observers see committed state but
+  // persistence failed. Both engine events and user onEvent are deferred.
+  let pendingEngineEvents: EngineEvent[] = [];
+  let pendingUserEvents: { readonly event: TaskBoardEvent; readonly board: TaskBoard }[] = [];
+  const hasEngineBridge = onEngineEvent !== undefined && agentId !== undefined;
+
+  const resolvedConfig: TaskBoardConfig = {
+    ...boardConfig,
+    // Capture all events during mutation — flushed by applyMutation after persistence
+    onEvent: (event, newBoard) => {
+      // Buffer user handler notifications (deferred to post-persistence)
+      if (boardConfig?.onEvent !== undefined) {
+        pendingUserEvents.push({ event, board: newBoard });
+      }
+      // Buffer engine events (deferred to post-persistence)
+      if (hasEngineBridge) {
+        const mapped = mapTaskBoardEventToEngineEvents(event, newBoard, agentId);
+        for (const e of mapped) {
+          pendingEngineEvents.push(e);
+        }
+      }
+    },
+  };
 
   // Load initial state from store
   const items = await store.list();
@@ -163,7 +202,18 @@ export async function createManagedTaskBoard(
   }
 
   // let justified: board is mutable state managed by the managed board
-  let board = createTaskBoard(boardConfig, { items, results: initialResults });
+  let board = createTaskBoard(resolvedConfig, { items, results: initialResults });
+
+  // Emit initial snapshot so hydrated tasks are visible immediately.
+  // Observer failures are non-fatal — matches post-persistence flush contract.
+  if (hasEngineBridge && board.size() > 0) {
+    try {
+      const snapshot = buildPlanUpdate(board, agentId, Date.now());
+      onEngineEvent(snapshot);
+    } catch {
+      // Observer failures must not prevent board creation
+    }
+  }
 
   // Async mutex: mutations queue behind the previous one to prevent
   // two callers from deriving from the same base board concurrently.
@@ -189,8 +239,13 @@ export async function createManagedTaskBoard(
 
     try {
       const oldBoard = board;
+      // Clear buffer before mutation — onEvent will fill it synchronously
+      pendingEngineEvents = [];
       const result = mutate(oldBoard);
-      if (!result.ok) return result;
+      if (!result.ok) {
+        pendingEngineEvents = [];
+        return result;
+      }
       // Run pre-persist hook before advancing task state in the store.
       // If this fails (e.g., disk-full writing result file), the task
       // state is never persisted, so the caller can safely retry.
@@ -199,8 +254,43 @@ export async function createManagedTaskBoard(
       }
       await persistBoardDiff(store, oldBoard, result.value);
       board = result.value;
+      // Flush all observer notifications only after persistence succeeds.
+      // Notifications are fire-and-forget — errors never change the mutation result.
+      const userEventsToFlush = pendingUserEvents;
+      const engineEventsToFlush = pendingEngineEvents;
+      pendingUserEvents = [];
+      pendingEngineEvents = [];
+      // Flush user handler (isolated — matches TaskBoard emit() contract with onEventError)
+      if (boardConfig?.onEvent !== undefined) {
+        for (const { event: ev, board: b } of userEventsToFlush) {
+          try {
+            boardConfig.onEvent(ev, b);
+          } catch (error: unknown) {
+            if (boardConfig.onEventError !== undefined) {
+              try {
+                boardConfig.onEventError(error, ev);
+              } catch {
+                // Double-fault: swallow silently per emit() contract
+              }
+            }
+          }
+        }
+      }
+      // Flush engine events (isolated — errors swallowed, never affect mutation result)
+      if (onEngineEvent !== undefined) {
+        for (const e of engineEventsToFlush) {
+          try {
+            onEngineEvent(e);
+          } catch {
+            // Observer failures must not fail committed mutations
+          }
+        }
+      }
       return result;
     } catch (err: unknown) {
+      // Discard all buffered notifications — persistence failed
+      pendingUserEvents = [];
+      pendingEngineEvents = [];
       // Translate store-layer exceptions (version conflicts, corrupt files,
       // I/O errors) into typed KoiError results instead of raw rejections.
       const message = err instanceof Error ? err.message : String(err);

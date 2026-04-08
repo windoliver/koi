@@ -136,8 +136,8 @@ export type TuiAssistantBlock =
       readonly status: ToolCallStatus;
       /** Streamed argument JSON fragments (model generating the function call). */
       readonly args?: string | undefined;
-      /** Tool execution result from tool_call_end (the actual tool response). */
-      readonly result?: unknown;
+      /** Tool execution result — always a string after reducer's capResult(). */
+      readonly result?: string | undefined;
     }
   | {
       readonly kind: "error";
@@ -165,6 +165,19 @@ export type TuiMessage =
     };
 
 // ---------------------------------------------------------------------------
+// Plan progress
+// ---------------------------------------------------------------------------
+
+/** Lightweight projection of a task for the progress display. */
+export interface PlanTask {
+  readonly id: string;
+  readonly subject: string;
+  readonly status: string;
+  readonly activeForm?: string | undefined;
+  readonly blockedBy?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
@@ -187,6 +200,8 @@ export interface TuiState {
   /** Saved sessions, sorted most-recent-first, capped at MAX_SESSIONS. */
   readonly sessions: readonly SessionSummary[];
   readonly slashQuery: string | null;
+  /** Task board progress — null before first plan event. */
+  readonly planTasks: readonly PlanTask[] | null;
 }
 
 // ---------------------------------------------------------------------------

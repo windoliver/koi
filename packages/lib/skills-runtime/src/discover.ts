@@ -4,12 +4,21 @@
  * Precedence (highest first): project > user > bundled.
  * When two tiers define the same skill name, the higher-priority tier wins.
  * Decision 4A: shadow warning emitted via onShadowedSkill callback.
+ *
+ * Progressive loading: reads frontmatter during discovery so SkillMetadata
+ * (description, tags, allowedTools, etc.) is available without calling load().
+ * Skills with unparseable frontmatter get minimal metadata (name from dirname).
+ *
+ * Decision 6A (extended): skillsRoot is resolved once per tier root here,
+ * stored in DiscoveredSkillEntry, and reused by the loader (no per-load realpath).
  */
 
 import { realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
-import type { SkillSource } from "./types.js";
+import { parseSkillMd } from "./parse.js";
+import type { SkillMetadata, SkillSource } from "./types.js";
+import { validateFrontmatter } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,25 +28,55 @@ import type { SkillSource } from "./types.js";
 const TIER_ORDER: readonly SkillSource[] = ["bundled", "user", "project"] as const;
 
 // ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * A fully resolved entry for a discovered skill.
+ * Merges source, dirPath, pre-resolved skillsRoot (Decision 6A),
+ * and frontmatter-derived metadata (progressive loading).
+ */
+export interface DiscoveredSkillEntry {
+  readonly source: SkillSource;
+  readonly dirPath: string;
+  /** Pre-resolved absolute path to the tier root. Used by loader for path traversal check. */
+  readonly skillsRoot: string;
+  /** Frontmatter metadata (no body, no security scan). May be minimal if frontmatter fails. */
+  readonly metadata: SkillMetadata;
+}
+
+export interface DiscoverConfig {
+  readonly projectRoot?: string;
+  readonly userRoot?: string;
+  readonly bundledRoot?: string | null;
+  readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
  * Discovers all available skill directories across the three source tiers.
  *
- * Returns a map of skill name → winning SkillSource.
- * Also returns a parallel map of skill name → absolute dirPath.
+ * Returns a map of skill name → DiscoveredSkillEntry, which includes:
+ * - The winning SkillSource tier
+ * - The absolute dirPath
+ * - The pre-resolved skillsRoot (Decision 6A)
+ * - SkillMetadata from frontmatter (progressive loading — no body)
  *
  * Decision 4A: calls onShadowedSkill for each skill shadowed by a higher tier.
  */
 export async function discoverSkills(
   config: DiscoverConfig,
-): Promise<Result<DiscoveredSkills, KoiError>> {
+): Promise<Result<ReadonlyMap<string, DiscoveredSkillEntry>, KoiError>> {
   const tiers = buildTierMap(config);
-  const nameToSource = new Map<string, SkillSource>();
-  const nameToDirPath = new Map<string, string>();
 
-  // Process lowest-priority tiers first; higher tiers overwrite via shadow logic
+  // First pass: resolve shadow precedence and build raw (name → source + dirPath + skillsRoot) map.
+  // We do this before reading frontmatter so that shadow logic runs only once.
+  type RawEntry = { source: SkillSource; dirPath: string; skillsRoot: string };
+  const rawEntries = new Map<string, RawEntry>();
+
   for (const tier of TIER_ORDER) {
     const root = tiers.get(tier);
     if (root === undefined || root === null) continue;
@@ -53,44 +92,81 @@ export async function discoverSkills(
     const skillNames = await listSkillDirs(resolvedRoot);
 
     for (const name of skillNames) {
-      const existingSource = nameToSource.get(name);
+      const existingSource = rawEntries.get(name)?.source;
       if (existingSource !== undefined) {
         // Shadow: current tier has higher priority, so overwrite and warn
         config.onShadowedSkill?.(name, tier);
       }
-      nameToSource.set(name, tier);
-      nameToDirPath.set(name, join(resolvedRoot, name));
+      rawEntries.set(name, {
+        source: tier,
+        dirPath: join(resolvedRoot, name),
+        skillsRoot: resolvedRoot, // pre-resolved (Decision 6A)
+      });
     }
   }
 
-  return {
-    ok: true,
-    value: {
-      skills: nameToSource as ReadonlyMap<string, SkillSource>,
-      dirPaths: nameToDirPath as ReadonlyMap<string, string>,
-    },
-  };
-}
+  // Second pass: read frontmatter for each winning skill (progressive loading).
+  const entries = new Map<string, DiscoveredSkillEntry>();
 
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
+  for (const [name, raw] of rawEntries) {
+    const metadata = await readSkillMetadata(name, raw.dirPath, raw.source);
+    entries.set(name, {
+      source: raw.source,
+      dirPath: raw.dirPath,
+      skillsRoot: raw.skillsRoot,
+      metadata,
+    });
+  }
 
-export interface DiscoverConfig {
-  readonly projectRoot?: string;
-  readonly userRoot?: string;
-  readonly bundledRoot?: string | null;
-  readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
-}
-
-export interface DiscoveredSkills {
-  readonly skills: ReadonlyMap<string, SkillSource>;
-  readonly dirPaths: ReadonlyMap<string, string>;
+  return { ok: true, value: entries as ReadonlyMap<string, DiscoveredSkillEntry> };
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Reads and parses frontmatter from a skill's SKILL.md to produce SkillMetadata.
+ *
+ * Fails gracefully: if the file can't be read or frontmatter is invalid,
+ * returns minimal metadata (name from dirName, empty description).
+ * The full load() will still fail with a proper VALIDATION error in that case.
+ */
+async function readSkillMetadata(
+  dirName: string,
+  dirPath: string,
+  source: SkillSource,
+): Promise<SkillMetadata> {
+  const fallback: SkillMetadata = { name: dirName, description: "", source, dirPath };
+  const skillMdPath = join(dirPath, "SKILL.md");
+
+  let content: string; // let: assigned in try/catch
+  try {
+    content = await Bun.file(skillMdPath).text();
+  } catch {
+    return fallback;
+  }
+
+  const parseResult = parseSkillMd(content, skillMdPath);
+  if (!parseResult.ok) return fallback;
+
+  const fmResult = validateFrontmatter(parseResult.value.frontmatter, skillMdPath);
+  if (!fmResult.ok) return fallback;
+
+  const fm = fmResult.value;
+  return {
+    name: fm.name,
+    description: fm.description,
+    source,
+    dirPath,
+    ...(fm.tags !== undefined ? { tags: fm.tags } : {}),
+    ...(fm.license !== undefined ? { license: fm.license } : {}),
+    ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
+    ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
+    ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+    ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
+  };
+}
 
 function buildTierMap(config: DiscoverConfig): ReadonlyMap<SkillSource, string | null | undefined> {
   return new Map<SkillSource, string | null | undefined>([

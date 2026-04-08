@@ -30,22 +30,36 @@ const SUPPORTED_PROPERTY_KEYWORDS = new Set([
   "description",
   "title",
   "default",
+  // String constraints — recognized but not validated (Zod handles runtime validation).
+  "minLength",
+  "maxLength",
+  "pattern",
+  // Numeric constraints — recognized but not validated.
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  // Array constraints — recognized but not validated.
+  "minItems",
+  "maxItems",
   // Structural keywords for arrays/objects — recognized but not deeply validated.
   // The validator only checks top-level property types; nested schema contents
   // (item shapes, nested required, nested properties) are not evaluated.
   "items",
   "properties",
   "required",
-  // String/number constraints — recognized (checked by the model), not validated.
-  // Zod's toJSONSchema emits these for z.string().min(1), z.enum([...]), etc.
+  // Validation keywords — recognized but not deeply validated.
+  // Fail-open on these: the tool's own Zod schema handles fine-grained validation.
   "minLength",
   "maxLength",
-  "enum",
-  "pattern",
   "minimum",
   "maximum",
-  // additionalProperties at the property level (nested objects)
+  "pattern",
+  "enum",
+  "const",
+  // Object sub-schema keywords — recognized but not deeply validated.
   "additionalProperties",
+  "propertyNames",
 ]);
 
 /**

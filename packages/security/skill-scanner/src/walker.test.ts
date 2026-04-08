@@ -102,6 +102,66 @@ describe("getCalleeAsMemberPath", () => {
     });
     expect(paths).toEqual(["child_process.exec"]);
   });
+
+  test("resolves bracket-notation string-literal member call path", () => {
+    const program = parse('child_process["execSync"]("cmd");');
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["child_process.execSync"]);
+  });
+
+  test("returns undefined for bracket-notation with non-literal expression", () => {
+    const program = parse("obj[variable]();");
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual([]);
+  });
+
+  test("flattens chained member access: globalThis.process.binding()", () => {
+    const program = parse("globalThis.process.binding('natives');");
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["globalThis.process.binding"]);
+  });
+
+  test('flattens mixed static/computed chain: globalThis.child_process["execSync"]()', () => {
+    const program = parse('globalThis.child_process["execSync"]("cmd");');
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["globalThis.child_process.execSync"]);
+  });
+
+  test("resolves template-literal computed key: child_process[`execSync`]()", () => {
+    const program = parse("child_process[`execSync`]('cmd');");
+    const paths: string[] = [];
+    visitAst(program, {
+      onCallExpression(node) {
+        const path = getCalleeAsMemberPath(node);
+        if (path !== undefined) paths.push(path);
+      },
+    });
+    expect(paths).toEqual(["child_process.execSync"]);
+  });
 });
 
 describe("offsetToLocation", () => {

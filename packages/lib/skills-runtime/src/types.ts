@@ -30,24 +30,25 @@ export interface ValidatedSkillRequires {
 }
 
 // ---------------------------------------------------------------------------
-// Loaded skill
+// Skill metadata (frontmatter only — no body, no security scan)
 // ---------------------------------------------------------------------------
 
 /**
- * A fully loaded, validated, and security-scanned skill.
- * Returned by SkillsRuntime.load() on success.
+ * Metadata for a discovered skill, derived from frontmatter only.
+ * Available after discover() without needing to call load().
+ * Does not include the skill body.
  */
-export interface SkillDefinition {
-  /** Skill name (matches directory name). */
+export interface SkillMetadata {
+  /** Skill name from frontmatter (matches directory name by convention). */
   readonly name: string;
   /** Human-readable description from frontmatter. */
   readonly description: string;
-  /** Full markdown body (after frontmatter stripped, includes resolved). */
-  readonly body: string;
   /** Which tier this skill came from. */
   readonly source: SkillSource;
   /** Absolute path to the skill directory. */
   readonly dirPath: string;
+  /** Searchable tags from frontmatter. */
+  readonly tags?: readonly string[];
   /** SPDX license identifier from frontmatter. */
   readonly license?: string;
   /** Claude Code compatibility string from frontmatter. */
@@ -58,6 +59,40 @@ export interface SkillDefinition {
   readonly requires?: ValidatedSkillRequires;
   /** Extra string key-value pairs from frontmatter. */
   readonly metadata?: Readonly<Record<string, string>>;
+}
+
+// ---------------------------------------------------------------------------
+// Loaded skill (extends metadata with body)
+// ---------------------------------------------------------------------------
+
+/**
+ * A fully loaded, validated, and security-scanned skill.
+ * Returned by SkillsRuntime.load() on success.
+ * Extends SkillMetadata — all metadata fields are present plus the body.
+ */
+export interface SkillDefinition extends SkillMetadata {
+  /** Full markdown body (after frontmatter stripped, includes resolved). */
+  readonly body: string;
+}
+
+// ---------------------------------------------------------------------------
+// Registry query filter
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter for SkillsRuntime.query().
+ * All conditions are AND-ed. Multi-tag uses AND semantics (skill must have ALL tags).
+ */
+export interface SkillQuery {
+  /** Filter to skills from a specific source tier. */
+  readonly source?: SkillSource;
+  /**
+   * Filter to skills that have ALL of the specified tags (AND semantics).
+   * Skills with no tags field are excluded when this is specified.
+   */
+  readonly tags?: readonly string[];
+  /** Filter to skills that list this tool in their allowedTools. */
+  readonly capability?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,15 +138,18 @@ export interface SkillsRuntimeConfig {
 
 export interface SkillsRuntime {
   /**
-   * Discovers all available skill names across all enabled source tiers.
-   * Returns a map of skill name → winning SkillSource tier.
-   * Does NOT load file content — metadata only.
+   * Discovers all available skills across all enabled source tiers.
+   * Returns a map of skill name → SkillMetadata (frontmatter fields, no body).
+   * Subsequent calls return the cached result — no re-scanning.
+   *
+   * Concurrent calls are safe: only one filesystem scan is performed.
    */
-  readonly discover: () => Promise<Result<ReadonlyMap<string, SkillSource>, KoiError>>;
+  readonly discover: () => Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>>;
 
   /**
    * Loads a single skill by name: parse → validate → security scan → cache.
    * Subsequent calls for the same name return the cached result.
+   * Concurrent calls for the same name are deduplicated — one load runs.
    *
    * Error codes:
    * - NOT_FOUND  — skill not in discovered set
@@ -123,8 +161,26 @@ export interface SkillsRuntime {
 
   /**
    * Loads all discovered skills in parallel.
-   * Each entry is either a successful SkillDefinition or a KoiError.
+   * Returns an outer Result for discovery failures, inner Results per skill.
    * Partial failures do not block other skills from loading.
    */
-  readonly loadAll: () => Promise<ReadonlyMap<string, Result<SkillDefinition, KoiError>>>;
+  readonly loadAll: () => Promise<
+    Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
+  >;
+
+  /**
+   * Queries discovered skill metadata without loading bodies.
+   * Runs discover() if not yet called. All filter conditions are AND-ed.
+   * Multi-tag filter uses AND semantics (skill must have ALL specified tags).
+   */
+  readonly query: (filter?: SkillQuery) => Promise<Result<readonly SkillMetadata[], KoiError>>;
+
+  /**
+   * Invalidates cached skill data.
+   * - invalidate(name): clears the body cache for a specific skill only.
+   *   Metadata from discover() is preserved. Use after a skill file changes.
+   * - invalidate(): full reset — clears discovery cache and all body caches.
+   *   Next discover() or load() re-scans the filesystem.
+   */
+  readonly invalidate: (name?: string) => void;
 }

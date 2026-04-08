@@ -8,6 +8,7 @@
 import type { EngineEvent } from "@koi/core/engine";
 import type {
   CumulativeMetrics,
+  PlanTask,
   SessionInfo,
   SessionSummary,
   TuiAction,
@@ -317,6 +318,52 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       };
     }
 
+    // ----- Plan/progress events -----
+    case "plan_update": {
+      const planTasks = event.tasks.map((t) => ({
+        id: t.id as string,
+        subject: t.subject,
+        status: t.status as string,
+        ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
+        ...(t.blockedBy !== undefined ? { blockedBy: t.blockedBy as string } : {}),
+      }));
+      return { ...state, planTasks };
+    }
+
+    case "task_progress": {
+      const taskId = event.taskId as string;
+      const newStatus = event.status as string;
+      const blockedBy = event.blockedBy !== undefined ? (event.blockedBy as string) : undefined;
+
+      const buildTask = (existingBlockedBy?: string): PlanTask => ({
+        id: taskId,
+        subject: event.subject,
+        status: newStatus,
+        ...(event.activeForm !== undefined ? { activeForm: event.activeForm } : {}),
+        ...(blockedBy !== undefined
+          ? { blockedBy }
+          : existingBlockedBy !== undefined && newStatus === "pending"
+            ? { blockedBy: existingBlockedBy }
+            : {}),
+      });
+
+      if (state.planTasks === null) {
+        return { ...state, planTasks: [buildTask()] };
+      }
+      const idx = state.planTasks.findIndex((t) => t.id === taskId);
+      if (idx < 0) {
+        return { ...state, planTasks: [...state.planTasks, buildTask()] };
+      }
+      const existing = state.planTasks[idx];
+      const updated = buildTask(existing?.blockedBy);
+      const planTasks = [
+        ...state.planTasks.slice(0, idx),
+        updated,
+        ...state.planTasks.slice(idx + 1),
+      ];
+      return { ...state, planTasks };
+    }
+
     // ----- Events the TUI ignores -----
     case "custom":
     case "discovery:miss":
@@ -403,8 +450,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "clear_messages":
-      if (state.messages.length === 0 && state.agentStatus === "idle") return state;
-      return { ...state, messages: [], agentStatus: "idle" };
+      if (state.messages.length === 0 && state.agentStatus === "idle" && state.planTasks === null)
+        return state;
+      return { ...state, messages: [], agentStatus: "idle", planTasks: null };
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.

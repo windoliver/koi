@@ -67,6 +67,15 @@ function escapeSeatbeltPath(path: string): string {
  *   - deny all writes, then allow specific write paths
  *   - network: binary allow/deny
  *
+ * IMPORTANT — operation naming: seatbelt does NOT support `file-read*` as a
+ * wildcard operation name in deny rules. The `*` is treated literally and matches
+ * no actual operation, so `(deny file-read* (subpath ...))` has no effect.
+ * Use explicit `file-read-data` and `file-read-metadata` instead.
+ *
+ * Specificity: rules with a path predicate (subpath/literal) are more specific
+ * than rules without one. More specific rules take precedence regardless of order,
+ * so denyRead entries correctly override the broad `(allow file-read-data)` above.
+ *
  * @param opts.home - HOME directory for ~/... path expansion.
  *   Defaults to process.env.HOME. Pass explicitly in tests or sandboxed contexts
  *   where process.env.HOME may not reflect the intended user home directory.
@@ -87,16 +96,21 @@ export function generateSeatbeltProfile(
     "(allow signal)",
     // Broad file reads — macOS dyld, system frameworks, and shared libraries
     // require read access to paths that cannot be enumerated at profile time.
-    // We use a deny-list to block sensitive subtrees instead.
+    // denyRead entries below shadow this for sensitive subtrees (path-predicate
+    // rules are more specific and take precedence over this broad allow).
     "(allow file-read-data)",
     "(allow file-read-metadata)",
   ];
 
-  // Block sensitive read paths (applied after the broad allow above)
+  // Block sensitive read paths. Uses explicit `file-read-data` and
+  // `file-read-metadata` — NOT `file-read*` (wildcard is not valid in seatbelt
+  // operation names and silently matches nothing).
   for (const path of profile.filesystem.denyRead ?? []) {
     const resolved = resolvePath(path, home);
     if (resolved !== null) {
-      lines.push(`(deny file-read* (subpath "${escapeSeatbeltPath(resolved)}"))`);
+      const escaped = escapeSeatbeltPath(resolved);
+      lines.push(`(deny file-read-data (subpath "${escaped}"))`);
+      lines.push(`(deny file-read-metadata (subpath "${escaped}"))`);
     }
   }
 

@@ -507,6 +507,24 @@ No cloud platform types, no LangGraph, no engine-specific concepts.
 
 ---
 
+## CLI / TUI Integration
+
+Sandbox profiles from this package are used by `@koi/cli`'s `tui-command.ts` to
+inject OS-level Bash confinement. The TUI wires `createOsAdapter()` at startup and,
+when available, passes a `restrictiveProfile()` merged with workspace-specific
+write paths (`cwd`, `/tmp`, `/var/folders`) and network access into `createBashTool()`.
+This makes the sandbox transparent to the model — it calls the ordinary Bash tool
+and all commands run inside seatbelt/bwrap automatically.
+
+### Seatbelt deny-rule fix
+
+`generateSeatbeltProfile()` now emits explicit `file-read-data` and `file-read-metadata`
+deny operations instead of `file-read*`. macOS seatbelt does not support `*` as a
+wildcard in operation names — the literal `file-read*` silently matches no actual
+operation, so `denyRead` entries were previously ineffective. The fix ensures
+credential paths are correctly blocked. Specificity rules apply: rules with a path
+predicate (subpath/literal) take precedence over the broad `(allow file-read-data)`.
+
 ## Tracking
 
 - Issue: #1336 (v2 Phase 2f-1)

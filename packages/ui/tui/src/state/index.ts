@@ -19,6 +19,7 @@ export type {
   LayoutTier,
   PermissionPromptData,
   PermissionRiskLevel,
+  PlanTask,
   SessionInfo,
   SessionSummary,
   ToolCallStatus,
