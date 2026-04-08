@@ -244,7 +244,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge. Renders `plan_update`/`task_progress` in verbose mode (#1555) |
 | `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
-| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop |
+| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop + doom loop detection (#1593) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |

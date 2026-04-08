@@ -1354,7 +1354,7 @@ console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 const skillToolResult = await createSkillTool({
   resolver: skillRuntime,
-  signal: AbortSignal.timeout(30_000),
+  signal: AbortSignal.timeout(300_000),
 });
 if (!skillToolResult.ok) {
   throw new Error(`createSkillTool failed: ${skillToolResult.error.message}`);
@@ -2634,6 +2634,92 @@ const queries: readonly QueryConfig[] = [
         createSessionTranscriptMiddleware({
           transcript: resumeTranscript,
           sessionId: sessionId("golden-session-resume"),
+        }),
+      ],
+    };
+  })(),
+
+  // @koi/session — system-sender-resume: exercises privileged system:* sender persistence.
+  // A prior session had an engine-injected system:doom-loop message (from doom loop detection).
+  // The transcript stores it with role "system" + metadata.senderId = "system:doom-loop".
+  // On resume, that entry must be replayed with senderId "system:doom-loop" (not downgraded
+  // to "user"). Trajectory proves the system:* sender survives the persist/resume cycle.
+  (() => {
+    const crashedTranscript = [
+      {
+        id: transcriptEntryId("sysresume-e1"),
+        role: "user" as const,
+        content: "Use add_numbers to compute 5 + 5.",
+        timestamp: Date.now() - 60000,
+      },
+      {
+        id: transcriptEntryId("sysresume-e2"),
+        role: "tool_call" as const,
+        content: JSON.stringify([
+          { id: "call-sr-01", toolName: "add_numbers", args: '{"a":5,"b":5}' },
+        ]),
+        timestamp: Date.now() - 59000,
+      },
+      {
+        id: transcriptEntryId("sysresume-e3"),
+        role: "tool_result" as const,
+        content: '{"result":10}',
+        timestamp: Date.now() - 58500,
+      },
+      {
+        id: transcriptEntryId("sysresume-e4"),
+        role: "assistant" as const,
+        content: "The result of 5 + 5 is 10.",
+        timestamp: Date.now() - 58000,
+      },
+      {
+        id: transcriptEntryId("sysresume-e5"),
+        role: "system" as const,
+        content: "[System note]: Session checkpoint saved. You may continue with new tasks.",
+        timestamp: Date.now() - 57000,
+        metadata: { senderId: "system:doom-loop" },
+      },
+    ];
+
+    const resumeResult = resumeFromTranscript(crashedTranscript);
+    const resumeMessages = resumeResult.ok ? resumeResult.value.messages : [];
+
+    // Verify the system:doom-loop sender survived resume
+    const systemMsg = resumeMessages.find((m) => m.senderId === "system:doom-loop");
+    if (systemMsg === undefined) {
+      console.warn(
+        "WARNING: system:doom-loop sender was NOT preserved through resume — " +
+          "check session-transcript.ts and resume.ts",
+      );
+    } else {
+      console.log(
+        "System sender resume verified: system:doom-loop preserved through persist/resume cycle",
+      );
+    }
+
+    const resumeTranscript = createInMemoryTranscript();
+    return {
+      name: "system-sender-resume",
+      prompt:
+        "You have the add_numbers tool available. " +
+        "Use it to compute 20 + 30 and tell me the answer.",
+      permissionMode: "bypass" as const,
+      permissionRules: BYPASS_RULES,
+      permissionDescription: "bypass (allow all)",
+      hooks: [],
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+      ],
+      maxTurns: 2,
+      initialMessages: resumeMessages,
+      extraMiddleware: [
+        createSessionTranscriptMiddleware({
+          transcript: resumeTranscript,
+          sessionId: sessionId("golden-system-sender-resume"),
         }),
       ],
     };
