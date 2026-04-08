@@ -129,9 +129,11 @@ export function mapSkillToSpawnRequest(
 
   if (spawnConfig.allowedTools !== undefined) {
     // Restricted fork: use toolAllowlist + explicit turn cap.
-    // Hard-filter reserved meta-tools (agent_spawn) from the allowlist
-    // to enforce the recursion guard regardless of skill metadata content.
-    const sanitized = spawnConfig.allowedTools.filter((t) => t !== "agent_spawn");
+    // Hard-filter reserved spawn tools from the allowlist to enforce the
+    // recursion guard. Both "agent_spawn" (L2 spawn-tools) and "Spawn"
+    // (L1 engine spawn provider) must be stripped regardless of skill metadata.
+    const RESERVED_SPAWN_TOOLS = new Set(["agent_spawn", "Spawn"]);
+    const sanitized = spawnConfig.allowedTools.filter((t) => !RESERVED_SPAWN_TOOLS.has(t));
     return {
       ...base,
       toolAllowlist: [...sanitized],
