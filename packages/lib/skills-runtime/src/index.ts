@@ -28,6 +28,8 @@ import type {
   SkillsRuntimeConfig,
 } from "./types.js";
 
+export type { SkillInjectorConfig } from "./middleware.js";
+export { createSkillInjectorMiddleware } from "./middleware.js";
 export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
 export type { ValidatedSkillRequires } from "./types.js";
 export type { ValidatedFrontmatter } from "./validate.js";

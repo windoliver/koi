@@ -1,7 +1,7 @@
 {
   "name": "skill-load",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775550492948,
+  "recordedAt": 1775601457790,
   "chunks": [
     {
       "kind": "text_delta",
@@ -26,7 +26,7 @@
         "content": "Red, yellow, and blue.\n",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "stop",
-        "responseId": "gen-1775550492-eg8HKXSJp7EGlYamaGGP",
+        "responseId": "gen-1775601457-j2mJQWOvqKiT0xa0kWQF",
         "richContent": [
           {
             "kind": "text",
