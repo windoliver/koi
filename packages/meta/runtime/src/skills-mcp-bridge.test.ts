@@ -170,31 +170,37 @@ describe("mapToolDescriptorToSkillMetadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapToolDescriptorsToSkillMetadata", () => {
-  test("deduplicates colliding sanitized names (keeps first)", () => {
+  test("deduplicates colliding sanitized names and reports skipped", () => {
     const tools = [descriptor("srv__a b", "srv"), descriptor("srv__ab", "srv")];
-    const result = mapToolDescriptorsToSkillMetadata(tools);
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(tools);
 
     // Both sanitize to "srv__ab" — only first kept
-    expect(result).toHaveLength(1);
-    expect(result[0]?.name).toBe("srv__ab");
+    expect(skills).toHaveLength(1);
+    expect(skills[0]?.name).toBe("srv__ab");
+    // Second tool reported as skipped
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toBe("srv__ab");
   });
 
-  test("skips descriptors with empty sanitized name", () => {
+  test("skips descriptors with empty sanitized name and reports them", () => {
     const tools: readonly ToolDescriptor[] = [
       { name: "!!!$$$", description: "bad", inputSchema: { type: "object", properties: {} } },
       descriptor("srv__good", "srv"),
     ];
-    const result = mapToolDescriptorsToSkillMetadata(tools);
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(tools);
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.name).toBe("srv__good");
+    expect(skills).toHaveLength(1);
+    expect(skills[0]?.name).toBe("srv__good");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toBe("!!!$$$");
   });
 
-  test("passes through non-colliding tools", () => {
+  test("passes through non-colliding tools with no skipped", () => {
     const tools = [descriptor("alpha__search", "alpha"), descriptor("beta__read", "beta")];
-    const result = mapToolDescriptorsToSkillMetadata(tools);
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(tools);
 
-    expect(result).toHaveLength(2);
+    expect(skills).toHaveLength(2);
+    expect(skipped).toHaveLength(0);
   });
 });
 

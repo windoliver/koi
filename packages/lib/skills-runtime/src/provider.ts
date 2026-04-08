@@ -60,11 +60,6 @@ export function createSkillProvider(runtime: SkillsRuntime): ComponentProvider {
           continue;
         }
         const skill = result.value;
-        // Skip skills with empty body (e.g., MCP-derived metadata-only entries)
-        // — empty content would inject blank blocks into the system prompt
-        if (skill.body === "") {
-          continue;
-        }
         const component: SkillComponent = {
           name: skill.name,
           description: skill.description,

@@ -30,7 +30,11 @@ export {
   validateFileSystemConfig,
 } from "./resolve-filesystem.js";
 // Skills-MCP bridge
-export type { SkillsMcpBridge, SkillsMcpBridgeConfig } from "./skills-mcp-bridge.js";
+export type {
+  MapToolDescriptorsResult,
+  SkillsMcpBridge,
+  SkillsMcpBridgeConfig,
+} from "./skills-mcp-bridge.js";
 export {
   createSkillsMcpBridge,
   mapToolDescriptorsToSkillMetadata,

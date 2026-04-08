@@ -79,27 +79,38 @@ export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): Sk
   };
 }
 
+export interface MapToolDescriptorsResult {
+  readonly skills: readonly SkillMetadata[];
+  readonly skipped: readonly string[];
+}
+
 /**
  * Maps descriptors to SkillMetadata, deduplicating after sanitization.
  * Skips descriptors whose sanitized name is empty or collides with an
- * earlier entry. Returns the deduplicated list.
+ * earlier entry. Reports skipped names for telemetry/warnings.
  */
 export function mapToolDescriptorsToSkillMetadata(
   descriptors: readonly ToolDescriptor[],
-): readonly SkillMetadata[] {
+): MapToolDescriptorsResult {
   const seen = new Set<string>();
-  const result: SkillMetadata[] = [];
+  const skills: SkillMetadata[] = [];
+  const skipped: string[] = [];
 
   for (const d of descriptors) {
     const mapped = mapToolDescriptorToSkillMetadata(d);
-    if (mapped.name === "" || seen.has(mapped.name)) {
-      continue; // skip empty or colliding names
+    if (mapped.name === "") {
+      skipped.push(d.name);
+      continue;
+    }
+    if (seen.has(mapped.name)) {
+      skipped.push(d.name);
+      continue;
     }
     seen.add(mapped.name);
-    result.push(mapped);
+    skills.push(mapped);
   }
 
-  return result;
+  return { skills, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,8 +138,13 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
 
       // Only apply if still current and not disposed
       if (!disposed && capturedVersion === version) {
-        const skills = mapToolDescriptorsToSkillMetadata(descriptors);
+        const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
         runtime.registerExternal(skills);
+
+        // Surface skipped tools from sanitization collisions
+        if (skipped.length > 0) {
+          onSyncError?.({ kind: "sanitization-collision", skipped });
+        }
       }
 
       // Surface partial failures (servers that timed out / disconnected)
