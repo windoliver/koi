@@ -18,8 +18,11 @@ const schema = z.object({
  *
  * The coordinator retains board ownership (assignedTo = coordinatorAgentId)
  * so it can complete or fail the task after agent_spawn returns.
- * Board ownership handoff to the spawned child's runtime AgentId
- * requires engine-level identity resolution — deferred to #1416.
+ *
+ * Design: task_delegate and agent_spawn are independent tools. The coordinator
+ * manually closes the loop: delegate → spawn → read output → task_update.
+ * For autonomous mode (#1553), a bridge (like v1's dispatchSpawnTasks) will
+ * atomically couple delegate → spawn → auto-complete.
  *
  * Rejection cases:
  *   - Task not found
@@ -34,8 +37,7 @@ export function createTaskDelegateTool(board: ManagedTaskBoard, coordinatorAgent
         "Delegate a pending task to a named child agent. " +
         "Moves the task to in_progress (preventing re-dispatch) and records the " +
         "intended executor in metadata.delegatedTo. The coordinator retains " +
-        "board ownership and must complete or fail the task after agent_spawn " +
-        "returns — child agents cannot update it directly until #1416 is resolved.",
+        "board ownership and must complete or fail the task after agent_spawn returns.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },

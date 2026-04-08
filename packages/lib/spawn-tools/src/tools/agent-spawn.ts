@@ -28,11 +28,11 @@ const schema = z.object({
  * Spawns a named child agent to complete a specific task. The child runs
  * asynchronously and returns its final output string.
  *
- * Board correlation via task_id is intentionally omitted: the child's runtime
- * AgentId is engine-generated and will not match the coordinator-chosen
- * task.assignedTo, so child task_update calls would be rejected by the board's
- * ownership check. Full board-correlated spawning requires engine-level
- * identity handoff — tracked in #1416.
+ * Design: agent_spawn and task_delegate are intentionally independent.
+ * For simple use, the coordinator calls agent_spawn directly (like CC's Agent
+ * tool). For autonomous/swarm use (#1553), a bridge component (like v1's
+ * dispatchSpawnTasks) couples them: task_delegate → agent_spawn → auto-complete.
+ * The bridge is a separate layer, not baked into these tools.
  */
 export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
   return {
