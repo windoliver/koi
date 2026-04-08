@@ -291,10 +291,39 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
+    // Dedup: within this turn, skip tool calls with identical (toolName + args).
+    // Models occasionally emit the same call twice in one response (e.g. Sonnet
+    // via OpenRouter). Keep the first occurrence; record skipped duplicates for
+    // observability. Uses canonicalized JSON of parsed args (recursively sorted
+    // keys) to catch semantically identical calls even with different key ordering.
+    const seen = new Set<string>();
+    const dedupedToolCalls: typeof validToolCalls = [];
+    const skippedToolCalls: typeof validToolCalls = [];
+    for (const tc of validToolCalls) {
+      const canonicalArgs =
+        tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+      const key = `${tc.toolName}\0${canonicalArgs}`;
+      if (seen.has(key)) {
+        skippedToolCalls.push(tc);
+      } else {
+        seen.add(key);
+        dedupedToolCalls.push(tc);
+      }
+    }
+    if (skippedToolCalls.length > 0) {
+      yield {
+        kind: "custom",
+        type: "dedup_skipped",
+        data: {
+          skipped: skippedToolCalls.map((tc) => ({ toolName: tc.toolName, callId: tc.callId })),
+        },
+      };
+    }
+
     // Transition based on model response
     state = transitionTurn(state, {
       kind: "model_done",
-      hasToolCalls: validToolCalls.length > 0,
+      hasToolCalls: dedupedToolCalls.length > 0,
     });
 
     // Stop gate: when model completes (no tool calls), check if any hook
@@ -331,15 +360,32 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     if (state.phase === "tool_execution") {
-      // Append assistant message (text + tool call intents) to transcript
+      // Append ALL tool call intents (including skipped duplicates) to the
+      // transcript so session-repair's callId pairing stays consistent —
+      // every tool_call_* event the model emitted has a matching intent.
       appendAssistantTurn(transcript, turnText, validToolCalls);
 
-      // Execute tool calls sequentially to preserve model-emitted order
-      // and avoid racing side effects between dependent operations.
-      // Check abort before each tool call to stop dispatching on cancellation.
+      // Build a map from dedup key → skipped callIds for result replication.
+      const skippedByKey = new Map<string, typeof skippedToolCalls>();
+      for (const tc of skippedToolCalls) {
+        const canonicalArgs =
+          tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+        const key = `${tc.toolName}\0${canonicalArgs}`;
+        const existing = skippedByKey.get(key);
+        if (existing !== undefined) {
+          existing.push(tc);
+        } else {
+          skippedByKey.set(key, [tc]);
+        }
+      }
+
+      // Execute deduped tool calls sequentially. On success, replicate the
+      // real result to any skipped duplicates so the model sees consistent
+      // output for every callId. On failure (throw), the duplicates remain
+      // without a result — the error propagates and the turn fails.
       try {
         const results: ToolResult[] = [];
-        for (const tc of validToolCalls) {
+        for (const tc of dedupedToolCalls) {
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
@@ -359,6 +405,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
           results.push(result);
           appendToolResult(transcript, result);
+
+          // Replicate the real result to skipped duplicates so the model
+          // sees the actual output for every callId, not a placeholder.
+          const canonicalArgs =
+            tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${canonicalArgs}`;
+          const duplicates = skippedByKey.get(key);
+          if (duplicates !== undefined) {
+            for (const dup of duplicates) {
+              const dupResult: ToolResult = {
+                callId: dup.callId,
+                toolName: dup.toolName,
+                output: response.output,
+              };
+              results.push(dupResult);
+              appendToolResult(transcript, dupResult);
+            }
+          }
+
           if (isAborted(signal)) {
             state = transitionTurn(state, { kind: "abort" });
             break;
@@ -532,6 +597,24 @@ function safeStringify(value: unknown): string {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+/**
+ * Recursively sort object keys and serialize to JSON for stable comparison.
+ * Arrays preserve order; nested objects are sorted at every level.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortDeep(value));
+}
+
+function sortDeep(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortDeep);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortDeep((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
 }
 
 /**

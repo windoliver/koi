@@ -1,6 +1,11 @@
 ---
 name: golden-check
-description: Check if the current branch's PR needs golden queries and trajectories, record missing ones, and validate until correct.
+description: >
+  Audit the current branch for missing golden query and trajectory coverage.
+  Records missing cassettes/trajectories and validates until CI passes.
+  Use before opening a PR that adds or modifies an L2 package.
+  Triggers on: "golden check", "check golden queries", "check trajectories",
+  "are golden queries covered", "record cassettes".
 allowed-tools: Bash Read Write Edit Glob Grep Agent
 ---
 

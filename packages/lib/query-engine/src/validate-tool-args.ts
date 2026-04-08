@@ -48,6 +48,18 @@ const SUPPORTED_PROPERTY_KEYWORDS = new Set([
   "items",
   "properties",
   "required",
+  // Validation keywords — recognized but not deeply validated.
+  // Fail-open on these: the tool's own Zod schema handles fine-grained validation.
+  "minLength",
+  "maxLength",
+  "minimum",
+  "maximum",
+  "pattern",
+  "enum",
+  "const",
+  // Object sub-schema keywords — recognized but not deeply validated.
+  "additionalProperties",
+  "propertyNames",
 ]);
 
 /**

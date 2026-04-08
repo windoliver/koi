@@ -124,6 +124,7 @@ function check(ctx: ScanContext): readonly ScanFinding[] {
       }
 
       // Member expression calls: child_process.exec(), process.binding()
+      // Now also matches bracket notation: child_process["execSync"]()
       const memberPath = getCalleeAsMemberPath(node);
       if (memberPath !== undefined) {
         if (DANGEROUS_MEMBER_CALLS.has(memberPath)) {

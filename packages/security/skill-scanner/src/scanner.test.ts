@@ -144,6 +144,44 @@ const b = 2;
   });
 });
 
+describe("bracket-notation bypass detection", () => {
+  test('detects globalThis["eval"]()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('globalThis["eval"]("code");');
+    expect(report.findings.some((f) => f.severity === "CRITICAL")).toBe(true);
+    expect(report.findings.some((f) => f.rule === "dangerous-api:global-eval")).toBe(true);
+  });
+
+  test('detects child_process["execSync"]()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('child_process["execSync"]("cmd");');
+    expect(report.findings.some((f) => f.severity === "CRITICAL")).toBe(true);
+    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.execSync")).toBe(
+      true,
+    );
+  });
+
+  test('detects process["binding"]()', () => {
+    const scanner = createScanner();
+    const report = scanner.scan('process["binding"]("natives");');
+    expect(report.findings.some((f) => f.severity === "CRITICAL")).toBe(true);
+    expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(true);
+  });
+
+  test("does not flag bracket-notation with non-literal key", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("const method = 'exec'; child_process[method]('cmd');");
+    // Variable bracket access is not resolved — no false positive on member path
+    expect(report.findings.some((f) => f.rule === "dangerous-api:child_process.exec")).toBe(false);
+  });
+
+  test("detects template-literal key: process[`binding`]()", () => {
+    const scanner = createScanner();
+    const report = scanner.scan("process[`binding`]('natives');");
+    expect(report.findings.some((f) => f.rule === "dangerous-api:process.binding")).toBe(true);
+  });
+});
+
 describe("onFilteredFinding callback", () => {
   test("calls onFilteredFinding for findings below severity threshold", () => {
     const filtered: ScanFinding[] = [];

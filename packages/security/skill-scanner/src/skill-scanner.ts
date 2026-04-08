@@ -19,14 +19,20 @@ export interface CodeBlock {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Matches any opening fence (``` or ~~~ or longer variants, optionally indented by up to 3
-// spaces as allowed by CommonMark), optionally followed by a lang/info-string.
-// We capture the fence char (group 1) and the first word of the info-string (group 2).
-const OPENING_FENCE_RE = /^ {0,3}([`~]{3,})\s*(\S*)/;
-// Closing fence: same char repeated at least as many times, no trailing content.
-// We store the opening fence char/length to validate the closing fence in extractCodeBlocks.
-const CLOSING_FENCE_BACKTICK_RE = /^ {0,3}`{3,}\s*$/;
-const CLOSING_FENCE_TILDE_RE = /^ {0,3}~{3,}\s*$/;
+// Opening fence regexes: homogeneous runs only (no mixed ` and ~).
+// Per CommonMark §4.5, backtick info strings must not contain backticks.
+const OPENING_FENCE_BACKTICK_RE = /^ {0,3}(`{3,})\s*([^`]*)/;
+const OPENING_FENCE_TILDE_RE = /^ {0,3}(~{3,})\s*(\S*)/;
+// Closing fence regexes: homogeneous runs only (no mixed ` and ~).
+// Per CommonMark §4.5, the closing fence must be the same character repeated ≥ openLen times.
+const CLOSING_FENCE_BACKTICK_RE = /^ {0,3}(`{3,})\s*$/;
+const CLOSING_FENCE_TILDE_RE = /^ {0,3}(~{3,})\s*$/;
+function isClosingFence(line: string, fenceChar: string, openLen: number): boolean {
+  const re = fenceChar === "~" ? CLOSING_FENCE_TILDE_RE : CLOSING_FENCE_BACKTICK_RE;
+  const match = re.exec(line);
+  if (match === null) return false;
+  return (match[1] ?? "").length >= openLen;
+}
 
 const LANG_TO_EXT: Readonly<Record<string, string>> = {
   js: ".js",
@@ -98,18 +104,19 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
   let blockLang = "";
   let blockStartLine = 0;
   let blockLines: string[] = [];
-  // let: the closing fence regex chosen to match the opening fence character (` or ~)
-  let closingFenceRe: RegExp = CLOSING_FENCE_BACKTICK_RE;
+  // let: opening fence character and length for CommonMark-compliant closing fence matching
+  let openFenceChar = "`";
+  let openFenceLen = 3;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line === undefined) continue;
 
     if (!inBlock) {
-      const openMatch = OPENING_FENCE_RE.exec(line);
+      const openMatch = OPENING_FENCE_BACKTICK_RE.exec(line) ?? OPENING_FENCE_TILDE_RE.exec(line);
       if (openMatch !== null) {
-        const fenceChar = (openMatch[1] ?? "")[0];
-        const lang = (openMatch[2] ?? "").toLowerCase();
+        const fence = openMatch[1] ?? "```";
+        const lang = (openMatch[2] ?? "").trim().split(/\s/)[0]?.toLowerCase() ?? "";
         // Fail-closed: scan everything EXCEPT unambiguously non-executable langs.
         // Unknown or empty lang tags are treated as JS/TS and scanned.
         if (!SKIP_LANGS.has(lang)) {
@@ -117,10 +124,11 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
           blockLang = lang;
           blockStartLine = i + 1; // 1-based line number of the opening fence
           blockLines = [];
-          closingFenceRe = fenceChar === "~" ? CLOSING_FENCE_TILDE_RE : CLOSING_FENCE_BACKTICK_RE;
+          openFenceChar = fence[0] ?? "`";
+          openFenceLen = fence.length;
         }
       }
-    } else if (closingFenceRe.test(line)) {
+    } else if (isClosingFence(line, openFenceChar, openFenceLen)) {
       // Closing fence found
       const code = blockLines.join("\n");
       if (code.trim().length > 0) {
@@ -135,6 +143,20 @@ export function extractCodeBlocks(markdown: string): readonly CodeBlock[] {
       blockLines = [];
     } else {
       blockLines.push(line);
+    }
+  }
+
+  // CommonMark §4.5: unclosed fence runs to end of document — emit remaining content.
+  // Fail-closed: scan the trailing code so attackers can't smuggle by omitting the closer.
+  if (inBlock) {
+    const code = blockLines.join("\n");
+    if (code.trim().length > 0) {
+      const ext = LANG_TO_EXT[blockLang] ?? ".ts";
+      blocks.push({
+        code: `${code}\n`,
+        filename: `block-${blocks.length}${ext}`,
+        startLine: blockStartLine,
+      });
     }
   }
 

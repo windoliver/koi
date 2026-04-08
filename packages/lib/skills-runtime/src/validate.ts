@@ -6,10 +6,10 @@
  * This eliminates manual optional-field spreading in the loader.
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type { KoiError, Result, SkillExecutionMode } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
-import type { ValidatedSkillRequires } from "./types.js";
+import type { ValidatedFrontmatter, ValidatedSkillRequires } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Requires sub-schema
@@ -27,6 +27,9 @@ const requiresSchema = z.object({
 // Frontmatter schema with .transform() for camelCase normalization
 // ---------------------------------------------------------------------------
 
+/** Valid execution modes for skills. */
+const EXECUTION_MODES = new Set<string>(["inline", "fork"]);
+
 const frontmatterSchema = z
   .object({
     name: z.string().min(1, "name must not be empty"),
@@ -37,6 +40,13 @@ const frontmatterSchema = z
     "allowed-tools": z.union([z.string(), z.array(z.string())]).optional(),
     tags: z.array(z.string()).optional(),
     requires: requiresSchema.optional(),
+    // Execution mode: "inline" (default) or "fork" — validated by refine below
+    execution: z
+      .string()
+      .refine((v) => EXECUTION_MODES.has(v), {
+        message: 'execution must be "inline" or "fork"',
+      })
+      .optional(),
     // Catch-all for extra string fields (e.g., version, author)
     // Handled separately after base parse
   })
@@ -61,6 +71,11 @@ const frontmatterSchema = z
       ? rawTags.filter((t: unknown): t is string => typeof t === "string")
       : undefined;
 
+    // Execution mode already validated by .refine() above — safe to cast
+    const rawExecution = raw.execution;
+    const executionMode: SkillExecutionMode | undefined =
+      typeof rawExecution === "string" ? (rawExecution as SkillExecutionMode) : undefined;
+
     // Collect extra string metadata fields (exclude known keys)
     const knownKeys = new Set([
       "name",
@@ -71,6 +86,7 @@ const frontmatterSchema = z
       "tags",
       "requires",
       "includes",
+      "execution",
     ]);
     const metadata: Record<string, string> = {};
     for (const [key, value] of Object.entries(raw)) {
@@ -91,23 +107,12 @@ const frontmatterSchema = z
         Object.keys(metadata).length > 0
           ? (metadata as Readonly<Record<string, string>>)
           : undefined,
+      executionMode,
     };
   });
 
-// ---------------------------------------------------------------------------
-// Exported type — explicit shape matching the .transform() output
-// ---------------------------------------------------------------------------
-
-export interface ValidatedFrontmatter {
-  readonly name: string;
-  readonly description: string;
-  readonly license?: string;
-  readonly compatibility?: string;
-  readonly allowedTools?: readonly string[];
-  readonly tags?: readonly string[];
-  readonly requires?: ValidatedSkillRequires;
-  readonly metadata?: Readonly<Record<string, string>>;
-}
+// Re-export for backwards compat — canonical definition is in types.ts
+export type { ValidatedFrontmatter } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Public API

@@ -87,8 +87,13 @@ interface SkillsRuntime {
   readonly loadAll: () => Promise<Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>>;
   readonly query: (filter?: SkillQuery) => Promise<Result<readonly SkillMetadata[], KoiError>>;
   readonly invalidate: (name?: string) => void;
+  readonly registerExternal: (skills: readonly SkillMetadata[]) => void;
 }
 ```
+
+### `registerExternal(skills)`
+
+Injects non-filesystem skills (e.g., MCP-derived) into the runtime. External skills have lowest precedence — any filesystem skill with the same name shadows them. Replaces all previously registered external skills (full replacement, not merge). Cache for filesystem skills is not affected.
 
 ### `SkillMetadata`
 
@@ -106,6 +111,7 @@ interface SkillMetadata {
   readonly allowedTools?: readonly string[];
   readonly requires?: ValidatedSkillRequires;
   readonly metadata?: Readonly<Record<string, string>>;
+  readonly executionMode?: "inline" | "fork";
 }
 ```
 
@@ -132,7 +138,7 @@ interface SkillQuery {
 ### `SkillSource`
 
 ```typescript
-type SkillSource = "bundled" | "user" | "project";
+type SkillSource = "bundled" | "user" | "project" | "mcp";
 ```
 
 ## Usage Example
@@ -206,6 +212,7 @@ tags:
   - quality
   - security
 allowed-tools: read_file write_file
+execution: inline
 requires:
   bins: [git]
   env: [GITHUB_TOKEN]
@@ -216,9 +223,137 @@ requires:
 Follow these steps...
 ```
 
+The `execution` field is optional (defaults to `inline`). Set to `fork` for skills that should run as isolated sub-agents.
+
+## Execution Modes
+
+Skills support two execution modes, declared in SKILL.md frontmatter:
+
+| Mode | Behavior | Default |
+|------|----------|---------|
+| `inline` | Skill body injected as context into the current agent | Yes |
+| `fork` | Skill delegates to a sub-agent via `SpawnRequest` | No |
+
+```yaml
+---
+name: deep-analysis
+description: Performs deep code analysis.
+execution: fork
+allowed-tools: read_file grep
+---
+```
+
+**Inline mode** (default) is what skills have always done — the body becomes context for the model.
+
+**Fork mode** maps the skill to a `SpawnRequest`:
+- `systemPrompt` ← skill body
+- `toolAllowlist` ← skill `allowedTools`
+- `description` ← skill name
+
+The caller can override execution mode at runtime regardless of what the manifest declares.
+
+## MCP-Derived Skills
+
+When `@koi/mcp` is present, MCP tool descriptors can be registered as skills via `registerExternal()`. This gives them first-class visibility in the skill registry without pretending they are filesystem-based SKILL.md files.
+
+### Source Precedence (updated)
+
+With MCP, the precedence order becomes:
+
+| Tier | Default path | Priority |
+|------|-------------|----------|
+| `project` | `.claude/skills/` relative to CWD | Highest |
+| `user` | `~/.claude/skills/` | Middle |
+| `bundled` | Package-bundled skills | Low |
+| `mcp` | Registered via `registerExternal()` | Lowest |
+
+Filesystem skills always shadow MCP-derived skills of the same name.
+
+### Registration
+
+```typescript
+import { createSkillsRuntime } from "@koi/skills-runtime";
+import type { SkillMetadata } from "@koi/skills-runtime";
+
+const runtime = createSkillsRuntime();
+
+// Bridge package maps MCP ToolDescriptors → SkillMetadata
+const mcpSkills: readonly SkillMetadata[] = [
+  {
+    name: "mcp__my-server__search",
+    description: "Search documents via MCP server",
+    source: "mcp",
+    dirPath: "mcp://my-server",
+  },
+];
+
+runtime.registerExternal(mcpSkills);
+
+// MCP skills now appear in discover() and query()
+const result = await runtime.query({ source: "mcp" });
+```
+
+### Cache Separation
+
+External (MCP) skills and filesystem skills use **separate internal caches**. When an MCP server reconnects and updates its tool list, calling `registerExternal()` replaces external entries without triggering a filesystem re-scan. `invalidate()` clears both caches. `invalidate(name)` checks both.
+
+### Bridge Package Pattern (Layer Safety)
+
+`@koi/skills-runtime` (L2) cannot import from `@koi/mcp` (L2 peer) — this would violate the layer rules. Instead:
+
+1. `@koi/skills-runtime` defines `registerExternal(skills)` accepting `SkillMetadata[]`
+2. A thin bridge package (or L3 `@koi/runtime`) imports both and wires the mapping
+3. The bridge listens to `McpResolver.onChange()` and calls `registerExternal()` with updated skills
+
+## Skill Injection Middleware
+
+`createSkillInjectorMiddleware` reads `SkillComponent` entries from the agent ECS and prepends their content into `request.systemPrompt` so the model follows skill guidance.
+
+```typescript
+import { createSkillInjectorMiddleware } from "@koi/skills-runtime";
+import type { Agent } from "@koi/core";
+
+// Lazy agent ref — middleware created before createKoi assembles the entity
+const agentRef: { current?: Agent } = {};
+const injector = createSkillInjectorMiddleware({
+  agent: () => {
+    if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+    return agentRef.current;
+  },
+});
+
+// Pass to createKoi alongside the skill provider
+const runtime = await createKoi({
+  middleware: [injector],
+  providers: [createSkillProvider(skillRuntime)],
+});
+agentRef.current = runtime.agent;
+```
+
+**Design:**
+- Phase: `"resolve"`, priority 300 — after permissions, before observability
+- Skills sorted alphabetically by name for deterministic `systemPrompt` text
+- Accepts `Agent | (() => Agent)` — direct reference or lazy thunk
+- `describeCapabilities` returns a fragment listing active skill count and names
+- Passthrough (no copy) when no skills are attached
+
+## ComponentProvider Bridge
+
+`createSkillProvider` bridges a `SkillsRuntime` to the agent ECS at assembly time:
+
+```typescript
+import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
+
+const runtime = createSkillsRuntime();
+const provider = createSkillProvider(runtime);
+// Pass to createKoi({ providers: [provider] })
+```
+
+Each loaded skill becomes a `SkillComponent` under `skillToken(name)`. Skipped skills (NOT_FOUND, VALIDATION, PERMISSION) are reported as `SkippedComponent` entries.
+
 ## Dependencies
 
-- `@koi/core` (L0) — `KoiError`, `Result`
+- `@koi/core` (L0) — `KoiError`, `Result`, `Agent`, `SkillComponent`, `KoiMiddleware`
 - `@koi/skill-scanner` (L0u) — AST-based security scanning
 - `@koi/validation` (L0u) — severity comparison, Zod error mapping
 - `zod` (external) — frontmatter schema validation

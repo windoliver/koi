@@ -1091,4 +1091,252 @@ describe("runTurn", () => {
       }
     });
   });
+
+  describe("within-turn dedup", () => {
+    test("duplicate tool calls within a turn are deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* dupToolStream(): AsyncIterable<ModelChunk> {
+        // Two identical tool calls: same name, same args, different callId
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+        yield { kind: "tool_call_delta", callId: callId("tc-1"), delta: '{"subject":"Fix auth"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+        yield { kind: "tool_call_delta", callId: callId("tc-2"), delta: '{"subject":"Fix auth"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => dupToolStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "created" };
+        },
+        tools: [toolDesc("task_create")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool handler should be called exactly once — duplicate skipped
+      expect(callCount.value).toBe(1);
+
+      // Should emit dedup_skipped custom event
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeDefined();
+      if (dedupEvent?.kind === "custom") {
+        const data = dedupEvent.data as {
+          skipped: ReadonlyArray<{ toolName: string; callId: string }>;
+        };
+        expect(data.skipped).toHaveLength(1);
+        expect(data.skipped[0]?.toolName).toBe("task_create");
+        expect(data.skipped[0]?.callId).toBe("tc-2");
+      }
+
+      // Should complete successfully
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+
+    test("different args are not deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* diffArgsStream(): AsyncIterable<ModelChunk> {
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+        yield { kind: "tool_call_delta", callId: callId("tc-1"), delta: '{"subject":"Task A"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+        yield { kind: "tool_call_delta", callId: callId("tc-2"), delta: '{"subject":"Task B"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => diffArgsStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "created" };
+        },
+        tools: [toolDesc("task_create")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Both should execute — different args
+      expect(callCount.value).toBe(2);
+
+      // No dedup event
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeUndefined();
+    });
+
+    test("different tool names with same args are not deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* diffToolsStream(): AsyncIterable<ModelChunk> {
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+        yield { kind: "tool_call_delta", callId: callId("tc-1"), delta: '{"subject":"Same"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "task_update", callId: callId("tc-2") };
+        yield { kind: "tool_call_delta", callId: callId("tc-2"), delta: '{"subject":"Same"}' };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => diffToolsStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "ok" };
+        },
+        tools: [toolDesc("task_create"), toolDesc("task_update")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Both should execute — different tool names
+      expect(callCount.value).toBe(2);
+
+      // No dedup event
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeUndefined();
+    });
+
+    test("semantically identical args with different key order are deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* reorderedKeysStream(): AsyncIterable<ModelChunk> {
+        // Same args but different JSON key order
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-1"),
+          delta: '{"subject":"X","desc":"Y"}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-2"),
+          delta: '{"desc":"Y","subject":"X"}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => reorderedKeysStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "created" };
+        },
+        tools: [toolDesc("task_create")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Should dedup despite different key order
+      expect(callCount.value).toBe(1);
+
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeDefined();
+    });
+
+    test("nested args with different values are not deduped", async () => {
+      const callCount = { value: 0 };
+
+      async function* nestedArgsStream(): AsyncIterable<ModelChunk> {
+        // Same top-level keys but different nested values
+        yield { kind: "tool_call_start", toolName: "search", callId: callId("tc-1") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-1"),
+          delta: '{"filter":{"status":"open"}}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-1") };
+        yield { kind: "tool_call_start", toolName: "search", callId: callId("tc-2") };
+        yield {
+          kind: "tool_call_delta",
+          callId: callId("tc-2"),
+          delta: '{"filter":{"status":"closed"}}',
+        };
+        yield { kind: "tool_call_end", callId: callId("tc-2") };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [() => nestedArgsStream(), createTextStream("done")],
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+          callCount.value += 1;
+          return { output: "results" };
+        },
+        tools: [toolDesc("search")],
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Both should execute — different nested values
+      expect(callCount.value).toBe(2);
+
+      const dedupEvent = events.find((e) => e.kind === "custom" && e.type === "dedup_skipped");
+      expect(dedupEvent).toBeUndefined();
+    });
+
+    test("skipped duplicate has synthetic tool result in transcript", async () => {
+      const receivedRequests: ModelRequest[] = [];
+      // let justified: mutable call counter for cycling through responses
+      let modelCallIndex = 0;
+
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (_request: ModelRequest): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+          receivedRequests.push(request);
+          const index = modelCallIndex;
+          modelCallIndex += 1;
+          if (index === 0) {
+            return (async function* (): AsyncIterable<ModelChunk> {
+              yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-1") };
+              yield { kind: "tool_call_delta", callId: callId("tc-1"), delta: '{"s":"X"}' };
+              yield { kind: "tool_call_end", callId: callId("tc-1") };
+              yield { kind: "tool_call_start", toolName: "task_create", callId: callId("tc-2") };
+              yield { kind: "tool_call_delta", callId: callId("tc-2"), delta: '{"s":"X"}' };
+              yield { kind: "tool_call_end", callId: callId("tc-2") };
+              yield { kind: "done", response: DONE_RESPONSE };
+            })();
+          }
+          return textStream("done");
+        },
+        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => ({
+          output: "created",
+        }),
+        tools: [toolDesc("task_create")],
+      };
+
+      await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Second model call transcript should have both assistant intents and
+      // two tool results (real + replicated) for callId pairing
+      expect(receivedRequests.length).toBe(2);
+      const secondRequest = receivedRequests[1];
+      expect(secondRequest).toBeDefined();
+      if (secondRequest !== undefined) {
+        const assistantMsgs = secondRequest.messages.filter((m) => m.senderId === "assistant");
+        const toolMsgs = secondRequest.messages.filter((m) => m.senderId === "tool");
+        // 1 assistant message with both tool call intents in metadata.toolCalls
+        expect(assistantMsgs.length).toBe(1);
+        // 2 tool results (real execution + replicated real output)
+        expect(toolMsgs.length).toBe(2);
+        // Both tool results should contain the real output, not a placeholder
+        for (const msg of toolMsgs) {
+          const text = msg.content[0];
+          if (text?.kind === "text") {
+            expect(text.text).toContain('"created"');
+          }
+        }
+      }
+    });
+  });
 });
