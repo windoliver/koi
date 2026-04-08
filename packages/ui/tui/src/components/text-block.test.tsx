@@ -66,16 +66,16 @@ describe("TextBlock — plain text (no syntaxStyle)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// With syntaxStyle but no treeSitterClient — falls back to <text>
+// With syntaxStyle (activates <markdown> — tree-sitter auto-initializes)
 // ---------------------------------------------------------------------------
 
-describe("TextBlock — with syntaxStyle but no treeSitterClient (text fallback)", () => {
-  // TextBlock requires BOTH syntaxStyle AND treeSitterClient to activate
-  // <markdown>. With only syntaxStyle, it uses the <text> fallback so prose
-  // renders correctly without tree-sitter WASM (not loadable in unit tests).
+describe("TextBlock — with syntaxStyle (markdown mode)", () => {
+  // TextBlock uses <markdown> when syntaxStyle is provided. Tree-sitter
+  // auto-initializes via getTreeSitterClient() singleton (opencode pattern).
+  // In unit tests, tree-sitter may not render styled output but should not crash.
   const syntaxStyle = SyntaxStyle.create();
 
-  test("renders plain text content (uses <text> fallback)", async () => {
+  test("renders text content via markdown", async () => {
     const frame = await renderTextBlock({ text: "hello world", syntaxStyle });
     expect(frame).toContain("hello world");
   });
