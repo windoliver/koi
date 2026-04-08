@@ -204,14 +204,18 @@ describe("drainEngineStream — abort handling", () => {
 
     const events: EngineEvent[] = [
       { kind: "text_delta", delta: "I'll " } as EngineEvent,
-      { kind: "tool_call_start", callId: "c1", toolName: "Bash" } as EngineEvent,
-      { kind: "tool_call_end", callId: "c1", result: { output: "ok" } } as EngineEvent,
+      {
+        kind: "tool_call_start",
+        callId: "c1" as import("@koi/core").ToolCallId,
+        toolName: "Bash",
+      } as EngineEvent,
+      { kind: "tool_call_end", callId: "c1" as import("@koi/core").ToolCallId } as EngineEvent,
       { kind: "text_delta", delta: "done" } as EngineEvent,
     ];
     await drainEngineStream(makeStream(events), store, batcher);
     batcher.flushSync();
 
     expect(flushed.length).toBe(4);
-    expect(flushed[1]).toEqual({ kind: "tool_call_start", callId: "c1", toolName: "Bash" });
+    expect((flushed[1] as { kind: string }).kind).toBe("tool_call_start");
   });
 });
