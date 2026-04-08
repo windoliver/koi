@@ -6,6 +6,11 @@
  *   - Todo items: flat array, replaced on each TodoWrite call
  *   - Plan mode: boolean flag + in-memory plan content
  *
+ * NOTE: Interaction state (todo list, plan mode flag, plan content) is ephemeral —
+ * stored in closure locals, lost on process restart. Sessions resumed via --resume
+ * will start with empty state. Persisting interaction state alongside the session
+ * transcript is a future enhancement.
+ *
  * The `elicit` callback must be provided by the caller (harness or CLI layer).
  * For CLI use: wire it to the TUI dialog or a readline prompt.
  * For tests: wire it to a mock that returns pre-canned answers.

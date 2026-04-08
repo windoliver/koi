@@ -25,7 +25,9 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     // quoted strings (e.g., MIT license text: "Software"), to deal...").
     // \n is included so multiline payloads like "echo ok\n. /tmp/evil.sh"
     // are caught even without a semicolon separator.
-    regex: /\bsource\b|(?:^|[;|&\n]\s*)\.\s+\S/,
+    // ^\s* allows leading whitespace at the start of input so "  . /tmp/evil.sh"
+    // is blocked even when the dot is not at column 0.
+    regex: /\bsource\b|(?:^\s*|[;|&\n]\s*)\.\s+\S/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },

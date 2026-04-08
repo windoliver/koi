@@ -19,12 +19,9 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import * as readline from "node:readline";
 import { createCliChannel } from "@koi/channel-cli";
 import type {
   ComponentProvider,
-  ElicitationQuestion,
-  ElicitationResult,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -54,7 +51,7 @@ import {
   resumeForSession,
 } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
-import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
@@ -90,42 +87,19 @@ function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
 }
 
 /**
- * Readline-based elicitation for AskUserQuestion in CLI mode.
- * Presents each question with numbered options, reads the user's selection.
- */
-async function cliElicit(
-  questions: readonly ElicitationQuestion[],
-): Promise<readonly ElicitationResult[]> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
-
-  const results: ElicitationResult[] = [];
-  for (const q of questions) {
-    process.stdout.write(`\n${q.question}\n`);
-    for (const [i, opt] of q.options.entries()) {
-      process.stdout.write(
-        `  ${String(i + 1)}. ${opt.label}${opt.description ? ` — ${opt.description}` : ""}\n`,
-      );
-    }
-    const answer = await ask("Your choice (number or text): ");
-    const idx = parseInt(answer, 10) - 1;
-    const selected = idx >= 0 ? q.options[idx] : undefined;
-    if (selected !== undefined) {
-      results.push({ selected: [selected.label] });
-    } else {
-      results.push({ selected: [], freeText: answer });
-    }
-  }
-  rl.close();
-  return results;
-}
-
-/**
  * Build the static ComponentProviders wired into every session:
  *   - builtin search (Glob, Grep)
  *   - web_fetch
  *   - Bash
- *   - interaction (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion)
+ *   - TodoWrite (task list tracker — no permission gating needed)
+ *
+ * NOTE: EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally
+ * NOT wired here. Plan-mode requires a permission backend that can enforce
+ * the read-only gate (deny Write/Edit/Bash until the plan is approved).
+ * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading —
+ * the mode flag would flip but no permissions would actually be restricted.
+ * The TUI harness wires the full interaction provider (including plan-mode)
+ * because it has a real permission backend. `koi start` uses TodoWrite only.
  */
 async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
   const searchProvider = createBuiltinSearchProvider({ cwd });
@@ -136,14 +110,18 @@ async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
     operations: ["fetch"],
   });
   const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
-  // Dynamic import: @koi/runtime re-exports from @koi/query-engine which causes
-  // a worktree dist resolution issue in Bun's test runner (ESM named export
-  // detection fails on stale dist). Lazy loading avoids the test-time crash.
-  const { createInteractionProvider } = await import("@koi/runtime");
-  const interactionProvider = createInteractionProvider({
-    elicit: cliElicit,
+
+  // let: mutable todo list, replaced atomically on each write
+  let todoItems: readonly TodoItem[] = [];
+  const todoTool = createTodoTool({
+    getItems: () => todoItems,
+    setItems: (items) => {
+      todoItems = items;
+    },
   });
-  return [searchProvider, webProvider, bashProvider, interactionProvider];
+  const todoProvider = wrapToolAsProvider(todoTool);
+
+  return [searchProvider, webProvider, bashProvider, todoProvider];
 }
 
 /**
