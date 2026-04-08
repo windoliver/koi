@@ -1,6 +1,6 @@
 # @koi/tools-builtin
 
-Layer 2 package — Built-in tools (filesystem + search) implementing the L0 `Tool` contract.
+Layer 2 package — Built-in tools (filesystem, search, and interaction) implementing the L0 `Tool` contract.
 
 ## Purpose
 
@@ -20,6 +20,13 @@ These are "primordial" tools — bundled at build time, highest trust level. The
 - **Grep** — Content search with rg backend + native literal fallback
 - **ToolSearch** — Keyword/select search over available tool summaries
 
+### Interaction Tools
+
+- **TodoWrite** — In-conversation to-do list management. Model provides the full replacement list on each call. Auto-clears when all items reach `completed` status.
+- **EnterPlanMode** — Read-only planning gate. Transitions the harness permission mode to `plan` (no file writes/edits/Bash until the plan is approved). Main-thread only — blocked with `FORBIDDEN` when called from a spawned agent context. Disabled in channel mode (no TUI dialog available).
+- **ExitPlanMode** — Plan approval with `allowedPrompts`. Presents plan for user approval on the main-thread path (policy-gated: `ask`). On the swarm-teammate path, writes a `plan_approval_request` to the team lead mailbox and returns `awaitingLeaderApproval: true`. Requires non-empty `plan_content` on all paths.
+- **AskUserQuestion** — Structured elicitation. Presents 1–4 predefined-choice questions to the user and waits for answers. Stateless: delegates all pause/answer logic to the `elicit` callback provided by the harness. Disabled in channel mode. Omitted entirely when `elicit` is not wired.
+
 ## Architecture
 
 ```
@@ -34,7 +41,10 @@ L2  @koi/tools-builtin  ← this package
         ├── tools/
         │   ├── read.ts           createFsReadTool(backend, prefix, policy)
         │   ├── edit.ts           createFsEditTool(backend, prefix, policy)
-        │   └── write.ts          createFsWriteTool(backend, prefix, policy)
+        │   ├── write.ts          createFsWriteTool(backend, prefix, policy)
+        │   ├── todo.ts           createTodoTool(config)
+        │   ├── plan-mode.ts      createEnterPlanModeTool(config) + createExitPlanModeTool(config)
+        │   └── ask-user.ts       createAskUserTool(config)
         ├── glob-tool.ts          createGlobTool(config)
         ├── grep-tool.ts          createGrepTool(config)
         ├── tool-search-tool.ts   createToolSearchTool(config)
@@ -99,6 +109,49 @@ Input: `{ query, max_results? }`. Returns `ToolSummary[]`.
 ### `createBuiltinSearchProvider(config): ComponentProvider`
 
 Bundles Glob, Grep, ToolSearch under `toolToken()` keys.
+
+## Interaction Tool API
+
+All interaction tool factories use `DEFAULT_UNSANDBOXED_POLICY` by default (overridable via `policy` in the config).
+
+### `createTodoTool(config: TodoToolConfig): Tool`
+
+Input: `{ todos: TodoItem[] }` — complete replacement list.
+
+```typescript
+interface TodoItem {
+  readonly id: string;
+  readonly content: string;
+  readonly status: "pending" | "in_progress" | "completed";
+  readonly activeForm?: string; // present-continuous verb for spinner, e.g. "Running tests"
+}
+```
+
+Returns `{ todos, cleared }`. `cleared: true` when all items were `completed` and the list was auto-wiped.
+
+State is injected via `getItems`/`setItems` callbacks — the tool itself holds no state. Call `setItems([])` on session reset.
+
+### `createEnterPlanModeTool(config: EnterPlanModeConfig): Tool`
+
+Input: `{}` (no args). Calls `config.enterPlanMode()` on success. Returns an error if:
+- `isAgentContext()` returns `true` — `FORBIDDEN`
+- `isChannelsActive()` returns `true` — `UNAVAILABLE`
+- Already in plan mode — `CONFLICT`
+
+### `createExitPlanModeTool(config: ExitPlanModeConfig): Tool`
+
+Input: `{ plan_content: string, allowedPrompts?: { tool: "Bash", prompt: string }[] }`.
+
+- Main-thread path: policy-gated (`ask`) — harness presents plan for user approval. After approval, calls `exitPlanMode()` and `onApproved(allowedPrompts)`.
+- Swarm-teammate path (`isTeammate && isPlanModeRequired`): writes `plan_approval_request` to team lead mailbox via `writeToMailbox`, returns `{ awaitingLeaderApproval: true, requestId }`.
+
+### `createAskUserTool(config: AskUserToolConfig): Tool`
+
+Input: `{ questions: ElicitationQuestion[] }` (1–4 questions, each with 2+ options).
+
+Delegates to `config.elicit(questions)` — the harness is responsible for pausing the agent loop and resolving with user answers. Returns `{ answers: [{ question, selected, freeText? }] }`.
+
+Omit from the tool set entirely (don't call the factory) when `elicit` is not available. `createInteractionProvider` (in `@koi/runtime`) handles this automatically.
 
 ## Layer Compliance
 

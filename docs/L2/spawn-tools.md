@@ -72,9 +72,23 @@ owned mutations atomically (#1241 follow-up).
 
 | Tool | Notes |
 |------|-------|
-| `agent_spawn` | Spawns a named child agent via injected `SpawnFn`. Returns `{ ok, output }`. Call `task_delegate` first to mark the task on the board, then pass `task_id` here so the child's result can be matched back. |
+| `agent_spawn` | Spawns a named child agent via injected `SpawnFn`. Returns `{ ok, output }`. Input: `{ agent_name, description, context? }`. Does NOT accept `task_id` — coupling to the task board is the responsibility of the autonomous bridge (#1553), not the tool itself. |
 
 ## Key Design Decisions
+
+### agent_spawn and task_delegate are intentionally independent
+
+`agent_spawn` does not accept a `task_id` parameter. The two tools are decoupled by design:
+
+- **Interactive/manual mode** (like CC's Agent tool): the coordinator model calls
+  `task_delegate` then `agent_spawn` in sequence and manually closes the loop by reading
+  the child output and calling `task_update`.
+- **Autonomous/swarm mode** (#1553): a bridge component (modelled on v1's
+  `dispatchSpawnTasks`) will atomically couple `task_delegate → agent_spawn →
+  auto-complete`. That bridge handles clearing stale `metadata.delegatedTo` on crash
+  recovery, passing `task_id` to the spawned child for deterministic claiming, and
+  providing an undelegate path for reassignment. The bridge is a separate layer, not
+  baked into these tools.
 
 ### SpawnFn is injected, not imported
 
@@ -102,11 +116,13 @@ restarts.
 ## Coordinator Workflow (with @koi/task-tools)
 
 ```
-1. task_create × N          — add all subtasks to the board (set metadata.kind)
-2. task_delegate + agent_spawn — fan-out: delegate then spawn for each task
+1. task_create × N             — add all subtasks to the board (set metadata.kind)
+2. task_delegate + agent_spawn — fan-out: delegate intent then spawn for each task
+                                  (model closes the loop manually in interactive mode;
+                                   #1553 bridge automates this for swarm use)
 3. task_list({ updated_since }) — poll for changed tasks only
-4. task_output              — fetch results one at a time, summarize each
-5. synthesize               — combine summaries into final answer
+4. task_output                 — fetch results one at a time, summarize each
+5. synthesize                  — combine summaries into final answer
 ```
 
 On restart: call `recoverOrphanedTasks` to reset any tasks left in_progress from the
