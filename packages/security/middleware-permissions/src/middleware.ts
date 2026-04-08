@@ -208,6 +208,16 @@ function tagCached(decision: PermissionDecision): PermissionDecision {
 }
 
 /** Determine denial source for tracker recording. Only "policy" counts toward escalation. */
+/** Safely serialize a value to a JSON preview string, truncated to maxLen. */
+function safePreviewJson(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 function denialSource(
   decision: PermissionDecision,
 ): "policy" | "backend-error" | "escalation" | "approval" {
@@ -1068,6 +1078,7 @@ export function createPermissionsMiddleware(
       ctx.reportDecision?.({
         phase: "execute",
         toolId: request.toolId,
+        toolInput: safePreviewJson(request.input, 300),
         action: decision.effect,
         durationMs,
         ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),

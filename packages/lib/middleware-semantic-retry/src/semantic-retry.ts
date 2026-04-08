@@ -415,6 +415,8 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         failureClass: lastClass.kind,
         retryCount: state.records.length,
         budgetRemaining: minBudget(state.budgets),
+        requestModified: modifiedRequest !== request,
+        messageCount: modifiedRequest.messages.length,
         failureHistory: state.records.map((r) => ({
           failureClass: r.failureClass.kind,
           succeeded: r.succeeded,
@@ -505,6 +507,8 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           failureClass: lastClass.kind,
           retryCount: state.records.length,
           budgetRemaining: minBudget(state.budgets),
+          requestModified: effectiveRequest !== request,
+          messageCount: effectiveRequest.messages.length,
           failureHistory: state.records.map((r) => ({
             failureClass: r.failureClass.kind,
             succeeded: r.succeeded,

@@ -711,12 +711,14 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
       ctx.reportDecision?.({
         injected: inject,
+        turnIndex: ctx.turnIndex,
         objectives: state.items.map((i) => ({
           text: i.text,
           completed: i.completed,
         })),
         completedCount: state.items.filter((i) => i.completed).length,
         totalCount: state.items.length,
+        messageCount: request.messages.length,
         ...(goalBlock !== undefined ? { goalBlock } : {}),
       });
       const enrichedRequest =
@@ -756,12 +758,14 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
       ctx.reportDecision?.({
         injected: inject,
+        turnIndex: ctx.turnIndex,
         objectives: state.items.map((i) => ({
           text: i.text,
           completed: i.completed,
         })),
         completedCount: state.items.filter((i) => i.completed).length,
         totalCount: state.items.length,
+        messageCount: request.messages.length,
         ...(goalBlock !== undefined ? { goalBlock } : {}),
       });
       const enrichedRequest =

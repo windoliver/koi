@@ -129,6 +129,7 @@ export function createExfiltrationGuardMiddleware(
           location: "model-output",
           matchCount: result.matchCount,
           action: config.action,
+          scanLength: textToScan.length,
         });
 
         if (config.action === "block") {
@@ -195,6 +196,7 @@ export function createExfiltrationGuardMiddleware(
             matchCount: result.secretCount,
             action: config.action,
             ...(kinds.length > 0 ? { kinds } : {}),
+            scanLength: JSON.stringify(request.input).length,
           });
 
           if (config.action === "block") {
@@ -267,6 +269,7 @@ export function createExfiltrationGuardMiddleware(
           toolId: request.toolId,
           matchCount: outputResult.matchCount,
           action: config.action,
+          scanLength: outputToScan.length,
         });
 
         if (config.action === "block") {
