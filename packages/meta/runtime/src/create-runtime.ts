@@ -330,22 +330,24 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
-      // Drain active stream finalizations (flush + afterFlush) before tearing down
-      // transport. This covers streams whose finally block is in-flight but whose
-      // flush promise hasn't been tracked yet in activeFlushes.
-      if (activeStreamFinalizations.size > 0) {
-        await Promise.allSettled([...activeStreamFinalizations]);
-      }
-      // Also drain any standalone flushes that may have been tracked separately.
-      if (activeFlushes.size > 0) {
-        await Promise.allSettled([...activeFlushes]);
-      }
+      // Step 1: Dispose adapter first — this terminates active model streams,
+      // which triggers their finally blocks (where flush + afterFlush run).
+      // Without this, awaiting stream finalizations would deadlock because
+      // only adapter disposal can abort a live model stream.
       const results = await Promise.allSettled([
         channel.disconnect(),
         rawAdapter.dispose?.() ?? Promise.resolve(),
         filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
-      // Close trajectory Nexus transport AFTER drain + dispose.
+      // Step 2: Now drain stream finalizations (flush + afterFlush) that were
+      // triggered by adapter disposal above.
+      if (activeStreamFinalizations.size > 0) {
+        await Promise.allSettled([...activeStreamFinalizations]);
+      }
+      if (activeFlushes.size > 0) {
+        await Promise.allSettled([...activeFlushes]);
+      }
+      // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
       trajectoryTransport?.close();
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failures.length > 0) {
@@ -414,10 +416,16 @@ function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryResolution | u
       : { agentName: config.agentName ?? DEFAULT_AGENT_NAME };
 
   if (config.trajectoryNexus !== undefined) {
-    const transport = createHttpTransport({
-      url: config.trajectoryNexus.url,
-      apiKey: config.trajectoryNexus.apiKey,
-    });
+    const { url, apiKey } = config.trajectoryNexus;
+    if (typeof url !== "string" || url.trim() === "") {
+      throw new Error("trajectoryNexus.url must be a non-empty string");
+    }
+    try {
+      new URL(url);
+    } catch {
+      throw new Error(`trajectoryNexus.url is not a valid URL: ${url}`);
+    }
+    const transport = createHttpTransport({ url, apiKey });
     const delegate = createNexusAtifDelegate({
       transport,
       basePath: config.trajectoryNexus.basePath,
