@@ -1339,4 +1339,234 @@ describe("runTurn", () => {
       }
     });
   });
+
+  describe("doom loop detection", () => {
+    test("detects doom loop after threshold consecutive identical tool calls", async () => {
+      // 3 turns of identical readFile calls, then model responds with text after intervention
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
+          // After doom loop intervention, model responds with text
+          createTextStream("I will try a different approach"),
+        ],
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+        }),
+      );
+
+      // Should have a doom_loop_detected custom event
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeDefined();
+      if (doomEvent?.kind === "custom") {
+        const data = doomEvent.data as { toolName: string; consecutiveTurns: number };
+        expect(data.toolName).toBe("readFile");
+        expect(data.consecutiveTurns).toBe(3);
+      }
+
+      // Should complete successfully after re-prompt
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+
+    test("does not fire below threshold", async () => {
+      // 2 identical calls with threshold=3 — no doom loop
+      const toolCalls: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          createTextStream("done"),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "file-content" };
+        },
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+        }),
+      );
+
+      // No doom loop event
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      // Both tool calls should have executed
+      expect(toolCalls).toEqual(["readFile", "readFile"]);
+    });
+
+    test("different args reset the streak", async () => {
+      const toolCalls: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/bar"}'),
+          createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
+          createTextStream("done"),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "content" };
+        },
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+        }),
+      );
+
+      // No doom loop — streak was broken by different args
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      // All 3 tool calls executed
+      expect(toolCalls.length).toBe(3);
+    });
+
+    test("text-only turn resets streak", async () => {
+      const toolCalls: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          // Text-only turn breaks the streak
+          createTextStream("thinking..."),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "content" };
+        },
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+          // Use stop gate to re-enter the loop after text-only turn
+          stopGate: async (_turnIndex: number) => {
+            return { kind: "continue" };
+          },
+        }),
+      );
+
+      // No doom loop event — text-only turn broke the streak
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      // Both tool calls should have executed
+      expect(toolCalls.length).toBe(2);
+    });
+
+    test("threshold=0 disables detection", async () => {
+      const toolCalls: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
+          createTextStream("done"),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "content" };
+        },
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 0,
+        }),
+      );
+
+      // No doom loop — detection disabled
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      // All 3 tool calls executed
+      expect(toolCalls.length).toBe(3);
+    });
+
+    test("respects maxDoomLoopInterventions cap", async () => {
+      // 5 identical calls with threshold=2, maxInterventions=2
+      // Turns 1-2: identical → intervention 1
+      // Turn 3: identical → intervention 2 (cap reached)
+      // Turn 4: identical → no intervention, tool executes
+      const toolCalls: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          // After intervention 1, model tries again
+          createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
+          // After intervention 2, model tries again — cap exhausted, tool executes
+          createToolCallStream("readFile", "tc-4", '{"path":"/foo"}'),
+          createTextStream("done"),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "content" };
+        },
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 2,
+          maxDoomLoopInterventions: 2,
+        }),
+      );
+
+      // Should have exactly 2 doom loop events
+      const doomEvents = events.filter(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvents.length).toBe(2);
+
+      // After cap exhausted, tool should execute
+      expect(toolCalls.length).toBeGreaterThanOrEqual(1);
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+  });
 });

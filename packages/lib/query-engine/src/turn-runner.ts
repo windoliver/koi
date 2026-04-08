@@ -16,6 +16,13 @@ import type {
 } from "@koi/core";
 import { DEFAULT_MAX_STOP_RETRIES } from "@koi/core";
 import { consumeModelStream } from "./consume-stream.js";
+import {
+  DEFAULT_DOOM_LOOP_THRESHOLD,
+  DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
+  detectDoomLoop,
+  parseDoomLoopKey,
+  updateStreaks,
+} from "./doom-loop.js";
 import type { TurnState } from "./turn-machine.js";
 import { createTurnState, transitionTurn } from "./turn-machine.js";
 import type { AccumulatedToolCall } from "./types.js";
@@ -38,6 +45,18 @@ export interface TurnRunnerConfig {
   readonly stopGate?: (turnIndex: number) => Promise<StopGateResult>;
   /** Maximum stop-gate re-prompts per session. Default: DEFAULT_MAX_STOP_RETRIES (3). */
   readonly maxStopRetries?: number | undefined;
+  /**
+   * Consecutive turns with an identical tool call (same name + args) before
+   * the runner injects a system message telling the model to stop repeating.
+   * Set to 0 or 1 to disable. Default: DEFAULT_DOOM_LOOP_THRESHOLD (3).
+   */
+  readonly doomLoopThreshold?: number | undefined;
+  /**
+   * Maximum doom-loop interventions before giving up and letting tools execute.
+   * `maxTurns` remains the ultimate safety valve.
+   * Default: DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS (2).
+   */
+  readonly maxDoomLoopInterventions?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +71,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     maxTurns,
     stopGate,
     maxStopRetries = DEFAULT_MAX_STOP_RETRIES,
+    doomLoopThreshold = DEFAULT_DOOM_LOOP_THRESHOLD,
+    maxDoomLoopInterventions = DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
   } = config;
 
   // let justified: mutable state driven by pure transition function
@@ -67,6 +88,10 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let errorMetadata: JsonObject | undefined;
   // let justified: mutable counter for stop-gate re-prompts
   let stopRetryCount = 0;
+  // let justified: mutable doom-loop streak counters (key → consecutive turn count)
+  let doomLoopStreaks = new Map<string, number>();
+  // let justified: mutable doom-loop intervention counter
+  let doomLoopInterventions = 0;
   const startTime = performance.now();
 
   // Pre-flight: handle already-aborted signal before entering the state machine.
@@ -318,6 +343,62 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           skipped: skippedToolCalls.map((tc) => ({ toolName: tc.toolName, callId: tc.callId })),
         },
       };
+    }
+
+    // Doom loop detection: check if any deduped tool call has been repeated
+    // across consecutive turns. If so, inject a system message telling the
+    // model to try a different approach, and skip tool execution this turn.
+    if (dedupedToolCalls.length > 0 && doomLoopThreshold >= 2) {
+      const currentKeys = dedupedToolCalls.map((tc) => {
+        const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+        return `${tc.toolName}\0${cArgs}`;
+      });
+
+      doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
+
+      const repeatedKey = detectDoomLoop(doomLoopStreaks, currentKeys, doomLoopThreshold);
+
+      if (repeatedKey !== null && doomLoopInterventions < maxDoomLoopInterventions) {
+        const { toolName } = parseDoomLoopKey(repeatedKey);
+
+        yield {
+          kind: "custom",
+          type: "doom_loop_detected",
+          data: {
+            toolName,
+            consecutiveTurns: doomLoopThreshold,
+            turnIndex: state.turnIndex,
+          },
+        };
+
+        if (turnText.length > 0) {
+          appendAssistantTurn(transcript, turnText, []);
+        }
+
+        transcript.push({
+          senderId: "system",
+          content: [
+            {
+              kind: "text",
+              text: `[Doom loop detected]: You have called "${toolName}" with the same arguments ${doomLoopThreshold} times consecutively. The tool already returned a result. Stop repeating this call and try a different approach.`,
+            },
+          ],
+          timestamp: Date.now(),
+        });
+
+        doomLoopInterventions++;
+
+        // Reuse the stop_blocked transition path: model_done(no tools) → complete → stop_blocked → continue
+        state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+        if (state.stopReason === "completed") {
+          state = transitionTurn(state, { kind: "stop_blocked" });
+        }
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        continue;
+      }
+    } else if (dedupedToolCalls.length === 0 && doomLoopThreshold >= 2) {
+      // Text-only turn: clear streaks (streak is broken)
+      doomLoopStreaks = new Map();
     }
 
     // Transition based on model response
