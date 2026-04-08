@@ -388,12 +388,18 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
         doomLoopInterventions++;
 
-        // Reuse the stop_blocked transition path: model_done(no tools) → complete → stop_blocked → continue
+        // Re-prompt without consuming the turn budget. Use stop_blocked to
+        // re-enter the loop, but compensate the turnIndex increment so the
+        // doom-loop intervention doesn't count against maxTurns.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+        const preTurnIndex = state.turnIndex;
         if (state.stopReason === "completed") {
           state = transitionTurn(state, { kind: "stop_blocked" });
         }
-        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        yield { kind: "turn_end", turnIndex: preTurnIndex };
+        // Compensate: stop_blocked incremented turnIndex, but doom-loop
+        // interventions should not consume the turn budget.
+        state = { ...state, turnIndex: preTurnIndex };
         continue;
       }
     } else if (dedupedToolCalls.length === 0 && doomLoopThreshold >= 2) {

@@ -72,6 +72,21 @@ describe("detectDoomLoop", () => {
     const streaks = new Map([[keyA, 10]]);
     expect(detectDoomLoop(streaks, [keyB], 3)).toBeNull();
   });
+
+  test("returns null when one key is repeated but another is new (mixed progress)", () => {
+    const streaks = new Map([[keyA, 5]]);
+    // keyA is repeated but keyB is new → model is making progress
+    expect(detectDoomLoop(streaks, [keyA, keyB], 3)).toBeNull();
+  });
+
+  test("returns null when only some keys exceed threshold in mixed turn", () => {
+    const streaks = new Map([
+      [keyA, 3],
+      [keyB, 1],
+    ]);
+    // keyA exceeds threshold but keyB does not → model is making progress
+    expect(detectDoomLoop(streaks, [keyA, keyB], 3)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

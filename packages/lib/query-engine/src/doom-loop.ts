@@ -15,10 +15,12 @@ export const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
 export const DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS = 2;
 
 /**
- * Check whether any key in `currentKeys` has a consecutive streak
- * >= `threshold` in the streak map.
+ * Check whether ALL keys in `currentKeys` have a consecutive streak
+ * >= `threshold` in the streak map. This ensures we only intervene when
+ * the model is making zero progress — if even one call is new/different,
+ * the model is doing something different and should be allowed to proceed.
  *
- * Returns the offending key (`toolName\0canonicalArgs`) or null.
+ * Returns the first offending key (`toolName\0canonicalArgs`) or null.
  * Pure function — no mutations.
  */
 export function detectDoomLoop(
@@ -28,11 +30,14 @@ export function detectDoomLoop(
 ): string | null {
   if (threshold < 2 || currentKeys.length === 0) return null;
 
+  // let justified: mutable tracker for first offending key
+  let firstRepeated: string | null = null;
   for (const key of currentKeys) {
     const count = streaks.get(key);
-    if (count !== undefined && count >= threshold) return key;
+    if (count === undefined || count < threshold) return null; // at least one call is new → no doom loop
+    if (firstRepeated === null) firstRepeated = key;
   }
-  return null;
+  return firstRepeated;
 }
 
 /**

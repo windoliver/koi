@@ -1568,5 +1568,87 @@ describe("runTurn", () => {
         expect(done.output.stopReason).toBe("completed");
       }
     });
+
+    test("doom loop intervention does not consume turn budget", async () => {
+      // maxTurns=3, doomLoopThreshold=3 — the intervention should NOT
+      // cause a max_turns exit before the recovery turn runs.
+      const handlers = createMockHandlers({
+        modelStreams: [
+          createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+          createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
+          // Recovery turn after intervention — model should see the system message
+          createTextStream("I will try something else"),
+        ],
+        tools: [toolDesc("readFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+          maxTurns: 3,
+        }),
+      );
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        // Should complete normally, NOT max_turns
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+
+    test("mixed-progress turn with one repeated and one new call executes all tools", async () => {
+      // readFile is repeated 3 times but each turn also has a new writeFile call.
+      // Since not ALL calls are repeated, doom loop should NOT trigger.
+      const toolCalls: string[] = [];
+
+      async function* mixedToolStream(
+        rfId: string,
+        wfId: string,
+        wfArgs: string,
+      ): AsyncIterable<ModelChunk> {
+        yield { kind: "tool_call_start", toolName: "readFile", callId: callId(rfId) };
+        yield { kind: "tool_call_delta", callId: callId(rfId), delta: '{"path":"/foo"}' };
+        yield { kind: "tool_call_end", callId: callId(rfId) };
+        yield { kind: "tool_call_start", toolName: "writeFile", callId: callId(wfId) };
+        yield { kind: "tool_call_delta", callId: callId(wfId), delta: wfArgs };
+        yield { kind: "tool_call_end", callId: callId(wfId) };
+        yield { kind: "done", response: DONE_RESPONSE };
+      }
+
+      const handlers = createMockHandlers({
+        modelStreams: [
+          () => mixedToolStream("tc-1a", "tc-1b", '{"path":"/a"}'),
+          () => mixedToolStream("tc-2a", "tc-2b", '{"path":"/b"}'),
+          () => mixedToolStream("tc-3a", "tc-3b", '{"path":"/c"}'),
+          createTextStream("done"),
+        ],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "ok" };
+        },
+        tools: [toolDesc("readFile"), toolDesc("writeFile")],
+      });
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+        }),
+      );
+
+      // No doom loop event — writeFile args differ each turn
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      // All 6 tool calls should execute (3x readFile + 3x writeFile)
+      expect(toolCalls.length).toBe(6);
+    });
   });
 });
