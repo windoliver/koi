@@ -65,16 +65,22 @@ export function MessageList(props: MessageListProps): JSX.Element {
   const [scrollState, setScrollState] = createSignal(INITIAL_SCROLL_STATE);
   const agentStatus = useTuiStore((s) => s.agentStatus);
 
-  // Detect streaming end → settling period
+  // Detect streaming end → settling period (only if not user-paused)
   createEffect(
     on(agentStatus, (status, prevStatus) => {
       if (prevStatus === "processing" && status === "idle") {
-        setScrollState((s) => onStreamEnd(s, Date.now()));
-        // Schedule settling timeout
-        const timer = setTimeout(() => {
-          setScrollState((s) => onSettleTimeout(s));
-        }, SETTLE_DURATION_MS);
-        onCleanup(() => clearTimeout(timer));
+        setScrollState((prev) => {
+          const next = onStreamEnd(prev, Date.now());
+          // Only schedule settle timer if we actually entered settling mode.
+          // If onStreamEnd preserved a user pause, no timer — stay paused.
+          if (next.mode === "settling") {
+            const timer = setTimeout(() => {
+              setScrollState((s) => (s.mode === "settling" ? onSettleTimeout(s) : s));
+            }, SETTLE_DURATION_MS);
+            onCleanup(() => clearTimeout(timer));
+          }
+          return next;
+        });
       }
     }),
   );

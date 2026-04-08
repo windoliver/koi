@@ -10,6 +10,9 @@
  *   stable head is memoized and only the live tail is re-parsed.
  * - Markdown healing: closes unclosed formatting marks so partial
  *   markdown renders correctly during streaming.
+ * - No-fence streaming: when there's no unclosed fence, the full text
+ *   is healed and rendered with streaming={true} to avoid finalizing
+ *   partial inline markdown (bold, links, inline code).
  */
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
@@ -43,12 +46,17 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
     return splitStreamingMarkdown(props.text);
   });
 
-  // Heal the tail for display (Decision 2A):
-  // Close unclosed formatting so partial markdown renders correctly.
-  const healedTail = createMemo(() => {
-    const tail = split().tail;
-    if (tail === "") return "";
-    return healMarkdown(tail);
+  // Whether there's an actual fence-based split (tail is non-empty)
+  const hasFenceSplit = () => split().tail !== "";
+
+  // Heal content for streaming display (Decision 2A):
+  // - With fence split: heal only the tail (stable head is already complete)
+  // - Without fence split: heal the full text (partial bold/links/inline code)
+  const healedContent = createMemo(() => {
+    if (!props.streaming) return "";
+    if (hasFenceSplit()) return healMarkdown(split().tail);
+    // No fence — heal the full text for streaming display
+    return healMarkdown(props.text);
   });
 
   return (
@@ -57,30 +65,40 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
       fallback={<text>{props.text}</text>}
     >
       {(cfg: () => MarkdownConfig) => (
-        <box flexDirection="column">
-          {/* Stable head — memoized, not re-parsed during streaming */}
-          <Show when={split().stable !== ""}>
+        <Show
+          when={props.streaming && (hasFenceSplit() || props.text !== "")}
+          fallback={
+            // Non-streaming: render full text as single finalized markdown
             <markdown
-              content={split().stable}
+              content={props.text}
               syntaxStyle={cfg().style}
               treeSitterClient={cfg().client}
               streaming={false}
             />
-          </Show>
-          {/* Live tail — re-parsed on each delta, healed for display */}
-          <Show when={healedTail() !== ""}>
-            <markdown
-              content={healedTail()}
-              syntaxStyle={cfg().style}
-              treeSitterClient={cfg().client}
-              streaming={props.streaming ?? false}
-            />
-          </Show>
-          {/* Non-streaming: render full text as single markdown */}
-          <Show when={!props.streaming && split().tail === ""}>
-            {/* This case is handled by stable above when not streaming */}
-          </Show>
-        </box>
+          }
+        >
+          {/* Streaming path */}
+          <box flexDirection="column">
+            {/* With fence split: stable head (memoized, finalized) + healed tail */}
+            <Show when={hasFenceSplit() && split().stable !== ""}>
+              <markdown
+                content={split().stable}
+                syntaxStyle={cfg().style}
+                treeSitterClient={cfg().client}
+                streaming={false}
+              />
+            </Show>
+            {/* Healed content — either tail-only (fence split) or full text (no fence) */}
+            <Show when={healedContent() !== ""}>
+              <markdown
+                content={healedContent()}
+                syntaxStyle={cfg().style}
+                treeSitterClient={cfg().client}
+                streaming={true}
+              />
+            </Show>
+          </box>
+        </Show>
       )}
     </Show>
   );
