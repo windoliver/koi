@@ -24,9 +24,10 @@ If no arguments are provided, ask the user what to test.
 Before launching the TUI, ensure:
 
 1. **Worktree**: You MUST be in a worktree (not the main repo root). If `basename "$PWD"` is `koi`, stop and tell the user to create a worktree first.
-2. **`.env` symlink**: The worktree needs API keys. Check if `.env` exists; if not, symlink it from the main repo:
+2. **`.env` symlink**: The worktree needs API keys. Check if `.env` exists; if not, find the main repo root via `git worktree list` and symlink:
    ```bash
-   ln -s /Users/sophiawj/private/koi/.env .env
+   MAIN_ROOT=$(git worktree list | head -1 | awk '{print $1}')
+   ln -s "${MAIN_ROOT}/.env" .env
    ```
 3. **Build**: Run `bun run build` — the TUI loads from built dist files. If build fails, diagnose and fix before proceeding.
 4. **tmux**: Verify tmux is available (`which tmux`).
