@@ -51,18 +51,36 @@ export function onScrollToBottom(state: AutoScrollState): AutoScrollState {
   return { mode: "following" };
 }
 
-/** User started text selection -> pause */
+/**
+ * User started text selection -> pause, preserving any existing scroll pause.
+ * If the user was already scroll-paused, selection end should restore scroll-pause
+ * (not resume following), so we track both reasons.
+ */
 export function onSelectionStart(state: AutoScrollState): AutoScrollState {
   if (state.mode === "paused" && state.pauseReason === "selection") return state;
-  return { mode: "paused", pauseReason: "selection" };
+  // Preserve the fact that user was already scroll-paused before selection
+  const wasScrollPaused = state.mode === "paused" && state.pauseReason === "scroll";
+  return {
+    mode: "paused",
+    pauseReason: "selection",
+    // Stash the prior scroll-pause so onSelectionEnd can restore it
+    settleUntil: wasScrollPaused ? -1 : undefined,
+  };
 }
 
-/** User cleared text selection -> resume if paused for selection */
+/**
+ * User cleared text selection -> resume prior state.
+ * If the user was scroll-paused before selecting, restore scroll-pause
+ * instead of jumping to following. settleUntil === -1 is the sentinel
+ * for "was scroll-paused before selection started".
+ */
 export function onSelectionEnd(state: AutoScrollState): AutoScrollState {
-  if (state.mode === "paused" && state.pauseReason === "selection") {
-    return { mode: "following" };
+  if (state.mode !== "paused" || state.pauseReason !== "selection") return state;
+  // Restore scroll-pause if it was active before selection
+  if (state.settleUntil === -1) {
+    return { mode: "paused", pauseReason: "scroll" };
   }
-  return state;
+  return { mode: "following" };
 }
 
 /**

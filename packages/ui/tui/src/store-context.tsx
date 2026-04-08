@@ -1,16 +1,20 @@
 /**
  * StoreContext — Solid context for TuiStore + useTuiStore(selector) accessor.
  *
- * With the SolidJS store backend, getState() returns a reactive proxy.
- * All useTuiStore selectors run inside createMemo, so property accesses
- * are automatically tracked by Solid's fine-grained reactivity system.
+ * With the SolidJS store + reconcile() backend, getState() returns a reactive
+ * proxy. Selectors access proxy properties inside the returned getter, so
+ * SolidJS tracks dependencies at the call site (JSX, createEffect, createMemo).
  *
- * No intermediate signal bridge is needed — the store proxy IS reactive.
+ * We intentionally do NOT wrap in createMemo here — reconcile() preserves
+ * proxy object identity for unchanged subtrees, which means createMemo's
+ * Object.is check would cache stale references for array/object selectors
+ * (sessions, metrics, messages). Direct getters let every consumer site
+ * track exactly the store paths it reads.
  */
 
-import { createContext, createMemo, useContext, type Accessor, type JSX } from "solid-js";
+import { createContext, useContext, type Accessor, type JSX } from "solid-js";
 import type { TuiStore } from "./state/store.js";
-import type { TuiMessage, TuiState } from "./state/types.js";
+import type { TuiState } from "./state/types.js";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -26,15 +30,14 @@ export const StoreContext: ReturnType<typeof createContext<TuiStore | null>> =
 
 /**
  * Select a slice of TUI state. Returns a **Solid Accessor** (a getter function)
- * that only re-computes when the accessed reactive properties change.
+ * that evaluates the selector against the reactive store proxy on each read.
  *
  * Since `store.getState()` returns a SolidJS reactive proxy, property reads
- * inside the selector are automatically tracked. For example:
- * - `s => s.activeView` — only fires when activeView changes
- * - `s => s.messages` — fires when messages array changes (add/remove)
- * - `s => s.runningToolCount > 0` — fires only when the count crosses zero
- *
- * @koi/tui is private (workspace-only); all internal consumers have been updated.
+ * inside the selector are tracked at the CALL SITE (JSX expression, createEffect,
+ * createMemo). This works correctly for both scalar and object/array selectors:
+ * - `s => s.activeView` — tracked when the getter is called inside JSX
+ * - `s => s.messages` — returns the proxy array; For/Show track nested changes
+ * - `s => s.runningToolCount > 0` — evaluated fresh on each read
  *
  * Call site:
  * ```tsx
@@ -50,30 +53,10 @@ export function useTuiStore<T>(selector: (state: TuiState) => T): Accessor<T> {
         "(TuiRoot sets this up automatically).",
     );
   }
-  return createMemo(() => selector(store.getState()));
-}
-
-/**
- * Access the store's messages array as a direct reactive proxy.
- *
- * Unlike `useTuiStore(s => s.messages)`, this does NOT wrap in createMemo.
- * createMemo caches by reference equality — since the SolidJS store always
- * returns the same proxy object, the memo never re-fires for nested changes
- * like `block.text += delta`. Direct proxy access lets SolidJS's `For`
- * component and JSX expressions track nested store paths natively.
- *
- * Use this for store arrays/objects where nested reactivity is needed.
- * Use `useTuiStore` for scalar values (string, number, boolean) where
- * memo caching is correct and efficient.
- */
-export function useStoreMessages(): () => readonly TuiMessage[] {
-  const store = useContext(StoreContext);
-  if (!store) {
-    throw new Error(
-      "useStoreMessages must be used within a component tree that provides StoreContext.",
-    );
-  }
-  return () => store.getState().messages;
+  // Direct getter — no createMemo. SolidJS tracks reactive reads at the call
+  // site. createMemo would cache by Object.is and miss proxy-identity-preserved
+  // updates from reconcile() for array/object selectors.
+  return () => selector(store.getState());
 }
 
 // Re-export JSX namespace types consumed by callers

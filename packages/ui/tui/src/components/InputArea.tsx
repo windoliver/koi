@@ -128,13 +128,13 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       }
       case "history-up":
       case "history-down": {
-        // Only navigate history when the input is single-line (no multiline
-        // caret movement to steal) or empty. This prevents Up/Down from
-        // destroying multiline drafts — the user keeps normal caret movement
-        // in multiline text and uses history only when the buffer is simple.
         const text = textareaRef?.plainText ?? "";
+        // Skip history when:
+        // - Multiline input: let textarea handle normal caret movement
+        // - Slash overlay active: let overlay own Up/Down for selection
         const isMultiline = text.includes("\n");
-        if (isMultiline) break; // let textarea handle normal caret movement
+        const slashActive = detectSlashPrefix(text) !== null;
+        if (isMultiline || slashActive) break;
 
         key.preventDefault();
         if (props.onHistoryNav) {
@@ -142,6 +142,11 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           const historyText = props.onHistoryNav(direction, text);
           if (historyText !== null) {
             textareaRef?.setText(historyText);
+            // Recompute slash state after programmatic text replacement
+            // so the overlay stays in sync with the buffer contents
+            queueMicrotask(() => {
+              props.onSlashDetected(detectSlashPrefix(historyText));
+            });
           }
         }
         break;

@@ -98,6 +98,15 @@ describe("onSelectionStart", () => {
     const next = onSelectionStart(paused);
     expect(next).toBe(paused);
   });
+
+  test("paused(scroll) -> paused(selection) preserves scroll context", () => {
+    const scrollPaused: AutoScrollState = { mode: "paused", pauseReason: "scroll" };
+    const next = onSelectionStart(scrollPaused);
+    expect(next.mode).toBe("paused");
+    expect(next.pauseReason).toBe("selection");
+    // Sentinel: settleUntil === -1 means "was scroll-paused before selection"
+    expect(next.settleUntil).toBe(-1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -105,13 +114,23 @@ describe("onSelectionStart", () => {
 // ---------------------------------------------------------------------------
 
 describe("onSelectionEnd", () => {
-  test("paused(selection) -> following", () => {
+  test("paused(selection) from following -> following", () => {
     const paused: AutoScrollState = {
       mode: "paused",
       pauseReason: "selection",
     };
     const next = onSelectionEnd(paused);
     expect(next.mode).toBe("following");
+  });
+
+  test("paused(selection) from scroll-pause -> restores scroll-pause", () => {
+    // Simulate: scroll up → select text → release selection
+    const scrollPaused: AutoScrollState = { mode: "paused", pauseReason: "scroll" };
+    const selecting = onSelectionStart(scrollPaused);
+    const released = onSelectionEnd(selecting);
+    // Should restore scroll-pause, NOT resume following
+    expect(released.mode).toBe("paused");
+    expect(released.pauseReason).toBe("scroll");
   });
 
   test("paused(scroll) unchanged — selection end does not clear scroll pause", () => {

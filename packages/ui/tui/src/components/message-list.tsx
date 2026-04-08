@@ -32,7 +32,7 @@ import {
   onStreamEnd,
   shouldFollow,
 } from "../auto-scroll/auto-scroll-state.js";
-import { useStoreMessages, useTuiStore } from "../store-context.js";
+import { useTuiStore } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
 
 const SPINNER_FRAME_COUNT = 10;
@@ -44,10 +44,7 @@ interface MessageListProps {
 }
 
 export function MessageList(props: MessageListProps): JSX.Element {
-  // Direct store proxy access — NOT memoized — so SolidJS For can track
-  // nested changes (block.text += delta) natively. useTuiStore's createMemo
-  // would cache by reference and miss nested mutations.
-  const messages = useStoreMessages();
+  const messages = useTuiStore((s) => s.messages);
   const [spinnerFrame, setSpinnerFrame] = createSignal(0);
 
   // Spinner ticks when tools are running OR agent is processing (thinking indicator).
