@@ -1,0 +1,432 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "skill-tool-use",
+  "agent": {
+    "name": "golden-skill-tool-use",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "Skill",
+        "description": "Execute a skill by name. Skills provide specialized capabilities and domain knowledge.\n\nExamples: Skill({ skill: \"commit\" }), Skill({ skill: \"review-pr\", args: \"123\" })\nAvailable skills (invoke by name):\n- bullet-points: Respond using bullet points instead of prose."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:02.507Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:02.508Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T02:45:02.617Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 213,
+        "completion_tokens": 5
+      },
+      "duration_ms": 1836,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Skill",
+            "description": "Execute a skill by name. Skills provide specialized capabilities and domain knowledge.\n\nExamples: Skill({ skill: \"commit\" }), Skill({ skill: \"review-pr\", args: \"123\" })\nAvailable skills (invoke by name):\n- bullet-points: Respond using bullet points instead of prose."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "d17932871741e9bbd2dae43524880df20c2096375c1263a7de10c68a404a659c"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.457Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
+      "duration_ms": 1921.9824589999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.458Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
+      "duration_ms": 1922.2317920000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.459Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
+      "duration_ms": 1923.763875,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.460Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
+      "duration_ms": 1925.3981250000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-08T02:45:04.461Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_Skill_7",
+          "function_name": "Skill",
+          "arguments": {
+            "skill": "bullet-points"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_Skill_7",
+            "content": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}"
+          }
+        ]
+      },
+      "duration_ms": 7,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775616304456
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.464Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Skill({\"skill\":\"bullet-points\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}"
+          }
+        ]
+      },
+      "duration_ms": 7.713208000000122,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.468Z",
+      "model_name": "hook:on-skill-tool-exec",
+      "message": "tool.succeeded → on-skill-tool-exec",
+      "duration_ms": 3.0132089999997334,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-skill-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-skill-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.469Z",
+      "model_name": "middleware:hooks",
+      "message": "Skill({\"skill\":\"bullet-points\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}"
+          }
+        ]
+      },
+      "duration_ms": 13.177416999999878,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.470Z",
+      "model_name": "middleware:permissions",
+      "message": "Skill({\"skill\":\"bullet-points\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}"
+          }
+        ]
+      },
+      "duration_ms": 14.115833999999268,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.471Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Skill({\"skill\":\"bullet-points\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}"
+          }
+        ]
+      },
+      "duration_ms": 14.637583999999151,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-08T02:45:04.473Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "Skill loaded successfully.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 254,
+        "completion_tokens": 5
+      },
+      "duration_ms": 486,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Skill",
+            "description": "Execute a skill by name. Skills provide specialized capabilities and domain knowledge.\n\nExamples: Skill({ skill: \"commit\" }), Skill({ skill: \"review-pr\", args: \"123\" })\nAvailable skills (invoke by name):\n- bullet-points: Respond using bullet points instead of prose."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "d17932871741e9bbd2dae43524880df20c2096375c1263a7de10c68a404a659c"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.961Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
+      "duration_ms": 490.11762499999986,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.962Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
+      "duration_ms": 490.4184580000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.963Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
+      "duration_ms": 490.69779199999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T02:45:04.964Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
+      "duration_ms": 490.8190420000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

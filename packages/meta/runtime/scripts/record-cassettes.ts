@@ -81,6 +81,7 @@ import {
   createSessionTranscriptMiddleware,
   resumeFromTranscript,
 } from "@koi/session";
+import { createSkillTool } from "@koi/skill-tool";
 import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
@@ -1324,7 +1325,7 @@ const discoverResult = await skillRuntime.discover();
 if (!discoverResult.ok) throw new Error(`Skill discover failed: ${discoverResult.error.message}`);
 const meta = discoverResult.value.get("bullet-points");
 if (!meta) throw new Error("bullet-points not discovered");
-if (!meta.tags || !meta.tags.includes("formatting")) {
+if (!meta.tags?.includes("formatting")) {
   throw new Error(`Expected tags to include "formatting", got: ${JSON.stringify(meta.tags)}`);
 }
 console.log(
@@ -1345,6 +1346,28 @@ console.log(
 
 const skillProvider = createSkillProvider(skillRuntime);
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
+
+// ---------------------------------------------------------------------------
+// @koi/skill-tool — SkillTool meta-tool golden query setup
+// Uses the same skillRuntime to create a Skill tool the model can invoke.
+// ---------------------------------------------------------------------------
+
+const skillToolResult = await createSkillTool({
+  resolver: skillRuntime,
+  signal: AbortSignal.timeout(30_000),
+});
+if (!skillToolResult.ok) {
+  throw new Error(`createSkillTool failed: ${skillToolResult.error.message}`);
+}
+const skillTool = skillToolResult.value;
+const skillToolProvider = createSingleToolProvider({
+  name: "skill-tool",
+  toolName: "Skill",
+  createTool: () => skillTool,
+});
+console.log(
+  `SkillTool golden query: Skill tool created, advertising ${discoverResult.value.size} skill(s)`,
+);
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2630,6 +2653,28 @@ const queries: readonly QueryConfig[] = [
     providers: [skillProvider],
   },
 
+  // skill-tool-use: @koi/skill-tool — model invokes Skill meta-tool to load bullet-points
+  //   createSkillTool uses the same skillRuntime as skill-load.
+  //   Trajectory proves: Skill tool advertises skills, model invokes it, inline body returned.
+  {
+    name: "skill-tool-use",
+    prompt:
+      'Use the Skill tool to invoke the "bullet-points" skill. After invoking it, say "Skill loaded successfully."',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-skill-tool-exec",
+        cmd: ["echo", "skill-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [skillToolProvider],
+    maxTurns: 2,
+  },
+
   // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
   {
     name: "mcp-server-send",
@@ -3041,6 +3086,25 @@ await recordCassette("skill-load", () =>
         content: [{ kind: "text", text: "What are the primary colors? Answer briefly." }],
       },
     ],
+  }),
+);
+
+// skill-tool-use: @koi/skill-tool — model calls Skill tool to load bullet-points
+await recordCassette("skill-tool-use", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: 'Use the Skill tool to invoke the "bullet-points" skill. After invoking it, say "Skill loaded successfully."',
+          },
+        ],
+      },
+    ],
+    tools: [skillTool.descriptor],
   }),
 );
 
