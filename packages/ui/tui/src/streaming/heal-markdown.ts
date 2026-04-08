@@ -5,15 +5,56 @@
  * incomplete. This function appends the minimal closing markers so the
  * partial markdown renders correctly in a terminal or preview pane.
  *
+ * Code-aware: does NOT heal markers inside code fences or inline code spans.
+ * This prevents `snake_case`, env vars, JSON fragments, and other code-like
+ * content from gaining spurious closing markers during streaming.
+ *
  * Pure function, no dependencies.
  */
 
 // ---------------------------------------------------------------------------
-// Fence detection (reused from split-streaming-markdown)
+// Fence detection
 // ---------------------------------------------------------------------------
 
 /** Matches a code fence at the start of a line: 3+ backticks. */
 const FENCE_RE = /^`{3,}[^\n]*$/gm;
+
+// ---------------------------------------------------------------------------
+// Code-aware text extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip code fences and inline code spans from text, returning only the
+ * prose portions where markdown formatting markers are meaningful.
+ * This prevents healing markers that appear inside code contexts.
+ */
+function extractProse(text: string): string {
+  // 1. Remove fenced code blocks (complete ones)
+  // Match ``` ... ``` across lines
+  let prose = text.replace(/^`{3,}[^\n]*\n[\s\S]*?^`{3,}\s*$/gm, "");
+
+  // 2. If there's an unclosed fence, remove everything from the fence onward
+  FENCE_RE.lastIndex = 0;
+  const fences: number[] = [];
+  // `let` justified: loop variable for regex exec iteration
+  let fenceMatch = FENCE_RE.exec(prose);
+  while (fenceMatch !== null) {
+    fences.push(fenceMatch.index);
+    fenceMatch = FENCE_RE.exec(prose);
+  }
+  if (fences.length % 2 === 1) {
+    // Odd fence — unclosed. Remove from the last fence to end
+    const lastFence = fences[fences.length - 1];
+    if (lastFence !== undefined) {
+      prose = prose.slice(0, lastFence);
+    }
+  }
+
+  // 3. Remove inline code spans (`` `...` ``)
+  prose = prose.replace(/`[^`]*`/g, "");
+
+  return prose;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -22,33 +63,47 @@ const FENCE_RE = /^`{3,}[^\n]*$/gm;
 /**
  * Close unclosed markdown formatting for streaming display.
  * Appends closing markers so partial markdown renders correctly.
+ *
+ * Code-aware: only heals markers in prose, not inside code fences or
+ * inline code spans. `snake_case`, backtick-quoted content, and fenced
+ * code blocks are left untouched.
  */
 export function healMarkdown(text: string): string {
   if (text.length === 0) return "";
 
   let healed = text;
 
-  // 1. Unclosed code fences
+  // 1. Unclosed code fences (checked on full text — fences are structural)
   healed = healCodeFences(healed);
 
-  // 2. Unclosed inline code (odd number of unescaped backticks)
-  healed = healInlineMarker(healed, "`");
+  // Extract prose (no code) for marker counting
+  const prose = extractProse(text);
 
-  // 3. Unclosed bold (**)
-  healed = healDoubleMarker(healed, "**");
+  // 2. Unclosed inline code (odd backticks in prose only)
+  if (countUnescaped(prose, "`") % 2 === 1) {
+    healed += "`";
+  }
 
-  // 4. Unclosed italic (* or _)
-  healed = healInlineMarker(healed, "*");
-  healed = healInlineMarker(healed, "_");
+  // 3. Unclosed bold (**) in prose
+  if (countDouble(prose, "**") % 2 === 1) {
+    healed += "**";
+  }
 
-  // 5. Unclosed link URL: [text](url  — missing )
-  if (/\[[^\]]*\]\([^)]*$/.test(healed)) {
+  // 4. Unclosed italic (* or _) in prose — skip pairs already counted as **
+  if (countSingleMarker(prose, "*") % 2 === 1) {
+    healed += "*";
+  }
+  if (countSingleMarker(prose, "_") % 2 === 1) {
+    healed += "_";
+  }
+
+  // 5. Unclosed link URL in prose: [text](url  — missing )
+  if (/\[[^\]]*\]\([^)]*$/.test(prose)) {
     healed += ")";
   }
 
-  // 6. Unclosed link text: [text  — missing ]
-  //    Only match if not already handled by step 5 (no `](` after the `[`)
-  if (/\[[^\]]*$/.test(healed) && !/\[[^\]]*\]\(/.test(healed)) {
+  // 6. Unclosed link text in prose: [text  — missing ]
+  if (/\[[^\]]*$/.test(prose) && !/\[[^\]]*\]\(/.test(prose)) {
     healed += "]";
   }
 
@@ -59,10 +114,7 @@ export function healMarkdown(text: string): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Close unclosed code fences by counting fence lines.
- * If the count is odd, append a newline + closing fence.
- */
+/** Close unclosed code fences by counting fence lines on the FULL text. */
 function healCodeFences(text: string): string {
   FENCE_RE.lastIndex = 0;
   let count = 0;
@@ -75,17 +127,24 @@ function healCodeFences(text: string): string {
   return text;
 }
 
-/**
- * If a double marker (like `**`) appears an odd number of times,
- * append a closing one. Counts non-overlapping occurrences.
- */
-function healDoubleMarker(text: string, marker: string): string {
+/** Count non-overlapping unescaped occurrences of a single character. */
+function countUnescaped(text: string, char: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === char && (i === 0 || text[i - 1] !== "\\")) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/** Count non-overlapping unescaped occurrences of a double marker (e.g. `**`). */
+function countDouble(text: string, marker: string): number {
   let count = 0;
   let idx = 0;
   while (idx < text.length) {
     const pos = text.indexOf(marker, idx);
     if (pos === -1) break;
-    // Skip if preceded by backslash
     if (pos > 0 && text[pos - 1] === "\\") {
       idx = pos + marker.length;
       continue;
@@ -93,37 +152,37 @@ function healDoubleMarker(text: string, marker: string): string {
     count++;
     idx = pos + marker.length;
   }
-  if (count % 2 === 1) {
-    return text + marker;
-  }
-  return text;
+  return count;
+}
+
+/** Check if a character is a word character (letter, digit, underscore). */
+function isWordChar(ch: string | undefined): boolean {
+  if (ch === undefined) return false;
+  return /\w/.test(ch);
 }
 
 /**
- * If a single-character marker (like `` ` ``, `*`, `_`) appears an odd
- * number of times (excluding escaped ones and, for `*`/`_`, those that
- * are part of `**`), append a closing one.
+ * Count single markers (*, _) excluding those that are part of double markers
+ * and those that are word-internal (e.g., `snake_case`, `MY_VAR`).
+ * Per CommonMark, `_` only starts/ends emphasis at word boundaries.
  */
-function healInlineMarker(text: string, marker: string): string {
+function countSingleMarker(text: string, marker: string): number {
   let count = 0;
   for (let i = 0; i < text.length; i++) {
-    if (text[i] === marker) {
-      // Skip if escaped
-      if (i > 0 && text[i - 1] === "\\") continue;
-      // For * and _, skip if part of a ** pair
-      if ((marker === "*" || marker === "_") && i + 1 < text.length && text[i + 1] === marker) {
-        i++; // skip the pair — handled by healDoubleMarker
-        continue;
-      }
-      if ((marker === "*" || marker === "_") && i > 0 && text[i - 1] === marker) {
-        // Second char of a **, already skipped above
-        continue;
-      }
-      count++;
+    if (text[i] !== marker) continue;
+    if (i > 0 && text[i - 1] === "\\") continue;
+    // Skip if part of a ** or __ pair
+    if (i + 1 < text.length && text[i + 1] === marker) {
+      i++;
+      continue;
     }
+    if (i > 0 && text[i - 1] === marker) continue;
+    // For `_`: skip word-internal underscores (snake_case, MY_VAR).
+    // CommonMark rule: _ emphasis requires non-word char on at least one side.
+    if (marker === "_" && isWordChar(text[i - 1]) && isWordChar(text[i + 1])) {
+      continue;
+    }
+    count++;
   }
-  if (count % 2 === 1) {
-    return text + marker;
-  }
-  return text;
+  return count;
 }

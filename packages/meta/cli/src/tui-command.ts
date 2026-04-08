@@ -177,19 +177,25 @@ export async function drainEngineStream(
 ): Promise<void> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
   try {
+    // `let` justified: tracks last yield time for frame-rate-limited yielding
+    let lastYieldAt = Date.now();
     for await (const event of stream) {
       batcher.enqueue(event);
-      // After text_delta events, flush the batcher immediately and yield to the
-      // event loop so OpenTUI can paint intermediate frames during streaming.
+      // Yield to the event loop at most once per frame (~16ms) during text
+      // streaming so OpenTUI can paint intermediate frames progressively.
       //
-      // Without this, HTTP response body chunks contain many SSE events which
-      // are all yielded synchronously by the model adapter's generator. The
-      // batcher would accumulate them all in one 16ms window, and the main
-      // thread would never yield for the renderer to paint — causing text to
-      // appear all at once instead of streaming progressively.
+      // Without yielding, HTTP response body chunks contain many SSE events
+      // which are all consumed synchronously, starving the render loop.
+      // Yielding per-delta (every text_delta) adds a macrotask hop per token
+      // which slows long responses. Per-frame yielding coalesces tokens into
+      // render batches — smooth streaming without per-token overhead.
       if (event.kind === "text_delta") {
-        batcher.flushSync();
-        await new Promise<void>((r) => setTimeout(r, 0));
+        const now = Date.now();
+        if (now - lastYieldAt >= 16) {
+          batcher.flushSync();
+          await new Promise<void>((r) => setTimeout(r, 0));
+          lastYieldAt = Date.now();
+        }
       }
     }
     batcher.flushSync();

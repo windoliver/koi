@@ -85,12 +85,14 @@ export function MessageList(props: MessageListProps): JSX.Element {
     }),
   );
 
-  // Keyboard scroll detection (Decision 7A)
+  // Keyboard scroll detection (Decision 7A) — PageUp/PageDown only.
+  // Ctrl+Up/Down are NOT used here because InputArea's useKeyboard is always
+  // focused in conversation view and would shadow those keys.
   useKeyboard((key) => {
-    if (key.name === "pageup" || (key.name === "up" && key.ctrl)) {
+    if (key.name === "pageup") {
       setScrollState((s) => onScrollUp(s));
     }
-    if (key.name === "pagedown" || (key.name === "down" && key.ctrl)) {
+    if (key.name === "pagedown") {
       setScrollState((s) => onScrollToBottom(s));
     }
   });

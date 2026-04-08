@@ -82,11 +82,12 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
     return { kind: "clear-line" };
   }
 
-  // Up/Down: prompt history navigation
-  if (key.name === "up") {
+  // Up/Down: prompt history navigation (bare keys only, not Ctrl/Meta modified)
+  // Ctrl+Up/Down are reserved for other bindings (not consumed here).
+  if (key.name === "up" && !key.ctrl && !key.meta) {
     return { kind: "history-up" };
   }
-  if (key.name === "down") {
+  if (key.name === "down" && !key.ctrl && !key.meta) {
     return { kind: "history-down" };
   }
 
