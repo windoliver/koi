@@ -139,7 +139,7 @@ export function createSessionTranscriptMiddleware(
                 .join("\n");
               if (content.length > 0) {
                 const role: TranscriptEntry["role"] =
-                  lastMsg.senderId === "system"
+                  lastMsg.senderId === "system" || lastMsg.senderId.startsWith("system:")
                     ? "system"
                     : lastMsg.senderId === "assistant"
                       ? "assistant"
@@ -149,6 +149,11 @@ export function createSessionTranscriptMiddleware(
                   role,
                   content,
                   timestamp: lastMsg.timestamp,
+                  // Preserve original senderId for engine-injected system:* messages
+                  // so resume can replay them with the correct privileged sender.
+                  ...(lastMsg.senderId.startsWith("system:")
+                    ? { metadata: { senderId: lastMsg.senderId } }
+                    : {}),
                 });
               }
             }
