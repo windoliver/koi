@@ -295,16 +295,17 @@ describe("reduce — engine_event — tool_call", () => {
         result: { toolName: "ls", callId: "call-1", rawArgs: '{"dir":"."}' },
       }),
     );
-    // tool_call_end is no-op — args still preserved from start
+    // tool_call_end acts as legacy fallback (marks complete), but tool_result
+    // will overwrite with real output below
     const midMsg = lastMessage(next);
     if (midMsg.kind === "assistant") {
       const block = blockAt(midMsg, 0);
       if (block.kind === "tool_call") {
-        expect(block.status).toBe("running");
+        expect(block.status).toBe("complete");
         expect(block.args).toBe('{"dir":"."}');
       }
     }
-    // tool_result sets complete with real output
+    // tool_result overwrites with real execution output
     next = reduce(
       next,
       engineEvent({
@@ -349,7 +350,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_end keeps block as running (no-op)", () => {
+  test("tool_call_end acts as legacy fallback — marks complete with result", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "tool_call",
@@ -372,17 +373,42 @@ describe("reduce — engine_event — tool_call", () => {
       state,
       engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: toolResult }),
     );
-    // tool_call_end is a no-op — block stays "running" until tool_result arrives
-    expect(next).toBe(state);
+    // Legacy fallback: tool_call_end marks complete for streams without tool_result
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.status).toBe("running");
-        expect(block.result).toBeUndefined();
+        expect(block.status).toBe("complete");
+        expect(block.result).toBe(JSON.stringify(toolResult));
         expect(block.args).toBe('{"dir":"."}'); // args preserved
       }
     }
+  });
+
+  test("tool_call_end does not overwrite tool_result completion", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "complete",
+        args: '{"dir":"."}',
+        result: '{"files":["a.ts"]}',
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_end",
+        callId: testCallId("call-1"),
+        result: { toolName: "ls", callId: "call-1", rawArgs: '{"dir":"."}' },
+      }),
+    );
+    // Already completed by tool_result — tool_call_end should not overwrite
+    expect(next).toBe(state);
   });
 
   test("tool_result marks tool as complete and stores output", () => {

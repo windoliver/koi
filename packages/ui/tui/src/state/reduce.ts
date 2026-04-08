@@ -297,15 +297,36 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_end": {
-      // tool_call_end carries AccumulatedToolCall metadata (parsed args)
-      // from the model stream — not execution output. The tool hasn't
-      // run yet. Keep block as "running"; real output arrives via tool_result.
-      return state;
+      // For streams that emit tool_result, tool_call_end carries only
+      // AccumulatedToolCall metadata — skip it (tool_result will complete).
+      // For legacy streams without tool_result, treat as completion fallback.
+      const found = findLastAssistant(state.messages);
+      if (!found) return state;
+
+      const callId = event.callId as string;
+      const tool = findToolBlock(found.msg.blocks, callId);
+      if (!tool) return state;
+
+      // If already completed by tool_result, don't overwrite with metadata.
+      if (tool.block.status === "complete") return state;
+
+      // Legacy fallback: mark complete with whatever result is available.
+      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+        ...tool.block,
+        status: "complete",
+        result: capResult(event.result),
+      });
+
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+      };
     }
 
     case "tool_result": {
       // tool_result carries the real execution output (stdout, file contents,
       // etc.) emitted by the turn runner after tool execution completes.
+      // Always overwrites any prior tool_call_end fallback data.
       const found = findLastAssistant(state.messages);
       if (!found) return state;
 

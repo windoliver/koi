@@ -27,23 +27,31 @@ export interface OutputCollector {
  * and ignores subsequent tool calls/text once the verdict is recorded.
  *
  * If no required tool is specified, falls back to collecting the last
- * tool_result output.
+ * tool_result output. Also accepts tool_call_end.result as a legacy
+ * fallback for engine streams that haven't migrated to tool_result.
  */
 export function createVerdictCollector(requiredToolName: string | undefined): OutputCollector {
   let verdictCaptured = false;
   let verdictOutput = "";
   let textBuffer = "";
+  /** Track the tool name for legacy tool_call_end fallback. */
+  let currentToolCallName: string | undefined;
 
   return {
     observe(event: EngineEvent): void {
       // Once we have the verdict, ignore everything else
       if (verdictCaptured) return;
 
+      if (event.kind === "tool_call_start") {
+        currentToolCallName = event.toolName;
+        return;
+      }
+
+      // Prefer tool_result (carries real execution output).
       if (event.kind === "tool_result") {
         const isVerdictTool = requiredToolName !== undefined && event.toolName === requiredToolName;
 
         if (isVerdictTool) {
-          // Capture the verdict and stop — ignore subsequent events
           verdictCaptured = true;
           const result = event.output;
           if (typeof result === "string") {
@@ -54,9 +62,37 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
           return;
         }
 
-        // No required tool specified — fall back to last tool result
         if (requiredToolName === undefined) {
           const result = event.output;
+          if (typeof result === "string") {
+            verdictOutput = result;
+          } else if (typeof result === "object" && result !== null) {
+            verdictOutput = JSON.stringify(result);
+          }
+        }
+        return;
+      }
+
+      // Legacy fallback: engine streams that haven't migrated to tool_result
+      // still carry executed output on tool_call_end.result.
+      if (event.kind === "tool_call_end") {
+        const isVerdictTool =
+          requiredToolName !== undefined && currentToolCallName === requiredToolName;
+        currentToolCallName = undefined;
+
+        if (isVerdictTool) {
+          verdictCaptured = true;
+          const result = event.result;
+          if (typeof result === "string") {
+            verdictOutput = result;
+          } else if (typeof result === "object" && result !== null) {
+            verdictOutput = JSON.stringify(result);
+          }
+          return;
+        }
+
+        if (requiredToolName === undefined) {
+          const result = event.result;
           if (typeof result === "string") {
             verdictOutput = result;
           } else if (typeof result === "object" && result !== null) {
@@ -84,7 +120,8 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
 
 /**
  * Simple text collector — accumulates text_delta events and falls back to
- * the last tool_result output. No verdict logic, no required tool name.
+ * the last tool_result output. Also accepts tool_call_end.result as a
+ * legacy fallback. No verdict logic, no required tool name.
  *
  * Used by `createAgentSpawnFn` for general agent-to-agent delegation.
  */
@@ -99,8 +136,20 @@ export function createTextCollector(): OutputCollector {
         return;
       }
 
+      // Prefer tool_result (carries real execution output).
       if (event.kind === "tool_result") {
         const result = event.output;
+        if (typeof result === "string") {
+          lastToolResult = result;
+        } else if (typeof result === "object" && result !== null) {
+          lastToolResult = JSON.stringify(result);
+        }
+        return;
+      }
+
+      // Legacy fallback: engine streams that haven't migrated to tool_result.
+      if (event.kind === "tool_call_end") {
+        const result = event.result;
         if (typeof result === "string") {
           lastToolResult = result;
         } else if (typeof result === "object" && result !== null) {

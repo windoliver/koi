@@ -88,12 +88,21 @@ function extractOutputText(output: EngineOutput): string {
 async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<EngineOutput> {
   let output: EngineOutput | undefined; // let: assigned inside for-await loop
   let textBuffer = ""; // let: accumulated text_delta fallback
-  let lastToolResult = ""; // let: last tool_result fallback
+  let lastToolResult = ""; // let: last tool_result / tool_call_end fallback
   for await (const event of stream) {
     if (event.kind === "text_delta") {
       textBuffer += event.delta;
     } else if (event.kind === "tool_result") {
+      // Prefer tool_result (carries real execution output).
       const result = event.output;
+      if (typeof result === "string") {
+        lastToolResult = result;
+      } else if (typeof result === "object" && result !== null) {
+        lastToolResult = JSON.stringify(result);
+      }
+    } else if (event.kind === "tool_call_end") {
+      // Legacy fallback: engine streams that haven't migrated to tool_result.
+      const result = event.result;
       if (typeof result === "string") {
         lastToolResult = result;
       } else if (typeof result === "object" && result !== null) {
