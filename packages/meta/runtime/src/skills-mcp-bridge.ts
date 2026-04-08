@@ -63,20 +63,14 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
   const { resolver, runtime, onSyncError } = config;
 
   let disposed = false;
-  let syncInFlight = false;
   let dirty = false;
   let version = 0;
+  let inflight: Promise<void> | undefined;
   let unsubChange: (() => void) | undefined;
 
-  const syncFromResolver = async (propagateError: boolean): Promise<void> => {
-    if (disposed || syncInFlight) {
-      if (syncInFlight) {
-        dirty = true;
-      }
-      return;
-    }
+  const doSync = async (propagateError: boolean): Promise<void> => {
+    if (disposed) return;
 
-    syncInFlight = true;
     const capturedVersion = ++version;
 
     try {
@@ -96,15 +90,29 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
       if (propagateError) {
         throw error;
       }
-    } finally {
-      syncInFlight = false;
     }
 
     // Re-sync if onChange fired during our discover()
     if (dirty && !disposed) {
       dirty = false;
-      await syncFromResolver(false);
+      await doSync(false);
     }
+  };
+
+  const syncFromResolver = (propagateError: boolean): Promise<void> => {
+    if (disposed) return Promise.resolve();
+
+    // If a sync is already in flight, concurrent callers join it
+    if (inflight !== undefined) {
+      dirty = true;
+      // Concurrent callers join the existing promise (no early resolve)
+      return propagateError ? inflight : inflight.catch(() => {});
+    }
+
+    inflight = doSync(propagateError).finally(() => {
+      inflight = undefined;
+    });
+    return inflight;
   };
 
   const sync = async (): Promise<void> => {

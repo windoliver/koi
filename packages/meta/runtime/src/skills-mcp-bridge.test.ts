@@ -317,6 +317,47 @@ describe("createSkillsMcpBridge", () => {
     expect(lastCall).toHaveLength(2);
   });
 
+  test("concurrent sync() callers join the same in-flight promise", async () => {
+    const resolver = createMockResolver([]);
+    resolver.discover.mockImplementation(() => Promise.resolve([descriptor("srv__tool", "srv")]));
+    const runtime = createMockRuntime();
+    const bridge = createSkillsMcpBridge({
+      resolver: resolver as unknown as McpResolver,
+      runtime: runtime as unknown as SkillsRuntime,
+    });
+
+    // Two concurrent sync() calls — second joins the in-flight promise
+    const p1 = bridge.sync();
+    const p2 = bridge.sync();
+    await Promise.all([p1, p2]);
+
+    // Both callers resolved, registerExternal was called
+    expect(runtime.registerExternal).toHaveBeenCalled();
+    // All calls should have tools (no empty stale result)
+    const lastCall = runtime.registerExternal.mock.calls[
+      runtime.registerExternal.mock.calls.length - 1
+    ]?.[0] as readonly SkillMetadata[] | undefined;
+    expect(lastCall?.length).toBeGreaterThan(0);
+  });
+
+  test("concurrent sync() callers both see startup failure", async () => {
+    const resolver = createMockResolver([]);
+    resolver.discover.mockImplementation(() => Promise.reject(new Error("fail")));
+    const runtime = createMockRuntime();
+    const bridge = createSkillsMcpBridge({
+      resolver: resolver as unknown as McpResolver,
+      runtime: runtime as unknown as SkillsRuntime,
+    });
+
+    const p1 = bridge.sync();
+    const p2 = bridge.sync();
+
+    // Both callers see the rejection
+    const results = await Promise.allSettled([p1, p2]);
+    expect(results[0]?.status).toBe("rejected");
+    expect(results[1]?.status).toBe("rejected");
+  });
+
   // -- error handling --------------------------------------------------------
 
   test("onChange clears stale skills on discover() error and calls onSyncError", async () => {
