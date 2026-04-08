@@ -1,0 +1,338 @@
+{
+  "name": "interaction-full",
+  "model": "anthropic/claude-sonnet-4-6",
+  "recordedAt": 1775534485014,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "I'll execute all 11 steps"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " in order. Let's"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " begin"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "!"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n\n---"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "\n\n###"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " Step 1 "
+    },
+    {
+      "kind": "text_delta",
+      "delta": "—"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " A"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "skUserQuestion"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "AskUserQuestion",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "{\"question"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "s\": [{\"quest"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ion\":\"Whic"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "h refact"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ori"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ng scop"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "e?\",\"hea"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "de"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "r\":\"Scope\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ",\"opt"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ions\":[{\"la"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "bel\":\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "Tar"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "geted — o"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ne modu"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "le o"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "nly\",\"de"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "scripti"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "on"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "\":\"Re"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "fa"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ctor a"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": " singl"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "e, targ"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "eted m"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "odule only."
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "\"},{\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "label\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ":\"Full — a"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ll modules\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ",\"des"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "cri"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ption\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": ":\""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "Refact"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "or all modul"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "es a"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "cross the "
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ent"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "ire"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": " codebas"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "e."
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "\"}]"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+      "delta": "}]}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 2729,
+      "outputTokens": 159
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "I'll execute all 11 steps in order. Let's begin!\n\n---\n\n### Step 1 — AskUserQuestion",
+        "model": "anthropic/claude-sonnet-4-6",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775534473-SZLINT054jjeFVMQT6TN",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "I'll execute all 11 steps in order. Let's begin!\n\n---\n\n### Step 1 — AskUserQuestion"
+          },
+          {
+            "kind": "tool_call",
+            "id": "toolu_bdrk_01MqhjiBruTs2hQoRkQ91sFT",
+            "name": "AskUserQuestion",
+            "arguments": {
+              "questions": [
+                {
+                  "question": "Which refactoring scope?",
+                  "header": "Scope",
+                  "options": [
+                    {
+                      "label": "Targeted — one module only",
+                      "description": "Refactor a single, targeted module only."
+                    },
+                    {
+                      "label": "Full — all modules",
+                      "description": "Refactor all modules across the entire codebase."
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 2729,
+          "outputTokens": 159
+        }
+      }
+    }
+  ]
+}

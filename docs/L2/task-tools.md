@@ -37,11 +37,28 @@ at a time.
 
 ### Coordinator fan-out via `task_delegate`
 
-`task_delegate(task_id, agent_id)` assigns a pending task to a child agent ID using
-`board.assign()` directly — bypassing the single-in-progress guard. Coordinators use this
-to fan-out N tasks simultaneously to N child agents. The distinction is semantic:
-- `task_update(in_progress)` = "I am working on this now" (single worker)
-- `task_delegate(agent_id)` = "child agent X will work on this" (coordinator)
+`task_delegate(task_id, agent_id)` records delegation intent in `metadata.delegatedTo`
+only — it does NOT change `task.status` or `task.assignedTo`. The task remains `pending`
+with no owner so the spawned worker can claim it via `task_update(status: "in_progress")`.
+
+The distinction is semantic:
+- `task_update(in_progress)` = "I am working on this now" (worker self-assignment)
+- `task_delegate(agent_id)` = "record that child agent X is intended for this task" (coordinator metadata — no ownership change)
+
+**Why metadata-only (not `assignedTo`)?** Assigning the coordinator's `AgentId` as owner
+breaks the worker ownership contract: `task_update`, `task_output`, and orphan recovery
+all use `assignedTo` as source of truth. Workers cannot close tasks they don't own.
+Keeping `assignedTo` empty lets the worker claim the task normally.
+
+**Rejection cases for `task_delegate`:**
+- Task not found
+- Task is not `pending` (already `in_progress`, `completed`, etc.)
+- Task already has `metadata.delegatedTo` set (undelegate first or create a new task)
+
+**Autonomous bridge (#1553):** For swarm use, a future bridge component (modelled on v1's
+`dispatchSpawnTasks`) will atomically couple `task_delegate → agent_spawn → auto-complete`,
+handle clearing stale `metadata.delegatedTo` on crash recovery, and provide an undelegate
+path. That bridge is a separate layer, not part of this package.
 
 ### Atomic ownership enforcement
 
@@ -165,7 +182,7 @@ fails. The `result` is still returned in full — the error is advisory.
 | `task_list` | — | Filters by `status`, `assigned_to`, `updated_since`. Returns `TaskSummary[]`, ordered in_progress → pending → terminal. |
 | `task_stop` | — | Kills an `in_progress` task owned by the calling agent. Rejects pending and cross-agent. |
 | `task_output` | — | Returns `TaskOutputResponse`. Validates `results` against registered schema if configured. |
-| `task_delegate` | — | **Coordinator only.** Assigns a pending task to a child agent ID. No single-in-progress guard — multiple tasks may be delegated simultaneously. |
+| `task_delegate` | — | **Coordinator only.** Records `metadata.delegatedTo` on a pending task. Does NOT change `assignedTo` or status — task stays `pending` for the worker to claim. No single-in-progress guard. |
 
 ## Relationship to Other Packages
 

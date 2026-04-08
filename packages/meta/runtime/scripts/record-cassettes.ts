@@ -23,7 +23,7 @@
  *   @koi/permissions          — permission backend
  *   @koi/middleware-permissions — permission gating MW
  *   @koi/tools-core           — buildTool()
- *   @koi/tools-builtin        — Glob/Grep/ToolSearch
+ *   @koi/tools-builtin        — Glob/Grep/ToolSearch + TodoWrite/plan-mode interaction tools
  *   @koi/fs-local             — local filesystem backend
  *   @koi/skills-runtime       — skill discovery + SkillComponent attach
  */
@@ -86,7 +86,15 @@ import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
-import { createBuiltinSearchProvider, createFsReadTool } from "@koi/tools-builtin";
+import {
+  createAskUserTool,
+  createBuiltinSearchProvider,
+  createEnterPlanModeTool,
+  createExitPlanModeTool,
+  createFsReadTool,
+  createGlobTool,
+  createTodoTool,
+} from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -94,6 +102,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Cassette } from "../src/cassette/types.js";
+import { createInteractionProvider } from "../src/create-interaction-provider.js";
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../src/middleware/trace-wrapper.js";
@@ -225,6 +234,42 @@ const credentialsTool = credentialsToolResult.value;
 
 // ---------------------------------------------------------------------------
 // Task tools — removed hand-built stubs; task-board query now uses real createTaskTools
+
+// ---------------------------------------------------------------------------
+// @koi/tools-builtin interaction tools — TodoWrite descriptor for cassette
+// ---------------------------------------------------------------------------
+
+// Dummy backing store — only used to extract descriptors for cassette recording.
+// The actual in-memory state lives in createInteractionProvider() at query time.
+// let: mutable ref for setItems callback (immutable replacement pattern)
+let _todoItemsForDescriptor: readonly import("@koi/tools-builtin").TodoItem[] = [];
+const todoToolForCassette = createTodoTool({
+  getItems: () => _todoItemsForDescriptor,
+  setItems: (items) => {
+    _todoItemsForDescriptor = items;
+  },
+});
+// let: mutable plan-mode flag used only for descriptor extraction
+let _planModeForDescriptor = false;
+const enterPlanModeToolForCassette = createEnterPlanModeTool({
+  isAgentContext: () => false,
+  isInPlanMode: () => _planModeForDescriptor,
+  enterPlanMode: () => {
+    _planModeForDescriptor = true;
+  },
+});
+const exitPlanModeToolForCassette = createExitPlanModeTool({
+  isInPlanMode: () => _planModeForDescriptor,
+  isTeammate: false,
+  isPlanModeRequired: false,
+  exitPlanMode: () => {
+    _planModeForDescriptor = false;
+  },
+  getPlanContent: async () => undefined,
+});
+const askUserToolForCassette = createAskUserTool({
+  elicit: async () => [],
+});
 
 // ---------------------------------------------------------------------------
 // @koi/task-tools — full tool surface (7 tools via createTaskTools)
@@ -2128,6 +2173,154 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 5,
   },
 
+  // todo-write: @koi/tools-builtin interaction tools — TodoWrite via createInteractionProvider
+  //   LLM writes a two-item todo list; ATIF captures the tool step and cleared=false result.
+  {
+    name: "todo-write",
+    prompt:
+      "Use the TodoWrite tool to create a to-do list with two tasks: " +
+      "first 'Write unit tests' with status 'in_progress', " +
+      "and second 'Write documentation' with status 'pending'. " +
+      "After calling the tool, report how many tasks are now in the list.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-todo-write",
+        cmd: ["echo", "todo-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [createInteractionProvider()],
+    maxTurns: 2,
+  },
+
+  // plan-mode: @koi/tools-builtin — realistic plan → explore → complete → exit flow
+  //   1. EnterPlanMode  2. TodoWrite (2 tasks: explore + plan)
+  //   3. Glob to explore (completes 'explore' task)  4. TodoWrite (explore done, plan in_progress)
+  //   5. TodoWrite (plan done → auto-clear)  6. ExitPlanMode
+  {
+    name: "plan-mode",
+    prompt:
+      "You are planning how to add a new feature to this repo. Follow these steps:\n" +
+      "1. Call EnterPlanMode.\n" +
+      "2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', " +
+      "and id='write-plan' content='Write the implementation plan' status='pending'.\n" +
+      "3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n" +
+      "4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n" +
+      "5. Call TodoWrite to mark 'write-plan' completed (auto-clear will fire).\n" +
+      "6. Call ExitPlanMode.\n" +
+      "Report what you found during exploration and confirm the plan was approved.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-plan-tool",
+        cmd: ["echo", "plan-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [createInteractionProvider(), createBuiltinSearchProvider({ cwd: process.cwd() })],
+    maxTurns: 8,
+  },
+
+  // interaction-full: ALL interaction tools + task_delegate + agent_spawn in one coordinator flow
+  //   AskUserQuestion → EnterPlanMode → TodoWrite(3 tasks) → Glob → TodoWrite(update)
+  //   → TodoWrite(write-plan done) → ExitPlanMode
+  //   → task_create → task_delegate → agent_spawn → TodoWrite(auto-clear)
+  //   Uses Sonnet 4.6: Gemini drops function name tokens after 3+ sequential tool calls.
+  //   task_create/task_delegate/agent_spawn all share taskToolsBoard — auto-wired.
+  //   agent_spawn does NOT accept task_id (deferred to #1416); delegation is tracked
+  //   separately on the board.
+  {
+    name: "interaction-full",
+    prompt:
+      "You are a coordinator. Execute ALL 11 steps below in order. Do not skip any step.\n" +
+      "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' options: " +
+      "'Targeted — one module only', 'Full — all modules'.\n" +
+      "2. Call EnterPlanMode.\n" +
+      "3. Call TodoWrite: [{id:'explore',content:'Explore repo',status:'in_progress'}, " +
+      "{id:'write-plan',content:'Write plan',status:'pending'}, " +
+      "{id:'dispatch',content:'Spawn refactor worker',status:'pending'}].\n" +
+      "4. Call Glob pattern='*.json'.\n" +
+      "5. Call TodoWrite: explore=completed, write-plan=in_progress, dispatch=pending.\n" +
+      "6. Call TodoWrite: explore=completed, write-plan=completed, dispatch=in_progress.\n" +
+      "7. Call ExitPlanMode.\n" +
+      "8. Call task_create: subject='Refactor targeted module', description='Apply approved plan'. NOTE the returned task_id.\n" +
+      "9. Call task_delegate: task_id=<from step 8>, agent_id='refactor-worker'. THIS STEP IS MANDATORY before agent_spawn.\n" +
+      "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module'.\n" +
+      "11. Call TodoWrite: dispatch=completed (this clears the list).\n" +
+      "Report: user choice, worker output, list cleared confirmation.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-interaction",
+        cmd: ["echo", "interaction-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createInteractionProvider({
+        elicit: async () => [{ selected: ["Targeted — one module only"] }],
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+      createSingleToolProvider({
+        name: "task-create",
+        toolName: "task_create",
+        createTool: () => ttCreate,
+      }),
+      createSingleToolProvider({
+        name: "task-delegate",
+        toolName: "task_delegate",
+        createTool: () => ttDelegate,
+      }),
+      createSingleToolProvider({
+        name: "agent-spawn",
+        toolName: "agent_spawn",
+        createTool: () => stAgentSpawn,
+      }),
+    ],
+    maxTurns: 14,
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
+  // ask-user: @koi/tools-builtin — AskUserQuestion with mock elicit
+  //   LLM calls AskUserQuestion, elicit returns pre-canned answer, LLM reports result.
+  {
+    name: "ask-user",
+    prompt:
+      "Use AskUserQuestion to ask which refactoring approach to use: " +
+      '"Extract Method" (pulls logic into a new function) or ' +
+      '"Inline Method" (removes the function and inlines the code). ' +
+      "Report which option was selected.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-ask-user",
+        cmd: ["echo", "ask-user-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createInteractionProvider({
+        // Pre-canned elicit: always selects first option (deterministic replay)
+        elicit: async () => [{ selected: ["Extract Method"] }],
+      }),
+    ],
+    maxTurns: 2,
+  },
+
   // sandbox-exec: @koi/sandbox-os — Bash runs transparently inside OS sandbox (DI pattern).
   //   agent calls Bash tool → Bash routes through SandboxInstance.exec() → ATIF captures output.
   //   Sandbox adapter + restrictive profile are server-side config; model sees only Bash.
@@ -2698,6 +2891,128 @@ const mcpTools =
       )
     : [];
 
+await recordCassette("todo-write", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "Use the TodoWrite tool to create a to-do list with two tasks: " +
+              "first 'Write unit tests' with status 'in_progress', " +
+              "and second 'Write documentation' with status 'pending'. " +
+              "After calling the tool, report how many tasks are now in the list.",
+          },
+        ],
+      },
+    ],
+    tools: [todoToolForCassette.descriptor],
+  }),
+);
+
+await recordCassette("plan-mode", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "You are planning how to add a new feature to this repo. Follow these steps:\n" +
+              "1. Call EnterPlanMode.\n" +
+              "2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', " +
+              "and id='write-plan' content='Write the implementation plan' status='pending'.\n" +
+              "3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n" +
+              "4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n" +
+              "5. Call TodoWrite to mark 'write-plan' completed (auto-clear will fire).\n" +
+              "6. Call ExitPlanMode.\n" +
+              "Report what you found during exploration and confirm the plan was approved.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      enterPlanModeToolForCassette.descriptor,
+      todoToolForCassette.descriptor,
+      exitPlanModeToolForCassette.descriptor,
+      createGlobTool({ cwd: process.cwd() }).descriptor,
+    ],
+  }),
+);
+
+await recordCassette("ask-user", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "Use AskUserQuestion to ask which refactoring approach to use: " +
+              '"Extract Method" (pulls logic into a new function) or ' +
+              '"Inline Method" (removes the function and inlines the code). ' +
+              "Report which option was selected.",
+          },
+        ],
+      },
+    ],
+    tools: [askUserToolForCassette.descriptor],
+  }),
+);
+
+await recordCassette(
+  "interaction-full",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                "You are a coordinator. Execute ALL 11 steps below in order. Do not skip any step.\n" +
+                "1. Call AskUserQuestion with ONE question: 'Which refactoring scope?' options: " +
+                "'Targeted — one module only', 'Full — all modules'.\n" +
+                "2. Call EnterPlanMode.\n" +
+                "3. Call TodoWrite: [{id:'explore',content:'Explore repo',status:'in_progress'}, " +
+                "{id:'write-plan',content:'Write plan',status:'pending'}, " +
+                "{id:'dispatch',content:'Spawn refactor worker',status:'pending'}].\n" +
+                "4. Call Glob pattern='*.json'.\n" +
+                "5. Call TodoWrite: explore=completed, write-plan=in_progress, dispatch=pending.\n" +
+                "6. Call TodoWrite: explore=completed, write-plan=completed, dispatch=in_progress.\n" +
+                "7. Call ExitPlanMode.\n" +
+                "8. Call task_create: subject='Refactor targeted module', description='Apply approved plan'. NOTE the returned task_id.\n" +
+                "9. Call task_delegate: task_id=<from step 8>, agent_id='refactor-worker'. THIS STEP IS MANDATORY before agent_spawn.\n" +
+                "10. Call agent_spawn: agent_name='refactor-worker', description='Refactor targeted module', task_id=<from step 8>.\n" +
+                "11. Call TodoWrite: dispatch=completed (this clears the list).\n" +
+                "Report: user choice, worker output, list cleared confirmation.",
+            },
+          ],
+        },
+      ],
+      tools: [
+        askUserToolForCassette.descriptor,
+        enterPlanModeToolForCassette.descriptor,
+        todoToolForCassette.descriptor,
+        exitPlanModeToolForCassette.descriptor,
+        createGlobTool({ cwd: process.cwd() }).descriptor,
+        ttCreate.descriptor,
+        ttDelegate.descriptor,
+        stAgentSpawn.descriptor,
+      ],
+    }),
+  { model: SONNET_MODEL },
+);
+
 await recordCassette("mcp-tool-use", () =>
   modelAdapter.stream({
     messages: [
@@ -2850,12 +3165,16 @@ await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
 
-console.log(`\nDone. ${4 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${8 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
 console.log("  fixtures/spawn-tools.cassette.json");
 console.log("  fixtures/hook-redaction.cassette.json");
+console.log("  fixtures/todo-write.cassette.json");
+console.log("  fixtures/plan-mode.cassette.json");
+console.log("  fixtures/ask-user.cassette.json");
+console.log("  fixtures/interaction-full.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);

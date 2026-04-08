@@ -1,5 +1,5 @@
-import type { AgentId, JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, agentId as mkAgentId, taskItemId } from "@koi/core";
+import type { JsonObject, ManagedTaskBoard, TaskItemId, Tool } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
 import { toTaskSummary } from "../project.js";
@@ -12,23 +12,42 @@ const schema = z.object({
 /**
  * task_delegate — coordinator delegation tool.
  *
- * Assigns a pending task to a child agent without triggering the
- * single-in-progress guard enforced by task_update. Coordinators use this
- * to fan-out N tasks simultaneously; workers use task_update for claiming
- * their own single in-progress task.
+ * Records delegation intent in `metadata.delegatedTo` only — does NOT change
+ * task status or assignedTo. The task stays `pending` with no owner.
  *
- * Only pending tasks may be delegated. In-progress (already delegated),
- * completed, failed, and killed tasks are rejected.
+ * ## Design: intentionally decoupled from agent_spawn
+ *
+ * task_delegate and agent_spawn are independent tools. In interactive/manual
+ * mode (like CC's Agent tool), the coordinator model closes the loop:
+ *   1. task_create → task_delegate → agent_spawn → read output → task_update
+ *
+ * For autonomous mode (#1553), a bridge (like v1's dispatchSpawnTasks) will
+ * atomically couple delegate → spawn → auto-complete. That bridge also handles:
+ *   - Clearing stale `metadata.delegatedTo` on crash recovery
+ *   - Passing task_id to the spawned child for deterministic claiming
+ *   - Providing an undelegate path for reassignment
+ *
+ * ## Why metadata-only (not assignedTo)
+ *
+ * Assigning the coordinator's AgentId as owner breaks the worker/recovery
+ * contract: task_update, task_output, and orphan recovery all use assignedTo
+ * as source of truth. Workers can't close tasks they don't own. This approach
+ * keeps the task available for the worker to claim via task_update(in_progress).
+ *
+ * Rejection cases:
+ *   - Task not found
+ *   - Task is not pending (already in_progress/completed/etc.)
+ *   - Task already has metadata.delegatedTo set
  */
 export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
   return {
     descriptor: {
       name: "task_delegate",
       description:
-        "Delegate a pending task to a child agent for execution. " +
-        "Unlike task_update, this allows multiple tasks to be delegated simultaneously — " +
-        "use it when coordinating parallel work across multiple agents. " +
-        "The child agent's ID is recorded as assignedTo on the task.",
+        "Delegate a pending task to a named child agent. " +
+        "Records the intended executor in metadata.delegatedTo only — " +
+        "the task remains pending with no assignedTo change. " +
+        "The spawned worker claims the task via task_update(status: in_progress).",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -42,7 +61,6 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
 
       const { task_id, agent_id } = parsed.data;
       const id = taskItemId(task_id);
-      const childAgentId: AgentId = mkAgentId(agent_id);
       const snapshot = board.snapshot();
       const task = snapshot.get(id);
 
@@ -57,12 +75,23 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
             "Only pending tasks may be delegated.",
         };
       }
+      if (task.metadata?.delegatedTo !== undefined) {
+        return {
+          ok: false,
+          error:
+            `Task '${task_id}' is already delegated to '${String(task.metadata.delegatedTo)}'. ` +
+            "Undelegate first or create a new task.",
+        };
+      }
 
-      // board.assign() — direct state transition, no single-in-progress guard.
-      // Coordinators fan-out N tasks; the guard lives only in task_update.
-      const assignResult = await board.assign(id, childAgentId);
-      if (!assignResult.ok) {
-        return { ok: false, error: assignResult.error.message };
+      // Record intended executor in metadata only. Preserve any existing metadata.
+      // The task stays pending — no status change, no assignedTo assignment.
+      const existingMeta = task.metadata ?? {};
+      const metaResult = await board.update(id, {
+        metadata: { ...existingMeta, delegatedTo: agent_id },
+      });
+      if (!metaResult.ok) {
+        return { ok: false, error: metaResult.error.message };
       }
 
       const updatedTask = board.snapshot().get(id);
@@ -72,6 +101,7 @@ export function createTaskDelegateTool(board: ManagedTaskBoard): Tool {
           updatedTask !== undefined
             ? toTaskSummary(updatedTask, board.snapshot())
             : ({ id } satisfies { id: TaskItemId }),
+        delegatedTo: agent_id,
       };
     },
   };

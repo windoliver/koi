@@ -1,0 +1,52 @@
+{
+  "name": "plan-mode",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775534473274,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "EnterPlanMode",
+      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+      "delta": "{}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 528,
+      "outputTokens": 3
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775534472-4T6sxKBkT5h22GkH8CC7",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+            "name": "EnterPlanMode",
+            "arguments": {}
+          }
+        ],
+        "usage": {
+          "inputTokens": 528,
+          "outputTokens": 3
+        }
+      }
+    }
+  ]
+}

@@ -25,7 +25,8 @@
  *   web_fetch            — HTTP fetch via @koi/tools-web
  *   Bash                 — shell execution via @koi/tools-bash
  *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
- *   task_create/get/update/list/stop/output/delegate — task management via @koi/task-tools
+ *   task_create, task_get, task_update, task_list, task_stop, task_output, task_delegate — task management via @koi/task-tools
+ *   agent_spawn — intentionally NOT registered until workers route through createKoi (#1582)
  */
 
 import { readdir } from "node:fs/promises";
@@ -56,7 +57,7 @@ import { createSkillsRuntime } from "@koi/skills-runtime";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashTool } from "@koi/tools-bash";
-import { createGlobTool, createGrepTool } from "@koi/tools-builtin";
+import { createGlobTool, createGrepTool, createTodoTool } from "@koi/tools-builtin";
 import { createWebExecutor, createWebFetchTool } from "@koi/tools-web";
 import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
 import {
@@ -88,7 +89,8 @@ const DEFAULT_SYSTEM_PROMPT =
   "task_create/task_list/task_get/task_update/task_stop/task_output for task management) " +
   "to complete tasks. " +
   "Always prefer using tools to gather accurate real-time information rather than " +
-  "answering from memory.";
+  "answering from memory.\n\n" +
+  "Use TodoWrite to track your progress across multi-step tasks.";
 /**
  * Maximum number of transcript messages sent in each model request.
  * Caps context window to control token costs in long sessions.
@@ -298,24 +300,40 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     agentId: "tui-agent" as AgentId,
   });
 
+  // --- Interaction tools (TodoWrite only) ---
+  // EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally NOT
+  // registered: they require real TUI dialogs to be safe. EnterPlanMode/
+  // ExitPlanMode only flip a boolean without gating Bash/fs access, and
+  // AskUserQuestion auto-answers without showing the user. Tracked in #1582.
+  // let: mutable state (per session, reset on agent:clear)
+  let todoItems: readonly import("@koi/tools-builtin").TodoItem[] = [];
+
+  const todoTool = createTodoTool({
+    getItems: () => todoItems,
+    setItems: (items) => {
+      todoItems = items;
+    },
+  });
+
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
   // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
-  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>([
-    [globTool.descriptor.name, globTool],
-    [grepTool.descriptor.name, grepTool],
-    [webFetchTool.descriptor.name, webFetchTool],
-    [bashTool.descriptor.name, bashTool],
-    ...taskTools.map((t) => [t.descriptor.name, t] as const),
-  ]);
-
-  const localToolDescriptors: readonly ToolDescriptor[] = [
-    globTool.descriptor,
-    grepTool.descriptor,
-    webFetchTool.descriptor,
-    bashTool.descriptor,
-    ...taskTools.map((t) => t.descriptor),
+  // agent_spawn is intentionally NOT registered: child workers only have Glob/Grep
+  // (read-only), but the child prompt says "write files, run commands" which they
+  // can't do. Remove until workers route through createKoi with full middleware (#1582).
+  const allTools: readonly Tool[] = [
+    globTool,
+    grepTool,
+    webFetchTool,
+    bashTool,
+    todoTool,
+    ...taskTools,
   ];
+  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>(
+    allTools.map((t) => [t.descriptor.name, t]),
+  );
+
+  const localToolDescriptors: readonly ToolDescriptor[] = allTools.map((t) => t.descriptor);
 
   const rawEngineAdapter: EngineAdapter = {
     engineId: "koi-tui",

@@ -1,5 +1,5 @@
 import type { JsonObject, Tool } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
 import type { SpawnToolsConfig } from "../types.js";
@@ -16,13 +16,6 @@ const schema = z.object({
     .string()
     .min(1)
     .describe("Clear description of the work this child agent should perform."),
-  task_id: z
-    .string()
-    .optional()
-    .describe(
-      "Optional task ID to associate with this spawn. " +
-        "Use task_delegate first to mark the task on the board, then pass its ID here.",
-    ),
   context: z
     .record(z.string(), z.unknown())
     .optional()
@@ -33,18 +26,21 @@ const schema = z.object({
  * agent_spawn — LLM-callable tool for coordinator agents.
  *
  * Spawns a named child agent to complete a specific task. The child runs
- * asynchronously and returns its final output string. Use task_delegate
- * before agent_spawn to mark the corresponding task as delegated on the board.
+ * asynchronously and returns its final output string.
+ *
+ * Design: agent_spawn and task_delegate are intentionally independent.
+ * For simple use, the coordinator calls agent_spawn directly (like CC's Agent
+ * tool). For autonomous/swarm use (#1553), a bridge component (like v1's
+ * dispatchSpawnTasks) couples them: task_delegate → agent_spawn → auto-complete.
+ * The bridge is a separate layer, not baked into these tools.
  */
 export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
   return {
     descriptor: {
       name: "agent_spawn",
       description:
-        "Spawn a named child agent to complete a specific task. " +
-        "Returns the child agent's final output as a string. " +
-        "Call task_delegate first to mark the task as delegated on the board, " +
-        "then pass its task_id here so the child's result can be matched back.",
+        "Spawn a named child agent to complete a task. " +
+        "Returns the child agent's final output as a string.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -56,13 +52,12 @@ export function createAgentSpawnTool(config: SpawnToolsConfig): Tool {
         return { ok: false, error: parsed.error.message };
       }
 
-      const { agent_name, description, task_id } = parsed.data;
+      const { agent_name, description } = parsed.data;
 
       const result = await config.spawnFn({
         agentName: agent_name,
         description,
         signal: config.signal,
-        ...(task_id !== undefined ? { taskId: taskItemId(task_id) } : {}),
         agentId: config.agentId,
       });
 

@@ -11,6 +11,9 @@ export {
   createFileSystemTools,
   createToolDispatcher,
 } from "./create-filesystem-provider.js";
+// Interaction tools provider (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion)
+export type { InteractionProviderConfig } from "./create-interaction-provider.js";
+export { createInteractionProvider } from "./create-interaction-provider.js";
 export { createRuntime } from "./create-runtime.js";
 // Debug
 export { collectDebugInfo, formatDebugInfo } from "./debug/collect-debug-info.js";

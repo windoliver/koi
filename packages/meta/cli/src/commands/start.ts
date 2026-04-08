@@ -51,7 +51,7 @@ import {
   resumeForSession,
 } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
-import { createBuiltinSearchProvider } from "@koi/tools-builtin";
+import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
@@ -91,8 +91,17 @@ function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
  *   - builtin search (Glob, Grep)
  *   - web_fetch
  *   - Bash
+ *   - TodoWrite (task list tracker — no permission gating needed)
+ *
+ * NOTE: EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally
+ * NOT wired here. Plan-mode requires a permission backend that can enforce
+ * the read-only gate (deny Write/Edit/Bash until the plan is approved).
+ * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading —
+ * the mode flag would flip but no permissions would actually be restricted.
+ * The TUI harness wires the full interaction provider (including plan-mode)
+ * because it has a real permission backend. `koi start` uses TodoWrite only.
  */
-function buildStaticProviders(cwd: string): ComponentProvider[] {
+async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
   const searchProvider = createBuiltinSearchProvider({ cwd });
   const webExecutor = createWebExecutor({ allowHttps: true });
   const webProvider = createWebProvider({
@@ -101,7 +110,18 @@ function buildStaticProviders(cwd: string): ComponentProvider[] {
     operations: ["fetch"],
   });
   const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
-  return [searchProvider, webProvider, bashProvider];
+
+  // let: mutable todo list, replaced atomically on each write
+  let todoItems: readonly TodoItem[] = [];
+  const todoTool = createTodoTool({
+    getItems: () => todoItems,
+    setItems: (items) => {
+      todoItems = items;
+    },
+  });
+  const todoProvider = wrapToolAsProvider(todoTool);
+
+  return [searchProvider, webProvider, bashProvider, todoProvider];
 }
 
 /**
@@ -308,12 +328,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // ---------------------------------------------------------------------------
 
   const cwd = process.cwd();
-  const [mcpProvider, hookMiddleware] = await Promise.all([
+  const [mcpProvider, hookMiddleware, staticProviders] = await Promise.all([
     loadMcpProvider(cwd),
     loadHookMiddleware(),
+    buildStaticProviders(cwd),
   ]);
-
-  const staticProviders = buildStaticProviders(cwd);
   const providers: ComponentProvider[] = [
     ...staticProviders,
     ...(mcpProvider !== undefined ? [mcpProvider] : []),

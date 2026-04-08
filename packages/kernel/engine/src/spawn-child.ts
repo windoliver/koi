@@ -561,8 +561,19 @@ const NON_INTERACTIVE_DENIED_TOOLS: ReadonlySet<string> = new Set([
  * inherited it, nested spawn calls would be attributed to the ancestor rather than
  * the actual spawning agent (wrong lineage, wrong inbox/report routing, wrong depth).
  * Each child that needs Spawn must have a fresh provider attached during assembly.
+ *
+ * The interaction tools (EnterPlanMode, ExitPlanMode, TodoWrite) carry closures over
+ * the parent's mutable inPlanMode flag, todoItems array, and plan-content memory.
+ * Inheriting them by reference would let a child corrupt the parent's coordination
+ * state — e.g., a worker could clear the parent's todo list or toggle plan mode.
+ * Children that genuinely need these tools must have their own provider attached.
  */
-const ALWAYS_EXCLUDED_FROM_INHERITANCE: ReadonlySet<string> = new Set(["Spawn"]);
+const ALWAYS_EXCLUDED_FROM_INHERITANCE: ReadonlySet<string> = new Set([
+  "Spawn",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "TodoWrite",
+]);
 
 /** Always exclude certain tools from child inheritance. */
 function expandDenylistWithAlwaysExcluded(

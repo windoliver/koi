@@ -81,12 +81,14 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
 
-**Wiring (as of PR #1518):**
+**Wiring (current):**
 
 - Model: `anthropic/claude-sonnet-4-6` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
-- **No tools / no Spawn**: `koi start` runs without any tool inventory. `Spawn` is not registered because built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that are not available in this bare CLI path. Agent spawn support will land with manifest/tool wiring (#1264).
+- **Tools wired:** Glob, Grep, web_fetch, Bash, and **TodoWrite** (in-conversation task tracking). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
+- **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT wired — plan-mode requires a real permission backend to enforce the read-only gate; without it the mode flag flips but no permissions are restricted. The TUI wires the full interaction provider because it has a real permission backend. `koi start` uses `TodoWrite` only.
+- **No Spawn**: `agent_spawn` is not registered — built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that require manifest-level wiring (#1264).
 - Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message
 - SIGINT: aborts gracefully, exits with `ExitCode.FAILURE` so automation can detect cancellation
 
@@ -138,6 +140,9 @@ so the key is not forwarded to OpenRouter.
 - Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten) are extracted from JSON results via `getResultDisplay()`.
 - Engine events are batch-dispatched via `store.dispatchBatch()` — the EventBatcher flushes all events in one pass with a single store notification, avoiding N signal invalidations per 16ms window.
 - A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
+- **Tools wired:** Glob, Grep, web_fetch, Bash, fs_read/write/edit (via `createRuntime`), task_create/get/update/list/stop/output/delegate (via `@koi/task-tools`), and **TodoWrite**.
+- **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT registered until real TUI dialogs are wired (tracked in #1582). Without dialog integration: plan-mode would flip a boolean without gating Bash/fs access, and AskUserQuestion would auto-answer without showing the user.
+- **No agent_spawn:** `agent_spawn` is intentionally not registered — child workers only have Glob/Grep (read-only) but the child prompt says "write files, run commands" which they cannot do. Deferred until workers route through `createKoi` with full middleware (#1582).
 - **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt via `createSkillInjectorMiddleware()` so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp). Non-filesystem skills (e.g., MCP-derived) can be injected via `registerExternal()`. Skills may declare `execution: fork` in frontmatter for isolated sub-agent execution.
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.

@@ -1,0 +1,478 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "ask-user",
+  "agent": {
+    "name": "golden-ask-user",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "TodoWrite",
+        "description": "Write the agent's to-do list. Pass the complete replacement list — all current items will be replaced. Items are auto-cleared when all reach 'completed' status. Use status 'in_progress' for the task currently being worked on (max 1 at a time)."
+      },
+      {
+        "name": "EnterPlanMode",
+        "description": "Switch to plan mode for complex tasks that require exploration and design before any file changes. In plan mode you MUST NOT write or edit files — only read, search, and explore. When ready, call ExitPlanMode to present your plan for approval."
+      },
+      {
+        "name": "ExitPlanMode",
+        "description": "Present your completed plan and request approval to exit plan mode and begin implementation. Call this only after you have written a thorough plan."
+      },
+      {
+        "name": "AskUserQuestion",
+        "description": "Present structured questions to the user and wait for their answers before continuing. Use when you need to clarify approach, preferences, or missing information. Each question must offer 2+ predefined choices. Limit to 4 questions per call."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:10.968Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:10.968Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-06T23:47:10.970Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 552,
+        "completion_tokens": 43
+      },
+      "duration_ms": 994,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "TodoWrite",
+            "description": "Write the agent's to-do list. Pass the complete replacement list — all current items will be replaced. Items are auto-cleared when all reach 'completed' status. Use status 'in_progress' for the task currently being worked on (max 1 at a time)."
+          },
+          {
+            "name": "EnterPlanMode",
+            "description": "Switch to plan mode for complex tasks that require exploration and design before any file changes. In plan mode you MUST NOT write or edit files — only read, search, and explore. When ready, call ExitPlanMode to present your plan for approval."
+          },
+          {
+            "name": "ExitPlanMode",
+            "description": "Present your completed plan and request approval to exit plan mode and begin implementation. Call this only after you have written a thorough plan."
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Present structured questions to the user and wait for their answers before continuing. Use when you need to clarify approach, preferences, or missing information. Each question must offer 2+ predefined choices. Limit to 4 questions per call."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-06T23:47:11.965Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_AskUserQuestion_3",
+          "function_name": "AskUserQuestion",
+          "arguments": {
+            "questions": [
+              {
+                "header": "Refactoring",
+                "question": "Which refactoring approach would you like to use?",
+                "options": [
+                  {
+                    "description": "Pulls logic into a new function",
+                    "label": "Extract Method"
+                  },
+                  {
+                    "description": "Removes the function and inlines the code",
+                    "label": "Inline Method"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_AskUserQuestion_3",
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.966Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "AskUserQuestion({\"questions\":[{\"header\":\"Refactoring\",\"question\":\"Which refactoring approach would you like to use?\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}]}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 0.5197500000003856,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.967Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 996.2924999999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.967Z",
+      "model_name": "middleware:hooks",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 996.3610419999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.967Z",
+      "model_name": "middleware:permissions",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 996.533625,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.967Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 996.5737079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.971Z",
+      "model_name": "hook:on-ask-user",
+      "message": "tool.succeeded → on-ask-user",
+      "duration_ms": 4.874584000000141,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-ask-user",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-ask-user"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.971Z",
+      "model_name": "middleware:hooks",
+      "message": "AskUserQuestion({\"questions\":[{\"header\":\"Refactoring\",\"question\":\"Which refactoring approach would you like to use?\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}]}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 5.570208000000093,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.971Z",
+      "model_name": "middleware:permissions",
+      "message": "AskUserQuestion({\"questions\":[{\"header\":\"Refactoring\",\"question\":\"Which refactoring approach would you like to use?\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}]}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 5.665417000000161,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:11.971Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "AskUserQuestion({\"questions\":[{\"header\":\"Refactoring\",\"question\":\"Which refactoring approach would you like to use?\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}]}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 6.137542000000394,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-06T23:47:11.971Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "The user selected \"Extract Method\".\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 629,
+        "completion_tokens": 8
+      },
+      "duration_ms": 555,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "TodoWrite",
+            "description": "Write the agent's to-do list. Pass the complete replacement list — all current items will be replaced. Items are auto-cleared when all reach 'completed' status. Use status 'in_progress' for the task currently being worked on (max 1 at a time)."
+          },
+          {
+            "name": "EnterPlanMode",
+            "description": "Switch to plan mode for complex tasks that require exploration and design before any file changes. In plan mode you MUST NOT write or edit files — only read, search, and explore. When ready, call ExitPlanMode to present your plan for approval."
+          },
+          {
+            "name": "ExitPlanMode",
+            "description": "Present your completed plan and request approval to exit plan mode and begin implementation. Call this only after you have written a thorough plan."
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Present structured questions to the user and wait for their answers before continuing. Use when you need to clarify approach, preferences, or missing information. Each question must offer 2+ predefined choices. Limit to 4 questions per call."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:12.526Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.\n\n{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 555.1132080000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:12.526Z",
+      "model_name": "middleware:hooks",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.\n\n{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 555.1780829999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:12.526Z",
+      "model_name": "middleware:permissions",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.\n\n{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 555.3512920000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-06T23:47:12.526Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.\n\n{\"answers\":[{\"question\":\"Which refactoring approach would you like to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 555.4059580000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@
  *
  * Filesystem tools: primordial Tool instances backed by FileSystemBackend.
  * Search tools: glob, grep, tool-search for codebase exploration.
+ * Interaction tools: plan-mode (enter/exit), ask-user, todo.
  */
 
 // Search tools
@@ -21,7 +22,18 @@ export { createGrepTool } from "./grep-tool.js";
 export type { ParseResult } from "./parse-args.js";
 export type { ToolSearchConfig } from "./tool-search-tool.js";
 export { createToolSearchTool } from "./tool-search-tool.js";
+// Interaction tools
+export type { AskUserToolConfig } from "./tools/ask-user.js";
+export { createAskUserTool } from "./tools/ask-user.js";
 export { createFsEditTool } from "./tools/edit.js";
+export type {
+  EnterPlanModeConfig,
+  ExitPlanModeConfig,
+  PlanApprovalRequest,
+} from "./tools/plan-mode.js";
+export { createEnterPlanModeTool, createExitPlanModeTool } from "./tools/plan-mode.js";
 export type { FsToolOptions } from "./tools/read.js";
 export { createFsReadTool } from "./tools/read.js";
+export type { TodoItem, TodoStatus, TodoToolConfig } from "./tools/todo.js";
+export { createTodoTool } from "./tools/todo.js";
 export { createFsWriteTool } from "./tools/write.js";
