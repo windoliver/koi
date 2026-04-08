@@ -2,19 +2,17 @@
  * tui-command tests.
  *
  * Covers:
- *   - drainEngineStream: connection status, event enqueue, error dispatch
- *   - TUI engine adapter transcript semantics (history accumulation + abort)
+ *   - drainEngineStream: connection status, event enqueue, error dispatch, abort handling
  *
  * `runTuiCommand` is an integration entry-point (requires TTY + renderer) and
  * is covered by E2E golden-query tests, not unit tests here.
  *
- * The overlapping-submit guard (`activeController !== null → add_error`) lives
- * inside `runTuiCommand`'s closure and requires a real TTY to test end-to-end;
- * it is covered by the golden-query trajectory for the TUI command.
+ * Transcript commit semantics are tested in engine-adapter.test.ts (T3-A cleanup:
+ * removed duplicated simulateTurn tests that re-implemented adapter logic).
  */
 
 import { describe, expect, mock, spyOn, test } from "bun:test";
-import type { EngineEvent, InboundMessage } from "@koi/core";
+import type { EngineEvent } from "@koi/core";
 import { createEventBatcher, createInitialState, createStore } from "@koi/tui";
 import { drainEngineStream } from "./tui-command.js";
 
@@ -31,41 +29,6 @@ async function* makeStream(events: readonly EngineEvent[]): AsyncGenerator<Engin
 async function* makeErrorStream(): AsyncGenerator<EngineEvent> {
   yield* []; // satisfies generator shape
   throw new Error("engine crash");
-}
-
-// Simulate a completed turn: turn_start, text_delta, done(completed), turn_end
-function _makeCompletedTurnStream(text: string): AsyncGenerator<EngineEvent> {
-  const events: EngineEvent[] = [
-    { kind: "turn_start", turnIndex: 0 },
-    { kind: "text_delta", delta: text },
-    {
-      kind: "done",
-      output: {
-        content: [{ kind: "text", text }],
-        stopReason: "completed",
-        metrics: { totalTokens: 10, inputTokens: 5, outputTokens: 5, turns: 1, durationMs: 0 },
-      },
-    },
-    { kind: "turn_end", turnIndex: 0 },
-  ];
-  return makeStream(events);
-}
-
-// Simulate an aborted turn: turn_start, then done(interrupted)
-function _makeAbortedTurnStream(): AsyncGenerator<EngineEvent> {
-  const events: EngineEvent[] = [
-    { kind: "turn_start", turnIndex: 0 },
-    {
-      kind: "done",
-      output: {
-        content: [],
-        stopReason: "interrupted",
-        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
-      },
-    },
-    { kind: "turn_end", turnIndex: 0 },
-  ];
-  return makeStream(events);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,102 +95,17 @@ describe("drainEngineStream — error path", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TUI adapter transcript semantics
-//
-// We test the adapter's history/transcript behavior by building a minimal
-// mock that mirrors the adapter logic: staged commit on "done(completed)",
-// no commit on "done(interrupted)".
+// drainEngineStream — flush ordering
 // ---------------------------------------------------------------------------
 
-describe("TUI adapter — transcript semantics", () => {
-  /**
-   * Simulate one turn through the transcript accumulation logic.
-   * Mirrors the adapter's commit logic extracted for testability.
-   */
-  function simulateTurn(
-    history: InboundMessage[],
-    stagedUserMsg: InboundMessage,
-    stopReason: "completed" | "interrupted",
-    assistantText: string,
-  ): void {
-    if (stopReason === "completed") {
-      history.push(stagedUserMsg);
-      if (assistantText.length > 0) {
-        history.push({
-          senderId: "assistant",
-          timestamp: Date.now(),
-          content: [{ kind: "text", text: assistantText }],
-        });
-      }
-    }
-    // "interrupted" — do NOT push anything
-  }
-
-  test("completed turn: user and assistant messages committed to history", () => {
-    const history: InboundMessage[] = [];
-    const userMsg: InboundMessage = {
-      senderId: "user",
-      timestamp: 0,
-      content: [{ kind: "text", text: "hello" }],
-    };
-    simulateTurn(history, userMsg, "completed", "Hi there!");
-    expect(history).toHaveLength(2);
-    expect(history[0]?.senderId).toBe("user");
-    expect(history[1]?.senderId).toBe("assistant");
-  });
-
-  test("interrupted turn: nothing committed to history", () => {
-    const history: InboundMessage[] = [];
-    const userMsg: InboundMessage = {
-      senderId: "user",
-      timestamp: 0,
-      content: [{ kind: "text", text: "abort me" }],
-    };
-    simulateTurn(history, userMsg, "interrupted", "");
-    expect(history).toHaveLength(0);
-  });
-
-  test("completed turn with empty assistant text: only user message committed", () => {
-    const history: InboundMessage[] = [];
-    const userMsg: InboundMessage = {
-      senderId: "user",
-      timestamp: 0,
-      content: [{ kind: "text", text: "hello" }],
-    };
-    simulateTurn(history, userMsg, "completed", "");
-    expect(history).toHaveLength(1);
-    expect(history[0]?.senderId).toBe("user");
-  });
-
-  test("context window is capped at MAX_TRANSCRIPT_MESSAGES", () => {
-    const MAX = 100;
-    const history: InboundMessage[] = Array.from({ length: MAX + 20 }, (_, i) => ({
-      senderId: i % 2 === 0 ? "user" : "assistant",
-      timestamp: i,
-      content: [{ kind: "text", text: `msg ${i}` }],
-    }));
-    const userMsg: InboundMessage = {
-      senderId: "user",
-      timestamp: 9999,
-      content: [{ kind: "text", text: "new" }],
-    };
-    // Simulate context window construction as done in the adapter
-    const contextWindow = [...history.slice(-MAX), userMsg];
-    expect(contextWindow).toHaveLength(MAX + 1);
-    // Staged message is always last
-    expect(contextWindow[contextWindow.length - 1]).toBe(userMsg);
-    // Oldest messages are dropped
-    expect(contextWindow[0]?.timestamp).toBe(20); // history[20] is the first kept
-  });
-
-  test("drainEngineStream flushes events before setting disconnected", async () => {
+describe("drainEngineStream — flush ordering", () => {
+  test("flushes events before setting disconnected", async () => {
     const store = createStore(createInitialState());
     const flushed: EngineEvent[] = [];
     const batcher = createEventBatcher<EngineEvent>((batch) => {
       flushed.push(...batch);
     });
 
-    // Stream emits a text_delta — we expect it flushed before disconnected is set.
     let disconnectedAtFlushCount = -1;
     const origDispatch = store.dispatch.bind(store);
     const dispatchSpy = mock((action: Parameters<typeof store.dispatch>[0]) => {
@@ -247,7 +125,97 @@ describe("TUI adapter — transcript semantics", () => {
     const events: EngineEvent[] = [{ kind: "text_delta", delta: "x" }];
     await drainEngineStream(makeStream(events), store, batcher);
 
-    // flushSync() is called before finally sets disconnected
     expect(disconnectedAtFlushCount).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-drain: drainEngineStream — abort handling
+// ---------------------------------------------------------------------------
+
+describe("drainEngineStream — abort handling", () => {
+  test("handles AbortError without dispatching ENGINE_ERROR", async () => {
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const dispatchSpy = spyOn(store, "dispatch");
+
+    // Create a stream that throws AbortError (simulates Ctrl+C)
+    async function* abortStream(): AsyncGenerator<EngineEvent> {
+      yield { kind: "text_delta", delta: "partial" } as EngineEvent;
+      const abortErr = new DOMException("The operation was aborted", "AbortError");
+      throw abortErr;
+    }
+
+    await drainEngineStream(abortStream(), store, batcher);
+
+    // drainEngineStream catches all errors (including AbortError) and
+    // dispatches add_error. This is correct behavior — the TUI shows the error.
+    // The key assertion: it doesn't crash and always sets disconnected.
+    expect(store.getState().connectionStatus).toBe("disconnected");
+
+    // Verify we still get an error dispatch (abort is still surfaced)
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBe(1);
+  });
+
+  test("sets disconnected status after abort", async () => {
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+
+    async function* abortStream(): AsyncGenerator<EngineEvent> {
+      yield* []; // satisfy useYield lint — generator must have at least one yield point
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    await drainEngineStream(abortStream(), store, batcher);
+    expect(store.getState().connectionStatus).toBe("disconnected");
+  });
+
+  test("flushes buffered events before handling abort", async () => {
+    const store = createStore(createInitialState());
+    const flushed: EngineEvent[] = [];
+    const batcher = createEventBatcher<EngineEvent>((batch) => {
+      flushed.push(...batch);
+    });
+
+    async function* abortAfterEvent(): AsyncGenerator<EngineEvent> {
+      yield { kind: "text_delta", delta: "flushed" } as EngineEvent;
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    await drainEngineStream(abortAfterEvent(), store, batcher);
+
+    // The event yielded before abort should still be flushed
+    expect(flushed.length).toBe(1);
+    expect(flushed[0]).toEqual({ kind: "text_delta", delta: "flushed" });
+  });
+
+  test("processes all events including tool lifecycle events", async () => {
+    const store = createStore(createInitialState());
+    const flushed: EngineEvent[] = [];
+    const batcher = createEventBatcher<EngineEvent>((batch) => {
+      flushed.push(...batch);
+    });
+
+    const events: EngineEvent[] = [
+      { kind: "text_delta", delta: "I'll " } as EngineEvent,
+      {
+        kind: "tool_call_start",
+        callId: "c1" as import("@koi/core").ToolCallId,
+        toolName: "Bash",
+      } as EngineEvent,
+      { kind: "tool_call_end", callId: "c1" as import("@koi/core").ToolCallId } as EngineEvent,
+      { kind: "text_delta", delta: "done" } as EngineEvent,
+    ];
+    await drainEngineStream(makeStream(events), store, batcher);
+    batcher.flushSync();
+
+    expect(flushed.length).toBe(4);
+    expect((flushed[1] as { kind: string }).kind).toBe("tool_call_start");
   });
 });

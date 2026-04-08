@@ -87,6 +87,15 @@ O(1) lookup by sessionId. Simpler `append()`, `load()`, `remove()`. Path travers
 ### `compact()` boundary extension
 `compact(sid, summary, preserveLastN)` extends `preserveLastN` backward if the naive cut would split a `tool_call`/`tool_result` pair. A split pair causes replay to fail because the model sees an orphan result. The function returns `CompactResult.extended=true` when this happens so the context-manager can reconcile its token accounting.
 
+### Engine-injected `system:*` sender preservation
+The session transcript middleware recognizes `system:*` prefixed senders
+(e.g., `system:doom-loop`, `system:capabilities`) as system role and stores
+the original `senderId` in `TranscriptEntry.metadata.senderId`. On resume,
+entries with a stored `system:*` sender are replayed with the original
+privileged sender — not downgraded to `"user"` like plain `"system"` entries.
+This ensures engine-injected guardrails (doom loop, capability injection)
+survive session persistence and remain in system prompt context after restart.
+
 ### `resumeFromTranscript()` — positional tool pairing
 `tool_call` entries in the transcript carry an array of `{id, toolName, args}` calls. The corresponding `tool_result` entries are positional (nth result matches nth call). `resumeFromTranscript()` matches them by queuing callIds and consuming positionally. Dangling calls (crash before tool completed) get synthetic error tool_results (`metadata.isError=true`). The final pass calls `repairSession()` to clean up any remaining orphans.
 

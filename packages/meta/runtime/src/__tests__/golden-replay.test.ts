@@ -1889,7 +1889,7 @@ describe("Golden: @koi/tasks", () => {
     expect(stream.length()).toBe(11);
 
     // Delta read from second chunk's offset returns only "world"
-    const deltaChunks = stream.read(allChunks[1]?.offset);
+    const deltaChunks = stream.read(allChunks[1]?.offset ?? 0);
     expect(deltaChunks).toHaveLength(1);
     expect(deltaChunks[0]?.content).toBe("world");
   });
@@ -1923,9 +1923,12 @@ describe("Golden: @koi/tasks", () => {
     const state = await registry
       .get("local_shell")
       ?.start(taskItemId("task_1"), output, { command: "echo test" });
-    expect(isLocalShellTask(state)).toBe(true);
-    expect(isRuntimeTask(state)).toBe(true);
-    expect(state.kind).toBe("local_shell");
+    expect(state).toBeDefined();
+    if (state !== undefined) {
+      expect(isLocalShellTask(state)).toBe(true);
+      expect(isRuntimeTask(state)).toBe(true);
+      expect(state.kind).toBe("local_shell");
+    }
   });
 });
 
@@ -6298,6 +6301,97 @@ describe("Golden: @koi/session — session-resume trajectory", () => {
     // Model should mention 10 (prior 3+7) and 40 (new 15+25)
     expect(lastContent).toContain("10");
     expect(lastContent).toContain("40");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// system:* sender preservation across persist/resume
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — system-sender-resume trajectory", () => {
+  type Step = {
+    readonly source: string;
+    readonly tool_calls?: readonly {
+      readonly function_name: string;
+      readonly arguments?: Record<string, unknown>;
+    }[];
+    readonly observation?: {
+      readonly results?: readonly { readonly content: string }[];
+    };
+    readonly extra?: {
+      readonly type?: string;
+      readonly middlewareName?: string;
+      readonly hook?: string;
+    };
+  };
+
+  const loadTrajectory = async (): Promise<readonly Step[]> => {
+    const doc = (await Bun.file(`${FIXTURES}/system-sender-resume.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly steps: readonly Step[];
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    return doc.steps;
+  };
+
+  test("system:doom-loop sender survives persist/resume cycle", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("sr-e1"),
+        role: "user" as const,
+        content: "test",
+        timestamp: 1000,
+      },
+      {
+        id: transcriptEntryId("sr-e2"),
+        role: "system" as const,
+        content: "[System note]: Session checkpoint saved.",
+        timestamp: 2000,
+        metadata: { senderId: "system:doom-loop" },
+      },
+    ];
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const systemMsg = result.value.messages.find((m) => m.senderId === "system:doom-loop");
+      expect(systemMsg).toBeDefined();
+      expect(systemMsg?.content[0]).toMatchObject({
+        kind: "text",
+        text: "[System note]: Session checkpoint saved.",
+      });
+    }
+  });
+
+  test("plain system entries without metadata.senderId are still replayed as user", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("sr-plain-e1"),
+        role: "system" as const,
+        content: "caller-controlled system message",
+        timestamp: 1000,
+      },
+    ];
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const msg = result.value.messages[0];
+      expect(msg?.senderId).toBe("user");
+    }
+  });
+
+  test("trajectory has add_numbers tool call after resumed doom-loop context", async () => {
+    const steps = await loadTrajectory();
+    const toolStep = steps.find(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "add_numbers"),
+    );
+    // The model should still use add_numbers despite the prior doom-loop warning
+    expect(toolStep).toBeDefined();
   });
 });
 

@@ -35,6 +35,7 @@ exports[`createInitialState initial state shape 1`] = `
   "sessions": [],
   "slashQuery": null,
   "toolsExpanded": false,
+  "trajectorySteps": [],
   "zoomLevel": 1,
 }
 `;

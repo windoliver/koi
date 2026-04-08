@@ -502,6 +502,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "toggle_tools_expanded":
       return { ...state, toolsExpanded: !state.toolsExpanded };
 
+    case "set_trajectory_data":
+      return { ...state, trajectorySteps: action.steps };
+
     case "load_history": {
       if (action.messages.length === 0) return state;
       const historical: TuiMessage[] = [];
