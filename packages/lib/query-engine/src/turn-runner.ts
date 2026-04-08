@@ -360,6 +360,15 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
 
+      // Prune per-key intervention counters for keys no longer in the streak
+      // map. This resets budgets when a loop is broken and resumed later.
+      const currentKeySet = new Set(currentKeys);
+      for (const key of doomLoopInterventionsByKey.keys()) {
+        if (!currentKeySet.has(key)) {
+          doomLoopInterventionsByKey.delete(key);
+        }
+      }
+
       const { repeatedKeys, hasRepeated, allRepeated } = partitionDoomLoopKeys(
         doomLoopStreaks,
         currentKeys,
@@ -376,7 +385,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
       }
 
-      if (hasRepeated && allRepeated && blockableKeys.size === repeatedKeys.size) {
+      if (
+        hasRepeated &&
+        allRepeated &&
+        blockableKeys.size > 0 &&
+        blockableKeys.size === repeatedKeys.size
+      ) {
         // ALL calls are repeated — full intervention: re-prompt the model.
         const blockedToolNames = [
           ...new Set([...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName)),
@@ -432,9 +446,9 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         continue;
       }
 
-      if (hasRepeated && !allRepeated && blockableKeys.size > 0) {
-        // Mixed turn: filter out repeated calls that haven't exhausted their
-        // per-key intervention budget. Keep new and budget-exhausted calls.
+      if (hasRepeated && blockableKeys.size > 0 && blockableKeys.size < currentKeys.length) {
+        // Mixed turn (or all-repeated with partial budget exhaustion):
+        // filter out blockable repeated calls, let new/exhausted calls execute.
         const blockedNames = [...blockableKeys].map((k) => parseDoomLoopKey(k).toolName);
         for (const key of blockableKeys) {
           doomLoopInterventionsByKey.set(key, (doomLoopInterventionsByKey.get(key) ?? 0) + 1);
