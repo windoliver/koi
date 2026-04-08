@@ -2,7 +2,7 @@
  * Plugin discovery — scans source roots for plugin.json manifests.
  */
 
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { pluginId } from "./plugin-id.js";
@@ -55,23 +55,65 @@ async function scanRoot(
   const plugins: PluginMeta[] = [];
   const errors: PluginError[] = [];
 
+  // Resolve the root itself so containment checks are against the real path
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = await realpath(root.path);
+  } catch {
+    return { plugins: [], errors: [] };
+  }
+
   await Promise.all(
     entries.map(async (entry) => {
       const dirPath = join(root.path, entry);
-      const manifestPath = join(dirPath, "plugin.json");
+
+      // Reject symlinks that escape the source root
+      let resolvedDir: string;
+      try {
+        resolvedDir = await realpath(dirPath);
+      } catch {
+        return;
+      }
+      if (!resolvedDir.startsWith(`${resolvedRoot}/`) && resolvedDir !== resolvedRoot) {
+        errors.push({
+          dirPath,
+          source: root.source,
+          error: {
+            code: "PERMISSION" as const,
+            message: `Plugin directory escapes source root: ${entry}`,
+            retryable: false,
+            context: { dirPath, resolvedDir, rootPath: resolvedRoot },
+          },
+        });
+        return;
+      }
+
+      const manifestPath = join(resolvedDir, "plugin.json");
 
       let raw: unknown;
       try {
         const file = Bun.file(manifestPath);
+        const exists = await file.exists();
+        if (!exists) return;
         raw = await file.json();
-      } catch {
-        // No plugin.json or invalid JSON — skip silently
+      } catch (err: unknown) {
+        // Manifest exists but is unreadable/malformed — record error
+        errors.push({
+          dirPath: resolvedDir,
+          source: root.source,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Failed to read plugin.json: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: false,
+            context: { dirPath: resolvedDir },
+          },
+        });
         return;
       }
 
       const result = validatePluginManifest(raw);
       if (!result.ok) {
-        errors.push({ dirPath, source: root.source, error: result.error });
+        errors.push({ dirPath: resolvedDir, source: root.source, error: result.error });
         return;
       }
 
@@ -84,7 +126,7 @@ async function scanRoot(
         source: root.source,
         version: manifest.version,
         description: manifest.description,
-        dirPath,
+        dirPath: resolvedDir,
         manifest,
         available,
       });

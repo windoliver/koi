@@ -85,6 +85,19 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
         };
       }
 
+      // Enforce availability gate — unavailable plugins cannot be loaded
+      if (!meta.available) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin is not available: ${id}`,
+            retryable: false,
+            context: { pluginId: id, source: meta.source },
+          },
+        };
+      }
+
       // Resolve skill paths with containment check
       const skillPaths: string[] = [];
       for (const relPath of meta.manifest.skills ?? []) {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverPlugins } from "./loader.js";
@@ -156,6 +156,40 @@ describe("discoverPlugins", () => {
     }
   });
 
+  test("symlinked plugin directory outside root is rejected", async () => {
+    const outsideDir = join(testDir, "outside-plugins", "escape-plugin");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(
+      join(outsideDir, "plugin.json"),
+      JSON.stringify({ name: "escape-plugin", version: "1.0.0", description: "Escaped" }),
+    );
+
+    // Create symlink inside bundledRoot pointing outside
+    await symlink(outsideDir, join(bundledRoot, "escape-plugin"));
+
+    const result = await discoverPlugins({ bundledRoot });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.plugins).toHaveLength(0);
+      expect(result.value.errors).toHaveLength(1);
+      expect(result.value.errors[0]?.error.code).toBe("PERMISSION");
+    }
+  });
+
+  test("malformed plugin.json records error instead of silent skip", async () => {
+    const badDir = join(bundledRoot, "bad-json");
+    await mkdir(badDir, { recursive: true });
+    await writeFile(join(badDir, "plugin.json"), "{ not valid json");
+
+    const result = await discoverPlugins({ bundledRoot });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.plugins).toHaveLength(0);
+      expect(result.value.errors).toHaveLength(1);
+      expect(result.value.errors[0]?.error.code).toBe("VALIDATION");
+    }
+  });
+
   test("plugin meta has correct structure", async () => {
     await writePlugin(bundledRoot, "plugin-a", MANIFEST_A);
 
@@ -169,7 +203,8 @@ describe("discoverPlugins", () => {
       expect(plugin?.source).toBe("bundled");
       expect(plugin?.version).toBe("1.0.0");
       expect(plugin?.description).toBe("Plugin A");
-      expect(plugin?.dirPath).toBe(join(bundledRoot, "plugin-a"));
+      const expectedDir = await realpath(join(bundledRoot, "plugin-a"));
+      expect(plugin?.dirPath).toBe(expectedDir);
       expect(plugin?.manifest).toEqual(MANIFEST_A);
       expect(plugin?.available).toBe(true);
     }

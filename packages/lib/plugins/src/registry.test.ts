@@ -162,6 +162,24 @@ describe("createPluginRegistry", () => {
     expect(plugins[0]?.name).toBe("available");
   });
 
+  test("load() rejects unavailable plugins with PERMISSION error", async () => {
+    await writePlugin(bundledRoot, "gated", {
+      name: "gated",
+      version: "1.0.0",
+      description: "Gated",
+    });
+    const registry = createPluginRegistry({
+      bundledRoot,
+      isAvailable: () => false,
+    });
+    const result = await registry.load("gated");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toContain("not available");
+    }
+  });
+
   // --- Invalidation ---
 
   test("invalidate() clears cache — next discover() re-scans", async () => {
