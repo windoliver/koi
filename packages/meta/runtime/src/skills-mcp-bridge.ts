@@ -39,16 +39,30 @@ export interface SkillsMcpBridge {
 // Mapping
 // ---------------------------------------------------------------------------
 
-/** Maps a single MCP ToolDescriptor to a SkillMetadata entry. */
+/**
+ * Maps a single MCP ToolDescriptor to a SkillMetadata entry.
+ *
+ * Security: the description is a safe generated string, NOT the raw MCP
+ * server description. External skills bypass the skill scanner and their
+ * description becomes the body injected into the system prompt by
+ * createSkillInjectorMiddleware. Passing untrusted MCP text through that
+ * path would be a prompt injection vector.
+ */
 export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): SkillMetadata {
   const server = descriptor.server ?? undefined;
   const baseTags: readonly string[] = server !== undefined ? ["mcp", server] : ["mcp"];
   const tags: readonly string[] =
     descriptor.tags !== undefined ? [...baseTags, ...descriptor.tags] : baseTags;
 
+  // Safe generated description — never pass raw MCP server text as skill body
+  const safeDescription =
+    server !== undefined
+      ? `MCP tool "${descriptor.name}" from server "${server}".`
+      : `MCP tool "${descriptor.name}".`;
+
   return {
     name: descriptor.name,
-    description: descriptor.description,
+    description: safeDescription,
     source: "mcp",
     dirPath: `mcp://${server ?? "unknown"}`,
     tags,
@@ -71,6 +85,8 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
   const doSync = async (propagateError: boolean): Promise<void> => {
     if (disposed) return;
 
+    // Clear dirty before starting — only flags set during discover() trigger re-sync
+    dirty = false;
     const capturedVersion = ++version;
 
     try {
@@ -109,8 +125,6 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
 
     // If a sync is already in flight, concurrent callers join it
     if (inflight !== undefined) {
-      dirty = true;
-      // Concurrent callers join the existing promise (no early resolve)
       return propagateError ? inflight : inflight.catch(() => {});
     }
 
@@ -120,12 +134,18 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
     return inflight;
   };
 
+  /** onChange handler: marks dirty (to trigger re-sync) and joins/starts sync. */
+  const onChangeHandler = (): void => {
+    if (disposed) return;
+    // Mark dirty so doSync re-syncs after the current in-flight completes
+    dirty = true;
+    void syncFromResolver(false);
+  };
+
   const sync = async (): Promise<void> => {
     // Subscribe before first discover so changes during sync set dirty flag
     if (unsubChange === undefined && !disposed && resolver.onChange !== undefined) {
-      unsubChange = resolver.onChange(() => {
-        void syncFromResolver(false);
-      });
+      unsubChange = resolver.onChange(onChangeHandler);
     }
 
     // Initial sync propagates errors so the caller can fail fast
