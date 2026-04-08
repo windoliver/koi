@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { toolResult } from "./state/test-helpers.js";
 import { getResultDisplay, getToolDisplay } from "./tool-display.js";
 
 // ---------------------------------------------------------------------------
@@ -271,13 +272,13 @@ describe("getToolDisplay — non-object args guard", () => {
 });
 
 // ===========================================================================
-// getResultDisplay — Phase 3: result chip extraction
+// getResultDisplay — accepts ToolResultData (structured, not pre-stringified)
 // ===========================================================================
 
 describe("getResultDisplay — Bash result", () => {
   test("extracts exitCode and durationMs chips, stdout as body", () => {
     const r = getResultDisplay(
-      JSON.stringify({ stdout: "hello world", stderr: "", exitCode: 0, durationMs: 42 }),
+      toolResult({ stdout: "hello world", stderr: "", exitCode: 0, durationMs: 42 }),
     );
     expect(r.chips).toEqual(["exitCode=0", "durationMs=42"]);
     expect(r.body).toBe("hello world");
@@ -285,21 +286,15 @@ describe("getResultDisplay — Bash result", () => {
 
   test("extracts timedOut chip when present", () => {
     const r = getResultDisplay(
-      JSON.stringify({
-        stdout: "",
-        stderr: "killed",
-        exitCode: 137,
-        durationMs: 5000,
-        timedOut: true,
-      }),
+      toolResult({ stdout: "", stderr: "killed", exitCode: 137, durationMs: 5000, timedOut: true }),
     );
     expect(r.chips).toContain("exitCode=137");
     expect(r.chips).toContain("timedOut=true");
   });
 
-  test("extracts truncated chip", () => {
+  test("extracts truncated chip from object field (not from ToolResultData.truncated)", () => {
     const r = getResultDisplay(
-      JSON.stringify({
+      toolResult({
         stdout: "long output...",
         stderr: "",
         exitCode: 0,
@@ -310,9 +305,15 @@ describe("getResultDisplay — Bash result", () => {
     expect(r.chips).toContain("truncated=true");
   });
 
+  test("truncated ToolResultData signals the view", () => {
+    const r = getResultDisplay({ value: "partial output", byteSize: 2_000_000, truncated: true });
+    expect(r.truncated).toBe(true);
+    expect(r.body).toBe("partial output");
+  });
+
   test("security block error shows error as body", () => {
     const r = getResultDisplay(
-      JSON.stringify({
+      toolResult({
         error: "Command blocked",
         category: "security",
         reason: "rm -rf",
@@ -327,7 +328,7 @@ describe("getResultDisplay — Bash result", () => {
 describe("getResultDisplay — web_fetch result", () => {
   test("extracts status and contentType chips, body as body", () => {
     const r = getResultDisplay(
-      JSON.stringify({
+      toolResult({
         status: 200,
         statusText: "OK",
         contentType: "text/html",
@@ -343,9 +344,7 @@ describe("getResultDisplay — web_fetch result", () => {
   });
 
   test("shows error body for failed fetch", () => {
-    const r = getResultDisplay(
-      JSON.stringify({ error: "Connection refused", code: "ECONNREFUSED" }),
-    );
+    const r = getResultDisplay(toolResult({ error: "Connection refused", code: "ECONNREFUSED" }));
     expect(r.body).toBe("Connection refused");
     expect(r.chips).toEqual(["code=ECONNREFUSED"]);
   });
@@ -354,14 +353,14 @@ describe("getResultDisplay — web_fetch result", () => {
 describe("getResultDisplay — Glob result", () => {
   test("extracts total and truncated chips, paths as body", () => {
     const r = getResultDisplay(
-      JSON.stringify({ paths: ["src/a.ts", "src/b.ts"], truncated: false, total: 2 }),
+      toolResult({ paths: ["src/a.ts", "src/b.ts"], truncated: false, total: 2 }),
     );
     expect(r.chips).toContain("total=2");
     expect(r.body).toBe("src/a.ts\nsrc/b.ts");
   });
 
   test("truncated glob shows truncated chip", () => {
-    const r = getResultDisplay(JSON.stringify({ paths: ["a.ts"], truncated: true }));
+    const r = getResultDisplay(toolResult({ paths: ["a.ts"], truncated: true }));
     expect(r.chips).toContain("truncated=true");
   });
 });
@@ -369,7 +368,7 @@ describe("getResultDisplay — Glob result", () => {
 describe("getResultDisplay — Grep result", () => {
   test("extracts mode chip, result string as body", () => {
     const r = getResultDisplay(
-      JSON.stringify({ result: "src/foo.ts:10:match", mode: "rg", truncated: false, warnings: [] }),
+      toolResult({ result: "src/foo.ts:10:match", mode: "rg", truncated: false, warnings: [] }),
     );
     expect(r.chips).toContain("mode=rg");
     expect(r.body).toBe("src/foo.ts:10:match");
@@ -378,12 +377,12 @@ describe("getResultDisplay — Grep result", () => {
 
 describe("getResultDisplay — fs_edit result", () => {
   test("extracts modified chip", () => {
-    const r = getResultDisplay(JSON.stringify({ path: "src/app.ts", modified: true }));
+    const r = getResultDisplay(toolResult({ path: "src/app.ts", modified: true }));
     expect(r.chips).toContain("modified=true");
   });
 
   test("edit error shows error body with code chip", () => {
-    const r = getResultDisplay(JSON.stringify({ error: "Hunk not found", code: "NOT_FOUND" }));
+    const r = getResultDisplay(toolResult({ error: "Hunk not found", code: "NOT_FOUND" }));
     expect(r.body).toBe("Hunk not found");
     expect(r.chips).toEqual(["code=NOT_FOUND"]);
   });
@@ -391,45 +390,47 @@ describe("getResultDisplay — fs_edit result", () => {
 
 describe("getResultDisplay — fs_write result", () => {
   test("extracts bytesWritten chip", () => {
-    const r = getResultDisplay(JSON.stringify({ path: "output.txt", bytesWritten: 1234 }));
+    const r = getResultDisplay(toolResult({ path: "output.txt", bytesWritten: 1234 }));
     expect(r.chips).toContain("bytesWritten=1234");
   });
 });
 
 describe("getResultDisplay — edge cases", () => {
-  test("empty string returns empty chips and body", () => {
-    const r = getResultDisplay("");
+  test("empty string value returns empty chips and body", () => {
+    const r = getResultDisplay(toolResult(""));
     expect(r.chips).toEqual([]);
     expect(r.body).toBe("");
   });
 
   test("[unserializable] sentinel passes through", () => {
-    const r = getResultDisplay("[unserializable]");
+    const r = getResultDisplay(toolResult("[unserializable]"));
     expect(r.chips).toEqual([]);
     expect(r.body).toBe("[unserializable]");
   });
 
-  test("plain text result returns no chips", () => {
-    const r = getResultDisplay("file1.ts\nfile2.ts");
+  test("plain text string result returns no chips", () => {
+    const r = getResultDisplay(toolResult("file1.ts\nfile2.ts"));
     expect(r.chips).toEqual([]);
     expect(r.body).toBe("file1.ts\nfile2.ts");
   });
 
-  test("non-object JSON returns raw string", () => {
-    const r = getResultDisplay('"just a string"');
+  test("JSON-stringified non-object string value returns raw string as body", () => {
+    // Value is the JSON string '"just a string"' — JSON.parse → string, not object
+    const r = getResultDisplay(toolResult('"just a string"'));
     expect(r.chips).toEqual([]);
     expect(r.body).toBe('"just a string"');
   });
 
-  test("array JSON returns raw string", () => {
-    const r = getResultDisplay("[1,2,3]");
+  test("JSON-stringified array string value returns raw string as body", () => {
+    // Value is the JSON string "[1,2,3]" — JSON.parse → array, not object
+    const r = getResultDisplay(toolResult("[1,2,3]"));
     expect(r.chips).toEqual([]);
     expect(r.body).toBe("[1,2,3]");
   });
 
   test("chips capped at 3 even with many metadata fields", () => {
     const r = getResultDisplay(
-      JSON.stringify({
+      toolResult({
         exitCode: 0,
         status: 200,
         durationMs: 10,
@@ -443,7 +444,7 @@ describe("getResultDisplay — edge cases", () => {
   });
 
   test("generic unknown result extracts scalars not in consumed set", () => {
-    const r = getResultDisplay(JSON.stringify({ customField: "value", count: 42 }));
+    const r = getResultDisplay(toolResult({ customField: "value", count: 42 }));
     expect(r.body).toContain("customField: value");
     expect(r.body).toContain("count: 42");
   });

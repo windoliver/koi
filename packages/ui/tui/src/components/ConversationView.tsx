@@ -10,11 +10,13 @@
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, on, Show } from "solid-js";
+import { createEffect, createSignal, on, Show, useContext } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import type { SlashCommand } from "../commands/slash-detection.js";
-import { useTuiStore } from "../store-context.js";
+import type { ClipboardImage } from "../utils/clipboard.js";
+import { StoreContext, useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
+import { AtOverlay } from "./AtOverlay.js";
 import { InputArea } from "./InputArea.js";
 import { MessageList } from "./message-list.js";
 import { SlashOverlay } from "./SlashOverlay.js";
@@ -30,13 +32,31 @@ export interface ConversationViewProps {
   readonly onSubmit: (text: string) => void;
   readonly onSlashDetected: (query: string | null) => void;
   readonly onSlashSelect?: ((command: SlashCommand) => void) | undefined;
+  /** Called with partial path when user types "@path" — host responds with set_at_results (#10). */
+  readonly onAtQuery?: ((query: string | null) => void) | undefined;
+  /** Called when user pastes an image from clipboard (#11). Bridge collects these for next submit. */
+  readonly onImageAttach?: ((image: ClipboardImage) => void) | undefined;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
   readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
+/** Detect @-mention prefix in input text. Returns partial path or null. */
+function detectAtPrefix(text: string): string | null {
+  const lastAt = text.lastIndexOf("@");
+  if (lastAt < 0) return null;
+  // Only trigger if "@" is preceded by whitespace or is at start
+  if (lastAt > 0 && text[lastAt - 1] !== " " && text[lastAt - 1] !== "\n") return null;
+  const partial = text.slice(lastAt + 1);
+  // Don't trigger on email addresses (contains .com-like patterns before @)
+  if (partial.includes(" ")) return null;
+  return partial;
+}
+
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
+  const atQuery = useTuiStore((s) => s.atQuery);
+  const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
 
@@ -66,6 +86,29 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   const dismissOverlay = (): void => {
     props.onSlashDetected(null);
   };
+
+  // #10: @-mention overlay handlers
+  const handleAtSelect = (path: string): void => {
+    storeCtx?.dispatch({ kind: "set_at_query", query: null });
+    storeCtx?.dispatch({ kind: "set_at_results", results: [] });
+    props.onAtQuery?.(null);
+    // Insert selected path into the input — communicated via onSubmit pattern
+    // The file path is inserted as "@path" text for the bridge to parse on submit
+    props.onSlashDetected(null);
+  };
+
+  const dismissAtOverlay = (): void => {
+    storeCtx?.dispatch({ kind: "set_at_query", query: null });
+    storeCtx?.dispatch({ kind: "set_at_results", results: [] });
+    props.onAtQuery?.(null);
+  };
+
+  // Notify host when @-query changes so it can provide file completions
+  createEffect(
+    on(atQuery, (query: string | null) => {
+      props.onAtQuery?.(query);
+    }),
+  );
 
   const handleSlashSelect = (command: SlashCommand): void => {
     props.onSlashDetected(null);
@@ -120,6 +163,13 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     return h[historyIdx] ?? null;
   };
 
+  const handleAtDetected = (query: string | null): void => {
+    storeCtx?.dispatch({ kind: "set_at_query", query });
+    if (query === null) {
+      storeCtx?.dispatch({ kind: "set_at_results", results: [] });
+    }
+  };
+
   return (
     <box flexDirection="column" flexGrow={1}>
       <MessageList syntaxStyle={props.syntaxStyle} treeSitterClient={props.treeSitterClient} />
@@ -127,6 +177,8 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         onSubmit={handleSubmit}
         onSlashDetected={props.onSlashDetected}
         onHistoryNav={handleHistoryNav}
+        onAtDetected={handleAtDetected}
+        onImageAttach={props.onImageAttach}
         focused={props.focused}
         // `disabled` is intentionally omitted here: InputArea's submit handler
         // already guards against slash-prefixed text synchronously via
@@ -146,6 +198,17 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
             onSelect={handleSlashSelect}
             onDismiss={dismissOverlay}
             focused={props.focused}
+          />
+        </box>
+      </Show>
+      {/* #10: AtOverlay for @-mention file completion */}
+      <Show when={atQuery() !== null}>
+        <box position="absolute" bottom={3} left={0} zIndex={10} backgroundColor={COLORS.bgElevated}>
+          <AtOverlay
+            query={atQuery() ?? ""}
+            onSelect={handleAtSelect}
+            onDismiss={dismissAtOverlay}
+            focused={props.focused && slashQuery() === null}
           />
         </box>
       </Show>

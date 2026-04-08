@@ -11,12 +11,15 @@ import type {
   PlanTask,
   SessionInfo,
   SessionSummary,
+  SpawnProgress,
+  SpawnStats,
+  ToolResultData,
   TuiAction,
   TuiAssistantBlock,
   TuiMessage,
   TuiState,
 } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
+import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Assistant message type (narrowed)
@@ -108,27 +111,109 @@ function maybeCompact(messages: readonly TuiMessage[]): readonly TuiMessage[] {
   return messages;
 }
 
-/** Cap a string to MAX_TOOL_OUTPUT_CHARS via tail-slice. */
+/** Cap a string to MAX characters via tail-slice. */
 function capOutput(text: string): string {
-  return text.length > MAX_TOOL_OUTPUT_CHARS ? text.slice(-MAX_TOOL_OUTPUT_CHARS) : text;
+  return text.length > MAX_TOOL_RESULT_BYTES ? text.slice(-MAX_TOOL_RESULT_BYTES) : text;
 }
 
 /**
- * Bound an unknown tool result to a safe string for storage.
- * Serializes non-string values with a size-limited JSON.stringify,
- * catching circular/non-serializable inputs gracefully.
+ * Convert an unknown tool execution output into a ToolResultData for storage.
+ *
+ * Stores the raw value with a 1 MB byte cap. When the serialized representation
+ * exceeds MAX_TOOL_RESULT_BYTES, the value is stored as a tail-sliced string
+ * with truncated: true so the view can offer a "show more" affordance.
+ *
+ * The view layer (tool-display.ts) handles serialization and rendering;
+ * this function only enforces the memory cap.
  */
-function capResult(result: unknown): string {
-  if (result === undefined || result === null) return "";
-  if (typeof result === "string") return capOutput(result);
-  try {
-    const json = JSON.stringify(result);
-    // JSON.stringify returns undefined for functions, symbols, etc.
-    if (json === undefined) return "[unserializable]";
-    return capOutput(json);
-  } catch {
-    return "[unserializable]";
+function capToolResult(output: unknown): ToolResultData {
+  if (output === undefined || output === null) {
+    return { value: "", byteSize: 0, truncated: false };
   }
+
+  // Compute byte size of serialized form to decide if capping is needed.
+  // For strings, use the string length as a fast approximation.
+  if (typeof output === "string") {
+    if (output.length <= MAX_TOOL_RESULT_BYTES) {
+      return { value: output, byteSize: output.length, truncated: false };
+    }
+    return {
+      value: output.slice(-MAX_TOOL_RESULT_BYTES),
+      byteSize: output.length,
+      truncated: true,
+    };
+  }
+
+  // For objects/arrays, serialize to measure size then decide.
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(output) ?? "[unserializable]";
+  } catch {
+    serialized = "[unserializable]";
+  }
+
+  if (serialized === "[unserializable]" || serialized === undefined) {
+    return { value: "[unserializable]", byteSize: 0, truncated: false };
+  }
+
+  const byteSize = serialized.length;
+  if (byteSize <= MAX_TOOL_RESULT_BYTES) {
+    // Small enough — store the original structured value (not the string)
+    return { value: output, byteSize, truncated: false };
+  }
+
+  // Too large — store the tail-sliced string with truncation signal
+  return {
+    value: serialized.slice(-MAX_TOOL_RESULT_BYTES),
+    byteSize,
+    truncated: true,
+  };
+}
+
+/**
+ * Find a tool_call block by callId within an assistant's blocks.
+ * Scans only tool_call blocks — O(n) over blocks, not messages.
+ */
+function findToolBlock(
+  blocks: readonly TuiAssistantBlock[],
+  callId: string,
+): { readonly block: ToolCallBlock; readonly blockIdx: number } | undefined {
+  const blockIdx = blocks.findIndex((b) => b.kind === "tool_call" && b.callId === callId);
+  if (blockIdx < 0) return undefined;
+  const block = blocks[blockIdx];
+  if (block?.kind !== "tool_call") return undefined;
+  return { block, blockIdx };
+}
+
+/**
+ * Apply a partial patch to a tool_call block identified by callId in the last
+ * assistant message. Returns the updated state, or the original state if the
+ * callId is not found (with a dev-mode warning).
+ *
+ * Extracts the repeated findLastAssistant + findToolBlock + updateAssistant
+ * pattern that was 4× duplicated across tool_call_* handlers (Issue 6).
+ */
+function updateToolBlock(state: TuiState, callId: string, patch: Partial<ToolCallBlock>): TuiState {
+  const found = findLastAssistant(state.messages);
+  if (!found) return state;
+
+  const tool = findToolBlock(found.msg.blocks, callId);
+  if (!tool) {
+    // Dev-mode warning: tool_result or tool_call_end for an unregistered callId.
+    // Possible causes: TUI missed tool_call_start (reconnect), or a bug upstream.
+    console.warn(`[tui/reduce] no tool_call block found for callId="${callId}"`);
+    return state;
+  }
+
+  const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+    ...tool.block,
+    ...patch,
+  });
+
+  return {
+    ...state,
+    messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+  };
 }
 
 /**
@@ -183,16 +268,57 @@ function ensureAssistant(messages: readonly TuiMessage[]): {
   return { messages: updated, found: { msg: implicit, idx: updated.length - 1 } };
 }
 
-/** Find a tool_call block by callId within an assistant's blocks. */
-function findToolBlock(
-  blocks: readonly TuiAssistantBlock[],
-  callId: string,
-): { readonly block: ToolCallBlock; readonly blockIdx: number } | undefined {
-  const blockIdx = blocks.findIndex((b) => b.kind === "tool_call" && b.callId === callId);
-  if (blockIdx < 0) return undefined;
-  const block = blocks[blockIdx];
-  if (block?.kind !== "tool_call") return undefined;
-  return { block, blockIdx };
+/**
+ * Collect all tool_call callIds across all assistant messages.
+ * Used by toggle_all_tools_expanded to populate/clear expandedToolCallIds.
+ */
+function collectAllToolCallIds(messages: readonly TuiMessage[]): readonly string[] {
+  const ids: string[] = [];
+  for (const msg of messages) {
+    if (msg.kind === "assistant") {
+      for (const block of msg.blocks) {
+        if (block.kind === "tool_call") {
+          ids.push(block.callId);
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Deep-unwrap JSON-encoded error messages (#19).
+ * Handles single-encoded `{"message":"..."}` and double-encoded `"\"...\""` patterns.
+ * Falls back to the original string on any parse failure.
+ */
+function unwrapErrorMessage(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith('"')) return raw;
+  try {
+    // First decode (handles double-encoded strings)
+    let decoded: unknown = JSON.parse(trimmed);
+    // Second decode if still a string
+    if (typeof decoded === "string") {
+      const firstDecode = decoded;
+      try {
+        decoded = JSON.parse(firstDecode);
+      } catch {
+        return firstDecode; // single-encoded string
+      }
+    }
+    if (typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)) {
+      const obj = decoded as Record<string, unknown>;
+      const msg = obj.message ?? obj.error;
+      if (typeof msg === "string") return msg;
+      if (typeof msg === "object" && msg !== null) {
+        const nested = (msg as Record<string, unknown>).message;
+        if (typeof nested === "string") return nested;
+      }
+    }
+  } catch {
+    // not JSON — return as-is
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +393,7 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         callId,
         toolName: event.toolName,
         status: "running",
+        startedAt: Date.now(),
         ...(initialArgs !== undefined ? { args: initialArgs } : {}),
       };
 
@@ -308,27 +435,103 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_end": {
-      // tool_call_end.result carries the accumulated tool call object
-      // (parsed args + execution result). Store it as `result`.
+      // tool_call_end fires when the model finishes generating the call (before
+      // execution). Mark the block "complete", compute duration from startedAt,
+      // and decrement the running count.
+      // The actual execution output arrives via tool_result (emitted after execution).
+      const found = findLastAssistant(state.messages);
+      const tool = found ? findToolBlock(found.msg.blocks, event.callId as string) : undefined;
+      const durationMs =
+        tool?.block.startedAt !== undefined ? Date.now() - tool.block.startedAt : undefined;
+      const patch =
+        durationMs !== undefined
+          ? { status: "complete" as const, durationMs }
+          : { status: "complete" as const };
+      return {
+        ...updateToolBlock(state, event.callId as string, patch),
+        runningToolCount: state.runningToolCount - 1,
+      };
+    }
+
+    case "tool_result": {
+      // tool_result fires after the tool finishes executing — this carries the
+      // actual output the user wants to see. Update the (already-complete) block.
+      return updateToolBlock(state, event.callId as string, {
+        result: capToolResult(event.output),
+      });
+    }
+
+    // ----- Spawn visualization -----
+    case "spawn_requested": {
+      const agentId = event.childAgentId as string;
+      const { messages, found } = ensureAssistant(state.messages);
+      const spawnBlock: TuiAssistantBlock = {
+        kind: "spawn_call",
+        agentId,
+        agentName: event.request.agentName,
+        description: event.request.description ?? event.request.agentName,
+        status: "running",
+      };
+      const updatedBlocks = [...found.msg.blocks, spawnBlock];
+      const progress: SpawnProgress = {
+        agentName: event.request.agentName,
+        description: event.request.description ?? event.request.agentName,
+        startedAt: Date.now(),
+      };
+      const activeSpawns = new Map(state.activeSpawns);
+      activeSpawns.set(agentId, progress);
+      return {
+        ...state,
+        messages: updateAssistant(messages, found, { blocks: updatedBlocks }),
+        activeSpawns,
+      };
+    }
+
+    case "agent_status_changed": {
+      const agentId = event.agentId as string;
+      const progress = state.activeSpawns.get(agentId);
+      if (!progress) return state;
+
+      const status = event.status;
+      // "terminated" is the only terminal ProcessState
+      if (status !== "terminated") return state;
+
+      // Find the spawn_call block in messages and update its status
       const found = findLastAssistant(state.messages);
       if (!found) return state;
 
-      const callId = event.callId as string;
-      const tool = findToolBlock(found.msg.blocks, callId);
-      if (!tool) return state;
+      const blockIdx = found.msg.blocks.findIndex(
+        (b) => b.kind === "spawn_call" && b.agentId === agentId,
+      );
+      if (blockIdx < 0) return state;
 
-      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
-        ...tool.block,
-        status: "complete",
-        result: capResult(event.result),
+      const spawnStatus: "complete" = "complete";
+      const durationMs = Date.now() - progress.startedAt;
+      const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
+
+      const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
+        kind: "spawn_call" as const,
+        agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        status: spawnStatus,
+        stats,
       });
+
+      const activeSpawns = new Map(state.activeSpawns);
+      activeSpawns.delete(agentId);
 
       return {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
-        runningToolCount: state.runningToolCount - 1,
+        activeSpawns,
       };
     }
+
+    case "agent_spawned":
+      // agent_spawned fires when the child agent is actually created. The
+      // spawn_call block was already added on spawn_requested. No-op here.
+      return state;
 
     // ----- Plan/progress events -----
     case "plan_update": {
@@ -376,14 +579,15 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       return { ...state, planTasks };
     }
 
-    // ----- Events the TUI ignores -----
+    // ----- Events the TUI observes but has no rendering for -----
     case "custom":
     case "discovery:miss":
-    case "spawn_requested":
-    case "agent_spawned":
-    case "agent_status_changed":
+    case "permission_attempt":
       return state;
 
+    // ----- Forward-compatibility catch-all -----
+    // New EngineEvent kinds added in future will safely no-op here
+    // rather than causing exhaustiveness errors in the TUI.
     default:
       return state;
   }
@@ -429,10 +633,12 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return action.level === state.zoomLevel ? state : { ...state, zoomLevel: action.level };
 
     case "add_error": {
+      // #19: Unwrap JSON-encoded error messages (e.g. from engine error payloads).
+      const message = unwrapErrorMessage(action.message);
       const errorBlock: TuiAssistantBlock = {
         kind: "error",
         code: action.code,
-        message: action.message,
+        message,
       };
       // Only append to the active (streaming) assistant turn.
       // Check BEFORE finalization so completed turns are never mutated.
@@ -463,9 +669,26 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "clear_messages":
-      if (state.messages.length === 0 && state.agentStatus === "idle" && state.planTasks === null)
+      if (
+        state.messages.length === 0 &&
+        state.agentStatus === "idle" &&
+        state.planTasks === null &&
+        state.expandedToolCallIds.size === 0 &&
+        state.expandedBodyToolCallIds.size === 0 &&
+        state.activeSpawns.size === 0
+      )
         return state;
-      return { ...state, messages: [], agentStatus: "idle", planTasks: null, runningToolCount: 0 };
+      return {
+        ...state,
+        messages: [],
+        agentStatus: "idle",
+        planTasks: null,
+        runningToolCount: 0,
+        expandedToolCallIds: new Set(),
+        expandedBodyToolCallIds: new Set(),
+        activeSpawns: new Map(),
+        retryState: null,
+      };
 
     case "permission_response": {
       // Dismiss the permission modal if the requestId matches the active prompt.
@@ -486,7 +709,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         provider: action.provider,
         sessionName: action.sessionName,
       };
-      return { ...state, sessionInfo };
+      const maxContextTokens =
+        action.maxTokens !== undefined ? action.maxTokens : state.maxContextTokens;
+      return { ...state, sessionInfo, maxContextTokens };
     }
 
     case "set_session_list": {
@@ -499,8 +724,66 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_slash_query":
       return action.query === state.slashQuery ? state : { ...state, slashQuery: action.query };
 
-    case "toggle_tools_expanded":
-      return { ...state, toolsExpanded: !state.toolsExpanded };
+    case "expand_tool": {
+      if (state.expandedToolCallIds.has(action.callId)) return state;
+      const next = new Set(state.expandedToolCallIds);
+      next.add(action.callId);
+      return { ...state, expandedToolCallIds: next };
+    }
+
+    case "collapse_tool": {
+      if (!state.expandedToolCallIds.has(action.callId)) return state;
+      const next = new Set(state.expandedToolCallIds);
+      next.delete(action.callId);
+      return { ...state, expandedToolCallIds: next };
+    }
+
+    case "toggle_all_tools_expanded": {
+      const allIds = collectAllToolCallIds(state.messages);
+      const anyUnexpanded = allIds.some((id) => !state.expandedToolCallIds.has(id));
+      const next = anyUnexpanded ? new Set(allIds) : new Set<string>();
+      return { ...state, expandedToolCallIds: next };
+    }
+
+    case "expand_tool_body": {
+      if (state.expandedBodyToolCallIds.has(action.callId)) return state;
+      const next = new Set(state.expandedBodyToolCallIds);
+      next.add(action.callId);
+      return { ...state, expandedBodyToolCallIds: next };
+    }
+
+    case "collapse_tool_body": {
+      if (!state.expandedBodyToolCallIds.has(action.callId)) return state;
+      const next = new Set(state.expandedBodyToolCallIds);
+      next.delete(action.callId);
+      return { ...state, expandedBodyToolCallIds: next };
+    }
+
+    case "set_retry_state": {
+      if (action.countdown === null) {
+        return state.retryState === null ? state : { ...state, retryState: null };
+      }
+      return {
+        ...state,
+        retryState: {
+          countdownSec: action.countdown,
+          attempt: action.attempt ?? state.retryState?.attempt ?? 1,
+        },
+      };
+    }
+
+    case "set_agent_context":
+      return {
+        ...state,
+        agentDepth: action.depth,
+        siblingInfo: action.siblingInfo ?? null,
+      };
+
+    case "set_at_query":
+      return action.query === state.atQuery ? state : { ...state, atQuery: action.query };
+
+    case "set_at_results":
+      return { ...state, atResults: action.results };
 
     case "load_history": {
       if (action.messages.length === 0) return state;

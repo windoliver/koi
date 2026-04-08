@@ -22,6 +22,7 @@ export function shouldRender(event: EngineEvent, verbose: boolean): boolean {
     case "turn_start":
     case "turn_end":
       return verbose;
+    case "tool_result":
     case "tool_call_delta":
     case "custom":
     case "discovery:miss":

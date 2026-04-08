@@ -8,7 +8,13 @@
 import type { ToolCallId } from "@koi/core/ecs";
 import type { EngineEvent } from "@koi/core/engine";
 import { createInitialState } from "./initial.js";
-import type { TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
+import type {
+  ToolResultData,
+  TuiAction,
+  TuiAssistantBlock,
+  TuiMessage,
+  TuiState,
+} from "./types.js";
 
 /** Create a TuiState with partial overrides on top of initial defaults. */
 export function stateWith(overrides: Partial<TuiState>): TuiState {
@@ -86,4 +92,25 @@ export function blockAt(msg: TuiMessage, idx: number): TuiAssistantBlock {
 /** Create a branded ToolCallId for tests (cast — safe in test context). */
 export function testCallId(id: string): ToolCallId {
   return id as ToolCallId;
+}
+
+/**
+ * Create a ToolResultData for tests.
+ *
+ * Accepts either a raw value (stored as-is) or a pre-stringified string.
+ * Sets byteSize and truncated based on actual content — tests get realistic
+ * values without needing to compute them manually.
+ */
+export function toolResult(value: unknown): ToolResultData {
+  const serialized =
+    typeof value === "string"
+      ? value
+      : (() => {
+          try {
+            return JSON.stringify(value) ?? "";
+          } catch {
+            return "[unserializable]";
+          }
+        })();
+  return { value, byteSize: serialized.length, truncated: false };
 }

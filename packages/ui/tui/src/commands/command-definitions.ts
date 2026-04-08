@@ -64,6 +64,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "Check system health and configuration",
     category: "navigation",
   },
+  {
+    id: "nav:agents",
+    label: "Agents",
+    description: "View active spawned sub-agents",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {
@@ -102,6 +108,13 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "Resume the most recent saved session",
     category: "session",
     minSessionCount: 2,
+  },
+  {
+    id: "session:fork",
+    label: "Fork session",
+    description: "Fork this session into a new one",
+    category: "session",
+    minSessionCount: 1,
   },
   {
     id: "session:rename",

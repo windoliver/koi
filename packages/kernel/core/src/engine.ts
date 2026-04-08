@@ -117,6 +117,17 @@ export type EngineEvent =
       readonly callId: ToolCallId;
       readonly result: unknown;
     }
+  | {
+      /**
+       * Emitted by the turn-runner AFTER a tool finishes executing.
+       * `output` is the raw ToolResponse.output — not the AccumulatedToolCall
+       * that tool_call_end carries. This is the data that should be displayed
+       * in the TUI as the tool's result.
+       */
+      readonly kind: "tool_result";
+      readonly callId: ToolCallId;
+      readonly output: unknown;
+    }
   | { readonly kind: "turn_start"; readonly turnIndex: number }
   | { readonly kind: "turn_end"; readonly turnIndex: number; readonly stopBlocked?: true }
   | { readonly kind: "done"; readonly output: EngineOutput }

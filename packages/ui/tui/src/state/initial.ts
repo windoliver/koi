@@ -29,6 +29,14 @@ export function createInitialState(): TuiState {
     slashQuery: null,
     planTasks: null,
     runningToolCount: 0,
-    toolsExpanded: false,
+    expandedToolCallIds: new Set(),
+    expandedBodyToolCallIds: new Set(),
+    activeSpawns: new Map(),
+    maxContextTokens: null,
+    retryState: null,
+    agentDepth: 0,
+    siblingInfo: null,
+    atQuery: null,
+    atResults: [],
   };
 }

@@ -2,7 +2,7 @@
  * StatusBar — top/bottom status line for the TUI.
  */
 
-import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
+import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "solid-js";
 import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
@@ -65,6 +65,11 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
   const sessionInfo = useTuiStore((s) => s.sessionInfo);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  const maxContextTokens = useTuiStore((s) => s.maxContextTokens);
+  const retryState = useTuiStore((s) => s.retryState);
+  const agentDepth = useTuiStore((s) => s.agentDepth);
+  const siblingInfo = useTuiStore((s) => s.siblingInfo);
+
   // Elapsed timer during streaming (like Claude Code's status line)
   const [elapsed, setElapsed] = createSignal(0);
   createEffect(
@@ -86,11 +91,39 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
     return m.engineTurns > m.turns ? "T" + m.turns + "·" + m.engineTurns : "T" + m.turns;
   });
 
+  // #17: context usage percentage
+  const contextPct = createMemo(() => {
+    const max = maxContextTokens();
+    if (!max) return null;
+    const used = cumulativeMetrics().totalTokens;
+    return Math.min(100, Math.round((used / max) * 100));
+  });
+
+  // #4: subagent footer label
+  const subagentLabel = createMemo(() => {
+    const depth = agentDepth();
+    if (depth === 0) return null;
+    const sib = siblingInfo();
+    return sib ? `Subagent (${sib.current} of ${sib.total})` : `Subagent (depth ${depth})`;
+  });
+
   return (
     <box flexDirection="row" width="100%" paddingLeft={1} paddingRight={1} gap={2}>
       <ModelChip info={sessionInfo()} />
       {showMetrics() ? <MetricsChip metrics={cumulativeMetrics()} /> : null}
+      {/* #17 context usage indicator */}
+      <Show when={contextPct() !== null}>
+        <text fg={COLORS.textMuted}>{`ctx ${contextPct()}%`}</text>
+      </Show>
+      {/* #4 subagent depth */}
+      <Show when={subagentLabel() !== null}>
+        <text fg={COLORS.amber}>{subagentLabel()}</text>
+      </Show>
       <box flexGrow={1} />
+      {/* #20 retry countdown */}
+      <Show when={retryState() !== null}>
+        <text fg={COLORS.amber}>{`Retrying in ${retryState()?.countdownSec}s (attempt ${retryState()?.attempt})`}</text>
+      </Show>
       <AgentStatusChip status={agentStatus()} elapsed={elapsed()} />
       <text fg={COLORS.textMuted}>{turnsLabel()}</text>
     </box>
