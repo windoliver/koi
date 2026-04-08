@@ -34,7 +34,7 @@ interface MockResolver {
   readonly load: ReturnType<typeof mock>;
   readonly onChange: ReturnType<typeof mock>;
   readonly dispose: ReturnType<typeof mock>;
-  readonly failures: readonly never[];
+  failures: readonly { readonly serverName: string; readonly error: unknown }[];
   /** Fire the captured onChange listener. */
   readonly fireChange: () => void;
 }
@@ -387,6 +387,36 @@ describe("createSkillsMcpBridge", () => {
 
     // onSyncError callback invoked
     expect(onSyncError).toHaveBeenCalledTimes(1);
+  });
+
+  test("partial failures from resolver.failures are surfaced via onSyncError", async () => {
+    const resolver = createMockResolver([descriptor("srv__tool", "srv")]);
+    const onSyncError = mock((_error: unknown) => {});
+    const runtime = createMockRuntime();
+
+    // Simulate partial failure: discover succeeds with some tools but failures array is populated
+    resolver.failures = [
+      { serverName: "dead-server", error: { code: "TIMEOUT", message: "timed out" } },
+    ];
+
+    const bridge = createSkillsMcpBridge({
+      resolver: resolver as unknown as McpResolver,
+      runtime: runtime as unknown as SkillsRuntime,
+      onSyncError,
+    });
+
+    await bridge.sync();
+
+    // Skills still registered (partial success)
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
+    const skills = runtime.registerExternal.mock.calls[0]?.[0] as readonly SkillMetadata[];
+    expect(skills).toHaveLength(1);
+
+    // onSyncError called with the failures array
+    expect(onSyncError).toHaveBeenCalledTimes(1);
+    const reported = onSyncError.mock.calls[0]?.[0] as readonly { readonly serverName: string }[];
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.serverName).toBe("dead-server");
   });
 
   test("initial sync() propagates discover() errors to the caller", async () => {

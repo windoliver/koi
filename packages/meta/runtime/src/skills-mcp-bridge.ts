@@ -81,6 +81,11 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
         const skills = descriptors.map(mapToolDescriptorToSkillMetadata);
         runtime.registerExternal(skills);
       }
+
+      // Surface partial failures (servers that timed out / disconnected)
+      if (resolver.failures.length > 0) {
+        onSyncError?.(resolver.failures);
+      }
     } catch (error: unknown) {
       // Clear stale skills on failure — don't advertise unreachable tools
       if (!disposed && capturedVersion === version) {
