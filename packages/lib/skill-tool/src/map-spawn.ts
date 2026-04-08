@@ -134,6 +134,11 @@ export function mapSkillToSpawnRequest(
     // (L1 engine spawn provider) must be stripped regardless of skill metadata.
     const RESERVED_SPAWN_TOOLS = new Set(["agent_spawn", "Spawn"]);
     const sanitized = spawnConfig.allowedTools.filter((t) => !RESERVED_SPAWN_TOOLS.has(t));
+    if (sanitized.length === 0) {
+      // All allowed tools were reserved spawn tools — child would have zero tools.
+      // Fall back to unrestricted fork rather than spawning a useless child.
+      return { ...base, fork: true as const };
+    }
     return {
       ...base,
       toolAllowlist: [...sanitized],

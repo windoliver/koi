@@ -177,6 +177,19 @@ describe("mapSkillToSpawnRequest", () => {
     expect(request.toolAllowlist).not.toContain("Spawn");
   });
 
+  test("falls back to fork: true when all allowedTools are reserved spawn tools", () => {
+    const skill = makeSkill();
+    const spawnConfig: SpawnConfig = {
+      agentName: "agent-g",
+      allowedTools: ["agent_spawn", "Spawn"],
+    };
+    const request = mapSkillToSpawnRequest(skill, "run", spawnConfig, baseConfig);
+
+    // After stripping reserved tools, allowlist is empty → fall back to fork
+    expect(request.fork).toBe(true);
+    expect(request.toolAllowlist).toBeUndefined();
+  });
+
   test("uses skill name as default description", () => {
     const skill = makeSkill();
     const spawnConfig: SpawnConfig = { agentName: "agent-e" };
