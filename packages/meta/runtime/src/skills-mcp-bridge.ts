@@ -5,6 +5,12 @@
  * them via registerExternal(). Subscribes to resolver onChange for live updates.
  *
  * Race-safe: serialized sync with disposed/dirty guards prevents stale writes.
+ *
+ * Single-owner constraint: registerExternal() uses full-replacement semantics,
+ * so only ONE bridge instance (or external-skill producer) should own a given
+ * SkillsRuntime's external slot. Multiple bridges on the same runtime will
+ * overwrite each other. If multi-source external skills are needed, compose
+ * them upstream and feed a single registerExternal() call.
  */
 
 import type { ToolDescriptor } from "@koi/core";

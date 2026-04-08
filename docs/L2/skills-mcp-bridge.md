@@ -44,6 +44,23 @@ Host disposes: bridge.dispose() → resolver.dispose()
 
 The bridge does NOT own the resolver or runtime lifecycle. `dispose()` unsubscribes onChange and calls `registerExternal([])` to clear stale skills.
 
+## Wiring
+
+The bridge is exported from `@koi/runtime` but **not** auto-wired into `createRuntime()`. The host (CLI, TUI, or test harness) is responsible for creating and wiring it:
+
+```ts
+import { createSkillsMcpBridge } from "@koi/runtime";
+
+const bridge = createSkillsMcpBridge({ resolver: mcpResolver, runtime: skillsRuntime });
+await bridge.sync();
+// ... on shutdown:
+bridge.dispose();
+```
+
+## Single-Owner Constraint
+
+`registerExternal()` uses full-replacement semantics — each call replaces ALL external skills. Only **one** bridge instance (or external-skill producer) should own a given `SkillsRuntime`'s external slot. Multiple bridges on the same runtime will silently overwrite each other. If multi-source external skills are needed, compose them upstream and feed a single `registerExternal()` call.
+
 ## Precedence
 
 MCP skills have the lowest priority: `project > user > bundled > mcp`. Any filesystem skill with the same name shadows the MCP skill.
