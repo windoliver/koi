@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:02.507Z",
+      "timestamp": "2026-04-08T04:09:49.481Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:02.508Z",
+      "timestamp": "2026-04-08T04:09:49.482Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T02:45:02.617Z",
+      "timestamp": "2026-04-08T04:09:49.484Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 213,
         "completion_tokens": 5
       },
-      "duration_ms": 1836,
+      "duration_ms": 626,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -83,10 +83,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.457Z",
+      "timestamp": "2026-04-08T04:09:50.113Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 1921.9824589999994,
+      "duration_ms": 631.0407090000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -103,10 +103,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.458Z",
+      "timestamp": "2026-04-08T04:09:50.114Z",
       "model_name": "middleware:hooks",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 1922.2317920000005,
+      "duration_ms": 631.0790419999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -123,10 +123,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.459Z",
+      "timestamp": "2026-04-08T04:09:50.115Z",
       "model_name": "middleware:permissions",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 1923.763875,
+      "duration_ms": 631.1326250000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -143,10 +143,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.460Z",
+      "timestamp": "2026-04-08T04:09:50.116Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 1925.3981250000002,
+      "duration_ms": 631.148416,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -163,7 +163,7 @@
     {
       "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-08T02:45:04.461Z",
+      "timestamp": "2026-04-08T04:09:50.117Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Skill_7",
@@ -181,16 +181,16 @@
           }
         ]
       },
-      "duration_ms": 7,
+      "duration_ms": 5,
       "outcome": "success",
       "extra": {
-        "_original_timestamp": 1775616304456
+        "_original_timestamp": 1775621390112
       }
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.464Z",
+      "timestamp": "2026-04-08T04:09:50.118Z",
       "model_name": "middleware:semantic-retry",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -200,7 +200,7 @@
           }
         ]
       },
-      "duration_ms": 7.713208000000122,
+      "duration_ms": 4.705332999999882,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -217,10 +217,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.468Z",
+      "timestamp": "2026-04-08T04:09:50.119Z",
       "model_name": "hook:on-skill-tool-exec",
       "message": "tool.succeeded → on-skill-tool-exec",
-      "duration_ms": 3.0132089999997334,
+      "duration_ms": 2.245166000000154,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -237,7 +237,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.469Z",
+      "timestamp": "2026-04-08T04:09:50.120Z",
       "model_name": "middleware:hooks",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -247,7 +247,7 @@
           }
         ]
       },
-      "duration_ms": 13.177416999999878,
+      "duration_ms": 7.720000000000255,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -264,7 +264,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.470Z",
+      "timestamp": "2026-04-08T04:09:50.121Z",
       "model_name": "middleware:permissions",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -274,7 +274,7 @@
           }
         ]
       },
-      "duration_ms": 14.115833999999268,
+      "duration_ms": 8.452999999999975,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -291,7 +291,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.471Z",
+      "timestamp": "2026-04-08T04:09:50.122Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -301,7 +301,7 @@
           }
         ]
       },
-      "duration_ms": 14.637583999999151,
+      "duration_ms": 8.792333999999755,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -318,7 +318,7 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T02:45:04.473Z",
+      "timestamp": "2026-04-08T04:09:50.124Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
       "observation": {
@@ -329,10 +329,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 254,
+        "prompt_tokens": 250,
         "completion_tokens": 5
       },
-      "duration_ms": 486,
+      "duration_ms": 475,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -351,10 +351,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.961Z",
+      "timestamp": "2026-04-08T04:09:50.601Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
-      "duration_ms": 490.11762499999986,
+      "duration_ms": 480.1584170000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -371,10 +371,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.962Z",
+      "timestamp": "2026-04-08T04:09:50.602Z",
       "model_name": "middleware:hooks",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
-      "duration_ms": 490.4184580000001,
+      "duration_ms": 480.21904099999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -391,10 +391,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.963Z",
+      "timestamp": "2026-04-08T04:09:50.603Z",
       "model_name": "middleware:permissions",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
-      "duration_ms": 490.69779199999994,
+      "duration_ms": 480.34395900000027,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -411,10 +411,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T02:45:04.964Z",
+      "timestamp": "2026-04-08T04:09:50.604Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"\n\n{\"ok\":true,\"value\":\"\\nAlways respond using bullet point lists. Never use prose paragraphs.\"}",
-      "duration_ms": 490.8190420000001,
+      "duration_ms": 480.40716599999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
