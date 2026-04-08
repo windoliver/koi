@@ -456,7 +456,7 @@ describe("createSkillsMcpBridge", () => {
 
   // -- error handling --------------------------------------------------------
 
-  test("onChange clears stale skills on discover() error and calls onSyncError", async () => {
+  test("onChange keeps last-known-good skills on discover() error and calls onSyncError", async () => {
     const resolver = createMockResolver([descriptor("srv__tool", "srv")]);
     const runtime = createMockRuntime();
     const onSyncError = mock((_error: unknown) => {});
@@ -476,10 +476,8 @@ describe("createSkillsMcpBridge", () => {
     // Should not throw; wait for async handler
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // registerExternal called twice: initial sync + clear on error
-    expect(runtime.registerExternal).toHaveBeenCalledTimes(2);
-    const clearCall = runtime.registerExternal.mock.calls[1]?.[0] as readonly SkillMetadata[];
-    expect(clearCall).toHaveLength(0);
+    // registerExternal NOT called again — last-known-good set preserved
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
 
     // onSyncError callback invoked
     expect(onSyncError).toHaveBeenCalledTimes(1);

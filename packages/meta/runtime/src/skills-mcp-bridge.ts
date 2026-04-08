@@ -152,14 +152,16 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
         onSyncError?.(resolver.failures);
       }
     } catch (error: unknown) {
-      // Clear stale skills on failure — don't advertise unreachable tools
-      if (!disposed && capturedVersion === version) {
-        runtime.registerExternal([]);
-      }
-      onSyncError?.(error);
       if (propagateError) {
+        // Initial sync failure: clear and propagate — nothing good to keep
+        if (!disposed && capturedVersion === version) {
+          runtime.registerExternal([]);
+        }
+        onSyncError?.(error);
         throw error;
       }
+      // Background refresh failure: keep last-known-good set, surface error
+      onSyncError?.(error);
     }
 
     // Re-sync if onChange fired during our discover()
