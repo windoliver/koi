@@ -436,9 +436,16 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           }
         }
         dedupedToolCalls = allowed;
-        // Append synthetic tool results for blocked calls after execution
-        // (handled below in the tool_execution block via doomLoopBlockedCalls)
-        doomLoopBlockedCalls = doomLoopBlocked;
+        // Collect ALL blocked callIds — both deduped and within-turn duplicates
+        // of blocked keys — so every emitted tool_call intent gets a synthetic result.
+        doomLoopBlockedCalls = [...doomLoopBlocked];
+        for (const tc of skippedToolCalls) {
+          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${cArgs}`;
+          if (repeatedKeys.has(key)) {
+            doomLoopBlockedCalls.push(tc);
+          }
+        }
         yield {
           kind: "custom",
           type: "doom_loop_filtered",
