@@ -416,14 +416,20 @@ function resolveTrajectoryStore(config: RuntimeConfig): TrajectoryResolution | u
       : { agentName: config.agentName ?? DEFAULT_AGENT_NAME };
 
   if (config.trajectoryNexus !== undefined) {
-    const { url, apiKey } = config.trajectoryNexus;
-    if (typeof url !== "string" || url.trim() === "") {
+    const { apiKey } = config.trajectoryNexus;
+    const rawUrl = config.trajectoryNexus.url;
+    if (typeof rawUrl !== "string" || rawUrl.trim() === "") {
       throw new Error("trajectoryNexus.url must be a non-empty string");
     }
+    const url = rawUrl.trim();
+    let parsed: URL;
     try {
-      new URL(url);
+      parsed = new URL(url);
     } catch {
       throw new Error(`trajectoryNexus.url is not a valid URL: ${url}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`trajectoryNexus.url must use http:// or https:// (got ${parsed.protocol})`);
     }
     const transport = createHttpTransport({ url, apiKey });
     const delegate = createNexusAtifDelegate({
