@@ -34,6 +34,8 @@ export interface SkillMeta {
   readonly dirPath: string;
   readonly tags?: readonly string[];
   readonly allowedTools?: readonly string[];
+  /** Execution mode: "inline" (default) or "fork" (sub-agent spawn). */
+  readonly executionMode?: "inline" | "fork" | undefined;
   /** Extra string key-value pairs from frontmatter (includes `agent` for fork mode). */
   readonly metadata?: Readonly<Record<string, string>>;
 }

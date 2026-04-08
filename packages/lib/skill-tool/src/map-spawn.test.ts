@@ -21,23 +21,32 @@ describe("extractSpawnConfig", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.agentName).toBe("my-agent");
-      expect(result.value.allowedTools).toBeUndefined();
     }
   });
 
-  test("includes allowedTools when present on skill", () => {
+  test("returns SpawnConfig when executionMode is fork", () => {
+    const skill = makeSkill({ executionMode: "fork" });
+    const result = extractSpawnConfig(skill);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Falls back to skill name when no metadata.agent
+      expect(result.value.agentName).toBe("test-skill");
+    }
+  });
+
+  test("returns SpawnConfig when executionMode is fork with agent override", () => {
     const skill = makeSkill({
-      metadata: { agent: "my-agent" },
-      allowedTools: ["Bash", "Read"],
+      executionMode: "fork",
+      metadata: { agent: "custom-agent" },
     });
     const result = extractSpawnConfig(skill);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.allowedTools).toEqual(["Bash", "Read"]);
+      expect(result.value.agentName).toBe("custom-agent");
     }
   });
 
-  test("returns NOT_FOUND when metadata.agent is missing", () => {
+  test("returns NOT_FOUND when inline-only (no executionMode, no agent)", () => {
     const skill = makeSkill({ metadata: { other: "value" } });
     const result = extractSpawnConfig(skill);
     expect(result.ok).toBe(false);
@@ -55,7 +64,7 @@ describe("extractSpawnConfig", () => {
     }
   });
 
-  test("returns NOT_FOUND when metadata.agent is empty string", () => {
+  test("returns NOT_FOUND when metadata.agent is empty and no executionMode", () => {
     const skill = makeSkill({ metadata: { agent: "" } });
     const result = extractSpawnConfig(skill);
     expect(result.ok).toBe(false);
@@ -66,7 +75,7 @@ describe("extractSpawnConfig", () => {
 
   test("returns VALIDATION when allowedTools is empty array", () => {
     const skill = makeSkill({
-      metadata: { agent: "my-agent" },
+      executionMode: "fork",
       allowedTools: [],
     });
     const result = extractSpawnConfig(skill);
@@ -83,7 +92,7 @@ describe("mapSkillToSpawnRequest", () => {
     sessionId: "session-123",
   };
 
-  test("sets fork: true when no allowedTools", () => {
+  test("always sets fork: true for recursion guard and turn cap", () => {
     const skill = makeSkill();
     const spawnConfig: SpawnConfig = { agentName: "agent-a" };
     const request = mapSkillToSpawnRequest(skill, "do stuff", spawnConfig, baseConfig);
@@ -91,21 +100,7 @@ describe("mapSkillToSpawnRequest", () => {
     expect(request.agentName).toBe("agent-a");
     expect(request.description).toBe("do stuff");
     expect(request.fork).toBe(true);
-    expect(request.toolAllowlist).toBeUndefined();
     expect(request.nonInteractive).toBe(true);
-  });
-
-  test("sets toolAllowlist when allowedTools present (no fork)", () => {
-    const skill = makeSkill();
-    const spawnConfig: SpawnConfig = {
-      agentName: "agent-b",
-      allowedTools: ["Bash", "Edit"],
-    };
-    const request = mapSkillToSpawnRequest(skill, undefined, spawnConfig, baseConfig);
-
-    expect(request.toolAllowlist).toEqual(["Bash", "Edit"]);
-    expect(request.fork).toBeUndefined();
-    expect(request.description).toBe("Execute skill: test-skill");
   });
 
   test("substitutes variables in systemPrompt", () => {
@@ -124,5 +119,13 @@ describe("mapSkillToSpawnRequest", () => {
     const request = mapSkillToSpawnRequest(skill, "test", spawnConfig, { signal });
 
     expect(request.signal).toBe(signal);
+  });
+
+  test("uses skill name as default description", () => {
+    const skill = makeSkill();
+    const spawnConfig: SpawnConfig = { agentName: "agent-e" };
+    const request = mapSkillToSpawnRequest(skill, undefined, spawnConfig, baseConfig);
+
+    expect(request.description).toBe("Execute skill: test-skill");
   });
 });

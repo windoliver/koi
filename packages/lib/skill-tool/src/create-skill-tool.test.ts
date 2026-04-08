@@ -188,6 +188,65 @@ describe("SkillTool.execute — inline mode", () => {
 });
 
 describe("SkillTool.execute — fork mode", () => {
+  test("delegates to spawnFn when executionMode is fork", async () => {
+    const skill = makeSkill("fork-skill", {
+      body: "Fork system prompt",
+      executionMode: "fork",
+    });
+    const resolver = makeResolver([skill]);
+
+    const spawnFn = mock(
+      async (_request: SpawnRequest): Promise<SpawnResult> => ({
+        ok: true,
+        output: "Forked via executionMode",
+      }),
+    );
+
+    const result = await createSkillTool(makeConfig(resolver, { spawnFn: spawnFn as SpawnFn }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const execResult = (await result.value.execute({
+      skill: "fork-skill",
+    })) as SpawnResult;
+    expect(execResult.ok).toBe(true);
+    if (execResult.ok) {
+      expect(execResult.output).toBe("Forked via executionMode");
+    }
+
+    const request = spawnFn.mock.calls[0]?.[0] as SpawnRequest;
+    expect(request.agentName).toBe("fork-skill"); // falls back to name
+    expect(request.fork).toBe(true);
+  });
+
+  test("fails closed when fork config validation fails (empty allowedTools)", async () => {
+    const skill = makeSkill("bad-fork", {
+      body: "body",
+      executionMode: "fork",
+      allowedTools: [],
+    });
+    const resolver = makeResolver([skill]);
+
+    const spawnFn = mock(
+      async (_request: SpawnRequest): Promise<SpawnResult> => ({
+        ok: true,
+        output: "should not reach",
+      }),
+    );
+
+    const result = await createSkillTool(makeConfig(resolver, { spawnFn: spawnFn as SpawnFn }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const execResult = (await result.value.execute({ skill: "bad-fork" })) as {
+      ok: false;
+      error: KoiError;
+    };
+    expect(execResult.ok).toBe(false);
+    expect(execResult.error.code).toBe("VALIDATION");
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
   test("delegates to spawnFn when skill has agent metadata", async () => {
     const skill = makeSkill("fork-skill", {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${VAR} pattern

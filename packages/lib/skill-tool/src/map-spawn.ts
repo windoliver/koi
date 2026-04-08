@@ -1,8 +1,12 @@
 /**
  * Skill → SpawnRequest mapping for fork-mode dispatch.
  *
- * Extracts typed spawn configuration from skill metadata and builds
- * a SpawnRequest that respects fork/allowedTools mutual exclusivity.
+ * Determines whether a skill should fork based on `executionMode` (from L0
+ * SkillExecutionMode) or `metadata.agent` (legacy/compatibility). Extracts
+ * typed spawn configuration and builds a SpawnRequest.
+ *
+ * Always uses `fork: true` to preserve the engine's recursion guard and
+ * default turn cap — never downgrades to plain `toolAllowlist`.
  */
 
 import type { KoiError, Result, SpawnRequest } from "@koi/core";
@@ -14,20 +18,27 @@ import type { LoadedSkill, SpawnConfig } from "./types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Extracts and validates spawn configuration from a loaded skill's metadata.
+ * Extracts and validates spawn configuration from a loaded skill.
  *
- * Returns `NOT_FOUND` error if the skill has no `agent` metadata field
- * (indicating it is inline-only). Returns `VALIDATION` error if the
- * `allowedTools` list is present but empty (ambiguous intent).
+ * Fork mode is determined by:
+ * 1. `skill.executionMode === "fork"` (canonical, from L0 SkillExecutionMode)
+ * 2. `skill.metadata.agent` present (legacy compatibility)
+ *
+ * Returns `NOT_FOUND` error if the skill is inline-only (neither condition met).
+ * Returns `VALIDATION` error if fork is requested but `allowedTools` is empty
+ * (ambiguous intent — either list specific tools or remove the field).
  */
 export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiError> {
+  const isForkMode = skill.executionMode === "fork";
   const agentName = skill.metadata?.agent;
-  if (agentName === undefined || agentName === "") {
+
+  // Neither executionMode=fork nor metadata.agent → inline-only
+  if (!isForkMode && (agentName === undefined || agentName === "")) {
     return {
       ok: false,
       error: {
         code: "NOT_FOUND",
-        message: `Skill "${skill.name}" has no "agent" metadata field — it is inline-only`,
+        message: `Skill "${skill.name}" is inline-only (no executionMode: fork or agent metadata)`,
         retryable: false,
         context: { skillName: skill.name },
       },
@@ -46,11 +57,13 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
     };
   }
 
+  // Use metadata.agent if present, otherwise fall back to skill name
+  const resolvedAgentName = agentName !== undefined && agentName !== "" ? agentName : skill.name;
+
   return {
     ok: true,
     value: {
-      agentName,
-      ...(skill.allowedTools !== undefined ? { allowedTools: skill.allowedTools } : {}),
+      agentName: resolvedAgentName,
     },
   };
 }
@@ -62,9 +75,9 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
 /**
  * Maps a loaded skill with validated spawn config into a SpawnRequest.
  *
- * When `allowedTools` is present, sets `toolAllowlist` (no fork).
- * Otherwise sets `fork: true` (inherits all parent tools).
- * These are mutually exclusive per SpawnRequest validation.
+ * Always uses `fork: true` to preserve the engine's recursion guard
+ * (strips agent_spawn from child) and default fork turn cap. This is
+ * critical for safety — plain `toolAllowlist` without `fork` loses both.
  */
 export function mapSkillToSpawnRequest(
   skill: LoadedSkill,
@@ -84,8 +97,6 @@ export function mapSkillToSpawnRequest(
     signal: config.signal,
     systemPrompt,
     nonInteractive: true,
-    ...(spawnConfig.allowedTools !== undefined
-      ? { toolAllowlist: [...spawnConfig.allowedTools] }
-      : { fork: true as const }),
+    fork: true as const,
   };
 }

@@ -186,27 +186,35 @@ export async function createSkillTool(config: SkillToolConfig): Promise<Result<T
       // 4. Check abort after async load
       if (signal.aborted) return cancelledError();
 
-      // 5. Determine execution mode
+      // 5. Determine execution mode — fail closed on validation errors
       const spawnResult = extractSpawnConfig(skill);
-      const isForkMode = spawnResult.ok && config.spawnFn !== undefined;
 
-      if (isForkMode) {
-        // Fork mode: delegate to SpawnFn
-        const request = mapSkillToSpawnRequest(skill, skillArgs, spawnResult.value, {
-          signal,
-          ...(config.sessionId !== undefined ? { sessionId: config.sessionId } : {}),
-        });
+      if (spawnResult.ok) {
+        // Skill wants fork mode
+        if (config.spawnFn === undefined) {
+          // No spawnFn available — fall back to inline (fork capability not wired)
+          // This is safe: the skill body is still useful as context
+        } else {
+          const request = mapSkillToSpawnRequest(skill, skillArgs, spawnResult.value, {
+            signal,
+            ...(config.sessionId !== undefined ? { sessionId: config.sessionId } : {}),
+          });
 
-        const { spawnFn } = config;
-        if (spawnFn === undefined) return internalError("spawnFn missing", "unreachable");
-        try {
-          return await spawnFn(request);
-        } catch (e: unknown) {
-          return internalError(`Unexpected error spawning skill "${skillName}"`, e);
+          try {
+            return await config.spawnFn(request);
+          } catch (e: unknown) {
+            return internalError(`Unexpected error spawning skill "${skillName}"`, e);
+          }
         }
+      } else if (spawnResult.error.code !== "NOT_FOUND") {
+        // Spawn config extraction failed with a real error (e.g. VALIDATION).
+        // Fail closed — do NOT fall back to inline execution, as this could
+        // bypass intended isolation boundaries.
+        return spawnResult;
       }
 
-      // Inline mode: return substituted body
+      // Inline mode: skill is inline-only (NOT_FOUND from extractSpawnConfig)
+      // or fork mode is unavailable (no spawnFn)
       const body = substituteVariables(skill.body, {
         ...(skillArgs !== undefined ? { args: skillArgs } : {}),
         skillDir: skill.dirPath,
