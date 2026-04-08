@@ -118,7 +118,14 @@ async function scanRoot(
       }
 
       const manifest = result.value;
-      const available = isAvailable ? isAvailable(manifest) : true;
+      let available = true;
+      if (isAvailable) {
+        try {
+          available = isAvailable(manifest);
+        } catch {
+          available = false;
+        }
+      }
 
       plugins.push({
         id: pluginId(manifest.name),
@@ -157,10 +164,29 @@ export async function discoverPlugins(
 
   const allErrors: PluginError[] = [];
   const byName = new Map<string, PluginMeta>();
+  // Track names that failed at higher-priority tiers to suppress lower-tier fallback.
+  // Uses both plugin name (from validated manifest) and directory basename (for failed manifests).
+  const failedAtHigherTier = new Map<string, PluginSource>();
 
+  // Roots are ordered by priority (managed first, bundled last) in buildSourceRoots
   for (const result of results) {
     allErrors.push(...result.errors);
+
+    // Record failed directory names at this tier's priority
+    for (const err of result.errors) {
+      const basename = err.dirPath.split("/").pop() ?? "";
+      if (basename && !failedAtHigherTier.has(basename)) {
+        failedAtHigherTier.set(basename, err.source);
+      }
+    }
+
     for (const plugin of result.plugins) {
+      // Fail closed: if a higher-priority tier had an error for this name, suppress this entry
+      const failedSource = failedAtHigherTier.get(plugin.name);
+      if (failedSource !== undefined && PRIORITY[failedSource] < PRIORITY[plugin.source]) {
+        continue;
+      }
+
       const existing = byName.get(plugin.name);
       if (existing === undefined || PRIORITY[plugin.source] < PRIORITY[existing.source]) {
         byName.set(plugin.name, plugin);

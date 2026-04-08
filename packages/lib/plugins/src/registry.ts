@@ -41,22 +41,30 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
     }
 
     discoverPromise = (async (): Promise<readonly PluginMeta[]> => {
-      const result = await discoverPlugins(config);
-      if (!result.ok) {
+      try {
+        const result = await discoverPlugins(config);
+        if (!result.ok) {
+          cachedPlugins = new Map();
+          cachedErrors = [];
+          return [];
+        }
+
+        const byName = new Map<string, PluginMeta>();
+        for (const plugin of result.value.plugins) {
+          byName.set(plugin.name, plugin);
+        }
+        cachedPlugins = byName;
+        cachedErrors = result.value.errors;
+
+        // Return only available plugins
+        return result.value.plugins.filter((p) => p.available);
+      } catch {
+        // Clear cached promise so next call retries
+        discoverPromise = undefined;
         cachedPlugins = new Map();
         cachedErrors = [];
         return [];
       }
-
-      const byName = new Map<string, PluginMeta>();
-      for (const plugin of result.value.plugins) {
-        byName.set(plugin.name, plugin);
-      }
-      cachedPlugins = byName;
-      cachedErrors = result.value.errors;
-
-      // Return only available plugins
-      return result.value.plugins.filter((p) => p.available);
     })();
 
     return discoverPromise;
@@ -136,10 +144,18 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
         middlewareNames: meta.manifest.middleware ?? [],
       };
 
-      return { ok: true, value: loaded };
+      return { ok: true, value: loaded } as Result<LoadedPlugin, KoiError>;
     })();
 
     loadCache.set(id, promise);
+
+    // Remove failed loads from cache so they can be retried after filesystem changes
+    promise.then((resolved) => {
+      if (!resolved.ok) {
+        loadCache.delete(id);
+      }
+    });
+
     return promise;
   };
 
