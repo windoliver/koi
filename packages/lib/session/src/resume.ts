@@ -106,19 +106,30 @@ export function resumeFromTranscript(
       }
 
       case "system": {
-        // The transcript middleware stores entries with role "system" only when
-        // the original message had senderId === "system" (exact string match, not
-        // a "system:*" prefixed engine-generated message). In the request mapper,
-        // plain senderId "system" does NOT match the "system:*" startsWith check
-        // and falls back to "user" role. Replay as "user" to preserve the original
-        // trust level — using "system:resume" would escalate caller-controlled text
-        // into privileged system prompt context, which is a trust-boundary violation.
-        messages.push({
-          senderId: "user",
-          content: [{ kind: "text", text: transcriptEntry.content }],
-          timestamp: transcriptEntry.timestamp,
-          metadata: { resumedSystemRole: true },
-        });
+        // Engine-injected messages (system:doom-loop, system:capabilities, etc.)
+        // store their original senderId in metadata. Replay with the original
+        // privileged sender so the request-mapper maps them as system role.
+        // Plain "system" entries (no stored senderId) are caller-controlled and
+        // replayed as "user" to avoid trust-boundary escalation.
+        const storedSenderId =
+          transcriptEntry.metadata !== undefined &&
+          typeof (transcriptEntry.metadata as Record<string, unknown>).senderId === "string"
+            ? ((transcriptEntry.metadata as Record<string, unknown>).senderId as string)
+            : undefined;
+        if (storedSenderId?.startsWith("system:")) {
+          messages.push({
+            senderId: storedSenderId,
+            content: [{ kind: "text", text: transcriptEntry.content }],
+            timestamp: transcriptEntry.timestamp,
+          });
+        } else {
+          messages.push({
+            senderId: "user",
+            content: [{ kind: "text", text: transcriptEntry.content }],
+            timestamp: transcriptEntry.timestamp,
+            metadata: { resumedSystemRole: true },
+          });
+        }
         break;
       }
 

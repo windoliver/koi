@@ -88,6 +88,14 @@ AtifSystemStep | AtifToolStep`. Each variant carries only its relevant fields. A
 serialization layer maps to/from the flat ATIF JSON spec with optional fields. Round-trip
 tests verify correctness.
 
+`AtifSystemStep` now carries an optional `observation` field (`AtifObservation`), matching
+`AtifAgentStep` and `AtifToolStep`. This enables MW span system steps to preserve their
+response content (e.g., allowed/blocked decision text) through ATIF round-trip.
+`extractObservationResponse()` accepts `AtifAgentStep | AtifToolStep | AtifSystemStep` and
+is called during system step import to reconstruct the `response` `RichContent` from the
+observation. This closes the data loss gap where MW span response text was recorded by the
+trace wrapper but dropped during ATIF export/import.
+
 ### 5. Content capture strategy
 
 - **Model requests**: Last user message + metadata (`totalMessages`, `estimatedTokens`).
@@ -216,7 +224,7 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
 
 ## Tests
 
-- Round-trip: per-variant `Rich → ATIF → Rich` with lossy-field documentation
+- Round-trip: per-variant `Rich → ATIF → Rich` with lossy-field documentation (including system step observation preservation)
 - Error resilience: mock store failures, verify middleware continues
 - Concurrent tool calls: overlapping async tool calls with controlled timing
 - Stream error paths: happy, error mid-stream, empty stream
@@ -251,3 +259,5 @@ function truncateContent(text: string, maxBytes?: number): RichContent;
 > **Trust-boundary fix (PR #1541, issue #1499):** Tool step metadata is now allowlisted instead of copied wholesale. System steps with non-default `kind`/`identifier` (e.g., `provenance:turn_summary`) use a nested `extra.__koi` transport object for lossless ATIF round-trip. Both library and runtime mappers updated consistently.
 
 > **Monotonic timestamps (PR #1569, issue #1558):** Added `createMonotonicClock()` factory. Concurrent middleware observers each calling `Date.now()` independently caused 20/28 golden trajectory fixtures to have non-monotonic timestamps. The factory guarantees strictly increasing timestamps via `max(last+1, baseClock())`. `@koi/runtime` creates a per-stream monotonic clock (not per-runtime) so concurrent sessions never interfere. The ATIF store also enforces monotonicity at append time as a safety net for L1 emitters lacking clock injection; adjusted timestamps preserve the original value in `metadata._original_timestamp`. All 28 golden fixtures re-recorded.
+
+> **System step observation + ATIF round-trip (current branch):** `AtifSystemStep` gained an optional `observation` field so MW span response content (e.g., `"allowed"` / `"blocked"` decision text from the trace wrapper) survives ATIF export and import. `extractObservationResponse()` now accepts system steps alongside agent and tool steps. The ATIF export path calls `buildObservation(step)` for system steps, and the import path calls `extractObservationResponse()` to reconstruct `response` `RichContent`. Round-trip tests cover the new path.

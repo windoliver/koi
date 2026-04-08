@@ -2329,3 +2329,70 @@ describe("reduce — toggle_all_tools_expanded", () => {
     expect(next.expandedToolCallIds.size).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// set_trajectory_data
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_trajectory_data", () => {
+  const makeStep = (
+    overrides: Partial<import("./types.js").TrajectoryStepSummary> & {
+      readonly stepIndex: number;
+      readonly kind: string;
+      readonly identifier: string;
+      readonly timestamp: number;
+    },
+  ): import("./types.js").TrajectoryStepSummary => ({
+    durationMs: undefined,
+    outcome: undefined,
+    requestText: undefined,
+    responseText: undefined,
+    errorText: undefined,
+    tokens: undefined,
+    middlewareSpan: undefined,
+    ...overrides,
+  });
+
+  test("stores trajectory steps", () => {
+    const state = createInitialState();
+    const steps = [
+      makeStep({
+        stepIndex: 0,
+        kind: "model_call",
+        identifier: "gpt-4",
+        durationMs: 500,
+        outcome: "success",
+        timestamp: 1000,
+      }),
+      makeStep({
+        stepIndex: 1,
+        kind: "tool_call",
+        identifier: "Glob",
+        durationMs: 50,
+        outcome: "success",
+        timestamp: 1500,
+      }),
+    ];
+    const next = reduce(state, { kind: "set_trajectory_data", steps });
+    expect(next.trajectorySteps).toHaveLength(2);
+    expect(next.trajectorySteps[0]?.identifier).toBe("gpt-4");
+    expect(next.trajectorySteps[1]?.identifier).toBe("Glob");
+  });
+
+  test("replaces existing trajectory data", () => {
+    const state = stateWith({
+      trajectorySteps: [
+        makeStep({
+          stepIndex: 0,
+          kind: "model_call",
+          identifier: "old",
+          durationMs: 100,
+          outcome: "success",
+          timestamp: 500,
+        }),
+      ],
+    });
+    const next = reduce(state, { kind: "set_trajectory_data", steps: [] });
+    expect(next.trajectorySteps).toHaveLength(0);
+  });
+});

@@ -1,0 +1,480 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "system-sender-resume",
+  "agent": {
+    "name": "golden-system-sender-resume",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:46.620Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:46.621Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T04:11:46.629Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "You have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 191,
+        "completion_tokens": 7
+      },
+      "duration_ms": 609,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 6,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "62b48aff4a734f1e2df469fa314ce046931abffb84c3ccce7ee7affc89d0330a"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.241Z",
+      "model_name": "middleware:@koi/session:transcript",
+      "message": "add_numbers({\"b\":30,\"a\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 0.46100000000001273,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "@koi/session:transcript",
+        "hook": "wrapToolCall",
+        "phase": "observe",
+        "priority": 200,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:@koi/session:transcript"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "tool",
+      "timestamp": "2026-04-08T04:11:47.242Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_4",
+          "function_name": "add_numbers",
+          "arguments": {
+            "b": 30,
+            "a": 20
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_4",
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775621507240
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.243Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"b\":30,\"a\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 0.9292080000000169,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.244Z",
+      "model_name": "middleware:@koi/session:transcript",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "duration_ms": 611.384,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "@koi/session:transcript",
+        "hook": "wrapModelStream",
+        "phase": "observe",
+        "priority": 200,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:@koi/session:transcript"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.245Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"b\":30,\"a\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 1.2605419999999867,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.246Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "duration_ms": 611.8122920000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.247Z",
+      "model_name": "middleware:hooks",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "duration_ms": 612.031166,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.248Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"b\":30,\"a\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 1.831625000000031,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.249Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"b\":30,\"a\":20})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"result\":50}"
+          }
+        ]
+      },
+      "duration_ms": 2.0941660000000866,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.250Z",
+      "model_name": "middleware:permissions",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "duration_ms": 613.1022500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.251Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.",
+      "duration_ms": 614.2785839999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "agent",
+      "timestamp": "2026-04-08T04:11:47.253Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"result\":50}",
+      "observation": {
+        "results": [
+          {
+            "content": "The answer is 50.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 219,
+        "completion_tokens": 8
+      },
+      "duration_ms": 437,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 8,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "62b48aff4a734f1e2df469fa314ce046931abffb84c3ccce7ee7affc89d0330a"
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.692Z",
+      "model_name": "middleware:@koi/session:transcript",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.\n\n{\"result\":50}",
+      "duration_ms": 449.18545800000015,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "@koi/session:transcript",
+        "hook": "wrapModelStream",
+        "phase": "observe",
+        "priority": 200,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:@koi/session:transcript"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.693Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.\n\n{\"result\":50}",
+      "duration_ms": 449.4258339999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.694Z",
+      "model_name": "middleware:hooks",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.\n\n{\"result\":50}",
+      "duration_ms": 449.5068329999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.695Z",
+      "model_name": "middleware:permissions",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.\n\n{\"result\":50}",
+      "duration_ms": 449.84504100000026,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-08T04:11:47.696Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use add_numbers to compute 5 + 5.\ncall-sr-01\n{\"result\":10}\nThe result of 5 + 5 is 10.\n[System note]: Session checkpoint saved. You may continue with new tasks.\nYou have the add_numbers tool available. Use it to compute 20 + 30 and tell me the answer.\n\n{\"result\":50}",
+      "duration_ms": 449.8589579999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

@@ -13,6 +13,8 @@
  *   @koi/tasks                — in-memory task board for background job tracking
  *   @koi/task-tools           — task_create, task_get, task_update, task_list, task_stop, task_output
  *   @koi/tools-web            — web_fetch
+ *   @koi/session              — JSONL transcript recording (optional, via config.session)
+ *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
  *
  * MCP transport wiring is deferred — tracked as a follow-up to #1542.
  * Hook loading from user config is deferred — currently passes empty hooks.
@@ -21,32 +23,46 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
   ApprovalHandler,
   InboundMessage,
   ManagedTaskBoard,
+  MemoryRecord,
+  MemoryRecordInput,
   ModelAdapter,
   RichTrajectoryStep,
-  TrajectoryDocumentStore,
+  SessionId,
+  SessionTranscript,
+  SpawnFn,
 } from "@koi/core";
 import {
   createSingleToolProvider,
   DEFAULT_UNSANDBOXED_POLICY,
   agentId as makeAgentId,
+  memoryRecordId,
 } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
-import { createKoi } from "@koi/engine";
-import { createEventTraceMiddleware } from "@koi/event-trace";
+import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
+import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
-import { createHookMiddleware } from "@koi/hooks";
+import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import type { MemoryToolBackend } from "@koi/memory-tools";
+import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import {
+  createRetrySignalBroker,
+  createSemanticRetryMiddleware,
+} from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
+import { createSessionTranscriptMiddleware } from "@koi/session";
+import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
@@ -72,8 +88,11 @@ const TUI_DOC_ID = "koi-tui-session";
 /** Maximum model→tool→model turns per user submit in the TUI. */
 const DEFAULT_MAX_TURNS = 10;
 
-/** Maximum messages retained in the transcript context window. */
-const MAX_TRANSCRIPT_MESSAGES = 20;
+/** Maximum messages retained in the transcript context window.
+ * Matches the default for `koi start --context-window` (100).
+ * A lower cap (e.g. 20) causes the model to silently lose context
+ * after ~10 exchanges with no compaction to preserve it. */
+const MAX_TRANSCRIPT_MESSAGES = 100;
 
 /**
  * Temp directory for task result storage. Enables `task_update(status="completed")`
@@ -83,37 +102,91 @@ const MAX_TRANSCRIPT_MESSAGES = 20;
 const TASK_RESULTS_DIR = join(tmpdir(), "koi-tui-task-results");
 
 // ---------------------------------------------------------------------------
-// In-memory trajectory store
+// In-memory memory backend (same pattern as record-cassettes.ts)
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal in-memory TrajectoryDocumentStore.
- *
- * Used by event-trace middleware to record model/tool steps. No disk I/O —
- * the TUI reads steps back via getTrajectorySteps() for the /trajectory view.
- */
-function createInMemoryTrajectoryStore(): TrajectoryDocumentStore {
-  // Map<docId, steps[]> — documents accumulate across the session lifetime
-  const documents = new Map<string, RichTrajectoryStep[]>();
+/** In-memory MemoryToolBackend with session-scoped clear(). */
+interface ClearableMemoryBackend extends MemoryToolBackend {
+  /** Clear all stored memories — called on session reset. */
+  readonly clear: () => void;
+}
+
+function createInMemoryMemoryBackend(): ClearableMemoryBackend {
+  const records = new Map<string, MemoryRecord>();
+  // let: mutable counter for ID generation
+  let counter = 0;
 
   return {
-    async append(docId, steps) {
-      const existing = documents.get(docId) ?? [];
-      documents.set(docId, [...existing, ...steps]);
+    store: (input: MemoryRecordInput) => {
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: record };
     },
-    async getDocument(docId) {
-      return documents.get(docId) ?? [];
+    storeWithDedup: (input: MemoryRecordInput, opts: { readonly force: boolean }) => {
+      const match = [...records.values()].find(
+        (r) => r.name === input.name && r.type === input.type,
+      );
+      if (match !== undefined) {
+        if (!opts.force) {
+          return { ok: true as const, value: { action: "conflict" as const, existing: match } };
+        }
+        const updated = {
+          ...match,
+          description: input.description,
+          content: input.content,
+          updatedAt: Date.now(),
+        } as MemoryRecord;
+        records.set(match.id, updated);
+        return { ok: true as const, value: { action: "updated" as const, record: updated } };
+      }
+      counter += 1;
+      const id = memoryRecordId(`mem-${counter}`);
+      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
+      const now = Date.now();
+      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
+      records.set(id, record);
+      return { ok: true as const, value: { action: "created" as const, record } };
     },
-    async getStepRange(docId, startIndex, endIndex) {
-      return (documents.get(docId) ?? []).slice(startIndex, endIndex);
+    recall: (_query, _options) => {
+      return { ok: true as const, value: [...records.values()] };
     },
-    async getSize(docId) {
-      // Approximate size in bytes for eviction heuristics
-      return JSON.stringify(documents.get(docId) ?? []).length;
+    search: (filter) => {
+      const all = [...records.values()];
+      const filtered = filter.type !== undefined ? all.filter((r) => r.type === filter.type) : all;
+      return { ok: true as const, value: filtered };
     },
-    async prune(_olderThanMs) {
-      // In-memory store doesn't prune by timestamp — cleared by GC on session end
-      return 0;
+    delete: (id) => {
+      const wasPresent = records.has(id);
+      records.delete(id);
+      return { ok: true as const, value: { wasPresent } };
+    },
+    findByName: (name, type) => {
+      const match = [...records.values()].find(
+        (r) => r.name === name && (type === undefined || r.type === type),
+      );
+      return { ok: true as const, value: match };
+    },
+    get: (id) => {
+      return { ok: true as const, value: records.get(id) };
+    },
+    update: (id, patch) => {
+      const existing = records.get(id);
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
+        };
+      const updated = { ...existing, ...patch, updatedAt: Date.now() } as MemoryRecord;
+      records.set(id, updated);
+      return { ok: true as const, value: updated };
+    },
+    clear: () => {
+      records.clear();
+      counter = 0;
     },
   };
 }
@@ -131,6 +204,22 @@ export interface TuiRuntimeConfig {
   readonly approvalHandler: ApprovalHandler;
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
+  /**
+   * System prompt injected via createSystemPromptMiddleware.
+   * Tells the model it has tools and should use them.
+   * When omitted, no system prompt middleware is installed.
+   */
+  readonly systemPrompt?: string | undefined;
+  /**
+   * Session transcript config for JSONL recording + session resume.
+   * When omitted, no session transcript middleware is installed.
+   */
+  readonly session?:
+    | {
+        readonly transcript: SessionTranscript;
+        readonly sessionId: SessionId;
+      }
+    | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -151,10 +240,11 @@ export interface TuiRuntimeHandle {
   /**
    * Reset stateful tool state for a new session (agent:clear / session:new).
    *
-   * **IMPORTANT — ordering constraint**: callers MUST abort the active run's
-   * AbortController (e.g. `activeController.abort()`) BEFORE calling this method.
-   * The task-board rotation is async (fire-and-forget) to avoid blocking the UI.
-   * Aborting the run first ensures all in-flight tool calls are cancelled before
+   * @param signal — the active run's AbortSignal. Must already be aborted
+   * (`signal.aborted === true`). Enforced at runtime — throws if the caller
+   * forgot to abort the controller before resetting session state.
+   *
+   * Aborting first ensures all in-flight tool calls are cancelled before
    * the board pointer moves, closing the window where a tool call could observe
    * the old board via `add`/`assign` and then the new board via `complete`/`fail`.
    *
@@ -166,8 +256,9 @@ export interface TuiRuntimeHandle {
    *    task_get / task_output in the new session.
    * 4. Clears session-scoped approval state (always-allow, approval cache, denial
    *    trackers) so prior-session approvals do not silently carry into the new session.
+   * 5. Clears the in-memory trajectory store for the new session.
    */
-  readonly resetSessionState: () => void;
+  readonly resetSessionState: (signal: AbortSignal) => Promise<void>;
   /**
    * Abort all in-flight bash_background subprocesses (SIGTERM → SIGKILL).
    *
@@ -215,8 +306,28 @@ export interface TuiRuntimeHandle {
 export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd() } = config;
 
-  // --- Trajectory store (in-memory, no disk I/O) ---
-  const trajectoryStore = createInMemoryTrajectoryStore();
+  // Session generation counter — incremented on each reset.
+  // The trace wrapper and event-trace MW capture the doc ID at construction
+  // and can't be rotated after createKoi assembly. The prune is awaited to
+  // minimize the window, but late fire-and-forget appends from the old
+  // session's trace can theoretically recreate the pruned document.
+  // In practice this window is <1ms (prune completes before new submit).
+  // Full fix requires doc-ID rotation which needs API changes to the trace
+  // wrapper — tracked as a known limitation.
+
+  // --- Trajectory store (in-memory ATIF store — production-grade with mutex + eviction) ---
+  // Cap at MAX_TRAJECTORY_STEPS to match the /trajectory view cap — no point storing
+  // steps the user can never see. Using the event-trace store gains atomic step IDs,
+  // per-doc mutex, size enforcement, and idempotent appends for free.
+  const trajectoryStore = createInMemoryAtifDocumentStore({
+    agentName: "koi-tui",
+    agentVersion: "0.1.0",
+    maxSteps: MAX_TRAJECTORY_STEPS,
+  });
+
+  // --- @koi/middleware-semantic-retry: retry signal broker ---
+  // Created before event-trace so it can be wired as signalReader.
+  const retryBroker = createRetrySignalBroker();
 
   // --- @koi/event-trace: record model/tool I/O for /trajectory view ---
   const { middleware: eventTraceMw } = createEventTraceMiddleware({
@@ -224,12 +335,48 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     docId: TUI_DOC_ID,
     agentName: "koi-tui",
     agentVersion: "0.1.0",
+    signalReader: retryBroker,
+  });
+  const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
+    signalWriter: retryBroker,
   });
 
-  // --- @koi/hooks: command hook dispatch ---
-  // No hooks loaded from config yet — deferred to a follow-up task.
-  // Empty hooks = hook middleware is present (for trajectory recording) but a no-op.
-  const hookMw = createHookMiddleware({ hooks: [] });
+  // --- Hook observer: records hook execution as ATIF trajectory steps ---
+  // Pure observer — subscribes to hook registry's onExecuted tap, does not dispatch.
+  // Same pattern as golden-query recording (record-cassettes.ts).
+  const { onExecuted: hookObserverTap, middleware: hookObserverMw } = createHookObserver({
+    store: trajectoryStore,
+    docId: TUI_DOC_ID,
+  });
+
+  // --- @koi/hooks: load hooks from ~/.koi/hooks.json + command hook dispatch ---
+  // Same pattern as koi start: load user hooks, wire observer tap for ATIF recording.
+  // Absent/unreadable file = no hooks (empty array, middleware is a no-op).
+  // Agent hooks (kind: "agent") are filtered out because the TUI does not provide
+  // a spawnFn — createHookMiddleware throws if any agent hook is present without one.
+  const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
+  // let: justified — set after async load
+  let loadedHooks: readonly import("@koi/core").HookConfig[] = [];
+  try {
+    const raw: unknown = await Bun.file(hooksConfigPath).json();
+    const hookResult = loadHooks(raw);
+    if (hookResult.ok) {
+      const agentHooks = hookResult.value.filter((h) => h.kind === "agent");
+      if (agentHooks.length > 0) {
+        console.warn(
+          `[koi tui] ${agentHooks.length} agent hook(s) skipped (not supported in TUI): ` +
+            agentHooks.map((h) => h.name).join(", "),
+        );
+      }
+      loadedHooks = hookResult.value.filter((h) => h.kind !== "agent");
+    }
+  } catch {
+    // Absent or unreadable — silently skip (no hooks configured)
+  }
+  const hookMw = createHookMiddleware({
+    hooks: loadedHooks,
+    onExecuted: hookObserverTap,
+  });
 
   // --- @koi/permissions + @koi/middleware-permissions ---
   // Default mode: read-only tools are pre-allowed; shell/network/write tools
@@ -346,32 +493,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     }),
   };
 
-  // Proxy delegates all ManagedTaskBoard method calls to boardRef.current.
-  // Replacing boardRef.current on session reset makes prior tasks invisible to
-  // the new session's task_list / task_get / task_output calls.
-  const taskBoard: ManagedTaskBoard = {
-    snapshot: () => boardRef.current.snapshot(),
-    nextId: () => boardRef.current.nextId(),
-    add: (input) => boardRef.current.add(input),
-    addAll: (inputs) => boardRef.current.addAll(inputs),
-    assign: (taskId, agentId) => boardRef.current.assign(taskId, agentId),
-    unassign: (taskId) => boardRef.current.unassign(taskId),
-    startTask: (taskId, agentId) => boardRef.current.startTask(taskId, agentId),
-    hasResultPersistence: () => boardRef.current.hasResultPersistence(),
-    complete: (taskId, result) => boardRef.current.complete(taskId, result),
-    completeOwnedTask: (taskId, agentId, result) =>
-      boardRef.current.completeOwnedTask(taskId, agentId, result),
-    fail: (taskId, error) => boardRef.current.fail(taskId, error),
-    failOwnedTask: (taskId, agentId, error) =>
-      boardRef.current.failOwnedTask(taskId, agentId, error),
-    kill: (taskId) => boardRef.current.kill(taskId),
-    killOwnedTask: (taskId, agentId) => boardRef.current.killOwnedTask(taskId, agentId),
-    update: (taskId, patch) => boardRef.current.update(taskId, patch),
-    updateOwned: (taskId, agentId, patch) => boardRef.current.updateOwned(taskId, agentId, patch),
-    [Symbol.asyncDispose]: async () => {
-      // Lifecycle is managed externally (boardRef.current) — proxy is a no-op here
+  // Proxy transparently delegates all ManagedTaskBoard property access to
+  // boardRef.current. Replacing boardRef.current on session reset makes prior
+  // tasks invisible to the new session's task_list / task_get / task_output calls.
+  // Unlike a manual delegation object, this auto-forwards new interface methods
+  // without code changes.
+  const taskBoard = new Proxy({} as ManagedTaskBoard, {
+    get(_target, prop, receiver) {
+      const value = Reflect.get(boardRef.current, prop, receiver);
+      return typeof value === "function" ? value.bind(boardRef.current) : value;
     },
-  };
+  });
 
   // Synthetic agent ID for task assignment — background tasks are owned by the TUI agent.
   const tuiAgentId = makeAgentId("koi-tui");
@@ -440,6 +572,41 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     operations: ["fetch"],
   });
 
+  // --- @koi/memory-tools: in-memory memory backend ---
+  // Same pattern as golden-query recording: in-memory Map-based backend.
+  // Provides memory_store, memory_recall, memory_search, memory_delete tools.
+  const memoryBackend = createInMemoryMemoryBackend();
+  const memoryProviderResult = createMemoryToolProvider({
+    backend: memoryBackend,
+    memoryDir: join(tmpdir(), "koi-tui-memory"),
+  });
+  const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
+
+  // --- @koi/spawn-tools: agent_spawn (error stub — spawning not supported in TUI) ---
+  // Returns a hard error so the model knows spawning failed and can fall back.
+  // Full spawning requires agent-runtime + harness wiring.
+  const stubSpawnFn: SpawnFn = async (request) => ({
+    ok: false,
+    error: {
+      code: "EXTERNAL",
+      message: `agent_spawn is not available in koi tui. Cannot delegate to "${request.agentName}". Complete the task directly instead of spawning.`,
+      retryable: false,
+    },
+  });
+  const spawnToolsAll = createSpawnTools({
+    spawnFn: stubSpawnFn,
+    board: taskBoard,
+    agentId: tuiAgentId,
+    signal: bgController.signal,
+  });
+  const spawnToolProviders = spawnToolsAll.map((tool) =>
+    createSingleToolProvider({
+      name: `spawn-${tool.descriptor.name}`,
+      toolName: tool.descriptor.name,
+      createTool: () => tool,
+    }),
+  );
+
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
   const engineAdapter = createTranscriptAdapter({
@@ -457,11 +624,57 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
+  // --- Optional middleware: system prompt + session transcript (C3-A) ---
+  // These are provided by the caller (tui-command.ts) so the runtime factory
+  // doesn't need to know about session storage paths or prompt content.
+  const optionalMiddleware = [
+    ...(config.systemPrompt !== undefined
+      ? [createSystemPromptMiddleware(config.systemPrompt)]
+      : []),
+    ...(config.session !== undefined
+      ? [
+          createSessionTranscriptMiddleware({
+            transcript: config.session.transcript,
+            sessionId: config.session.sessionId,
+          }),
+        ]
+      : []),
+  ];
+
+  // --- Wrap middleware with trace for full ATIF instrumentation ---
+  // Same pattern as golden-query recording: each middleware hook invocation
+  // (wrapModelCall, wrapToolCall, wrapModelStream) is recorded as an ATIF step,
+  // showing MW:permissions, MW:hooks, MW:exfiltration-guard triggered events.
+  // Event-trace itself is excluded (TRACE_EXCLUDED set in trace-wrapper.ts).
+  const allMiddleware = [
+    eventTraceMw,
+    hookMw,
+    hookObserverMw,
+    permMw,
+    exfiltrationGuardMw,
+    semanticRetryMw,
+    ...optionalMiddleware,
+  ];
+  // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
+  // when multiple MW spans complete within the same Date.now() millisecond.
+  // The store's idempotent dedup uses stepIndex:timestamp as the batch token;
+  // all trace wrapper steps use stepIndex=0, so identical timestamps cause
+  // silent drops. A monotonic counter ensures unique tokens.
+  // let: mutable — incremented on each trace step
+  let traceCounter = Date.now();
+  const tracedMiddleware = allMiddleware.map((mw) =>
+    wrapMiddlewareWithTrace(mw, {
+      store: trajectoryStore,
+      docId: TUI_DOC_ID,
+      clock: () => traceCounter++,
+    }),
+  );
+
   // --- Assemble runtime via createKoi ---
   const runtime = await createKoi({
     manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
     adapter: engineAdapter,
-    middleware: [eventTraceMw, hookMw, permMw, exfiltrationGuardMw],
+    middleware: tracedMiddleware,
     providers: [
       builtinSearchProvider,
       fsReadProvider,
@@ -471,6 +684,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       bashBackgroundProvider,
       ...taskToolProviders,
       webProvider,
+      ...(memoryProvider !== undefined ? [memoryProvider] : []),
+      ...spawnToolProviders,
     ],
     approvalHandler,
     loopDetection: false,
@@ -486,38 +701,45 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // Full trajectory is preserved in the store; only the view is capped.
       return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
     },
-    resetSessionState: () => {
+    resetSessionState: async (signal: AbortSignal) => {
+      // C4-A: Fail fast if caller forgot to abort the active run first.
+      if (!signal.aborted) {
+        throw new Error(
+          "resetSessionState: active AbortSignal must be aborted before resetting. " +
+            "Call controller.abort() first to cancel in-flight tool calls.",
+        );
+      }
+
       // 1. Reset Bash tracked cwd so the new session starts from workspaceRoot.
       bashHandle.resetCwd();
 
+      // 1b. Clear in-memory memory backend so prior-session memories
+      //     don't leak into the new session via memory_recall/memory_search.
+      memoryBackend.clear();
+
       // 2. Abort prior-session background subprocesses (SIGTERM→SIGKILL) and
       //    rotate the controller so new background tasks use a fresh signal.
+      //    Wait for the SIGKILL escalation window so old jobs can't mutate
+      //    the workspace after reset completes (same pattern as shutdown).
+      const hadLiveProcesses = liveSubprocessCount > 0;
       bgController.abort();
       bgController = new AbortController();
+      if (hadLiveProcesses) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
 
-      // 3. Clear session-scoped approval state (always-allow, caches, trackers)
-      //    so prior-session approvals do not silently carry into the new session.
-      //    The runtime reuses the same factorySessionId across session resets —
-      //    explicitly clearing via the middleware handle is the only way to revoke
-      //    approvals without recreating the entire runtime.
+      // 3. Clear session-scoped approval state (always-allow, caches, trackers).
       permMw.clearSessionApprovals(runtime.sessionId);
 
-      // 4. Rotate task board: swap boardRef.current to a fresh in-memory board.
-      //    Prior-session tasks are abandoned with the old board — not discoverable
-      //    by the new session's task_list / task_get / task_output calls.
-      //    createManagedTaskBoard is async but resolves in <1 ms for in-memory stores
-      //    (no disk I/O). Between the call and resolution, the proxy still points
-      //    to the old board; since session reset clears the transcript, no concurrent
-      //    tool calls are expected in that window.
-      //    runBackground() fire-and-forget closures that complete after the rotation
-      //    write to boardRef.current (the new board), which won't have the old task —
-      //    completeOwnedTask/failOwnedTask return ok:false and are caught gracefully.
-      void createManagedTaskBoard({
+      // 4. Rotate task board — AWAITED so new-session submits can't hit the old board.
+      const newBoard = await createManagedTaskBoard({
         store: createMemoryTaskBoardStore(),
         resultsDir: TASK_RESULTS_DIR,
-      }).then((newBoard) => {
-        boardRef.current = newBoard;
       });
+      boardRef.current = newBoard;
+
+      // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      await trajectoryStore.prune(Date.now() + 86_400_000);
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
     shutdownBackgroundTasks: () => {

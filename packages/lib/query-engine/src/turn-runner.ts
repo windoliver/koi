@@ -17,6 +17,13 @@ import type {
 } from "@koi/core";
 import { DEFAULT_MAX_STOP_RETRIES } from "@koi/core";
 import { consumeModelStream } from "./consume-stream.js";
+import {
+  DEFAULT_DOOM_LOOP_THRESHOLD,
+  DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
+  parseDoomLoopKey,
+  partitionDoomLoopKeys,
+  updateStreaks,
+} from "./doom-loop.js";
 import type { TurnState } from "./turn-machine.js";
 import { createTurnState, transitionTurn } from "./turn-machine.js";
 import type { AccumulatedToolCall } from "./types.js";
@@ -39,6 +46,18 @@ export interface TurnRunnerConfig {
   readonly stopGate?: (turnIndex: number) => Promise<StopGateResult>;
   /** Maximum stop-gate re-prompts per session. Default: DEFAULT_MAX_STOP_RETRIES (3). */
   readonly maxStopRetries?: number | undefined;
+  /**
+   * Consecutive turns with an identical tool call (same name + args) before
+   * the runner injects a system message telling the model to stop repeating.
+   * Set to 0 or 1 to disable. Default: DEFAULT_DOOM_LOOP_THRESHOLD (3).
+   */
+  readonly doomLoopThreshold?: number | undefined;
+  /**
+   * Maximum doom-loop interventions before giving up and letting tools execute.
+   * `maxTurns` remains the ultimate safety valve.
+   * Default: DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS (2).
+   */
+  readonly maxDoomLoopInterventions?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +72,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     maxTurns,
     stopGate,
     maxStopRetries = DEFAULT_MAX_STOP_RETRIES,
+    doomLoopThreshold = DEFAULT_DOOM_LOOP_THRESHOLD,
+    maxDoomLoopInterventions = DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
   } = config;
 
   // let justified: mutable state driven by pure transition function
@@ -68,6 +89,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let errorMetadata: JsonObject | undefined;
   // let justified: mutable counter for stop-gate re-prompts
   let stopRetryCount = 0;
+  // let justified: mutable doom-loop streak counters (key → consecutive turn count)
+  let doomLoopStreaks = new Map<string, number>();
+  // let justified: mutable doom-loop intervention counters per key
+  const doomLoopInterventionsByKey = new Map<string, number>();
+  // let justified: mutable — tool calls blocked by doom-loop filtering in mixed turns
+  let doomLoopBlockedCalls: AccumulatedToolCall[] = [];
   const startTime = performance.now();
 
   // Pre-flight: handle already-aborted signal before entering the state machine.
@@ -298,7 +325,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // observability. Uses canonicalized JSON of parsed args (recursively sorted
     // keys) to catch semantically identical calls even with different key ordering.
     const seen = new Set<string>();
-    const dedupedToolCalls: typeof validToolCalls = [];
+    // let justified: mutable — doom loop detection may filter out repeated calls
+    let dedupedToolCalls: typeof validToolCalls = [];
     const skippedToolCalls: typeof validToolCalls = [];
     for (const tc of validToolCalls) {
       const canonicalArgs =
@@ -319,6 +347,147 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           skipped: skippedToolCalls.map((tc) => ({ toolName: tc.toolName, callId: tc.callId })),
         },
       };
+    }
+
+    // Doom loop detection: check if any deduped tool call has been repeated
+    // across consecutive turns. Per-key detection blocks individual repeated
+    // calls while allowing new/different calls in the same turn to execute.
+    // If ALL calls are repeated, inject a system message and re-prompt.
+    if (dedupedToolCalls.length > 0 && doomLoopThreshold >= 2) {
+      const currentKeys = dedupedToolCalls.map((tc) => {
+        const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+        return `${tc.toolName}\0${cArgs}`;
+      });
+
+      doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
+
+      // Prune per-key intervention counters for keys no longer in the streak
+      // map. This resets budgets when a loop is broken and resumed later.
+      const currentKeySet = new Set(currentKeys);
+      for (const key of doomLoopInterventionsByKey.keys()) {
+        if (!currentKeySet.has(key)) {
+          doomLoopInterventionsByKey.delete(key);
+        }
+      }
+
+      const { repeatedKeys, hasRepeated, allRepeated } = partitionDoomLoopKeys(
+        doomLoopStreaks,
+        currentKeys,
+        doomLoopThreshold,
+      );
+
+      // Check per-key intervention budgets. A key is blockable if it hasn't
+      // exhausted its per-key cap yet.
+      const blockableKeys = new Set<string>();
+      for (const key of repeatedKeys) {
+        const count = doomLoopInterventionsByKey.get(key) ?? 0;
+        if (count < maxDoomLoopInterventions) {
+          blockableKeys.add(key);
+        }
+      }
+
+      if (
+        hasRepeated &&
+        allRepeated &&
+        blockableKeys.size > 0 &&
+        blockableKeys.size === repeatedKeys.size
+      ) {
+        // ALL calls are repeated — full intervention: re-prompt the model.
+        const blockedToolNames = [
+          ...new Set([...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName)),
+        ];
+        const toolNameList = blockedToolNames.join(", ");
+
+        yield {
+          kind: "custom",
+          type: "doom_loop_detected",
+          data: {
+            toolNames: blockedToolNames,
+            consecutiveTurns: doomLoopThreshold,
+            turnIndex: state.turnIndex,
+          },
+        };
+
+        // Record the assistant's tool-call intents so the transcript stays
+        // paired — every streamed tool_call event has a matching intent.
+        appendAssistantTurn(transcript, turnText, validToolCalls);
+
+        // Append per-call synthetic blocked results (including within-turn
+        // duplicates) so callId pairing is complete.
+        for (const tc of validToolCalls) {
+          appendToolResult(transcript, {
+            callId: tc.callId,
+            toolName: tc.toolName,
+            output: `[Doom loop]: Blocked — "${tc.toolName}" called with identical arguments ${doomLoopThreshold} turns in a row.`,
+          });
+        }
+
+        transcript.push({
+          senderId: "system:doom-loop",
+          content: [
+            {
+              kind: "text",
+              text: `[Doom loop detected]: You have called ${toolNameList} with the same arguments ${doomLoopThreshold} turns in a row. Stop repeating and try a different approach.`,
+            },
+          ],
+          timestamp: Date.now(),
+        });
+
+        for (const key of repeatedKeys) {
+          doomLoopInterventionsByKey.set(key, (doomLoopInterventionsByKey.get(key) ?? 0) + 1);
+        }
+
+        // Re-prompt the model. Doom loop interventions count against maxTurns
+        // so the turn budget remains the ultimate safety valve.
+        state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+        if (state.stopReason === "completed") {
+          state = transitionTurn(state, { kind: "stop_blocked" });
+        }
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        continue;
+      }
+
+      if (hasRepeated && blockableKeys.size > 0 && blockableKeys.size < currentKeys.length) {
+        // Mixed turn (or all-repeated with partial budget exhaustion):
+        // filter out blockable repeated calls, let new/exhausted calls execute.
+        const blockedNames = [...blockableKeys].map((k) => parseDoomLoopKey(k).toolName);
+        for (const key of blockableKeys) {
+          doomLoopInterventionsByKey.set(key, (doomLoopInterventionsByKey.get(key) ?? 0) + 1);
+        }
+        // let justified: mutable — partition into blocked and allowed calls
+        const doomLoopBlocked: typeof dedupedToolCalls = [];
+        const allowed: typeof dedupedToolCalls = [];
+        for (const tc of dedupedToolCalls) {
+          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${cArgs}`;
+          if (blockableKeys.has(key)) {
+            doomLoopBlocked.push(tc);
+          } else {
+            allowed.push(tc);
+          }
+        }
+        dedupedToolCalls = allowed;
+        // Collect ALL blocked callIds — both deduped and within-turn duplicates
+        // of blocked keys — so every emitted tool_call intent gets a synthetic result.
+        doomLoopBlockedCalls = [...doomLoopBlocked];
+        for (const tc of skippedToolCalls) {
+          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${cArgs}`;
+          if (blockableKeys.has(key)) {
+            doomLoopBlockedCalls.push(tc);
+          }
+        }
+        yield {
+          kind: "custom",
+          type: "doom_loop_filtered",
+          data: { blockedTools: blockedNames, turnIndex: state.turnIndex },
+        };
+      }
+    } else if (dedupedToolCalls.length === 0 && doomLoopThreshold >= 2) {
+      // Text-only turn: clear streaks and per-key intervention budgets so
+      // protection remains active for future unrelated loops.
+      doomLoopStreaks = new Map();
+      doomLoopInterventionsByKey.clear();
     }
 
     // Transition based on model response
@@ -379,6 +548,27 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           skippedByKey.set(key, [tc]);
         }
       }
+
+      // Remove skippedByKey entries for doom-loop-blocked calls so live
+      // execution doesn't try to replicate results for them.
+      for (const blocked of doomLoopBlockedCalls) {
+        const blockedArgs =
+          blocked.parsedArgs !== undefined ? stableStringify(blocked.parsedArgs) : blocked.rawArgs;
+        skippedByKey.delete(`${blocked.toolName}\0${blockedArgs}`);
+      }
+
+      // Emit synthetic results for doom-loop-blocked calls in their original
+      // position (before live execution) to preserve transcript result ordering.
+      // This must happen before the try block so partial failures don't orphan them.
+      for (const blocked of doomLoopBlockedCalls) {
+        const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
+        appendToolResult(transcript, {
+          callId: blocked.callId,
+          toolName: blocked.toolName,
+          output: syntheticOutput,
+        });
+      }
+      doomLoopBlockedCalls = [];
 
       // Execute deduped tool calls sequentially. On success, replicate the
       // real result to any skipped duplicates so the model sees consistent

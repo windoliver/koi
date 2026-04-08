@@ -785,6 +785,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_at_results":
       return { ...state, atResults: action.results };
 
+    case "set_trajectory_data":
+      return { ...state, trajectorySteps: action.steps };
+
     case "load_history": {
       if (action.messages.length === 0) return state;
       const historical: TuiMessage[] = [];

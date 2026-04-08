@@ -38,5 +38,7 @@ export function createInitialState(): TuiState {
     siblingInfo: null,
     atQuery: null,
     atResults: [],
+    toolsExpanded: false,
+    trajectorySteps: [],
   };
 }
