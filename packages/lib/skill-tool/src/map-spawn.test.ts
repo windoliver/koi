@@ -46,6 +46,18 @@ describe("extractSpawnConfig", () => {
     }
   });
 
+  test("returns NOT_FOUND when executionMode is explicitly inline even with agent", () => {
+    const skill = makeSkill({
+      executionMode: "inline",
+      metadata: { agent: "should-be-ignored" },
+    });
+    const result = extractSpawnConfig(skill);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+
   test("returns NOT_FOUND when inline-only (no executionMode, no agent)", () => {
     const skill = makeSkill({ metadata: { other: "value" } });
     const result = extractSpawnConfig(skill);
@@ -115,13 +127,18 @@ describe("mapSkillToSpawnRequest", () => {
     expect(request.nonInteractive).toBe(true);
   });
 
-  test("substitutes variables in systemPrompt", () => {
+  test("substitutes trusted variables in systemPrompt but not args", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${VAR} patterns
     const skill = makeSkill({ body: "Run ${ARGS} in ${SKILL_DIR} (${SESSION_ID})" });
     const spawnConfig: SpawnConfig = { agentName: "agent-c" };
     const request = mapSkillToSpawnRequest(skill, "build", spawnConfig, baseConfig);
 
-    expect(request.systemPrompt).toBe("Run build in /skills/test-skill (session-123)");
+    // ARGS should NOT be interpolated into systemPrompt (prompt injection risk)
+    // SKILL_DIR and SESSION_ID are trusted and should be substituted
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal pattern preserved
+    expect(request.systemPrompt).toBe("Run ${ARGS} in /skills/test-skill (session-123)");
+    // args should be in description instead
+    expect(request.description).toBe("build");
   });
 
   test("passes signal through", () => {

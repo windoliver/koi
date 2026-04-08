@@ -28,10 +28,16 @@ const VAR_PATTERN = /\$\{(\w+)\}/g;
  * Unknown `${...}` patterns are left as-is.
  */
 export function substituteVariables(body: string, vars: SkillVariables): string {
-  const map: Readonly<Record<string, string>> = {
-    ARGS: vars.args ?? "",
+  const map: Record<string, string> = {
     SKILL_DIR: vars.skillDir,
-    SESSION_ID: vars.sessionId ?? "",
   };
+  // Only add optional variables when explicitly provided.
+  // Unset variables are left as-is (${ARGS} stays literal when no args given).
+  if (vars.args !== undefined) {
+    map.ARGS = vars.args;
+  }
+  if (vars.sessionId !== undefined) {
+    map.SESSION_ID = vars.sessionId;
+  }
   return body.replace(VAR_PATTERN, (match: string, key: string) => map[key] ?? match);
 }

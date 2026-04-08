@@ -29,8 +29,22 @@ import type { LoadedSkill, SpawnConfig } from "./types.js";
  * (ambiguous intent — either list specific tools or remove the field).
  */
 export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiError> {
-  const isForkMode = skill.executionMode === "fork";
   const agentName = skill.metadata?.agent;
+
+  // executionMode is authoritative when present
+  if (skill.executionMode === "inline") {
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Skill "${skill.name}" has explicit executionMode: inline`,
+        retryable: false,
+        context: { skillName: skill.name },
+      },
+    };
+  }
+
+  const isForkMode = skill.executionMode === "fork";
 
   // Neither executionMode=fork nor metadata.agent → inline-only
   if (!isForkMode && (agentName === undefined || agentName === "")) {
@@ -97,8 +111,10 @@ export function mapSkillToSpawnRequest(
   spawnConfig: SpawnConfig,
   config: { readonly signal: AbortSignal; readonly sessionId?: string },
 ): SpawnRequest {
+  // Substitute only trusted variables into systemPrompt.
+  // args are NOT interpolated into the system prompt to prevent prompt
+  // injection — they are passed as the task description (user-level input).
   const systemPrompt = substituteVariables(skill.body, {
-    ...(args !== undefined ? { args } : {}),
     skillDir: skill.dirPath,
     ...(config.sessionId !== undefined ? { sessionId: config.sessionId } : {}),
   });

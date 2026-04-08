@@ -34,11 +34,11 @@ describe("substituteVariables", () => {
     expect(result).toBe("Session: abc-123");
   });
 
-  test("defaults missing ARGS and SESSION_ID to empty string", () => {
+  test("leaves ARGS and SESSION_ID as-is when not provided", () => {
     const result = substituteVariables(`args=[${ARGS}] session=[${SESSION_ID}]`, {
       skillDir: "/skills/test",
     });
-    expect(result).toBe("args=[] session=[]");
+    expect(result).toBe(`args=[${ARGS}] session=[${SESSION_ID}]`);
   });
 
   test("leaves unknown variable patterns as-is", () => {

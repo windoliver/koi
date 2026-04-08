@@ -292,7 +292,9 @@ describe("SkillTool.execute — fork mode", () => {
     expect(spawnFn).toHaveBeenCalledTimes(1);
     const request = spawnFn.mock.calls[0]?.[0] as SpawnRequest;
     expect(request.agentName).toBe("deploy-agent");
-    expect(request.systemPrompt).toBe("System prompt for deploy prod");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting literal pattern preserved
+    expect(request.systemPrompt).toBe("System prompt for ${ARGS}");
+    expect(request.description).toBe("deploy prod");
     expect(request.nonInteractive).toBe(true);
     expect(request.fork).toBe(true);
   });
