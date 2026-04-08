@@ -16,7 +16,7 @@ import { reduce } from "../state/reduce.js";
 import { createStore } from "../state/store.js";
 import type { TuiStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
-import { StoreContext, TuiStateContext, createStoreSignal } from "../store-context.js";
+import { StoreContext } from "../store-context.js";
 import { ConversationView } from "./ConversationView.js";
 import { SlashOverlay } from "./SlashOverlay.js";
 
@@ -31,9 +31,7 @@ const SAMPLE_COMMANDS: readonly SlashCommand[] = [
 function StoreProviders(props: { readonly store: TuiStore; readonly children: JSX.Element }): JSX.Element {
   return (
     <StoreContext.Provider value={props.store}>
-      <TuiStateContext.Provider value={createStoreSignal(props.store)}>
-        {props.children}
-      </TuiStateContext.Provider>
+      {props.children}
     </StoreContext.Provider>
   );
 }

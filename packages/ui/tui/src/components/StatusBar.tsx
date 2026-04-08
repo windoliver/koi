@@ -2,7 +2,7 @@
  * StatusBar — top/bottom status line for the TUI.
  */
 
-import { createMemo } from "solid-js";
+import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
@@ -15,12 +15,6 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
   idle: COLORS.success,
   processing: COLORS.amber,
   error: COLORS.danger,
-};
-
-const STATUS_LABELS: Record<AgentStatus, string> = {
-  idle: "idle",
-  processing: "streaming…",
-  error: "error",
 };
 
 function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
@@ -50,8 +44,17 @@ function MetricsChip(props: { readonly metrics: CumulativeMetrics }): JSX.Elemen
   );
 }
 
-function AgentStatusChip(props: { readonly status: AgentStatus }): JSX.Element {
-  return <text fg={STATUS_COLORS[props.status]}>{STATUS_LABELS[props.status]}</text>;
+function AgentStatusChip(props: {
+  readonly status: AgentStatus;
+  readonly elapsed: number;
+}): JSX.Element {
+  const label = () => {
+    if (props.status === "processing") {
+      return props.elapsed > 0 ? `streaming… ${props.elapsed}s` : "streaming…";
+    }
+    return props.status === "idle" ? "idle" : "error";
+  };
+  return <text fg={STATUS_COLORS[props.status]}>{label()}</text>;
 }
 
 export interface StatusBarProps {
@@ -62,6 +65,21 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
   const sessionInfo = useTuiStore((s) => s.sessionInfo);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  // Elapsed timer during streaming (like Claude Code's status line)
+  const [elapsed, setElapsed] = createSignal(0);
+  createEffect(
+    on(agentStatus, (st: AgentStatus) => {
+      if (st === "processing") {
+        const start = Date.now();
+        setElapsed(0);
+        const id = setInterval(() => setElapsed(Math.round((Date.now() - start) / 1000)), 1000);
+        onCleanup(() => clearInterval(id));
+      } else {
+        setElapsed(0);
+      }
+    }),
+  );
+
   const showMetrics = createMemo(() => (props.width ?? 80) >= 60);
   const turnsLabel = createMemo(() => {
     const m = cumulativeMetrics();
@@ -73,7 +91,7 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
       <ModelChip info={sessionInfo()} />
       {showMetrics() ? <MetricsChip metrics={cumulativeMetrics()} /> : null}
       <box flexGrow={1} />
-      <AgentStatusChip status={agentStatus()} />
+      <AgentStatusChip status={agentStatus()} elapsed={elapsed()} />
       <text fg={COLORS.textMuted}>{turnsLabel()}</text>
     </box>
   );

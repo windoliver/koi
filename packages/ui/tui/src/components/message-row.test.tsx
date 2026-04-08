@@ -13,7 +13,10 @@
 
 import { testRender } from "@opentui/solid";
 import { describe, expect, test } from "bun:test";
+import { createInitialState } from "../state/initial.js";
+import { createStore } from "../state/store.js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
+import { StoreContext } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
 
 const RENDER_OPTS = { width: 80, height: 24 };
@@ -22,8 +25,15 @@ async function renderMessage(
   message: TuiMessage,
   opts = RENDER_OPTS,
 ): Promise<string> {
+  // Provide StoreContext so ToolCallBlock can read toolsExpanded via useTuiStore.
+  // Use expanded=true so tool result content is visible in tests.
+  const store = createStore({ ...createInitialState(), toolsExpanded: true });
   const { captureCharFrame, renderOnce, renderer } = await testRender(
-    () => <MessageRow message={message} spinnerFrame={() => 0} />,
+    () => (
+      <StoreContext.Provider value={store}>
+        <MessageRow message={message} spinnerFrame={() => 0} />
+      </StoreContext.Provider>
+    ),
     opts,
   );
   await renderOnce();

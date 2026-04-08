@@ -132,30 +132,29 @@ describe("processInputKey — line editing", () => {
 // ---------------------------------------------------------------------------
 
 describe("processInputKey — history", () => {
-  // History navigation is not yet implemented — up/down are always noop.
-  test("up arrow is noop", () => {
+  test("up arrow returns history-up", () => {
     const result = processInputKey(key("up"), "");
-    expect(result).toEqual({ kind: "noop" });
+    expect(result).toEqual({ kind: "history-up" });
   });
 
-  test("up arrow is noop when buffer is single-line", () => {
+  test("up arrow returns history-up when buffer has text", () => {
     const result = processInputKey(key("up"), "hello");
-    expect(result).toEqual({ kind: "noop" });
+    expect(result).toEqual({ kind: "history-up" });
   });
 
-  test("up arrow is noop when buffer is multi-line", () => {
+  test("up arrow returns history-up when buffer is multi-line", () => {
     const result = processInputKey(key("up"), "line1\nline2");
-    expect(result).toEqual({ kind: "noop" });
+    expect(result).toEqual({ kind: "history-up" });
   });
 
-  test("down arrow is noop", () => {
+  test("down arrow returns history-down", () => {
     const result = processInputKey(key("down"), "");
-    expect(result).toEqual({ kind: "noop" });
+    expect(result).toEqual({ kind: "history-down" });
   });
 
-  test("down arrow is noop when buffer is multi-line", () => {
+  test("down arrow returns history-down when buffer is multi-line", () => {
     const result = processInputKey(key("down"), "line1\nline2");
-    expect(result).toEqual({ kind: "noop" });
+    expect(result).toEqual({ kind: "history-down" });
   });
 });
 

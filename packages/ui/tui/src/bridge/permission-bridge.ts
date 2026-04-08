@@ -169,7 +169,15 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
       // Save the current modal before the bridge takes over (first prompt only)
       if (queue.length === 0) {
         const currentModal = store.getState().modal;
-        savedModal = currentModal?.kind === "permission-prompt" ? null : currentModal;
+        // Deep-copy the modal to detach from SolidJS store proxy. reconcile()
+        // replaces proxy references on update; holding a stale proxy would
+        // restore garbage. JSON round-trip is safe — modals are plain data.
+        savedModal =
+          currentModal?.kind === "permission-prompt"
+            ? null
+            : currentModal !== null
+              ? (JSON.parse(JSON.stringify(currentModal)) as TuiModal)
+              : null;
       }
 
       queue.push(promptData);

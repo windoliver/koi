@@ -32,6 +32,11 @@ export interface InputAreaProps {
   readonly onSubmit: (text: string) => void;
   /** Called when slash command prefix is detected. Null = no overlay. */
   readonly onSlashDetected: (query: string | null) => void;
+  /**
+   * Called when the user navigates prompt history (arrow up/down).
+   * Receives the current textarea text so the draft can be saved/restored.
+   */
+  readonly onHistoryNav?: ((direction: "up" | "down", currentText: string) => string | null) | undefined;
   /** Whether input is disabled (e.g., modal active, disconnected). */
   readonly disabled?: boolean;
   /** Whether this area has keyboard focus. */
@@ -119,6 +124,31 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           const text = textareaRef?.plainText ?? "";
           props.onSlashDetected(detectSlashPrefix(text));
         });
+        break;
+      }
+      case "history-up":
+      case "history-down": {
+        const text = textareaRef?.plainText ?? "";
+        // Skip history when:
+        // - Multiline input: let textarea handle normal caret movement
+        // - Slash overlay active: let overlay own Up/Down for selection
+        const isMultiline = text.includes("\n");
+        const slashActive = detectSlashPrefix(text) !== null;
+        if (isMultiline || slashActive) break;
+
+        key.preventDefault();
+        if (props.onHistoryNav) {
+          const direction = result.kind === "history-up" ? "up" : "down";
+          const historyText = props.onHistoryNav(direction, text);
+          if (historyText !== null) {
+            textareaRef?.setText(historyText);
+            // Recompute slash state after programmatic text replacement
+            // so the overlay stays in sync with the buffer contents
+            queueMicrotask(() => {
+              props.onSlashDetected(detectSlashPrefix(historyText));
+            });
+          }
+        }
         break;
       }
       case "noop":

@@ -6,6 +6,8 @@
 
 // Initial state
 export { createInitialState } from "./initial.js";
+// Mutations (SolidJS store backend)
+export { mutate } from "./mutations.js";
 // Reducer
 export { reduce } from "./reduce.js";
 // Store

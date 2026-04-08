@@ -34,8 +34,6 @@ import type { TuiStore } from "./state/store.js";
 import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
 import {
   StoreContext,
-  TuiStateContext,
-  createStoreSignal,
   useTuiStore,
 } from "./store-context.js";
 
@@ -109,23 +107,6 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     throw new Error("TuiRoot must be rendered inside <StoreContext.Provider>");
   }
 
-  // Create one shared state signal for the entire subtree. All useTuiStore
-  // selectors in child components share this single subscription, guaranteeing
-  // snapshot consistency — every selector sees the same post-dispatch state.
-  // Providing TuiStateContext here restores the old single-provider embedding
-  // contract: callers only need <StoreContext.Provider value={store}>.
-  const stateSignal = createStoreSignal(store);
-
-  return (
-    <TuiStateContext.Provider value={stateSignal}>
-      <TuiRootInner {...props} store={store} />
-    </TuiStateContext.Provider>
-  );
-}
-
-function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.Element {
-  const store = props.store;
-
   // Decision 13A: minimal selectors — only re-render on view/modal changes.
   // Zero re-renders during streaming text_delta events.
   const activeView = useTuiStore((s) => s.activeView);
@@ -171,6 +152,12 @@ function TuiRootInner(props: TuiRootProps & { readonly store: TuiStore }): JSX.E
   // ── Global keyboard handler ───────────────────────────────────────────────
   // Reads state at event-time via store.getState() — no stale-closure risk.
   useKeyboard((event: KeyEvent): void => {
+    // Ctrl+E: toggle tool result expansion (Decision 15A)
+    if (event.ctrl && event.name === "e") {
+      store.dispatch({ kind: "toggle_tools_expanded" });
+      return;
+    }
+
     handleGlobalKey(event, store.getState(), {
       onTogglePalette: () => {
         const s = store.getState();

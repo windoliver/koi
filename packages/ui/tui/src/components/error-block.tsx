@@ -1,12 +1,13 @@
 /**
- * ErrorBlock — renders an error with code and message.
+ * ErrorBlock — renders an error with code and unwrapped message.
  *
- * Styled with red border and prominent text to distinguish
- * errors from normal conversation flow.
+ * Deep-parses JSON error responses (double-encoded, nested .error.message)
+ * for clean human-readable display (Decision 4.1).
  */
 
 import type { JSX } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
+import { unwrapErrorMessage } from "../utils/unwrap-error.js";
 
 type ErrorData = TuiAssistantBlock & { readonly kind: "error" };
 
@@ -15,6 +16,8 @@ interface ErrorBlockProps {
 }
 
 export function ErrorBlock(props: ErrorBlockProps): JSX.Element {
+  const displayMessage = () => unwrapErrorMessage(props.block.message);
+
   return (
     <box
       flexDirection="column"
@@ -27,7 +30,7 @@ export function ErrorBlock(props: ErrorBlockProps): JSX.Element {
       <text fg="red">
         <b>Error: {props.block.code}</b>
       </text>
-      <text fg="red">{props.block.message}</text>
+      <text fg="red">{displayMessage()}</text>
     </box>
   );
 }
