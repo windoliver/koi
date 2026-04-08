@@ -9,6 +9,27 @@
 import type { EngineEvent } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-throwing serialization of arbitrary tool output to string.
+ * Returns the string as-is, serializes objects via JSON.stringify,
+ * and catches circular references / BigInt / non-serializable values
+ * so observe() never throws while streaming events.
+ */
+function safeSerialize(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? "[unserializable]" : json;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Interface
 // ---------------------------------------------------------------------------
 
@@ -50,25 +71,16 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
       // Prefer tool_result (carries real execution output).
       if (event.kind === "tool_result") {
         const isVerdictTool = requiredToolName !== undefined && event.toolName === requiredToolName;
+        const serialized = safeSerialize(event.output);
 
         if (isVerdictTool) {
           verdictCaptured = true;
-          const result = event.output;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
+          verdictOutput = serialized;
           return;
         }
 
         if (requiredToolName === undefined) {
-          const result = event.output;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
+          verdictOutput = serialized;
         }
         return;
       }
@@ -79,25 +91,16 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
         const isVerdictTool =
           requiredToolName !== undefined && currentToolCallName === requiredToolName;
         currentToolCallName = undefined;
+        const serialized = safeSerialize(event.result);
 
         if (isVerdictTool) {
           verdictCaptured = true;
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
+          verdictOutput = serialized;
           return;
         }
 
         if (requiredToolName === undefined) {
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
+          verdictOutput = serialized;
         }
         return;
       }
@@ -138,23 +141,13 @@ export function createTextCollector(): OutputCollector {
 
       // Prefer tool_result (carries real execution output).
       if (event.kind === "tool_result") {
-        const result = event.output;
-        if (typeof result === "string") {
-          lastToolResult = result;
-        } else if (typeof result === "object" && result !== null) {
-          lastToolResult = JSON.stringify(result);
-        }
+        lastToolResult = safeSerialize(event.output);
         return;
       }
 
       // Legacy fallback: engine streams that haven't migrated to tool_result.
       if (event.kind === "tool_call_end") {
-        const result = event.result;
-        if (typeof result === "string") {
-          lastToolResult = result;
-        } else if (typeof result === "object" && result !== null) {
-          lastToolResult = JSON.stringify(result);
-        }
+        lastToolResult = safeSerialize(event.result);
         return;
       }
 

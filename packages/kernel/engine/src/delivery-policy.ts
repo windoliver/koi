@@ -79,6 +79,18 @@ function extractOutputText(output: EngineOutput): string {
   return texts.join("\n");
 }
 
+/** Non-throwing serialization of arbitrary tool output to string. */
+function safeSerializeResult(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? "[unserializable]" : json;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 /**
  * Consume an async iterable of EngineEvents, returning the done event's output.
  * Accumulates text_delta and tool_result output as a fallback so output is not
@@ -94,20 +106,10 @@ async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<Engine
       textBuffer += event.delta;
     } else if (event.kind === "tool_result") {
       // Prefer tool_result (carries real execution output).
-      const result = event.output;
-      if (typeof result === "string") {
-        lastToolResult = result;
-      } else if (typeof result === "object" && result !== null) {
-        lastToolResult = JSON.stringify(result);
-      }
+      lastToolResult = safeSerializeResult(event.output);
     } else if (event.kind === "tool_call_end") {
       // Legacy fallback: engine streams that haven't migrated to tool_result.
-      const result = event.result;
-      if (typeof result === "string") {
-        lastToolResult = result;
-      } else if (typeof result === "object" && result !== null) {
-        lastToolResult = JSON.stringify(result);
-      }
+      lastToolResult = safeSerializeResult(event.result);
     } else if (event.kind === "done") {
       output = event.output;
     }
