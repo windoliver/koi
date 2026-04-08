@@ -78,6 +78,53 @@ export interface CreateHookMiddlewareOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Decision reporting helpers
+// ---------------------------------------------------------------------------
+
+/** Safely serialize a value to a JSON preview string, truncated to maxLen. */
+function safePreview(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Build a per-hook record for decision reporting.
+ * Captures the full decision shape — not just the `kind` but also the
+ * reason (block), patch (modify), outputPatch (transform), and failure details.
+ */
+function buildHookRecord(r: HookExecutionResult): JsonObject {
+  if (!r.ok) {
+    return {
+      name: r.hookName,
+      decision: "error",
+      durationMs: r.durationMs,
+      error: r.error,
+      failClosed: r.failClosed !== false,
+      ...(r.aborted === true ? { aborted: true } : {}),
+    } as JsonObject;
+  }
+  const d = r.decision;
+  return {
+    name: r.hookName,
+    decision: d.kind,
+    durationMs: r.durationMs,
+    ...(r.executionFailed === true ? { executionFailed: true } : {}),
+    ...(d.kind === "block" ? { reason: d.reason } : {}),
+    ...(d.kind === "modify" ? { patch: safePreview(d.patch, 300) } : {}),
+    ...(d.kind === "transform"
+      ? {
+          outputPatch: safePreview(d.outputPatch, 300),
+          ...(d.metadata !== undefined ? { metadata: d.metadata } : {}),
+        }
+      : {}),
+  } as JsonObject;
+}
+
+// ---------------------------------------------------------------------------
 // Decision aggregation
 // ---------------------------------------------------------------------------
 
@@ -384,13 +431,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         ...(aggregated.decision.kind === "block"
           ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
           : {}),
-        hooks: preResults.map((r) => ({
-          name: r.hookName,
-          decision: r.ok ? r.decision.kind : "error",
-          durationMs: r.durationMs,
-          ...(r.ok === false ? { error: r.error } : {}),
-          ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
-        })),
+        hooks: preResults.map((r) => buildHookRecord(r)),
       });
     }
 
@@ -506,17 +547,13 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         ctx.reportDecision?.({
           event: "tool.before",
           toolId: request.toolId,
+          toolInput: safePreview(request.input, 300),
           aggregated: aggregated.decision.kind,
           ...(aggregated.decision.kind === "block"
             ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
             : {}),
-          hooks: preResults.map((r) => ({
-            name: r.hookName,
-            decision: r.ok ? r.decision.kind : "error",
-            durationMs: r.durationMs,
-            ...(r.ok === false ? { error: r.error } : {}),
-            ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
-          })),
+          ...(aggregated.decision.kind === "modify" ? { patch: aggregated.decision.patch } : {}),
+          hooks: preResults.map((r) => buildHookRecord(r)),
         });
       }
 
@@ -614,15 +651,12 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         ctx.reportDecision?.({
           event: "tool.succeeded",
           toolId: request.toolId,
+          toolOutput: safePreview(response.output, 300),
           aggregated: postDecision.kind,
           ...(postDecision.kind === "block" ? { reason: postDecision.reason } : {}),
-          hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) => ({
-            name: r.hookName,
-            decision: r.ok ? r.decision.kind : "error",
-            durationMs: r.durationMs,
-            ...(r.ok === false ? { error: r.error } : {}),
-            ...(r.ok && r.decision.kind === "transform" ? { transformed: true } : {}),
-          })),
+          hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) =>
+            buildHookRecord(r),
+          ),
         });
       }
 
@@ -675,13 +709,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
           ...(aggregated.decision.kind === "block"
             ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
             : {}),
-          hooks: preResults.map((r) => ({
-            name: r.hookName,
-            decision: r.ok ? r.decision.kind : "error",
-            durationMs: r.durationMs,
-            ...(r.ok === false ? { error: r.error } : {}),
-            ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
-          })),
+          hooks: preResults.map((r) => buildHookRecord(r)),
         });
       }
       const preResult =
