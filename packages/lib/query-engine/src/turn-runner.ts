@@ -380,8 +380,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           },
         };
 
-        if (turnText.length > 0) {
-          appendAssistantTurn(transcript, turnText, []);
+        // Record the assistant's tool-call intents so the transcript stays
+        // paired — every streamed tool_call event has a matching intent.
+        appendAssistantTurn(transcript, turnText, validToolCalls);
+
+        // Append synthetic blocked results for every call (including
+        // within-turn duplicates) so callId pairing is complete.
+        const blockedOutput = `[Doom loop]: Blocked — "${toolName}" called with identical arguments ${doomLoopThreshold} turns in a row.`;
+        for (const tc of validToolCalls) {
+          appendToolResult(transcript, {
+            callId: tc.callId,
+            toolName: tc.toolName,
+            output: blockedOutput,
+          });
         }
 
         transcript.push({
@@ -498,34 +509,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
       }
 
-      // Append synthetic results for doom-loop-blocked calls BEFORE live
-      // execution so partial failures don't leave orphaned tool call IDs.
-      // Also replicate to any same-turn duplicates of blocked calls.
+      // Remove skippedByKey entries for doom-loop-blocked calls so live
+      // execution doesn't try to replicate results for them.
       for (const blocked of doomLoopBlockedCalls) {
-        const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
-        appendToolResult(transcript, {
-          callId: blocked.callId,
-          toolName: blocked.toolName,
-          output: syntheticOutput,
-        });
-        // Replicate synthetic result to skipped duplicates of this blocked call
         const blockedArgs =
           blocked.parsedArgs !== undefined ? stableStringify(blocked.parsedArgs) : blocked.rawArgs;
-        const blockedKey = `${blocked.toolName}\0${blockedArgs}`;
-        const blockedDuplicates = skippedByKey.get(blockedKey);
-        if (blockedDuplicates !== undefined) {
-          for (const dup of blockedDuplicates) {
-            appendToolResult(transcript, {
-              callId: dup.callId,
-              toolName: dup.toolName,
-              output: syntheticOutput,
-            });
-          }
-          // Remove from skippedByKey so live execution doesn't also try to replicate
-          skippedByKey.delete(blockedKey);
-        }
+        skippedByKey.delete(`${blocked.toolName}\0${blockedArgs}`);
       }
-      doomLoopBlockedCalls = [];
 
       // Execute deduped tool calls sequentially. On success, replicate the
       // real result to any skipped duplicates so the model sees consistent
@@ -577,6 +567,18 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             break;
           }
         }
+        // Append synthetic results for doom-loop-blocked calls AFTER live
+        // execution succeeds — ensures no partial state on failure.
+        for (const blocked of doomLoopBlockedCalls) {
+          const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
+          appendToolResult(transcript, {
+            callId: blocked.callId,
+            toolName: blocked.toolName,
+            output: syntheticOutput,
+          });
+        }
+        doomLoopBlockedCalls = [];
+
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
         }
