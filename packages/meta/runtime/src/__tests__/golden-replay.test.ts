@@ -1877,21 +1877,21 @@ describe("Golden: @koi/tasks", () => {
 
     const allChunks = stream.read(0);
     expect(allChunks).toHaveLength(2);
-    expect(allChunks[0]!.content).toBe("hello ");
-    expect(allChunks[0]!.offset).toBe(0);
-    expect(allChunks[1]!.content).toBe("world");
+    expect(allChunks[0]?.content).toBe("hello ");
+    expect(allChunks[0]?.offset).toBe(0);
+    expect(allChunks[1]?.content).toBe("world");
 
     // Each chunk has byteLength
-    expect(allChunks[0]!.byteLength).toBe(6); // "hello " = 6 bytes
-    expect(allChunks[1]!.byteLength).toBe(5); // "world" = 5 bytes
+    expect(allChunks[0]?.byteLength).toBe(6); // "hello " = 6 bytes
+    expect(allChunks[1]?.byteLength).toBe(5); // "world" = 5 bytes
 
     // Total length is 11 bytes
     expect(stream.length()).toBe(11);
 
     // Delta read from second chunk's offset returns only "world"
-    const deltaChunks = stream.read(allChunks[1]!.offset);
+    const deltaChunks = stream.read(allChunks[1]?.offset);
     expect(deltaChunks).toHaveLength(1);
-    expect(deltaChunks[0]!.content).toBe("world");
+    expect(deltaChunks[0]?.content).toBe("world");
   });
 
   test("createTaskRegistry + task kind type guards exercise runtime surface", async () => {
@@ -1921,8 +1921,8 @@ describe("Golden: @koi/tasks", () => {
     // Start a task through the lifecycle
     const output = createOutputStream();
     const state = await registry
-      .get("local_shell")!
-      .start(taskItemId("task_1"), output, { command: "echo test" });
+      .get("local_shell")
+      ?.start(taskItemId("task_1"), output, { command: "echo test" });
     expect(isLocalShellTask(state)).toBe(true);
     expect(isRuntimeTask(state)).toBe(true);
     expect(state.kind).toBe("local_shell");
@@ -7341,5 +7341,202 @@ describe("Golden: @koi/skill-tool", () => {
     };
     expect(execResult.ok).toBe(true);
     expect(execResult.value).toBe("Hello from greet skill in /tmp/skills/greet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-notebook (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-notebook", () => {
+  test("notebook_read on fixture returns 3-cell summary", async () => {
+    const { createNotebookReadTool } = await import("@koi/tool-notebook");
+    const tool = createNotebookReadTool({});
+    const FIXTURES_DIR = `${import.meta.dirname}/../../fixtures`;
+
+    const result = (await tool.execute({ path: `${FIXTURES_DIR}/golden-notebook.ipynb` })) as {
+      readonly cellCount: number;
+      readonly cells: ReadonlyArray<{ readonly cell_type: string }>;
+      readonly nbformat: number;
+    };
+
+    expect(result.cellCount).toBe(3);
+    expect(result.nbformat).toBe(4);
+    expect(result.cells[0]?.cell_type).toBe("markdown");
+    expect(result.cells[1]?.cell_type).toBe("code");
+    expect(result.cells[2]?.cell_type).toBe("raw");
+  });
+
+  test("notebook_read on missing file returns NOT_FOUND error", async () => {
+    const { createNotebookReadTool } = await import("@koi/tool-notebook");
+    const tool = createNotebookReadTool({});
+
+    const result = (await tool.execute({ path: "/tmp/does-not-exist-golden.ipynb" })) as {
+      readonly code: string;
+      readonly error: string;
+    };
+
+    expect(result.code).toBe("NOT_FOUND");
+    expect(result.error).toContain("not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-browser (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-browser", () => {
+  test("browser_snapshot with mock driver returns accessibility tree with refs", async () => {
+    const { createBrowserSnapshotTool, createMockDriver } = await import("@koi/tool-browser");
+    const driver = createMockDriver();
+    const tool = createBrowserSnapshotTool(driver, "browser", { sandbox: false, capabilities: {} });
+
+    const result = (await tool.execute({})) as {
+      readonly snapshot: string;
+      readonly snapshotId: string;
+      readonly url: string;
+    };
+
+    expect(result.snapshot).toContain("[ref=e1]");
+    expect(result.snapshot).toContain("[ref=e2]");
+    expect(result.snapshotId).toBe("snap-mock-001");
+    expect(result.url).toBe("https://example.com");
+  });
+
+  test("browser_navigate with file:// scheme returns VALIDATION error before driver call", async () => {
+    const { createBrowserNavigateTool, createMockDriver } = await import("@koi/tool-browser");
+    const driver = createMockDriver();
+    const tool = createBrowserNavigateTool(driver, "browser", { sandbox: false, capabilities: {} });
+
+    const result = (await tool.execute({ url: "file:///etc/passwd" })) as {
+      readonly code: string;
+      readonly error: string;
+    };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("file:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/lsp (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/lsp", () => {
+  test("createLspTools returns tools with expected LSP method names", async () => {
+    const { createLspTools } = await import("@koi/lsp");
+
+    // Minimal mock client — capabilities() returns ServerCapabilities to gate tool registration
+    const mockClient = {
+      capabilities: () => ({
+        hoverProvider: true,
+        definitionProvider: true,
+        referencesProvider: true,
+        documentSymbolProvider: true,
+        workspaceSymbolProvider: true,
+      }),
+      hover: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      gotoDefinition: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      findReferences: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      documentSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      workspaceSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      getDiagnostics: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      openDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      closeDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+    } as unknown as import("@koi/lsp").LspClient;
+
+    const tools = createLspTools(mockClient, "test-lsp");
+    const names = tools.map((t) => t.descriptor.name);
+
+    expect(names).toContain("lsp__test-lsp__hover");
+    expect(names).toContain("lsp__test-lsp__goto_definition");
+    expect(names).toContain("lsp__test-lsp__find_references");
+    expect(names).toContain("lsp__test-lsp__document_symbols");
+    expect(names).toContain("lsp__test-lsp__workspace_symbols");
+    // Always-present tools regardless of capabilities
+    expect(names).toContain("lsp__test-lsp__open_document");
+    expect(names).toContain("lsp__test-lsp__get_diagnostics");
+    // All tools must have a valid inputSchema
+    for (const tool of tools) {
+      expect(tool.descriptor.inputSchema).toBeDefined();
+      expect((tool.descriptor.inputSchema as { type: string }).type).toBe("object");
+    }
+  });
+
+  test("lsp_hover tool with missing required arg returns VALIDATION error", async () => {
+    const { createLspTools } = await import("@koi/lsp");
+
+    const mockClient = {
+      capabilities: () => ({ hoverProvider: true }),
+      hover: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      gotoDefinition: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      findReferences: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      documentSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      workspaceSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      getDiagnostics: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      openDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      closeDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+    } as unknown as import("@koi/lsp").LspClient;
+
+    const tools = createLspTools(mockClient, "test-lsp");
+    const hoverTool = tools.find((t) => t.descriptor.name === "lsp__test-lsp__hover");
+    expect(hoverTool).toBeDefined();
+    if (!hoverTool) return;
+
+    // Missing required `uri` arg — should return VALIDATION error, not throw
+    const result = (await hoverTool.execute({ line: 5, character: 10 })) as {
+      readonly ok: boolean;
+      readonly error?: { readonly code: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("VALIDATION");
   });
 });

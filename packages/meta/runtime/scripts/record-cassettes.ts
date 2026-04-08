@@ -53,6 +53,8 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import type { LspClient } from "@koi/lsp";
+import { createLspTools } from "@koi/lsp";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -86,6 +88,13 @@ import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import {
+  createBrowserProvider,
+  createBrowserSnapshotTool,
+  createMockDriver,
+} from "@koi/tool-browser";
+import type { NotebookToolConfig } from "@koi/tool-notebook";
+import { createNotebookAddCellTool, createNotebookReadTool } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
 import {
   createAskUserTool,
@@ -1368,6 +1377,130 @@ const skillToolProvider = createSingleToolProvider({
 console.log(
   `SkillTool golden query: Skill tool created, advertising ${discoverResult.value.size} skill(s)`,
 );
+
+// ---------------------------------------------------------------------------
+// @koi/tool-notebook setup
+// ---------------------------------------------------------------------------
+
+const NOTEBOOK_FIXTURE = `${FIXTURES}/golden-notebook.ipynb`;
+const notebookConfig: NotebookToolConfig = {};
+const notebookReadTool = createNotebookReadTool(notebookConfig);
+const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
+
+// Copy fixture to a temp path so notebook-add-cell doesn't mutate the committed fixture
+const notebookTmpPath = `/tmp/koi-golden-notebook-${Date.now()}.ipynb`;
+await Bun.write(notebookTmpPath, await Bun.file(NOTEBOOK_FIXTURE).text());
+
+// ---------------------------------------------------------------------------
+// @koi/tool-browser setup (mock driver — no real browser for golden queries)
+// ---------------------------------------------------------------------------
+
+const goldenMockDriver = createMockDriver();
+const goldenBrowserPolicy = { sandbox: false, capabilities: {} } as const;
+const browserProvider = createBrowserProvider({
+  backend: goldenMockDriver,
+  prefix: "browser",
+  policy: goldenBrowserPolicy,
+});
+// Standalone tool for cassette descriptor extraction
+const browserSnapshotForCassette = createBrowserSnapshotTool(
+  goldenMockDriver,
+  "browser",
+  goldenBrowserPolicy,
+);
+
+// ---------------------------------------------------------------------------
+// @koi/lsp setup (mock client — no real LSP server for golden queries)
+// ---------------------------------------------------------------------------
+
+const goldenLspClient: LspClient = {
+  capabilities: () => ({
+    hoverProvider: true,
+    definitionProvider: true,
+    referencesProvider: true,
+    documentSymbolProvider: true,
+    workspaceSymbolProvider: true,
+  }),
+  hover: async (_uri, _line, _char) => ({
+    ok: true as const,
+    value: {
+      contents: {
+        kind: "markdown" as const,
+        value: "```typescript\nfunction greet(name: string): string\n```\nSays hello.",
+      },
+      range: {
+        start: { line: _line, character: _char },
+        end: { line: _line, character: _char + 5 },
+      },
+    },
+  }),
+  gotoDefinition: async (_uri, _line, _char) => ({
+    ok: true as const,
+    value: [
+      {
+        uri: "file:///src/greet.ts",
+        range: { start: { line: 10, character: 0 }, end: { line: 10, character: 20 } },
+      },
+    ],
+  }),
+  findReferences: async () => ({
+    ok: true as const,
+    value: [
+      {
+        uri: "file:///src/main.ts",
+        range: { start: { line: 5, character: 2 }, end: { line: 5, character: 7 } },
+      },
+      {
+        uri: "file:///src/test.ts",
+        range: { start: { line: 12, character: 4 }, end: { line: 12, character: 9 } },
+      },
+    ],
+  }),
+  documentSymbols: async () => ({
+    ok: true as const,
+    value: [
+      {
+        name: "greet",
+        kind: 12,
+        location: {
+          uri: "file:///src/greet.ts",
+          range: { start: { line: 0, character: 0 }, end: { line: 3, character: 1 } },
+        },
+      },
+    ],
+  }),
+  workspaceSymbols: async () => ({
+    ok: true as const,
+    value: [
+      {
+        name: "greet",
+        kind: 12,
+        location: {
+          uri: "file:///src/greet.ts",
+          range: { start: { line: 0, character: 0 }, end: { line: 3, character: 1 } },
+        },
+      },
+    ],
+  }),
+  openDocument: async () => ({ ok: true as const, value: undefined }),
+  closeDocument: async () => ({ ok: true as const, value: undefined }),
+  getDiagnostics: () => new Map(),
+  close: async () => {},
+  isConnected: () => true,
+  serverName: () => "golden-lsp",
+} as unknown as LspClient;
+
+const lspTools = createLspTools(goldenLspClient, "golden-lsp");
+const lspToolProvider: ComponentProvider = {
+  name: "lsp-golden",
+  attach: async () => {
+    const components = new Map<string, unknown>();
+    for (const tool of lspTools) {
+      components.set(`tool:${tool.descriptor.name}`, tool);
+    }
+    return { components, skipped: [] };
+  },
+};
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2675,6 +2808,110 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
+  // notebook-read: @koi/tool-notebook — reads a .ipynb fixture, returns cell summary
+  {
+    name: "notebook-read",
+    prompt: `Use the notebook_read tool to read the notebook at "${NOTEBOOK_FIXTURE}" and report how many cells it has and their types.`,
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-notebook-read",
+        cmd: ["echo", "notebook-read-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "notebook-read",
+        toolName: "notebook_read",
+        createTool: () => notebookReadTool,
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // notebook-add-cell: @koi/tool-notebook — adds a code cell, then reads back to confirm
+  {
+    name: "notebook-add-cell",
+    prompt: `Use the notebook_add_cell tool to add a new code cell with source "print('added by golden query')" at index 1 in the notebook at "${notebookTmpPath}". Then use notebook_read to confirm the cell count increased to 4.`,
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-notebook-add",
+        cmd: ["echo", "notebook-add-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "notebook-read",
+        toolName: "notebook_read",
+        createTool: () => notebookReadTool,
+      }),
+      createSingleToolProvider({
+        name: "notebook-add-cell",
+        toolName: "notebook_add_cell",
+        createTool: () => notebookAddCellTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // lsp-hover: @koi/lsp — LLM opens a document and gets hover info via mock LSP client
+  //   mock client returns TypeScript-style hover with markdown content.
+  //   Trajectory proves: LSP tool adapter wires into createKoi, open_document + hover execute.
+  {
+    name: "lsp-hover",
+    prompt:
+      'First use the "lsp__golden-lsp__open_document" tool to open a document with uri "file:///src/main.ts" and content "function greet(name: string) { return name; }". ' +
+      'Then use the "lsp__golden-lsp__hover" tool to get hover info at uri "file:///src/main.ts", line 0, character 9. ' +
+      "Report the hover result.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-lsp-hover",
+        cmd: ["echo", "lsp-hover-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [lspToolProvider],
+    maxTurns: 3,
+    // Gemini 2.0 Flash returns 400 on tool names with '/' separators (lsp__golden-lsp__hover)
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
+  // browser-snapshot: @koi/tool-browser — LLM calls browser_snapshot via mock driver
+  //   mock driver returns an accessibility tree snapshot with [ref=e1..e3].
+  //   Trajectory proves: browser provider wires into createKoi, snapshot tool executes.
+  {
+    name: "browser-snapshot",
+    prompt:
+      "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-browser-snapshot",
+        cmd: ["echo", "browser-snapshot-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [browserProvider],
+    maxTurns: 2,
+  },
+
   // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
   {
     name: "mcp-server-send",
@@ -3126,6 +3363,85 @@ await recordCassette("exfiltration-guard-block", () =>
   }),
 );
 
+await recordCassette("notebook-read", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: `Use the notebook_read tool to read the notebook at "${NOTEBOOK_FIXTURE}" and report how many cells it has and their types.`,
+          },
+        ],
+      },
+    ],
+    tools: [notebookReadTool.descriptor],
+  }),
+);
+
+await recordCassette("notebook-add-cell", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: `Use the notebook_add_cell tool to add a new code cell with source "print('added by golden query')" at index 1 in the notebook at "${notebookTmpPath}". Then use notebook_read to confirm the cell count increased to 4.`,
+          },
+        ],
+      },
+    ],
+    tools: [notebookReadTool.descriptor, notebookAddCellTool.descriptor],
+  }),
+);
+
+// lsp-hover uses Sonnet 4.6 — Gemini 2.0 Flash returns 400 on tool names with '/' separators
+await recordCassette(
+  "lsp-hover",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                'First use the "lsp__golden-lsp__open_document" tool to open a document with uri "file:///src/main.ts" and content "function greet(name: string) { return name; }". ' +
+                'Then use the "lsp__golden-lsp__hover" tool to get hover info at uri "file:///src/main.ts", line 0, character 9. ' +
+                "Report the hover result.",
+            },
+          ],
+        },
+      ],
+      tools: lspTools.map((t) => t.descriptor),
+    }),
+  { model: SONNET_MODEL },
+);
+
+await recordCassette("browser-snapshot", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+          },
+        ],
+      },
+    ],
+    tools: [browserSnapshotForCassette.descriptor],
+  }),
+);
+
 import type { AttachResult, Tool } from "@koi/core";
 // ---------------------------------------------------------------------------
 // MCP server setup: @koi/mcp-server platform tools via InMemoryTransport
@@ -3229,7 +3545,7 @@ await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
 
-console.log(`\nDone. ${8 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
@@ -3240,6 +3556,10 @@ console.log("  fixtures/plan-mode.cassette.json");
 console.log("  fixtures/ask-user.cassette.json");
 console.log("  fixtures/interaction-full.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
+console.log("  fixtures/notebook-read.cassette.json");
+console.log("  fixtures/notebook-add-cell.cassette.json");
+console.log("  fixtures/lsp-hover.cassette.json");
+console.log("  fixtures/browser-snapshot.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

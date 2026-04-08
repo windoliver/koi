@@ -1,0 +1,55 @@
+{
+  "name": "browser-snapshot",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775628924548,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "browser_snapshot",
+      "callId": "tool_browser_snapshot_cE9OApF5KHtsWGhD6fRf"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_browser_snapshot_cE9OApF5KHtsWGhD6fRf",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_browser_snapshot_cE9OApF5KHtsWGhD6fRf",
+      "delta": "{}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 169,
+      "outputTokens": 3
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_browser_snapshot_cE9OApF5KHtsWGhD6fRf"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775628923-LpkIGRoR3W9shQ8uSq52",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_browser_snapshot_cE9OApF5KHtsWGhD6fRf",
+            "name": "browser_snapshot",
+            "arguments": {}
+          }
+        ],
+        "usage": {
+          "inputTokens": 169,
+          "outputTokens": 3
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "b36cb3acede66c4bcf82a46c7325aadf0fd1102dabeade162212b98282b12f22"
+        }
+      }
+    }
+  ]
+}

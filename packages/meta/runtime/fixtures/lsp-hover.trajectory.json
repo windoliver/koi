@@ -1,0 +1,809 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "lsp-hover",
+  "agent": {
+    "name": "golden-lsp-hover",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "lsp__golden-lsp__open_document",
+        "description": "Open a document in LSP server \"golden-lsp\" for analysis. Must be called before hover/definition/references."
+      },
+      {
+        "name": "lsp__golden-lsp__close_document",
+        "description": "Close a previously opened document in LSP server \"golden-lsp\"."
+      },
+      {
+        "name": "lsp__golden-lsp__get_diagnostics",
+        "description": "Get cached diagnostics (compiler errors, warnings, lints) from LSP server \"golden-lsp\". Returns all diagnostics if no URI specified."
+      },
+      {
+        "name": "lsp__golden-lsp__hover",
+        "description": "Get hover information (type, documentation) for a symbol at a position in LSP server \"golden-lsp\"."
+      },
+      {
+        "name": "lsp__golden-lsp__goto_definition",
+        "description": "Find the definition location of a symbol at a position in LSP server \"golden-lsp\"."
+      },
+      {
+        "name": "lsp__golden-lsp__find_references",
+        "description": "Find all references to a symbol at a position in LSP server \"golden-lsp\". Returns up to 100 results."
+      },
+      {
+        "name": "lsp__golden-lsp__document_symbols",
+        "description": "List all symbols (functions, classes, variables) in a document in LSP server \"golden-lsp\". Returns up to 50 results."
+      },
+      {
+        "name": "lsp__golden-lsp__workspace_symbols",
+        "description": "Search for symbols across the workspace in LSP server \"golden-lsp\". Returns up to 50 results."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:31.481Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:31.482Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:49:31.490Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.",
+      "observation": {
+        "results": [
+          {
+            "content": "Sure! I'll start by opening the document first, and then fetch the hover info once it's open. Let me do these sequentially.\n\n**Step 1: Open the document**"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1688,
+        "completion_tokens": 137
+      },
+      "duration_ms": 2222,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 8,
+        "tools": [
+          {
+            "name": "lsp__golden-lsp__open_document",
+            "description": "Open a document in LSP server \"golden-lsp\" for analysis. Must be called before hover/definition/references."
+          },
+          {
+            "name": "lsp__golden-lsp__close_document",
+            "description": "Close a previously opened document in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__get_diagnostics",
+            "description": "Get cached diagnostics (compiler errors, warnings, lints) from LSP server \"golden-lsp\". Returns all diagnostics if no URI specified."
+          },
+          {
+            "name": "lsp__golden-lsp__hover",
+            "description": "Get hover information (type, documentation) for a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__goto_definition",
+            "description": "Find the definition location of a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__find_references",
+            "description": "Find all references to a symbol at a position in LSP server \"golden-lsp\". Returns up to 100 results."
+          },
+          {
+            "name": "lsp__golden-lsp__document_symbols",
+            "description": "List all symbols (functions, classes, variables) in a document in LSP server \"golden-lsp\". Returns up to 50 results."
+          },
+          {
+            "name": "lsp__golden-lsp__workspace_symbols",
+            "description": "Search for symbols across the workspace in LSP server \"golden-lsp\". Returns up to 50 results."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "06b6f839cb7effcbd3a8204a0e249adbf78dc104bcb7c18d217a3aa23665f653"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:49:33.717Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_lsp__golden-lsp__open_document_3",
+          "function_name": "lsp__golden-lsp__open_document",
+          "arguments": {
+            "uri": "file:///src/main.ts",
+            "content": "function greet(name: string) { return name; }"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_lsp__golden-lsp__open_document_3",
+            "content": "{\"ok\":true,\"message\":\"Document opened\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.719Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "lsp__golden-lsp__open_document({\"uri\":\"file:///src/main.ts\",\"content\":\"function greet(name: string) { return name; }\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"message\":\"Document opened\"}"
+          }
+        ]
+      },
+      "duration_ms": 0.8897090000000389,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.732Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.",
+      "duration_ms": 2241.854083,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.733Z",
+      "model_name": "middleware:hooks",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.",
+      "duration_ms": 2242.1282910000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.734Z",
+      "model_name": "middleware:permissions",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.",
+      "duration_ms": 2243.294167,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.735Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.",
+      "duration_ms": 2244.469458,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.738Z",
+      "model_name": "hook:on-lsp-hover",
+      "message": "tool.succeeded → on-lsp-hover",
+      "duration_ms": 20.411957999999686,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-lsp-hover",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-lsp-hover"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.739Z",
+      "model_name": "middleware:hooks",
+      "message": "lsp__golden-lsp__open_document({\"uri\":\"file:///src/main.ts\",\"content\":\"function greet(name: string) { return name; }\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"message\":\"Document opened\"}"
+          }
+        ]
+      },
+      "duration_ms": 22.191249999999854,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.740Z",
+      "model_name": "middleware:permissions",
+      "message": "lsp__golden-lsp__open_document({\"uri\":\"file:///src/main.ts\",\"content\":\"function greet(name: string) { return name; }\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"message\":\"Document opened\"}"
+          }
+        ]
+      },
+      "duration_ms": 23.532458000000588,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:33.741Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "lsp__golden-lsp__open_document({\"uri\":\"file:///src/main.ts\",\"content\":\"function greet(name: string) { return name; }\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"message\":\"Document opened\"}"
+          }
+        ]
+      },
+      "duration_ms": 24.268541999999798,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:49:33.743Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"message\":\"Document opened\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "The document was opened successfully. Now let's get the hover info:"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1808,
+        "completion_tokens": 115
+      },
+      "duration_ms": 1695,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 8,
+        "tools": [
+          {
+            "name": "lsp__golden-lsp__open_document",
+            "description": "Open a document in LSP server \"golden-lsp\" for analysis. Must be called before hover/definition/references."
+          },
+          {
+            "name": "lsp__golden-lsp__close_document",
+            "description": "Close a previously opened document in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__get_diagnostics",
+            "description": "Get cached diagnostics (compiler errors, warnings, lints) from LSP server \"golden-lsp\". Returns all diagnostics if no URI specified."
+          },
+          {
+            "name": "lsp__golden-lsp__hover",
+            "description": "Get hover information (type, documentation) for a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__goto_definition",
+            "description": "Find the definition location of a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__find_references",
+            "description": "Find all references to a symbol at a position in LSP server \"golden-lsp\". Returns up to 100 results."
+          },
+          {
+            "name": "lsp__golden-lsp__document_symbols",
+            "description": "List all symbols (functions, classes, variables) in a document in LSP server \"golden-lsp\". Returns up to 50 results."
+          },
+          {
+            "name": "lsp__golden-lsp__workspace_symbols",
+            "description": "Search for symbols across the workspace in LSP server \"golden-lsp\". Returns up to 50 results."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "06b6f839cb7effcbd3a8204a0e249adbf78dc104bcb7c18d217a3aa23665f653"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:49:35.439Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_lsp__golden-lsp__hover_14",
+          "function_name": "lsp__golden-lsp__hover",
+          "arguments": {
+            "uri": "file:///src/main.ts",
+            "line": 0,
+            "character": 9
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_lsp__golden-lsp__hover_14",
+            "content": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.441Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "lsp__golden-lsp__hover({\"uri\":\"file:///src/main.ts\",\"line\":0,\"character\":9})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}"
+          }
+        ]
+      },
+      "duration_ms": 0.35212500000034197,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.442Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}",
+      "duration_ms": 1700.5494589999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.443Z",
+      "model_name": "middleware:hooks",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}",
+      "duration_ms": 1700.6032919999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.444Z",
+      "model_name": "middleware:permissions",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}",
+      "duration_ms": 1700.7403750000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.445Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}",
+      "duration_ms": 1700.7711250000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.446Z",
+      "model_name": "hook:on-lsp-hover",
+      "message": "tool.succeeded → on-lsp-hover",
+      "duration_ms": 4.937750000000051,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-lsp-hover",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-lsp-hover"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.447Z",
+      "model_name": "middleware:hooks",
+      "message": "lsp__golden-lsp__hover({\"uri\":\"file:///src/main.ts\",\"line\":0,\"character\":9})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}"
+          }
+        ]
+      },
+      "duration_ms": 5.448416999999608,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.448Z",
+      "model_name": "middleware:permissions",
+      "message": "lsp__golden-lsp__hover({\"uri\":\"file:///src/main.ts\",\"line\":0,\"character\":9})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}"
+          }
+        ]
+      },
+      "duration_ms": 5.523541999999907,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:35.449Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "lsp__golden-lsp__hover({\"uri\":\"file:///src/main.ts\",\"line\":0,\"character\":9})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}"
+          }
+        ]
+      },
+      "duration_ms": 5.593667000000096,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:49:35.451Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end\":{\"line\":0,\"character\":14}}}",
+      "observation": {
+        "results": [
+          {
+            "content": "Here are the results from both steps:\n\n### Step 1: Open Document ✅\nThe document at `file:///src/main.ts` was successfully opened with the provided content.\n\n---\n\n### Step 2: Hover Result 📋\n\nThe hover information returned for **line 0, character 9** (which corresponds to the `greet` function name) is:\n\n- **Type Signature:**\n  ```typescript\n  function greet(name: string): string\n  ```\n- **Documentation:** `Says hello.`\n- **Range:** The hover applies to characters 9–14 on line 0, which is exactly the span of the word `greet`.\n\nIn summary, the LSP server recognizes `greet` as a function that accepts a `name` parameter of type `string` and returns a `string`, with the documentation note \"Says hello.\""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1980,
+        "completion_tokens": 197
+      },
+      "duration_ms": 5056,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 8,
+        "tools": [
+          {
+            "name": "lsp__golden-lsp__open_document",
+            "description": "Open a document in LSP server \"golden-lsp\" for analysis. Must be called before hover/definition/references."
+          },
+          {
+            "name": "lsp__golden-lsp__close_document",
+            "description": "Close a previously opened document in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__get_diagnostics",
+            "description": "Get cached diagnostics (compiler errors, warnings, lints) from LSP server \"golden-lsp\". Returns all diagnostics if no URI specified."
+          },
+          {
+            "name": "lsp__golden-lsp__hover",
+            "description": "Get hover information (type, documentation) for a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__goto_definition",
+            "description": "Find the definition location of a symbol at a position in LSP server \"golden-lsp\"."
+          },
+          {
+            "name": "lsp__golden-lsp__find_references",
+            "description": "Find all references to a symbol at a position in LSP server \"golden-lsp\". Returns up to 100 results."
+          },
+          {
+            "name": "lsp__golden-lsp__document_symbols",
+            "description": "List all symbols (functions, classes, variables) in a document in LSP server \"golden-lsp\". Returns up to 50 results."
+          },
+          {
+            "name": "lsp__golden-lsp__workspace_symbols",
+            "description": "Search for symbols across the workspace in LSP server \"golden-lsp\". Returns up to 50 results."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "06b6f839cb7effcbd3a8204a0e249adbf78dc104bcb7c18d217a3aa23665f653"
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:40.509Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}\n\n{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end…",
+      "duration_ms": 5063.959,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:40.510Z",
+      "model_name": "middleware:hooks",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}\n\n{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end…",
+      "duration_ms": 5064.241999999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:40.511Z",
+      "model_name": "middleware:permissions",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}\n\n{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end…",
+      "duration_ms": 5064.497332999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:40.512Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "First use the \"lsp__golden-lsp__open_document\" tool to open a document with uri \"file:///src/main.ts\" and content \"function greet(name: string) { return name; }\". Then use the \"lsp__golden-lsp__hover\" tool to get hover info at uri \"file:///src/main.ts\", line 0, character 9. Report the hover result.\n\n{\"ok\":true,\"message\":\"Document opened\"}\n\n{\"contents\":{\"kind\":\"markdown\",\"value\":\"```typescript\\nfunction greet(name: string): string\\n```\\nSays hello.\"},\"range\":{\"start\":{\"line\":0,\"character\":9},\"end…",
+      "duration_ms": 5064.616666,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

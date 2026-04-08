@@ -1,0 +1,599 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "notebook-add-cell",
+  "agent": {
+    "name": "golden-notebook-add-cell",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "notebook_read",
+        "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+      },
+      {
+        "name": "notebook_add_cell",
+        "description": "Add a new cell (code, markdown, or raw) to a Jupyter notebook at the given index. If index is omitted or out of range, appends to the end."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.271Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.272Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:26.274Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 304,
+        "completion_tokens": 72
+      },
+      "duration_ms": 1052,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "notebook_read",
+            "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+          },
+          {
+            "name": "notebook_add_cell",
+            "description": "Add a new cell (code, markdown, or raw) to a Jupyter notebook at the given index. If index is omitted or out of range, appends to the end."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "174c7515262a688f1833ec7ac3946b88d3f822dc77e96c102f070327ecad52cc"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.328Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.",
+      "duration_ms": 1055.9308329999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.329Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.",
+      "duration_ms": 1055.9786670000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.330Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.",
+      "duration_ms": 1056.0413340000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.331Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.",
+      "duration_ms": 1056.0574159999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:15:27.332Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_notebook_add_cell_7",
+          "function_name": "notebook_add_cell",
+          "arguments": {
+            "cell_type": "code",
+            "path": "/tmp/koi-golden-notebook-1775628921644.ipynb",
+            "source": "print('added by golden query')",
+            "index": 1
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_notebook_add_cell_7",
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}"
+          }
+        ]
+      },
+      "duration_ms": 5,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775628927327
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.333Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "notebook_add_cell({\"cell_type\":\"code\",\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"source\":\"print('added by golden query')\",\"index\":1})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}"
+          }
+        ]
+      },
+      "duration_ms": 4.4638340000001335,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.335Z",
+      "model_name": "hook:on-notebook-add",
+      "message": "tool.succeeded → on-notebook-add",
+      "duration_ms": 3.265292000000045,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-notebook-add",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-notebook-add"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.336Z",
+      "model_name": "middleware:hooks",
+      "message": "notebook_add_cell({\"cell_type\":\"code\",\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"source\":\"print('added by golden query')\",\"index\":1})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}"
+          }
+        ]
+      },
+      "duration_ms": 7.906667000000198,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.337Z",
+      "model_name": "middleware:permissions",
+      "message": "notebook_add_cell({\"cell_type\":\"code\",\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"source\":\"print('added by golden query')\",\"index\":1})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}"
+          }
+        ]
+      },
+      "duration_ms": 7.9682080000002316,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.338Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "notebook_add_cell({\"cell_type\":\"code\",\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"source\":\"print('added by golden query')\",\"index\":1})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}"
+          }
+        ]
+      },
+      "duration_ms": 8.04962499999965,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:15:27.339Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_notebook_read_13",
+          "function_name": "notebook_read",
+          "arguments": {
+            "path": "/tmp/koi-golden-notebook-1775628921644.ipynb"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_notebook_read_13",
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Test\\n---\",\"outputCount\":0,\"executionCount\":null}]}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.342Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "notebook_read({\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\""
+          }
+        ]
+      },
+      "duration_ms": 5.854417000000467,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.343Z",
+      "model_name": "hook:on-notebook-add",
+      "message": "tool.succeeded → on-notebook-add",
+      "duration_ms": 2.6688750000002983,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-notebook-add",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-notebook-add"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.344Z",
+      "model_name": "middleware:hooks",
+      "message": "notebook_read({\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\""
+          }
+        ]
+      },
+      "duration_ms": 8.638041999999587,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.345Z",
+      "model_name": "middleware:permissions",
+      "message": "notebook_read({\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\""
+          }
+        ]
+      },
+      "duration_ms": 8.691334000000097,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:27.346Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "notebook_read({\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\""
+          }
+        ]
+      },
+      "duration_ms": 8.762624999999389,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:27.348Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"print('added by golden query')\",\"outputCount\":0,\"executionCount\":null},{\"index\":2,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":3,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Test\\n---\",\"outputCount\":0,\"executionCount\":null}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "I have added a new code cell at index 1. The notebook now has 4 cells.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 581,
+        "completion_tokens": 21
+      },
+      "duration_ms": 652,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "notebook_read",
+            "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+          },
+          {
+            "name": "notebook_add_cell",
+            "description": "Add a new cell (code, markdown, or raw) to a Jupyter notebook at the given index. If index is omitted or out of range, appends to the end."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "174c7515262a688f1833ec7ac3946b88d3f822dc77e96c102f070327ecad52cc"
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.002Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Noteboo…",
+      "duration_ms": 656.3538749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.003Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Noteboo…",
+      "duration_ms": 656.3954999999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.004Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Noteboo…",
+      "duration_ms": 656.4877919999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.005Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the notebook_add_cell tool to add a new code cell with source \"print('added by golden query')\" at index 1 in the notebook at \"/tmp/koi-golden-notebook-1775628921644.ipynb\". Then use notebook_read to confirm the cell count increased to 4.\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"index\":1,\"cell_type\":\"code\",\"cellCount\":4}\n\n{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"nbformat\":4,\"cellCount\":4,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Noteboo…",
+      "duration_ms": 656.5258750000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

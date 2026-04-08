@@ -201,6 +201,16 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/lsp": {
+      "name": "@koi/lsp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/middleware-goal": {
       "name": "@koi/middleware-goal",
       "version": "0.0.0",
@@ -300,6 +310,20 @@
         "@koi/core": "workspace:*",
         "@koi/task-board": "workspace:*",
         "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/lib/tool-browser": {
+      "name": "@koi/tool-browser",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/tool-notebook": {
+      "name": "@koi/tool-notebook",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/tools-bash": {
@@ -411,6 +435,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/mcp-server": "workspace:*",
         "@koi/memory": "workspace:*",
@@ -432,6 +457,8 @@
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
+        "@koi/tool-browser": "workspace:*",
+        "@koi/tool-notebook": "workspace:*",
         "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
@@ -871,6 +898,8 @@
 
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
+    "@koi/lsp": ["@koi/lsp@workspace:packages/lib/lsp"],
+
     "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
     "@koi/mcp-server": ["@koi/mcp-server@workspace:packages/net/mcp-server"],
@@ -924,6 +953,10 @@
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
+
+    "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/lib/tool-browser"],
+
+    "@koi/tool-notebook": ["@koi/tool-notebook@workspace:packages/lib/tool-notebook"],
 
     "@koi/tools-bash": ["@koi/tools-bash@workspace:packages/lib/tools-bash"],
 
