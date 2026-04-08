@@ -238,6 +238,13 @@ export function createExfiltrationGuardMiddleware(
           kinds: ["redaction_failure"],
           action: "block",
         });
+        ctx.reportDecision?.({
+          location: "tool-output",
+          toolId: request.toolId,
+          matchCount: 0,
+          action: "block",
+          error: "redaction_failure",
+        });
         return {
           output: {
             error:
@@ -253,6 +260,12 @@ export function createExfiltrationGuardMiddleware(
           toolId: request.toolId,
           matchCount: outputResult.matchCount,
           kinds: [],
+          action: config.action,
+        });
+        ctx.reportDecision?.({
+          location: "tool-output",
+          toolId: request.toolId,
+          matchCount: outputResult.matchCount,
           action: config.action,
         });
 
@@ -284,7 +297,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
@@ -415,6 +428,12 @@ export function createExfiltrationGuardMiddleware(
                 kinds: ["redaction_failure"],
                 action: "block",
               });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: 0,
+                action: "block",
+                error: "redaction_failure",
+              });
               yield {
                 kind: "error",
                 message:
@@ -431,6 +450,12 @@ export function createExfiltrationGuardMiddleware(
                 matchCount: result.matchCount,
                 kinds: [],
                 action: config.action,
+              });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: result.matchCount,
+                action: config.action,
+                bufferLength: buffer.length,
               });
 
               if (config.action === "block") {

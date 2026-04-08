@@ -708,17 +708,24 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const turnKey = String(ctx.turnId);
 
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
+      const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
       ctx.reportDecision?.({
         injected: inject,
+        objectives: state.items.map((i) => ({
+          text: i.text,
+          completed: i.completed,
+        })),
         completedCount: state.items.filter((i) => i.completed).length,
         totalCount: state.items.length,
+        ...(goalBlock !== undefined ? { goalBlock } : {}),
       });
-      const enrichedRequest = inject
-        ? {
-            ...request,
-            messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],
-          }
-        : request;
+      const enrichedRequest =
+        goalBlock !== undefined
+          ? {
+              ...request,
+              messages: [buildGoalMessage(goalBlock), ...request.messages],
+            }
+          : request;
 
       const response: ModelResponse = await next(enrichedRequest);
 
@@ -746,17 +753,24 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const turnKey = String(ctx.turnId);
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
+      const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
       ctx.reportDecision?.({
         injected: inject,
+        objectives: state.items.map((i) => ({
+          text: i.text,
+          completed: i.completed,
+        })),
         completedCount: state.items.filter((i) => i.completed).length,
         totalCount: state.items.length,
+        ...(goalBlock !== undefined ? { goalBlock } : {}),
       });
-      const enrichedRequest = inject
-        ? {
-            ...request,
-            messages: [buildGoalMessage(renderGoalBlock(state.items, header)), ...request.messages],
-          }
-        : request;
+      const enrichedRequest =
+        goalBlock !== undefined
+          ? {
+              ...request,
+              messages: [buildGoalMessage(goalBlock), ...request.messages],
+            }
+          : request;
 
       // Buffer streamed text for completion detection.
       // Flush eagerly on the terminal `done` chunk BEFORE yielding it —

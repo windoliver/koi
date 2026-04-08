@@ -8,6 +8,7 @@
 import type {
   Agent,
   CapabilityFragment,
+  JsonObject,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -97,6 +98,31 @@ function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
   return { ...request, systemPrompt };
 }
 
+/** Max chars of systemPrompt to include in decision metadata. */
+const PROMPT_PREVIEW_LIMIT = 800;
+
+/**
+ * Build the decision payload for skill injection.
+ * Captures skill names, per-skill content length, and a preview of
+ * the final systemPrompt so the trajectory shows what was actually injected.
+ */
+function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObject {
+  const sorted = sortedSkills(agent);
+  return {
+    injected: sorted.length > 0,
+    skillCount: sorted.length,
+    skills: sorted.map((s) => ({ name: s.name, contentLength: s.content.length })),
+    ...(systemPrompt !== undefined
+      ? {
+          systemPrompt:
+            systemPrompt.length <= PROMPT_PREVIEW_LIMIT
+              ? systemPrompt
+              : `${systemPrompt.slice(0, PROMPT_PREVIEW_LIMIT)}… (${String(systemPrompt.length)} chars)`,
+        }
+      : {}),
+  } as JsonObject;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -126,13 +152,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const agent = resolveAgent(agentOrFn);
-      const skills = sortedSkills(agent);
-      ctx.reportDecision?.({
-        injected: skills.length > 0,
-        skillCount: skills.length,
-        skills: skills.map((s) => s.name),
-      });
-      return next(injectSkills(agent, request));
+      const injected = injectSkills(agent, request);
+      ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      return next(injected);
     },
 
     async *wrapModelStream(
@@ -141,13 +163,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       const agent = resolveAgent(agentOrFn);
-      const skills = sortedSkills(agent);
-      ctx.reportDecision?.({
-        injected: skills.length > 0,
-        skillCount: skills.length,
-        skills: skills.map((s) => s.name),
-      });
-      yield* next(injectSkills(agent, request));
+      const injected = injectSkills(agent, request);
+      ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      yield* next(injected);
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

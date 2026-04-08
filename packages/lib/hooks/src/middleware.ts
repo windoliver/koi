@@ -375,19 +375,24 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       data: buildModelPreData(request),
     });
     const preResults = await registry.execute(sessionId, preEvent);
-    // Report hook fire records for trace recording (ctx may have reportDecision injected by trace wrapper)
+    const aggregated = aggregateDecisions(preResults);
+    // Report hook fire records + aggregated decision for trace recording
     if (preResults.length > 0) {
       ctx.reportDecision?.({
         event: "compact.before",
+        aggregated: aggregated.decision.kind,
+        ...(aggregated.decision.kind === "block"
+          ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+          : {}),
         hooks: preResults.map((r) => ({
           name: r.hookName,
           decision: r.ok ? r.decision.kind : "error",
           durationMs: r.durationMs,
           ...(r.ok === false ? { error: r.error } : {}),
+          ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
         })),
       });
     }
-    const aggregated = aggregateDecisions(preResults);
 
     if (aggregated.decision.kind === "block") {
       return {
@@ -496,16 +501,21 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResults = await registry.execute(sessionId, preEvent, ctx.signal);
       const aggregated = aggregateDecisions(preResults);
 
-      // Report pre-call hook fire records for trace recording
+      // Report pre-call hook fire records + aggregated decision for trace recording
       if (preResults.length > 0) {
         ctx.reportDecision?.({
           event: "tool.before",
           toolId: request.toolId,
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
           hooks: preResults.map((r) => ({
             name: r.hookName,
             decision: r.ok ? r.decision.kind : "error",
             durationMs: r.durationMs,
             ...(r.ok === false ? { error: r.error } : {}),
+            ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
           })),
         });
       }
@@ -597,21 +607,24 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         };
       }
 
-      // Report post-call hook fire records for trace recording
+      const postDecision = aggregatePostDecisions(postResultsOrTimeout);
+
+      // Report post-call hook fire records + aggregated post-decision for trace recording
       if (Array.isArray(postResultsOrTimeout) && postResultsOrTimeout.length > 0) {
         ctx.reportDecision?.({
           event: "tool.succeeded",
           toolId: request.toolId,
+          aggregated: postDecision.kind,
+          ...(postDecision.kind === "block" ? { reason: postDecision.reason } : {}),
           hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) => ({
             name: r.hookName,
             decision: r.ok ? r.decision.kind : "error",
             durationMs: r.durationMs,
             ...(r.ok === false ? { error: r.error } : {}),
+            ...(r.ok && r.decision.kind === "transform" ? { transformed: true } : {}),
           })),
         });
       }
-
-      const postDecision = aggregatePostDecisions(postResultsOrTimeout);
 
       if (postDecision.kind === "transform") {
         const isPlainObject =
@@ -653,19 +666,24 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         data: buildModelPreData(request),
       });
       const preResults = await registry.execute(sessionId, preEvent);
-      // Report model pre-call hook fire records
+      const aggregated = aggregateDecisions(preResults);
+      // Report model pre-call hook fire records + aggregated decision
       if (preResults.length > 0) {
         ctx.reportDecision?.({
           event: "compact.before",
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
           hooks: preResults.map((r) => ({
             name: r.hookName,
             decision: r.ok ? r.decision.kind : "error",
             durationMs: r.durationMs,
             ...(r.ok === false ? { error: r.error } : {}),
+            ...(r.ok && r.decision.kind === "block" ? { reason: r.decision.reason } : {}),
           })),
         });
       }
-      const aggregated = aggregateDecisions(preResults);
       const preResult =
         aggregated.decision.kind === "block"
           ? {

@@ -948,14 +948,27 @@ export function createPermissionsMiddleware(
 
     const filteredCount = tools.length - filtered.length;
     if (filteredCount > 0) {
-      const filteredNames = tools
-        .filter((_, i) => decisions[i]?.effect === "deny")
-        .map((t) => t.name);
+      const filteredDetails = tools
+        .map((t, i) => ({ name: t.name, decision: decisions[i] }))
+        .filter(
+          (
+            d,
+          ): d is {
+            readonly name: string;
+            readonly decision: { readonly effect: "deny"; readonly reason: string };
+          } => d.decision?.effect === "deny",
+        )
+        .map((d) => ({
+          tool: d.name,
+          reason: d.decision.reason,
+          source: denialSource(d.decision),
+        }));
       ctx.reportDecision?.({
         phase: "filter",
         totalTools: tools.length,
+        allowedCount: filtered.length,
         filteredCount,
-        filteredTools: filteredNames,
+        filteredTools: filteredDetails,
       });
     }
     if (filtered.length === tools.length) return request;
@@ -1056,7 +1069,8 @@ export function createPermissionsMiddleware(
         phase: "execute",
         toolId: request.toolId,
         action: decision.effect,
-        ...(decision.effect !== "allow" ? { rule: decision.reason } : {}),
+        durationMs,
+        ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
         source: denialSource(decision),
       });
 
