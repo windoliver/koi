@@ -1,9 +1,14 @@
 /**
  * TextBlock — renders a text block with streaming-aware markdown.
  *
- * Uses <text> for reliable baseline rendering. When both syntaxStyle and
- * treeSitterClient are provided, upgrades to <markdown> for rich rendering
- * with syntax-highlighted code fences and full prose/heading support.
+ * Uses <text> for reliable baseline rendering. When syntaxStyle is provided,
+ * upgrades to <markdown> for rich rendering with syntax-highlighted code
+ * fences and full prose/heading support. The <markdown> renderable auto-
+ * initializes a TreeSitterClient singleton via getTreeSitterClient() — no
+ * explicit treeSitterClient prop is needed (same pattern as opencode).
+ *
+ * If the embedding environment doesn't have OpenTUI's tree-sitter runtime
+ * available, pass `syntaxStyle={undefined}` to force plain-text fallback.
  *
  * Streaming optimizations (Decisions 3A, 2A):
  * - Code block isolation: splits text at the last unclosed fence so the
@@ -15,7 +20,7 @@
  *   partial inline markdown (bold, links, inline code).
  */
 
-import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
+import type { SyntaxStyle } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
 import { healMarkdown } from "../streaming/heal-markdown.js";
@@ -24,20 +29,10 @@ import { splitStreamingMarkdown } from "../streaming/split-streaming-markdown.js
 interface TextBlockProps {
   readonly text: string;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  readonly treeSitterClient?: TreeSitterClient | undefined;
   readonly streaming?: boolean | undefined;
 }
 
-type MarkdownConfig = { readonly style: SyntaxStyle; readonly client: TreeSitterClient };
-
 export function TextBlock(props: TextBlockProps): JSX.Element {
-  const markdownConfig = (): MarkdownConfig | undefined => {
-    if (props.syntaxStyle !== undefined && props.treeSitterClient !== undefined) {
-      return { style: props.syntaxStyle, client: props.treeSitterClient };
-    }
-    return undefined;
-  };
-
   // Streaming code block isolation (Decision 3A):
   // Split at the last unclosed fence. The stable part is memoized — only
   // the tail (which changes on every delta) triggers a re-parse.
@@ -60,19 +55,15 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
   });
 
   return (
-    <Show
-      when={markdownConfig()}
-      fallback={<text>{props.text}</text>}
-    >
-      {(cfg: () => MarkdownConfig) => (
+    <Show when={props.syntaxStyle} fallback={<text>{props.text}</text>}>
+      {(style: () => SyntaxStyle) => (
         <Show
           when={props.streaming && (hasFenceSplit() || props.text !== "")}
           fallback={
             // Non-streaming: render full text as single finalized markdown
             <markdown
               content={props.text}
-              syntaxStyle={cfg().style}
-              treeSitterClient={cfg().client}
+              syntaxStyle={style()}
               streaming={false}
             />
           }
@@ -83,8 +74,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
             <Show when={hasFenceSplit() && split().stable !== ""}>
               <markdown
                 content={split().stable}
-                syntaxStyle={cfg().style}
-                treeSitterClient={cfg().client}
+                syntaxStyle={style()}
                 streaming={false}
               />
             </Show>
@@ -92,8 +82,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
             <Show when={healedContent() !== ""}>
               <markdown
                 content={healedContent()}
-                syntaxStyle={cfg().style}
-                treeSitterClient={cfg().client}
+                syntaxStyle={style()}
                 streaming={true}
               />
             </Show>

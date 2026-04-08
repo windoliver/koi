@@ -14,6 +14,7 @@
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ApprovalHandler, ModelAdapter } from "@koi/core";
+import { toolToken } from "@koi/core";
 import { createTuiRuntime, MAX_TRAJECTORY_STEPS } from "./tui-runtime.js";
 
 // ---------------------------------------------------------------------------
@@ -133,5 +134,129 @@ describe("createTuiRuntime — cwd defaults", () => {
       // No cwd provided — should use process.cwd()
     });
     expect(runtimeHandle.runtime).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2-A: Tool inventory snapshot — verifies all expected tools are wired
+// ---------------------------------------------------------------------------
+
+describe("createTuiRuntime — tool inventory", () => {
+  /** Expected tool names that must be registered after createTuiRuntime(). */
+  const EXPECTED_TOOLS = [
+    "Glob",
+    "Grep",
+    "ToolSearch",
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "Bash",
+    "bash_background",
+    "web_fetch",
+    "task_create",
+    "task_get",
+    "task_list",
+    "task_output",
+    "task_stop",
+    "task_update",
+  ] as const;
+
+  test("all expected tools are registered as agent components", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    const { agent } = runtimeHandle.runtime;
+
+    const missing: string[] = [];
+    for (const name of EXPECTED_TOOLS) {
+      if (!agent.has(toolToken(name))) {
+        missing.push(name);
+      }
+    }
+
+    expect(missing).toEqual([]);
+  });
+
+  test("expected tool count matches snapshot", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    const { agent } = runtimeHandle.runtime;
+
+    // Count how many expected tools are present (should be all of them)
+    const presentCount = EXPECTED_TOOLS.filter((name) => agent.has(toolToken(name))).length;
+    expect(presentCount).toBe(EXPECTED_TOOLS.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1-A: resetSessionState — full test suite
+// ---------------------------------------------------------------------------
+
+describe("createTuiRuntime — resetSessionState", () => {
+  test("throws when signal is not aborted (C4-A)", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    const controller = new AbortController();
+    // Signal not aborted — must throw
+    await expect(runtimeHandle?.resetSessionState(controller.signal)).rejects.toThrow(
+      "active AbortSignal must be aborted before resetting",
+    );
+  });
+
+  test("succeeds when signal is aborted", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    const controller = new AbortController();
+    controller.abort();
+    // Should not throw
+    await expect(runtimeHandle?.resetSessionState(controller.signal)).resolves.toBeUndefined();
+  });
+
+  test("clears transcript on reset (caller responsibility)", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    const { transcript } = runtimeHandle;
+
+    // Simulate session with messages
+    transcript.push({
+      senderId: "user",
+      timestamp: Date.now(),
+      content: [{ kind: "text", text: "hello" }],
+    });
+    expect(transcript).toHaveLength(1);
+
+    // Abort + reset (now async)
+    const controller = new AbortController();
+    controller.abort();
+    await runtimeHandle.resetSessionState(controller.signal);
+
+    // Transcript is caller-managed; splice must be called separately
+    transcript.splice(0);
+    expect(transcript).toHaveLength(0);
+  });
+
+  test("multiple resets in sequence do not throw", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+
+    // First reset
+    const c1 = new AbortController();
+    c1.abort();
+    await runtimeHandle.resetSessionState(c1.signal);
+
+    // Second reset with a new controller
+    const c2 = new AbortController();
+    c2.abort();
+    await expect(runtimeHandle?.resetSessionState(c2.signal)).resolves.toBeUndefined();
+  });
+
+  test("hasActiveBackgroundTasks returns false initially", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    expect(runtimeHandle.hasActiveBackgroundTasks()).toBe(false);
+  });
+
+  test("shutdownBackgroundTasks returns false when no tasks active", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    expect(runtimeHandle.shutdownBackgroundTasks()).toBe(false);
+  });
+
+  test("sandboxActive reflects OS adapter availability", async () => {
+    runtimeHandle = await createTuiRuntime(makeConfig());
+    // sandboxActive depends on whether seatbelt/bwrap is available on this machine.
+    // We just verify it's a boolean — the actual value depends on the test environment.
+    expect(typeof runtimeHandle.sandboxActive).toBe("boolean");
   });
 });

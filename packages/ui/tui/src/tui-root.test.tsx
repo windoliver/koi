@@ -157,6 +157,7 @@ describe("resolveNavCommand", () => {
     expect(resolveNavCommand("nav:sessions")).toBe("sessions");
     expect(resolveNavCommand("nav:doctor")).toBe("doctor");
     expect(resolveNavCommand("nav:help")).toBe("help");
+    expect(resolveNavCommand("nav:trajectory")).toBe("trajectory");
   });
 
   test("engine-affecting commands return null (bubble up to onCommand)", () => {
