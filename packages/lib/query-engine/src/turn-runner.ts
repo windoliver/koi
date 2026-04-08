@@ -420,10 +420,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         continue;
       }
 
-      if (hasRepeated && !allRepeated) {
+      if (hasRepeated && !allRepeated && doomLoopInterventions < maxDoomLoopInterventions) {
         // Mixed turn: filter out repeated calls, keep new ones.
         // Repeated calls get synthetic tool results to keep transcript pairing
         // consistent — every tool_call intent must have a matching tool result.
+        // Subject to maxDoomLoopInterventions cap — once exhausted, let all calls through.
+        doomLoopInterventions++;
         const blockedNames = [...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName);
         // let justified: mutable — partition into blocked and allowed calls
         const doomLoopBlocked: typeof dedupedToolCalls = [];
