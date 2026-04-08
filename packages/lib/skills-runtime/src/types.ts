@@ -2,7 +2,7 @@
  * Public types for @koi/skills-runtime.
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type { KoiError, Result, SkillExecutionMode } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import type { Severity } from "@koi/validation";
 
@@ -12,9 +12,9 @@ import type { Severity } from "@koi/validation";
 
 /**
  * The origin tier of a discovered skill.
- * Precedence: project > user > bundled.
+ * Precedence (highest first): project > user > bundled > mcp.
  */
-export type SkillSource = "bundled" | "user" | "project";
+export type SkillSource = "bundled" | "user" | "project" | "mcp";
 
 // ---------------------------------------------------------------------------
 // Validated requires (Zod-transformed from YAML `requires` block)
@@ -30,35 +30,40 @@ export interface ValidatedSkillRequires {
 }
 
 // ---------------------------------------------------------------------------
+// Validated frontmatter (Zod-transformed output)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validated and normalized output from SKILL.md YAML frontmatter.
+ * Base type for SkillMetadata — frontmatter fields flow through automatically.
+ */
+export interface ValidatedFrontmatter {
+  readonly name: string;
+  readonly description: string;
+  readonly license?: string;
+  readonly compatibility?: string;
+  readonly allowedTools?: readonly string[];
+  readonly tags?: readonly string[];
+  readonly requires?: ValidatedSkillRequires;
+  readonly metadata?: Readonly<Record<string, string>>;
+  /** Execution mode: "inline" (context injection) or "fork" (sub-agent spawn). */
+  readonly executionMode?: SkillExecutionMode | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Skill metadata (frontmatter only — no body, no security scan)
 // ---------------------------------------------------------------------------
 
 /**
  * Metadata for a discovered skill, derived from frontmatter only.
  * Available after discover() without needing to call load().
- * Does not include the skill body.
+ * Extends ValidatedFrontmatter with source and location information.
  */
-export interface SkillMetadata {
-  /** Skill name from frontmatter (matches directory name by convention). */
-  readonly name: string;
-  /** Human-readable description from frontmatter. */
-  readonly description: string;
+export interface SkillMetadata extends ValidatedFrontmatter {
   /** Which tier this skill came from. */
   readonly source: SkillSource;
-  /** Absolute path to the skill directory. */
+  /** Absolute path to the skill directory (or URI for non-filesystem sources). */
   readonly dirPath: string;
-  /** Searchable tags from frontmatter. */
-  readonly tags?: readonly string[];
-  /** SPDX license identifier from frontmatter. */
-  readonly license?: string;
-  /** Claude Code compatibility string from frontmatter. */
-  readonly compatibility?: string;
-  /** Allowed tool names from frontmatter `allowed-tools`. */
-  readonly allowedTools?: readonly string[];
-  /** Runtime requirements parsed from frontmatter `requires`. */
-  readonly requires?: ValidatedSkillRequires;
-  /** Extra string key-value pairs from frontmatter. */
-  readonly metadata?: Readonly<Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,4 +188,15 @@ export interface SkillsRuntime {
    *   Next discover() or load() re-scans the filesystem.
    */
   readonly invalidate: (name?: string) => void;
+
+  /**
+   * Registers non-filesystem skills (e.g., MCP-derived tool descriptors).
+   *
+   * External skills have lowest precedence — any filesystem skill with the
+   * same name shadows them. Replaces all previously registered external skills
+   * (full replacement, not incremental merge).
+   *
+   * Does not trigger filesystem re-scan. Filesystem discovery cache is untouched.
+   */
+  readonly registerExternal: (skills: readonly SkillMetadata[]) => void;
 }
