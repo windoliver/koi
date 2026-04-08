@@ -422,7 +422,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
 
         transcript.push({
-          senderId: "system",
+          senderId: "system:doom-loop",
           content: [
             {
               kind: "text",
@@ -556,6 +556,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         skippedByKey.delete(`${blocked.toolName}\0${blockedArgs}`);
       }
 
+      // Emit synthetic results for doom-loop-blocked calls in their original
+      // position (before live execution) to preserve transcript result ordering.
+      // This must happen before the try block so partial failures don't orphan them.
+      for (const blocked of doomLoopBlockedCalls) {
+        const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
+        appendToolResult(transcript, {
+          callId: blocked.callId,
+          toolName: blocked.toolName,
+          output: syntheticOutput,
+        });
+      }
+      doomLoopBlockedCalls = [];
+
       // Execute deduped tool calls sequentially. On success, replicate the
       // real result to any skipped duplicates so the model sees consistent
       // output for every callId. On failure (throw), the duplicates remain
@@ -615,19 +628,6 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           errorMetadata = { source: "tool_execution", message: msg };
           state = transitionTurn(state, { kind: "error", message: msg });
         }
-      } finally {
-        // Append synthetic results for doom-loop-blocked calls regardless of
-        // whether live tools succeeded or threw. Every emitted tool_call intent
-        // must have a matching tool result for transcript pairing.
-        for (const blocked of doomLoopBlockedCalls) {
-          const syntheticOutput = `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`;
-          appendToolResult(transcript, {
-            callId: blocked.callId,
-            toolName: blocked.toolName,
-            output: syntheticOutput,
-          });
-        }
-        doomLoopBlockedCalls = [];
       }
     } else if (turnText.length > 0) {
       // Text-only turn — append assistant message to transcript
