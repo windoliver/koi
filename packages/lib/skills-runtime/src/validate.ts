@@ -40,8 +40,13 @@ const frontmatterSchema = z
     "allowed-tools": z.union([z.string(), z.array(z.string())]).optional(),
     tags: z.array(z.string()).optional(),
     requires: requiresSchema.optional(),
-    // Execution mode: "inline" (default) or "fork"
-    execution: z.string().optional(),
+    // Execution mode: "inline" (default) or "fork" — validated by refine below
+    execution: z
+      .string()
+      .refine((v) => EXECUTION_MODES.has(v), {
+        message: 'execution must be "inline" or "fork"',
+      })
+      .optional(),
     // Catch-all for extra string fields (e.g., version, author)
     // Handled separately after base parse
   })
@@ -66,12 +71,10 @@ const frontmatterSchema = z
       ? rawTags.filter((t: unknown): t is string => typeof t === "string")
       : undefined;
 
-    // Normalize execution mode
+    // Execution mode already validated by .refine() above — safe to cast
     const rawExecution = raw.execution;
     const executionMode: SkillExecutionMode | undefined =
-      typeof rawExecution === "string" && EXECUTION_MODES.has(rawExecution)
-        ? (rawExecution as SkillExecutionMode)
-        : undefined;
+      typeof rawExecution === "string" ? (rawExecution as SkillExecutionMode) : undefined;
 
     // Collect extra string metadata fields (exclude known keys)
     const knownKeys = new Set([

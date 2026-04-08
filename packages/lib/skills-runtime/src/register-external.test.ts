@@ -193,4 +193,42 @@ describe("SkillsRuntime.registerExternal()", () => {
     expect(result.value.get("mcp-only")?.source).toBe("mcp");
     expect(result.value.size).toBe(3);
   });
+
+  test("load() reflects updated metadata after re-registration (no stale cache)", async () => {
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("mcp-tool", "Original description")]);
+
+    // Load the skill (caches the definition)
+    const first = await runtime.load("mcp-tool");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.body).toBe("Original description");
+
+    // Re-register with different metadata
+    runtime.registerExternal([mcpSkill("mcp-tool", "Updated description")]);
+
+    // load() should return the updated definition, not stale cache
+    const second = await runtime.load("mcp-tool");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.body).toBe("Updated description");
+  });
+
+  test("removed external skill is no longer loadable after re-registration", async () => {
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([mcpSkill("tool-a"), mcpSkill("tool-b")]);
+
+    // Load tool-a (caches it)
+    const first = await runtime.load("tool-a");
+    expect(first.ok).toBe(true);
+
+    // Re-register without tool-a
+    runtime.registerExternal([mcpSkill("tool-b")]);
+
+    // tool-a should now be NOT_FOUND
+    const second = await runtime.load("tool-a");
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("NOT_FOUND");
+  });
 });

@@ -127,4 +127,29 @@ describe("skillDefinitionToComponent", () => {
     expect(component.requires?.bins).toEqual(["git"]);
     expect(component.requires?.env).toEqual(["TOKEN"]);
   });
+
+  test("preserves executionMode through conversion", () => {
+    const def = {
+      name: "fork-skill",
+      description: "Runs in sub-agent.",
+      body: "# Fork\n\nDo this in isolation.",
+      source: "user" as const,
+      dirPath: "/tmp/fork-skill",
+      executionMode: "fork" as const,
+    };
+    const component = skillDefinitionToComponent(def);
+    expect(component.executionMode).toBe("fork");
+  });
+
+  test("omits executionMode when undefined (inline default)", () => {
+    const def = {
+      name: "inline-skill",
+      description: "Inline.",
+      body: "b",
+      source: "user" as const,
+      dirPath: "/tmp/inline",
+    };
+    const component = skillDefinitionToComponent(def);
+    expect(component.executionMode).toBeUndefined();
+  });
 });

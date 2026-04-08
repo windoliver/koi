@@ -158,16 +158,16 @@ describe("validateFrontmatter", () => {
     expect(result.value.executionMode).toBeUndefined();
   });
 
-  test("invalid execution value → executionMode is undefined (silently ignored)", () => {
+  test("invalid execution value → VALIDATION error (fail-closed)", () => {
     const result = validateFrontmatter({
       name: "s",
       description: "d",
       execution: "invalid-mode",
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // Invalid values are silently ignored — treated as no execution field
-    expect(result.value.executionMode).toBeUndefined();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("execution");
   });
 
   test("execution field is not collected into metadata", () => {

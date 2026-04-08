@@ -278,6 +278,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {

@@ -379,10 +379,27 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // ---------------------------------------------------------------------------
 
   const registerExternal = (skills: readonly SkillMetadata[]): void => {
+    const oldExternal = externalSkills;
     // Full replacement: build a new map from the provided skills.
-    // The reference identity change (externalSkills !== lastExternalRef)
-    // triggers a merged-map rebuild on next discover() call.
-    externalSkills = new Map(skills.map((s) => [s.name, s]));
+    const newExternal = new Map(skills.map((s) => [s.name, s]));
+
+    // Evict cached/inflight definitions for names that changed or were removed.
+    // Without this, load() returns stale definitions after MCP reconnect.
+    for (const [name] of oldExternal) {
+      if (!newExternal.has(name) || newExternal.get(name) !== oldExternal.get(name)) {
+        cache.delete(name);
+        loadInflight.delete(name);
+      }
+    }
+    // Also evict newly added names in case they shadow a previously-loaded filesystem skill
+    for (const [name] of newExternal) {
+      if (!oldExternal.has(name)) {
+        cache.delete(name);
+        loadInflight.delete(name);
+      }
+    }
+
+    externalSkills = newExternal;
     // Invalidate the merged meta map so discover() rebuilds it
     discoveredMetaMap = undefined;
   };

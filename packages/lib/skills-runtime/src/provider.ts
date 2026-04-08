@@ -66,6 +66,7 @@ export function createSkillProvider(runtime: SkillsRuntime): ComponentProvider {
           content: skill.body,
           ...(skill.allowedTools !== undefined ? { tags: skill.allowedTools } : {}),
           ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
+          ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),
         };
         components.set(skillToken(name), component);
       }
@@ -92,5 +93,6 @@ export function skillDefinitionToComponent(skill: SkillDefinition): SkillCompone
     description: skill.description,
     content: skill.body,
     ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
+    ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),
   };
 }
