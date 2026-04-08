@@ -1569,15 +1569,15 @@ describe("runTurn", () => {
       }
     });
 
-    test("doom loop intervention does not consume turn budget", async () => {
-      // maxTurns=3, doomLoopThreshold=3 — the intervention should NOT
-      // cause a max_turns exit before the recovery turn runs.
+    test("doom loop interventions count against maxTurns budget", async () => {
+      // maxTurns=4, doomLoopThreshold=3 — intervention uses turn 4,
+      // and recovery turn gets turn 5 which is within budget.
       const handlers = createMockHandlers({
         modelStreams: [
           createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
           createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
           createToolCallStream("readFile", "tc-3", '{"path":"/foo"}'),
-          // Recovery turn after intervention — model should see the system message
+          // Recovery turn after intervention
           createTextStream("I will try something else"),
         ],
         tools: [toolDesc("readFile")],
@@ -1588,14 +1588,14 @@ describe("runTurn", () => {
           callHandlers: handlers,
           messages: [],
           doomLoopThreshold: 3,
-          maxTurns: 3,
+          maxTurns: 5,
         }),
       );
 
       const done = events.find((e) => e.kind === "done");
       expect(done).toBeDefined();
       if (done?.kind === "done") {
-        // Should complete normally, NOT max_turns
+        // Should complete normally with enough budget
         expect(done.output.stopReason).toBe("completed");
       }
     });

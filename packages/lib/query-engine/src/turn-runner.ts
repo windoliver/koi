@@ -397,14 +397,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
         doomLoopInterventions++;
 
-        // Re-prompt without consuming the turn budget.
+        // Re-prompt the model. Doom loop interventions count against maxTurns
+        // so the turn budget remains the ultimate safety valve.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
-        const preTurnIndex = state.turnIndex;
         if (state.stopReason === "completed") {
           state = transitionTurn(state, { kind: "stop_blocked" });
         }
-        yield { kind: "turn_end", turnIndex: preTurnIndex };
-        state = { ...state, turnIndex: preTurnIndex };
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
         continue;
       }
 
@@ -499,6 +498,18 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
       }
 
+      // Append synthetic results for doom-loop-blocked calls BEFORE live
+      // execution so partial failures don't leave orphaned tool call IDs.
+      for (const blocked of doomLoopBlockedCalls) {
+        const blockedResult: ToolResult = {
+          callId: blocked.callId,
+          toolName: blocked.toolName,
+          output: `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`,
+        };
+        appendToolResult(transcript, blockedResult);
+      }
+      doomLoopBlockedCalls = [];
+
       // Execute deduped tool calls sequentially. On success, replicate the
       // real result to any skipped duplicates so the model sees consistent
       // output for every callId. On failure (throw), the duplicates remain
@@ -549,19 +560,6 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             break;
           }
         }
-        // Append synthetic results for doom-loop-blocked calls so every
-        // tool_call intent in the transcript has a matching tool result.
-        for (const blocked of doomLoopBlockedCalls) {
-          const blockedResult: ToolResult = {
-            callId: blocked.callId,
-            toolName: blocked.toolName,
-            output: `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`,
-          };
-          results.push(blockedResult);
-          appendToolResult(transcript, blockedResult);
-        }
-        doomLoopBlockedCalls = [];
-
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
         }
