@@ -113,11 +113,12 @@ export function mapSkillToSpawnRequest(
 
   if (spawnConfig.allowedTools !== undefined) {
     // Restricted fork: use toolAllowlist + explicit turn cap.
-    // agent_spawn is excluded by not being in the allowlist (allowlists
-    // are explicit — only listed tools are available to the child).
+    // Hard-filter reserved meta-tools (agent_spawn) from the allowlist
+    // to enforce the recursion guard regardless of skill metadata content.
+    const sanitized = spawnConfig.allowedTools.filter((t) => t !== "agent_spawn");
     return {
       ...base,
-      toolAllowlist: [...spawnConfig.allowedTools],
+      toolAllowlist: [...sanitized],
       maxTurns: FORK_MAX_TURNS,
     };
   }

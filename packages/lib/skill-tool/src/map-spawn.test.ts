@@ -147,6 +147,18 @@ describe("mapSkillToSpawnRequest", () => {
     expect(request.nonInteractive).toBe(true);
   });
 
+  test("strips agent_spawn from allowedTools for recursion guard", () => {
+    const skill = makeSkill();
+    const spawnConfig: SpawnConfig = {
+      agentName: "agent-f",
+      allowedTools: ["Bash", "agent_spawn", "Read"],
+    };
+    const request = mapSkillToSpawnRequest(skill, "run", spawnConfig, baseConfig);
+
+    expect(request.toolAllowlist).toEqual(["Bash", "Read"]);
+    expect(request.toolAllowlist).not.toContain("agent_spawn");
+  });
+
   test("uses skill name as default description", () => {
     const skill = makeSkill();
     const spawnConfig: SpawnConfig = { agentName: "agent-e" };
