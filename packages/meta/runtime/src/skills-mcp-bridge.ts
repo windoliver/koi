@@ -125,6 +125,25 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
   let version = 0;
   let inflight: Promise<void> | undefined;
   let unsubChange: (() => void) | undefined;
+  // Per-server last-known-good cache for partial failure merging
+  const lastKnownByServer = new Map<string, readonly SkillMetadata[]>();
+
+  /** Group skills by their server (extracted from dirPath). */
+  const groupByServer = (
+    skills: readonly SkillMetadata[],
+  ): ReadonlyMap<string, readonly SkillMetadata[]> => {
+    const groups = new Map<string, SkillMetadata[]>();
+    for (const s of skills) {
+      const server = s.dirPath.replace("mcp://", "");
+      const list = groups.get(server);
+      if (list !== undefined) {
+        list.push(s);
+      } else {
+        groups.set(server, [s]);
+      }
+    }
+    return groups;
+  };
 
   const doSync = async (propagateError: boolean): Promise<void> => {
     if (disposed) return;
@@ -139,7 +158,25 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
       // Only apply if still current and not disposed
       if (!disposed && capturedVersion === version) {
         const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
-        runtime.registerExternal(skills);
+
+        // Update per-server cache with successful servers
+        const freshByServer = groupByServer(skills);
+        for (const [server, serverSkills] of freshByServer) {
+          lastKnownByServer.set(server, serverSkills);
+        }
+
+        // Remove cached servers that are no longer in the resolver
+        // (only if they didn't fail — failed servers keep last-known-good)
+        const failedServers = new Set(resolver.failures.map((f) => sanitizeMcpName(f.serverName)));
+        for (const server of lastKnownByServer.keys()) {
+          if (!freshByServer.has(server) && !failedServers.has(server)) {
+            lastKnownByServer.delete(server);
+          }
+        }
+
+        // Merge all per-server caches into the external set
+        const merged = [...lastKnownByServer.values()].flat();
+        runtime.registerExternal(merged);
 
         // Surface skipped tools from sanitization collisions
         if (skipped.length > 0) {
@@ -214,6 +251,7 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
     disposed = true;
     unsubChange?.();
     unsubChange = undefined;
+    lastKnownByServer.clear();
     runtime.registerExternal([]);
   };
 

@@ -529,4 +529,40 @@ describe("createSkillsMcpBridge", () => {
     const clearCall = runtime.registerExternal.mock.calls[0]?.[0] as readonly SkillMetadata[];
     expect(clearCall).toHaveLength(0);
   });
+
+  test("partial server failure retains last-known-good skills for failed server", async () => {
+    // Initial: two servers, both healthy
+    const initialTools = [descriptor("alpha__search", "alpha"), descriptor("beta__read", "beta")];
+    const resolver = createMockResolver(initialTools);
+    const runtime = createMockRuntime();
+    const onSyncError = mock((_error: unknown) => {});
+    const bridge = createSkillsMcpBridge({
+      resolver: resolver as unknown as McpResolver,
+      runtime: runtime as unknown as SkillsRuntime,
+      onSyncError,
+    });
+
+    await bridge.sync();
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
+    const initial = runtime.registerExternal.mock.calls[0]?.[0] as readonly SkillMetadata[];
+    expect(initial).toHaveLength(2);
+
+    // Background refresh: beta fails, alpha returns new tools
+    resolver.discover.mockImplementation(() =>
+      Promise.resolve([descriptor("alpha__search2", "alpha")]),
+    );
+    resolver.failures = [{ serverName: "beta", error: { code: "TIMEOUT", message: "timed out" } }];
+    resolver.fireChange();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Should have alpha's new tool + beta's last-known-good
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(2);
+    const merged = runtime.registerExternal.mock.calls[1]?.[0] as readonly SkillMetadata[];
+    expect(merged).toHaveLength(2);
+    const names = merged.map((s) => s.name);
+    expect(names).toContain("alpha__search2");
+    expect(names).toContain("beta__read");
+
+    bridge.dispose();
+  });
 });
