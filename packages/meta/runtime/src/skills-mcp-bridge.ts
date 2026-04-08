@@ -40,29 +40,36 @@ export interface SkillsMcpBridge {
 // ---------------------------------------------------------------------------
 
 /**
+ * Sanitizes an MCP-controlled string to only contain safe characters.
+ * Strips anything that isn't alphanumeric, underscore, hyphen, or dot.
+ * This prevents prompt injection via tool names or server names that
+ * flow into the capability banner or SkillMetadata keys.
+ */
+function sanitizeMcpName(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 128);
+}
+
+/**
  * Maps a single MCP ToolDescriptor to a SkillMetadata entry.
  *
- * Security: the description is a safe generated string, NOT the raw MCP
- * server description. External skills bypass the skill scanner and their
- * description becomes the body injected into the system prompt by
- * createSkillInjectorMiddleware. Passing untrusted MCP text through that
- * path would be a prompt injection vector.
+ * Security: all MCP-controlled strings are sanitized before use.
+ * - name: stripped to safe characters (alphanumeric, underscore, hyphen, dot)
+ * - description: constant string — raw MCP descriptions never flow into the
+ *   system prompt (external skills bypass the skill scanner)
+ * - server/tags: sanitized
  */
 export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): SkillMetadata {
-  const server = descriptor.server ?? undefined;
+  const sanitizedName = sanitizeMcpName(descriptor.name);
+  const server = descriptor.server !== undefined ? sanitizeMcpName(descriptor.server) : undefined;
   const baseTags: readonly string[] = server !== undefined ? ["mcp", server] : ["mcp"];
   const tags: readonly string[] =
-    descriptor.tags !== undefined ? [...baseTags, ...descriptor.tags] : baseTags;
-
-  // Constant description — no MCP-controlled strings interpolated.
-  // descriptor.name and server are untrusted MCP input that could contain
-  // prompt injection payloads. The name is still used as the SkillMetadata
-  // key (for discovery/querying) but never flows into the system prompt body.
-  const safeDescription = "MCP-provided tool (external).";
+    descriptor.tags !== undefined
+      ? [...baseTags, ...descriptor.tags.map(sanitizeMcpName)]
+      : baseTags;
 
   return {
-    name: descriptor.name,
-    description: safeDescription,
+    name: sanitizedName,
+    description: "MCP-provided tool (external).",
     source: "mcp",
     dirPath: `mcp://${server ?? "unknown"}`,
     tags,
