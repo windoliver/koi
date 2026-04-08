@@ -297,12 +297,43 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_end": {
-      // tool_call_end carries AccumulatedToolCall metadata from the model
-      // stream before execution. Do NOT mark complete — the tool hasn't
-      // run yet. Real output arrives via tool_result. For legacy streams
-      // without tool_result, finalizeAssistant() will mark the block as
-      // error on done/turn_end, which is safer than falsely showing success.
-      return state;
+      // In migrated streams, tool_call_end carries AccumulatedToolCall
+      // metadata (rawArgs, parsedArgs) — not execution output. Skip those.
+      // For legacy streams with real execution output, mark complete as
+      // a backward-compatible fallback so the tool doesn't falsely show
+      // as error via finalizeAssistant().
+      const found = findLastAssistant(state.messages);
+      if (!found) return state;
+
+      const callId = event.callId as string;
+      const tool = findToolBlock(found.msg.blocks, callId);
+      if (!tool) return state;
+
+      // If already completed by tool_result, don't overwrite.
+      if (tool.block.status === "complete") return state;
+
+      // Detect AccumulatedToolCall metadata — skip it (not execution output).
+      const result = event.result;
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        "rawArgs" in (result as Record<string, unknown>) &&
+        "callId" in (result as Record<string, unknown>)
+      ) {
+        return state;
+      }
+
+      // Legacy fallback: non-metadata result → mark complete.
+      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+        ...tool.block,
+        status: "complete",
+        result: capResult(result),
+      });
+
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+      };
     }
 
     case "tool_result": {

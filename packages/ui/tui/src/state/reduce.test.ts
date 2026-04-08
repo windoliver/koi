@@ -349,7 +349,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_end is a no-op — keeps block running", () => {
+  test("tool_call_end with AccumulatedToolCall metadata is a no-op", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "tool_call",
@@ -362,7 +362,8 @@ describe("reduce — engine_event — tool_call", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
-    const toolResult = {
+    // AccumulatedToolCall metadata has rawArgs + callId — should be skipped
+    const metadata = {
       toolName: "ls",
       callId: "call-1",
       rawArgs: '{"dir":"."}',
@@ -370,9 +371,8 @@ describe("reduce — engine_event — tool_call", () => {
     };
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: toolResult }),
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: metadata }),
     );
-    // tool_call_end is a no-op — block stays running until tool_result
     expect(next).toBe(state);
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
@@ -380,7 +380,38 @@ describe("reduce — engine_event — tool_call", () => {
       if (block.kind === "tool_call") {
         expect(block.status).toBe("running");
         expect(block.result).toBeUndefined();
-        expect(block.args).toBe('{"dir":"."}'); // args preserved
+      }
+    }
+  });
+
+  test("tool_call_end with real output marks complete (legacy fallback)", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "running",
+        args: '{"dir":"."}',
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    // Real execution output (no rawArgs/callId) — legacy fallback should complete
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_end",
+        callId: testCallId("call-1"),
+        result: { files: ["a.ts", "b.ts"] },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("complete");
+        expect(block.result).toBe('{"files":["a.ts","b.ts"]}');
       }
     }
   });
