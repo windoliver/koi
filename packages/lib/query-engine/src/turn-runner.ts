@@ -92,6 +92,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let doomLoopStreaks = new Map<string, number>();
   // let justified: mutable doom-loop intervention counter
   let doomLoopInterventions = 0;
+  // let justified: mutable — tool calls blocked by doom-loop filtering in mixed turns
+  let doomLoopBlockedCalls: AccumulatedToolCall[] = [];
   const startTime = performance.now();
 
   // Pre-flight: handle already-aborted signal before entering the state machine.
@@ -408,13 +410,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       if (hasRepeated && !allRepeated) {
         // Mixed turn: filter out repeated calls, keep new ones.
-        // Repeated calls are silently dropped — they already ran before.
+        // Repeated calls get synthetic tool results to keep transcript pairing
+        // consistent — every tool_call intent must have a matching tool result.
         const blockedNames = [...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName);
-        dedupedToolCalls = dedupedToolCalls.filter((tc) => {
+        // let justified: mutable — partition into blocked and allowed calls
+        const doomLoopBlocked: typeof dedupedToolCalls = [];
+        const allowed: typeof dedupedToolCalls = [];
+        for (const tc of dedupedToolCalls) {
           const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
           const key = `${tc.toolName}\0${cArgs}`;
-          return !repeatedKeys.has(key);
-        });
+          if (repeatedKeys.has(key)) {
+            doomLoopBlocked.push(tc);
+          } else {
+            allowed.push(tc);
+          }
+        }
+        dedupedToolCalls = allowed;
+        // Append synthetic tool results for blocked calls after execution
+        // (handled below in the tool_execution block via doomLoopBlockedCalls)
+        doomLoopBlockedCalls = doomLoopBlocked;
         yield {
           kind: "custom",
           type: "doom_loop_filtered",
@@ -535,6 +549,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             break;
           }
         }
+        // Append synthetic results for doom-loop-blocked calls so every
+        // tool_call intent in the transcript has a matching tool result.
+        for (const blocked of doomLoopBlockedCalls) {
+          const blockedResult: ToolResult = {
+            callId: blocked.callId,
+            toolName: blocked.toolName,
+            output: `[Doom loop]: This call was blocked because "${blocked.toolName}" was called with identical arguments ${doomLoopThreshold} turns in a row.`,
+          };
+          results.push(blockedResult);
+          appendToolResult(transcript, blockedResult);
+        }
+        doomLoopBlockedCalls = [];
+
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
         }
