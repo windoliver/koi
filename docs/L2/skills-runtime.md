@@ -305,9 +305,55 @@ External (MCP) skills and filesystem skills use **separate internal caches**. Wh
 2. A thin bridge package (or L3 `@koi/runtime`) imports both and wires the mapping
 3. The bridge listens to `McpResolver.onChange()` and calls `registerExternal()` with updated skills
 
+## Skill Injection Middleware
+
+`createSkillInjectorMiddleware` reads `SkillComponent` entries from the agent ECS and prepends their content into `request.systemPrompt` so the model follows skill guidance.
+
+```typescript
+import { createSkillInjectorMiddleware } from "@koi/skills-runtime";
+import type { Agent } from "@koi/core";
+
+// Lazy agent ref — middleware created before createKoi assembles the entity
+const agentRef: { current?: Agent } = {};
+const injector = createSkillInjectorMiddleware({
+  agent: () => {
+    if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+    return agentRef.current;
+  },
+});
+
+// Pass to createKoi alongside the skill provider
+const runtime = await createKoi({
+  middleware: [injector],
+  providers: [createSkillProvider(skillRuntime)],
+});
+agentRef.current = runtime.agent;
+```
+
+**Design:**
+- Phase: `"resolve"`, priority 300 — after permissions, before observability
+- Skills sorted alphabetically by name for deterministic `systemPrompt` text
+- Accepts `Agent | (() => Agent)` — direct reference or lazy thunk
+- `describeCapabilities` returns a fragment listing active skill count and names
+- Passthrough (no copy) when no skills are attached
+
+## ComponentProvider Bridge
+
+`createSkillProvider` bridges a `SkillsRuntime` to the agent ECS at assembly time:
+
+```typescript
+import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
+
+const runtime = createSkillsRuntime();
+const provider = createSkillProvider(runtime);
+// Pass to createKoi({ providers: [provider] })
+```
+
+Each loaded skill becomes a `SkillComponent` under `skillToken(name)`. Skipped skills (NOT_FOUND, VALIDATION, PERMISSION) are reported as `SkippedComponent` entries.
+
 ## Dependencies
 
-- `@koi/core` (L0) — `KoiError`, `Result`
+- `@koi/core` (L0) — `KoiError`, `Result`, `Agent`, `SkillComponent`, `KoiMiddleware`
 - `@koi/skill-scanner` (L0u) — AST-based security scanning
 - `@koi/validation` (L0u) — severity comparison, Zod error mapping
 - `zod` (external) — frontmatter schema validation

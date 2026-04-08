@@ -52,6 +52,7 @@ import {
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createSkillsRuntime } from "@koi/skills-runtime";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashTool } from "@koi/tools-bash";
@@ -369,11 +370,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   const tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
+  // --- @koi/skills-runtime: discover + load user skills for system prompt injection ---
+  // Skills are loaded once at startup and prepended to the system prompt.
+  // Discovery follows standard tier precedence: project > user > bundled.
+  const skillRuntime = createSkillsRuntime();
+  const skillContent = await (async (): Promise<string> => {
+    const outer = await skillRuntime.loadAll();
+    if (!outer.ok) return "";
+    const parts: string[] = [];
+    for (const [, result] of outer.value) {
+      if (result.ok) parts.push(result.value.body);
+    }
+    return parts.sort().join("\n\n---\n\n");
+  })();
+  const systemPrompt =
+    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+
   const runtime = createRuntime({
     adapter: rawEngineAdapter,
     middleware: [
       createSessionTranscriptMiddleware({ transcript: jsonlTranscript, sessionId: tuiSessionId }),
-      createSystemPromptMiddleware(DEFAULT_SYSTEM_PROMPT),
+      createSystemPromptMiddleware(systemPrompt),
     ],
     // Wire fs_read, fs_write, fs_edit via the meta-runtime filesystem facility.
     // createRuntime stacks these on top of rawEngineAdapter.terminals.toolCall
