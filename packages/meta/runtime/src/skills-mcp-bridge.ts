@@ -100,7 +100,7 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
 
   const sync = async (): Promise<void> => {
     // Subscribe before first discover so changes during sync set dirty flag
-    if (unsubChange === undefined && !disposed) {
+    if (unsubChange === undefined && !disposed && resolver.onChange !== undefined) {
       unsubChange = resolver.onChange(() => {
         void syncFromResolver();
       });
