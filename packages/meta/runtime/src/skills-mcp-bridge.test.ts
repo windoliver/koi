@@ -79,8 +79,8 @@ describe("mapToolDescriptorToSkillMetadata", () => {
     const result = mapToolDescriptorToSkillMetadata(td);
 
     expect(result.name).toBe("myserver__search");
-    // Safe generated description — not raw MCP server text
-    expect(result.description).toBe('MCP tool "myserver__search" from server "myserver".');
+    // Constant safe description — no MCP-controlled strings
+    expect(result.description).toBe("MCP-provided tool (external).");
     expect(result.source).toBe("mcp");
     expect(result.dirPath).toBe("mcp://myserver");
     expect(result.tags).toEqual(["mcp", "myserver", "ai"]);
@@ -111,16 +111,17 @@ describe("mapToolDescriptorToSkillMetadata", () => {
     };
     const result = mapToolDescriptorToSkillMetadata(td);
 
-    // Description should be the safe generated form, not the raw server text
-    expect(result.description).toBe('MCP tool "srv__evil" from server "srv".');
+    // Description should be constant, not contain any MCP-controlled text
+    expect(result.description).toBe("MCP-provided tool (external).");
     expect(result.description).not.toContain("IGNORE");
+    expect(result.description).not.toContain("srv__evil");
   });
 
-  test("uses safe description without server field", () => {
+  test("uses same constant description regardless of server field", () => {
     const td = descriptor("orphan__tool");
     const result = mapToolDescriptorToSkillMetadata(td);
 
-    expect(result.description).toBe('MCP tool "orphan__tool".');
+    expect(result.description).toBe("MCP-provided tool (external).");
   });
 
   test("does not include executionMode (runtime default)", () => {

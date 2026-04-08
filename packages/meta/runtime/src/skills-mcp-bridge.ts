@@ -54,11 +54,11 @@ export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): Sk
   const tags: readonly string[] =
     descriptor.tags !== undefined ? [...baseTags, ...descriptor.tags] : baseTags;
 
-  // Safe generated description — never pass raw MCP server text as skill body
-  const safeDescription =
-    server !== undefined
-      ? `MCP tool "${descriptor.name}" from server "${server}".`
-      : `MCP tool "${descriptor.name}".`;
+  // Constant description — no MCP-controlled strings interpolated.
+  // descriptor.name and server are untrusted MCP input that could contain
+  // prompt injection payloads. The name is still used as the SkillMetadata
+  // key (for discovery/querying) but never flows into the system prompt body.
+  const safeDescription = "MCP-provided tool (external).";
 
   return {
     name: descriptor.name,
