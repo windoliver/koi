@@ -148,8 +148,15 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
       unsubChange = resolver.onChange(onChangeHandler);
     }
 
-    // Initial sync propagates errors so the caller can fail fast
-    await syncFromResolver(true);
+    try {
+      // Initial sync propagates errors so the caller can fail fast
+      await syncFromResolver(true);
+    } catch (error: unknown) {
+      // Unsubscribe on failed initial sync — don't leave a stale listener
+      unsubChange?.();
+      unsubChange = undefined;
+      throw error;
+    }
   };
 
   const dispose = (): void => {

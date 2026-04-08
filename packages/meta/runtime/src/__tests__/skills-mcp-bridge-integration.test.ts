@@ -89,7 +89,8 @@ describe("skills-mcp bridge integration", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
     expect(loaded.value.source).toBe("mcp");
-    expect(loaded.value.body).toBe("Tool alpha__search");
+    // Body is the safe generated description, not raw MCP text
+    expect(loaded.value.body).toBe('MCP tool "alpha__search" from server "alpha".');
 
     bridge.dispose();
 
