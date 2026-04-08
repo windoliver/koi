@@ -638,7 +638,7 @@ describe("verification nudge", () => {
 // ---------------------------------------------------------------------------
 
 describe("task_delegate", () => {
-  test("delegates a pending task — in_progress owned by coordinator, delegatedTo in metadata", async () => {
+  test("delegates a pending task — stays pending, delegatedTo recorded in metadata", async () => {
     const { create, delegate } = await setup();
     const r = await exec(create, { subject: "Auth module", description: "Implement OAuth2" });
     expect(r.ok).toBe(true);
@@ -646,14 +646,14 @@ describe("task_delegate", () => {
 
     const dr = await exec(delegate, { task_id: id, agent_id: "child-agent-1" });
     expect(dr.ok).toBe(true);
-    // Coordinator owns the in_progress task; child name is recorded in delegatedTo.
+    // Pure metadata delegation: task stays pending, no assignedTo change.
     const task = dr.task as Record<string, unknown>;
-    expect(task.status).toBe("in_progress");
-    expect(task.assignedTo).toBe("agent-1"); // coordinator keeps ownership (#1416)
+    expect(task.status).toBe("pending");
+    expect(task.assignedTo).toBeUndefined();
     expect((dr as Record<string, unknown>).delegatedTo).toBe("child-agent-1");
   });
 
-  test("allows N tasks to be delegated simultaneously without coordinator in_progress conflict", async () => {
+  test("allows N tasks to be delegated simultaneously — all stay pending", async () => {
     const { create, delegate } = await setup();
     const r1 = await exec(create, { subject: "Task A", description: "First" });
     const r2 = await exec(create, { subject: "Task B", description: "Second" });
@@ -669,10 +669,10 @@ describe("task_delegate", () => {
     expect(d1.ok).toBe(true);
     expect(d2.ok).toBe(true);
     expect(d3.ok).toBe(true);
-    // All tasks move to in_progress — coordinator owns all, child names in metadata.
-    expect((d1.task as Record<string, unknown>).status).toBe("in_progress");
-    expect((d2.task as Record<string, unknown>).status).toBe("in_progress");
-    expect((d3.task as Record<string, unknown>).status).toBe("in_progress");
+    // Pure metadata delegation: all tasks remain pending, no ownership conflicts.
+    expect((d1.task as Record<string, unknown>).status).toBe("pending");
+    expect((d2.task as Record<string, unknown>).status).toBe("pending");
+    expect((d3.task as Record<string, unknown>).status).toBe("pending");
   });
 
   test("rejects re-delegation of an already-delegated task", async () => {
@@ -728,24 +728,25 @@ describe("task_delegate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// task_update regression — single-in-progress guard still active after delegation
+// task_update regression — delegation does not block in_progress
 // ---------------------------------------------------------------------------
 
-describe("task_update regression — in_progress guard survives delegation", () => {
-  test("task_update cannot start a second task when one is already delegated (in_progress)", async () => {
+describe("task_update regression — delegation does not block in_progress", () => {
+  test("task_update can start a task after another is delegated (delegation is metadata-only)", async () => {
     const { create, update, delegate } = await setup();
     const r1 = await exec(create, { subject: "Delegated task", description: "Delegated" });
     const r2 = await exec(create, { subject: "Worker task", description: "For worker" });
     const id1 = (r1.task as Record<string, unknown>).id as string;
     const id2 = (r2.task as Record<string, unknown>).id as string;
 
-    // Delegate task 1 — coordinator owns it in_progress; board prevents second in_progress.
-    await exec(delegate, { task_id: id1, agent_id: "child-1" });
+    // Delegate task 1 — pure metadata only, task stays pending, no in_progress held.
+    const dr = await exec(delegate, { task_id: id1, agent_id: "child-1" });
+    expect(dr.ok).toBe(true);
+    expect((dr.task as Record<string, unknown>).status).toBe("pending");
 
-    // task_update trying to claim task 2 as in_progress should fail.
+    // task_update can now claim task 2 as in_progress — no ownership conflict.
     const ur = await exec(update, { task_id: id2, status: "in_progress" });
-    expect(ur.ok).toBe(false);
-    expect(String(ur.error)).toMatch(/in_progress/);
+    expect(ur.ok).toBe(true);
   });
 });
 

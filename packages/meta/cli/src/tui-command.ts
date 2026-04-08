@@ -26,6 +26,7 @@
  *   Bash                 — shell execution via @koi/tools-bash
  *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
  *   task_create, task_get, task_update, task_list, task_stop, task_output, task_delegate — task management via @koi/task-tools
+ *   agent_spawn — intentionally NOT registered until workers route through createKoi (#1582)
  */
 
 import { readdir } from "node:fs/promises";
@@ -41,7 +42,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { agentId, DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
@@ -290,95 +291,12 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     },
   });
 
-  // --- Spawn tools (agent_spawn) — reuses taskBoard from above ---
-  const { createSpawnTools } = await import("@koi/spawn-tools");
-  const coordinatorId = agentId("tui-coordinator");
-  // Real spawn: runs a child agent via runTurn with the same model adapter.
-  // The child gets the coordinator's tools and produces output as a string.
-  // This is a lightweight in-process spawn — no process registry or lifecycle,
-  // just a nested model→tool→model loop (same pattern as CC's Agent tool).
-  // let: mutable — populated after allTools is built (circular ref: spawn needs tools, tools include spawn)
-  let toolRegistryRef: ReadonlyMap<string, Tool> = new Map();
-  let toolDescriptorsRef: readonly ToolDescriptor[] = [];
-  // Worker tool set: read-only tools only.
-  // Bash is intentionally excluded from worker tools: child agents run via raw
-  // runTurn without middleware (no exfiltration guard, no permissions, no
-  // transcript), so unsandboxed Bash in a child would be unguarded.
-  // Tracked in #1582 (createKoi migration for worker agents).
-  // TODO(#1582): once workers route through createKoi, re-enable Bash + web_fetch
-  // behind the same middleware stack as the coordinator.
-  const workerToolNames = new Set(["Glob", "Grep"]);
-  const realSpawnFn: import("@koi/core").SpawnFn = async (request) => {
-    // Filter to worker-appropriate tools (exclude TodoWrite, PlanMode, spawn, task tools)
-    const childToolDescriptors = toolDescriptorsRef.filter((t) => workerToolNames.has(t.name));
-    const childCallHandlers: import("@koi/core").ComposedCallHandlers = {
-      modelCall: modelAdapter.complete,
-      modelStream: modelAdapter.stream,
-      toolCall: async (toolReq) => {
-        const tool = toolRegistryRef.get(toolReq.toolId);
-        if (tool === undefined || !workerToolNames.has(toolReq.toolId)) {
-          return { output: { error: `Tool not available for worker: ${toolReq.toolId}` } };
-        }
-        const result = await tool.execute(toolReq.input);
-        return { output: result };
-      },
-      tools: childToolDescriptors,
-    };
-    let output = "";
-    try {
-      for await (const event of runTurn({
-        callHandlers: childCallHandlers,
-        messages: [
-          {
-            senderId: "system",
-            timestamp: Date.now(),
-            content: [
-              {
-                kind: "text" as const,
-                text:
-                  "You are a worker agent. Complete the task using your tools. " +
-                  "Actually execute the work (write files, run commands) — do not just describe what you would do. " +
-                  "Be concise in your text output: summarize what you did.",
-              },
-            ],
-          },
-          {
-            senderId: "user",
-            timestamp: Date.now(),
-            content: [{ kind: "text" as const, text: request.description }],
-          },
-        ],
-        maxTurns: 8,
-      })) {
-        if (event.kind === "text_delta") {
-          output += event.delta;
-        }
-        if (event.kind === "tool_call_start") {
-          process.stderr.write(`[spawn] child tool: ${event.toolName}\n`);
-        }
-      }
-      return { ok: true as const, output: output || "(child produced no text output)" };
-    } catch (err: unknown) {
-      return {
-        ok: false as const,
-        error: {
-          code: "INTERNAL" as const,
-          message: err instanceof Error ? err.message : String(err),
-          retryable: false,
-        },
-      };
-    }
-  };
-  const spawnTools = createSpawnTools({
-    spawnFn: realSpawnFn,
-    board: taskBoard,
-    agentId: coordinatorId,
-    signal: AbortSignal.timeout(300_000),
-  });
-
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
   // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
+  // agent_spawn is intentionally NOT registered: child workers only have Glob/Grep
+  // (read-only), but the child prompt says "write files, run commands" which they
+  // can't do. Remove until workers route through createKoi with full middleware (#1582).
   const allTools: readonly Tool[] = [
     globTool,
     grepTool,
@@ -386,17 +304,12 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     bashTool,
     todoTool,
     ...taskTools,
-    ...spawnTools,
   ];
   const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>(
     allTools.map((t) => [t.descriptor.name, t]),
   );
 
   const localToolDescriptors: readonly ToolDescriptor[] = allTools.map((t) => t.descriptor);
-
-  // Wire spawn's tool refs now that allTools is built (breaks the circular ref).
-  toolRegistryRef = localTools;
-  toolDescriptorsRef = localToolDescriptors;
 
   const rawEngineAdapter: EngineAdapter = {
     engineId: "koi-tui",

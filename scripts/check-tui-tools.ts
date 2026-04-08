@@ -20,7 +20,11 @@ const GOLDEN_INTERACTION_TOOLS = ["TodoWrite"] as const;
 
 const GOLDEN_TASK_TOOLS = ["task_create", "task_delegate"] as const;
 
-const GOLDEN_SPAWN_TOOLS = ["agent_spawn"] as const;
+// agent_spawn is intentionally NOT in TUI until workers route through createKoi
+// with full middleware (Bash, web_fetch, exfiltration guard, permissions) — tracked in #1582.
+// Without createKoi, child workers only have Glob/Grep (read-only) but the prompt
+// says "write files, run commands", causing misleading ok:true responses.
+const GOLDEN_SPAWN_TOOLS: readonly string[] = [] as const;
 
 const ALL_GOLDEN_TOOLS = [
   ...GOLDEN_INTERACTION_TOOLS,

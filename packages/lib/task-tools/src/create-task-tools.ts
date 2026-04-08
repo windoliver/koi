@@ -78,6 +78,6 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     createTaskListTool(board),
     createTaskStopTool(board, agentId),
     createTaskOutputTool(board, agentId, config),
-    createTaskDelegateTool(board, agentId),
+    createTaskDelegateTool(board),
   ];
 }
