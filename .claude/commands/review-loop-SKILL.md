@@ -3,8 +3,9 @@ name: review-loop
 description: >
   Adversarial review-fix convergence loop. Runs Codex adversarial-review,
   fixes every finding, then reviews again — up to 10 rounds or until clean.
-  Use when asked to "review loop", "review and fix", "harden this code",
-  or "keep reviewing until clean".
+  Triggers on: "review loop", "review and fix", "harden this code",
+  "keep reviewing until clean", "adversarial review", "codex review".
+allowed-tools: Bash Read Write Edit Glob Grep Agent
 ---
 
 # Adversarial Review-Fix Loop

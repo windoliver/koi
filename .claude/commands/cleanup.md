@@ -1,6 +1,10 @@
 ---
 name: cleanup
-description: Clean up unused worktrees, merged local branches, and orphaned Codex broker processes to free memory and reduce fseventsd load.
+description: >
+  Clean up unused worktrees, merged local branches, and orphaned Codex broker
+  processes. Use when the system feels slow, fseventsd is using too much memory,
+  or after finishing a batch of PRs. Triggers on: "clean up", "free memory",
+  "remove old worktrees", "prune branches", "kill orphaned processes".
 allowed-tools: Bash Read Glob Grep
 ---
 
