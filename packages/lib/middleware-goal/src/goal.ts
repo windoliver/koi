@@ -708,6 +708,11 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const turnKey = String(ctx.turnId);
 
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
+      ctx.reportDecision?.({
+        injected: inject,
+        completedCount: state.items.filter((i) => i.completed).length,
+        totalCount: state.items.length,
+      });
       const enrichedRequest = inject
         ? {
             ...request,
@@ -741,6 +746,11 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const turnKey = String(ctx.turnId);
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
+      ctx.reportDecision?.({
+        injected: inject,
+        completedCount: state.items.filter((i) => i.completed).length,
+        totalCount: state.items.length,
+      });
       const enrichedRequest = inject
         ? {
             ...request,

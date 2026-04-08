@@ -121,19 +121,33 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     priority: 300,
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      return next(injectSkills(resolveAgent(agentOrFn), request));
+      const agent = resolveAgent(agentOrFn);
+      const skills = sortedSkills(agent);
+      ctx.reportDecision?.({
+        injected: skills.length > 0,
+        skillCount: skills.length,
+        skills: skills.map((s) => s.name),
+      });
+      return next(injectSkills(agent, request));
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      yield* next(injectSkills(resolveAgent(agentOrFn), request));
+      const agent = resolveAgent(agentOrFn);
+      const skills = sortedSkills(agent);
+      ctx.reportDecision?.({
+        injected: skills.length > 0,
+        skillCount: skills.length,
+        skills: skills.map((s) => s.name),
+      });
+      yield* next(injectSkills(agent, request));
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

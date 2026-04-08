@@ -597,6 +597,20 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         };
       }
 
+      // Report post-call hook fire records for trace recording
+      if (Array.isArray(postResultsOrTimeout) && postResultsOrTimeout.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.succeeded",
+          toolId: request.toolId,
+          hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) => ({
+            name: r.hookName,
+            decision: r.ok ? r.decision.kind : "error",
+            durationMs: r.durationMs,
+            ...(r.ok === false ? { error: r.error } : {}),
+          })),
+        });
+      }
+
       const postDecision = aggregatePostDecisions(postResultsOrTimeout);
 
       if (postDecision.kind === "transform") {
