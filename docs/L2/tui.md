@@ -28,20 +28,32 @@ EngineEvent (from @koi/core)
            │
            ▼
 ┌──────────────────────┐
-│  TuiStore            │  ← thin wrapper (~70 LOC)
-│  - getState()        │     always returns latest state
-│  - dispatch(action)  │     applies reducer + microtask-batched notify
-│  - dispatchBatch()   │     reduces N actions in one pass, single notify
-│  - subscribe(fn)     │     returns unsubscribe function
+│  TuiStore            │  ← SolidJS store + reconcile()
+│  - getState()        │     returns reactive proxy
+│  - dispatch(action)  │     reducer + reconcile() deep-diff
+│  - dispatchBatch()   │     reduces N actions, single reconcile
+│  - subscribe(fn)     │     external listener (non-Solid consumers)
 └──────────────────────┘
            │
            ▼
 ┌──────────────────────┐
-│  TuiStateContext      │  ← one shared reactive signal per component tree
-│  createStoreSignal()  │     adapts TuiStore → Solid Accessor<TuiState>
-│  useTuiStore(sel)     │     returns Accessor<T> (call as sel() in JSX)
+│  useTuiStore(sel)     │  ← direct getter (no createMemo)
+│                       │     SolidJS tracks reads at call site
+│                       │     works for scalars AND objects/arrays
 └──────────────────────┘
 ```
+
+### Streaming Features
+
+- **Thinking indicator**: animated `⠹ Thinking…` spinner while waiting for first token
+- **Progressive streaming**: frame-rate-limited flush+yield (16ms) for all streaming events
+- **Code block isolation**: splits at unclosed fence, memoizes stable head
+- **Markdown healing**: code-aware closer for unclosed formatting (width-aware fences)
+- **Accordion collapse**: tool results collapsed by default (Ctrl+E toggle-all)
+- **Auto-scroll**: scroll-up pauses, selection preserves scroll, settle on stream end
+- **Prompt history**: arrow up/down (session-scoped, clears on reset)
+- **Diff display**: unified diffs for `_edit` tools (supports `edits[]` schema)
+- **Elapsed timer**: `streaming… 5s` in status bar during processing
 
 ## State Shape
 
@@ -61,10 +73,14 @@ interface TuiState {
   readonly agentStatus: AgentStatus;              // idle | processing | error
   // Session picker data (Phase 2j-4)
   readonly sessions: readonly SessionSummary[];   // sorted most-recent-first, max 50
+  // Streaming & tool display (#1581)
+  readonly runningToolCount: number;              // O(1) check for spinner activation
+  readonly toolsExpanded: boolean;                // Ctrl+E toggle for accordion collapse
 }
 ```
 
-Eleven flat fields. Rule of Three: group only at 12+ fields.
+Thirteen flat fields. `runningToolCount` replaced the O(messages*blocks) `hasRunningTools` scan.
+`toolsExpanded` is the global toggle for tool result accordion collapse (Ctrl+E).
 
 `PlanTask` is a rendering-only type with `id`, `description`, and `status` — the TUI
 never imports `TaskItem` from `@koi/core`.

@@ -296,7 +296,7 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
       });
 
       if (state.planTasks === null) {
-        (state as { planTasks: PlanTask[] }).planTasks = [buildTask()];
+        (state as unknown as { planTasks: PlanTask[] }).planTasks = [buildTask()];
         break;
       }
       const tasks = state.planTasks as PlanTask[];
@@ -399,7 +399,7 @@ export function mutate(state: Draft, action: TuiAction): void {
     }
 
     case "clear_messages":
-      (state as { messages: TuiMessage[] }).messages = [];
+      (state as unknown as { messages: TuiMessage[] }).messages = [];
       (state as { agentStatus: string }).agentStatus = "idle";
       (state as { planTasks: null }).planTasks = null;
       (state as { runningToolCount: number }).runningToolCount = 0;
@@ -468,7 +468,10 @@ export function mutate(state: Draft, action: TuiAction): void {
         }
       }
       if (historical.length === 0) break;
-      (state as { messages: TuiMessage[] }).messages = [...historical, ...state.messages];
+      (state as unknown as { messages: TuiMessage[] }).messages = [
+        ...historical,
+        ...state.messages,
+      ];
       maybeCompact(state);
       break;
     }

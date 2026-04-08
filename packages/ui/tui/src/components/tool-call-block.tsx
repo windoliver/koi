@@ -195,7 +195,7 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
       <box
         flexDirection="row"
         gap={1}
-        onClick={isComplete() ? () => setLocalExpanded((e) => !e) : undefined}
+        onMouseDown={isComplete() ? () => setLocalExpanded((e: boolean) => !e) : undefined}
       >
         <StatusIndicator status={props.block.status} spinnerFrame={props.spinnerFrame} />
         <Show

@@ -101,8 +101,16 @@ koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 
 ### `koi tui`
 
-Interactive terminal console. Opens a full-screen OpenTUI terminal UI with real model streaming,
+Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
 conversation history, command palette (Ctrl+P), and view switching (sessions, doctor, help).
+
+**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with frame-rate-limited
+yielding (flush + yield every 16ms for text/thinking/tool events) so OpenTUI can paint intermediate
+frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store uses `reconcile()` for
+fine-grained signal updates.
+
+**Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
+(session-scoped); PageUp/PageDown pauses auto-scroll.
 
 ```bash
 koi tui

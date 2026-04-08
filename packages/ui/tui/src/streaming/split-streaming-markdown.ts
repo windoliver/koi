@@ -103,7 +103,7 @@ function collectFences(
 
   let match: RegExpExecArray | null = FENCE_RE.exec(text);
   while (match !== null) {
-    result.push({ index: match.index, width: match[1]?.length });
+    result.push({ index: match.index, width: match[1]?.length ?? 3 });
     match = FENCE_RE.exec(text);
   }
 

@@ -115,7 +115,7 @@ export function MessageList(props: MessageListProps): JSX.Element {
 
   // Text selection pauses auto-scroll
   useSelectionHandler((selection) => {
-    if (selection && selection.text.length > 0) {
+    if (selection !== null && selection !== undefined) {
       setScrollState((s) => onSelectionStart(s));
     } else {
       setScrollState((s) => onSelectionEnd(s));
@@ -139,11 +139,12 @@ export function MessageList(props: MessageListProps): JSX.Element {
       flexGrow={1}
       stickyScroll={shouldFollow(scrollState())}
       stickyStart="bottom"
-      onMouseScroll={(event: { readonly deltaY: number }) => {
-        if (event.deltaY < 0) {
+      onMouseScroll={(event) => {
+        // MouseEvent.y is the vertical scroll position; negative = scroll up
+        const deltaY = "deltaY" in event ? (event as { readonly deltaY: number }).deltaY : event.y;
+        if (deltaY < 0) {
           setScrollState((s) => onScrollUp(s));
         } else if (isAtBottom()) {
-          // Only resume follow when viewport has actually reached the bottom
           setScrollState((s) => onScrollToBottom(s));
         }
       }}
