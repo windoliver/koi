@@ -347,4 +347,21 @@ describe("createSkillsMcpBridge", () => {
     // onSyncError callback invoked
     expect(onSyncError).toHaveBeenCalledTimes(1);
   });
+
+  test("initial sync() propagates discover() errors to the caller", async () => {
+    const resolver = createMockResolver([]);
+    resolver.discover.mockImplementation(() => Promise.reject(new Error("startup failure")));
+    const runtime = createMockRuntime();
+    const bridge = createSkillsMcpBridge({
+      resolver: resolver as unknown as McpResolver,
+      runtime: runtime as unknown as SkillsRuntime,
+    });
+
+    await expect(bridge.sync()).rejects.toThrow("startup failure");
+
+    // Skills cleared on failure
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
+    const clearCall = runtime.registerExternal.mock.calls[0]?.[0] as readonly SkillMetadata[];
+    expect(clearCall).toHaveLength(0);
+  });
 });

@@ -68,7 +68,7 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
   let version = 0;
   let unsubChange: (() => void) | undefined;
 
-  const syncFromResolver = async (): Promise<void> => {
+  const syncFromResolver = async (propagateError: boolean): Promise<void> => {
     if (disposed || syncInFlight) {
       if (syncInFlight) {
         dirty = true;
@@ -93,6 +93,9 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
         runtime.registerExternal([]);
       }
       onSyncError?.(error);
+      if (propagateError) {
+        throw error;
+      }
     } finally {
       syncInFlight = false;
     }
@@ -100,7 +103,7 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
     // Re-sync if onChange fired during our discover()
     if (dirty && !disposed) {
       dirty = false;
-      await syncFromResolver();
+      await syncFromResolver(false);
     }
   };
 
@@ -108,11 +111,12 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
     // Subscribe before first discover so changes during sync set dirty flag
     if (unsubChange === undefined && !disposed && resolver.onChange !== undefined) {
       unsubChange = resolver.onChange(() => {
-        void syncFromResolver();
+        void syncFromResolver(false);
       });
     }
 
-    await syncFromResolver();
+    // Initial sync propagates errors so the caller can fail fast
+    await syncFromResolver(true);
   };
 
   const dispose = (): void => {
