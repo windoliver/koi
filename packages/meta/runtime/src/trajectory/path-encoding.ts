@@ -16,9 +16,13 @@ export function encodeDocId(docId: string): string {
   return encodeURIComponent(docId).replace(/\./g, "%2E");
 }
 
-/** Decode a filename back to the original docId. */
-export function decodeDocId(encoded: string): string {
-  return decodeURIComponent(encoded);
+/** Decode a filename back to the original docId. Returns undefined for malformed percent escapes. */
+export function decodeDocId(encoded: string): string | undefined {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Build a filename from a docId. */
@@ -26,7 +30,7 @@ export function docIdToFilename(docId: string): string {
   return `${encodeDocId(docId)}${EXTENSION}`;
 }
 
-/** Extract the docId from a filename, or undefined if not an ATIF file. */
+/** Extract the docId from a filename, or undefined if not an ATIF file or malformed. */
 export function filenameToDocId(filename: string): string | undefined {
   if (!filename.endsWith(EXTENSION)) return undefined;
   return decodeDocId(filename.slice(0, -EXTENSION.length));

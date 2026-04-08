@@ -43,4 +43,13 @@ describe("docIdToFilename / filenameToDocId", () => {
     expect(filenameToDocId("readme.md")).toBeUndefined();
     expect(filenameToDocId("data.json")).toBeUndefined();
   });
+
+  test("filenameToDocId returns undefined for malformed percent escapes", () => {
+    expect(filenameToDocId("bad%ZZ.atif.json")).toBeUndefined();
+    expect(filenameToDocId("%E0%A4%A.atif.json")).toBeUndefined();
+  });
+
+  test("decodeDocId returns undefined for malformed percent escapes", () => {
+    expect(decodeDocId("bad%ZZ")).toBeUndefined();
+  });
 });

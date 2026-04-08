@@ -501,10 +501,13 @@ function createStepBuffer(store: TrajectoryDocumentStore, docId: string): StepBu
     flush: async () => {
       if (steps.length === 0) return;
       const batch = [...steps];
-      // Only clear after successful append — failed remote writes preserve the batch
-      // so the caller's onFlushError can retry or the next flush picks them up.
-      await store.append(docId, batch);
+      // Clear before write (at-most-once): prevents duplicate steps on ambiguous
+      // transport failures where the remote write committed but the ack was lost.
+      // Worst case: one batch of steps lost on a rare transport failure.
+      // This is safer than at-least-once (duplicate steps corrupt trajectories).
+      // Phase 2 OCC (#1469) will enable exactly-once via etag/if_match.
       steps.length = 0;
+      await store.append(docId, batch);
     },
     size: () => steps.length,
   };
