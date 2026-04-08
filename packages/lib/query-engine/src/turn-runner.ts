@@ -366,6 +366,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         doomLoopThreshold,
       );
 
+      // Reset intervention budget when no keys exceed the threshold — the
+      // model moved on, so future unrelated loops should be guarded again.
+      if (!hasRepeated) {
+        doomLoopInterventions = 0;
+      }
+
       if (hasRepeated && allRepeated && doomLoopInterventions < maxDoomLoopInterventions) {
         // ALL calls are repeated — full intervention: re-prompt the model.
         const blockedToolNames = [
@@ -457,8 +463,10 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         };
       }
     } else if (dedupedToolCalls.length === 0 && doomLoopThreshold >= 2) {
-      // Text-only turn: clear streaks (streak is broken)
+      // Text-only turn: clear streaks and reset intervention budget so
+      // protection remains active for future unrelated loops.
       doomLoopStreaks = new Map();
+      doomLoopInterventions = 0;
     }
 
     // Transition based on model response
