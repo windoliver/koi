@@ -125,21 +125,22 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
   let version = 0;
   let inflight: Promise<void> | undefined;
   let unsubChange: (() => void) | undefined;
-  // Per-server last-known-good cache for partial failure merging
+  // Per-server last-known-good cache keyed by ORIGINAL (unsanitized) server name
+  // to avoid cross-server contamination from sanitization collisions
   const lastKnownByServer = new Map<string, readonly SkillMetadata[]>();
 
-  /** Group skills by their server (extracted from dirPath). */
-  const groupByServer = (
-    skills: readonly SkillMetadata[],
-  ): ReadonlyMap<string, readonly SkillMetadata[]> => {
-    const groups = new Map<string, SkillMetadata[]>();
-    for (const s of skills) {
-      const server = s.dirPath.replace("mcp://", "");
-      const list = groups.get(server);
+  /** Group descriptors by their original server field (pre-sanitization). */
+  const groupDescriptorsByServer = (
+    descriptors: readonly ToolDescriptor[],
+  ): ReadonlyMap<string, readonly ToolDescriptor[]> => {
+    const groups = new Map<string, ToolDescriptor[]>();
+    for (const d of descriptors) {
+      const key = d.server ?? "unknown";
+      const list = groups.get(key);
       if (list !== undefined) {
-        list.push(s);
+        list.push(d);
       } else {
-        groups.set(server, [s]);
+        groups.set(key, [d]);
       }
     }
     return groups;
@@ -157,17 +158,20 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
 
       // Only apply if still current and not disposed
       if (!disposed && capturedVersion === version) {
-        const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
+        // Group by original server name before sanitization
+        const freshByServer = groupDescriptorsByServer(descriptors);
+        const failedServers = new Set(resolver.failures.map((f) => f.serverName));
+        const allSkipped: string[] = [];
 
         // Update per-server cache with successful servers
-        const freshByServer = groupByServer(skills);
-        for (const [server, serverSkills] of freshByServer) {
-          lastKnownByServer.set(server, serverSkills);
+        for (const [server, serverDescs] of freshByServer) {
+          const { skills, skipped } = mapToolDescriptorsToSkillMetadata(serverDescs);
+          lastKnownByServer.set(server, skills);
+          allSkipped.push(...skipped);
         }
 
         // Remove cached servers that are no longer in the resolver
         // (only if they didn't fail — failed servers keep last-known-good)
-        const failedServers = new Set(resolver.failures.map((f) => sanitizeMcpName(f.serverName)));
         for (const server of lastKnownByServer.keys()) {
           if (!freshByServer.has(server) && !failedServers.has(server)) {
             lastKnownByServer.delete(server);
@@ -179,8 +183,8 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
         runtime.registerExternal(merged);
 
         // Surface skipped tools from sanitization collisions
-        if (skipped.length > 0) {
-          onSyncError?.({ kind: "sanitization-collision", skipped });
+        if (allSkipped.length > 0) {
+          onSyncError?.({ kind: "sanitization-collision", skipped: allSkipped });
         }
       }
 
