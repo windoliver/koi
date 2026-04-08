@@ -64,6 +64,17 @@ export function MessageList(props: MessageListProps): JSX.Element {
   // ── Auto-scroll state machine (Decisions 6-8, 7A) ────────────────────────
   const [scrollState, setScrollState] = createSignal(INITIAL_SCROLL_STATE);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  const messageCount = useTuiStore((s) => s.messages.length);
+
+  // Reset scroll state on session clear/resume (messages drop to 0).
+  // Without this, a user who scrolled up in session A stays paused in session B.
+  createEffect(
+    on(messageCount, (count: number, prev: number | undefined) => {
+      if (count === 0 && prev !== undefined && prev > 0) {
+        setScrollState(INITIAL_SCROLL_STATE);
+      }
+    }),
+  );
 
   // Detect streaming end → settling period (only if not user-paused)
   createEffect(

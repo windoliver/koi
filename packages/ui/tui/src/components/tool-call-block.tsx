@@ -100,12 +100,38 @@ function useParsedArgs(block: ToolCallData): Accessor<Readonly<Record<string, un
   });
 }
 
-/** Compute unified diff string for _edit tools. */
+/**
+ * Compute unified diff string for _edit tools.
+ *
+ * Supports two schemas:
+ * - Legacy/external: `{ file_path, old_string, new_string }` (single hunk)
+ * - First-party fs_edit: `{ path, edits: [{ oldText, newText }, ...] }` (multi-hunk)
+ */
 function useEditDiff(block: ToolCallData): Accessor<string | null> {
   const parsedArgs = useParsedArgs(block);
   return createMemo((): string | null => {
     const args = parsedArgs();
     if (args === null) return null;
+
+    // First-party fs_edit schema: { path, edits: [{ oldText, newText }] }
+    const edits = args.edits;
+    if (Array.isArray(edits) && edits.length > 0) {
+      const filePath = typeof args.path === "string" ? args.path : undefined;
+      const parts: string[] = [];
+      for (const edit of edits) {
+        if (typeof edit === "object" && edit !== null && !Array.isArray(edit)) {
+          const e = edit as Readonly<Record<string, unknown>>;
+          const oldStr = typeof e.oldText === "string" ? e.oldText : "";
+          const newStr = typeof e.newText === "string" ? e.newText : "";
+          if (oldStr !== "" || newStr !== "") {
+            parts.push(computeEditDiff(oldStr, newStr, filePath));
+          }
+        }
+      }
+      return parts.length > 0 ? parts.join("\n") : null;
+    }
+
+    // Legacy/external schema: { file_path, old_string, new_string }
     const oldStr = typeof args.old_string === "string" ? args.old_string : "";
     const newStr = typeof args.new_string === "string" ? args.new_string : "";
     if (oldStr === "" && newStr === "") return null;
