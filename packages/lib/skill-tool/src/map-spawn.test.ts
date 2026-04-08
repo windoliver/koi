@@ -97,6 +97,19 @@ describe("extractSpawnConfig", () => {
     }
   });
 
+  test("returns VALIDATION when allowedTools has only reserved spawn tools", () => {
+    const skill = makeSkill({
+      executionMode: "fork",
+      allowedTools: ["agent_spawn", "Spawn"],
+    });
+    const result = extractSpawnConfig(skill);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("reserved spawn tools");
+    }
+  });
+
   test("includes allowedTools when present on fork skill", () => {
     const skill = makeSkill({
       executionMode: "fork",
@@ -177,18 +190,7 @@ describe("mapSkillToSpawnRequest", () => {
     expect(request.toolAllowlist).not.toContain("Spawn");
   });
 
-  test("falls back to fork: true when all allowedTools are reserved spawn tools", () => {
-    const skill = makeSkill();
-    const spawnConfig: SpawnConfig = {
-      agentName: "agent-g",
-      allowedTools: ["agent_spawn", "Spawn"],
-    };
-    const request = mapSkillToSpawnRequest(skill, "run", spawnConfig, baseConfig);
-
-    // After stripping reserved tools, allowlist is empty → fall back to fork
-    expect(request.fork).toBe(true);
-    expect(request.toolAllowlist).toBeUndefined();
-  });
+  // Note: all-reserved-spawn-tools case is caught by extractSpawnConfig validation
 
   test("uses skill name as default description", () => {
     const skill = makeSkill();

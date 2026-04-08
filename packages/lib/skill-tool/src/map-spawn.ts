@@ -59,16 +59,34 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
     };
   }
 
-  if (skill.allowedTools !== undefined && skill.allowedTools.length === 0) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: `Skill "${skill.name}" has an empty allowed-tools list — ambiguous for spawn mode`,
-        retryable: false,
-        context: { skillName: skill.name },
-      },
-    };
+  if (skill.allowedTools !== undefined) {
+    if (skill.allowedTools.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Skill "${skill.name}" has an empty allowed-tools list — ambiguous for spawn mode`,
+          retryable: false,
+          context: { skillName: skill.name },
+        },
+      };
+    }
+
+    // Check if all allowed tools are reserved spawn tools (would produce
+    // an empty allowlist after sanitization → privilege escalation risk).
+    const RESERVED_SPAWN_TOOLS = new Set(["agent_spawn", "Spawn"]);
+    const usable = skill.allowedTools.filter((t) => !RESERVED_SPAWN_TOOLS.has(t));
+    if (usable.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Skill "${skill.name}" allowed-tools contains only reserved spawn tools — no usable tools remain after sanitization`,
+          retryable: false,
+          context: { skillName: skill.name },
+        },
+      };
+    }
   }
 
   // Use metadata.agent if present, otherwise fall back to skill name
@@ -134,11 +152,7 @@ export function mapSkillToSpawnRequest(
     // (L1 engine spawn provider) must be stripped regardless of skill metadata.
     const RESERVED_SPAWN_TOOLS = new Set(["agent_spawn", "Spawn"]);
     const sanitized = spawnConfig.allowedTools.filter((t) => !RESERVED_SPAWN_TOOLS.has(t));
-    if (sanitized.length === 0) {
-      // All allowed tools were reserved spawn tools — child would have zero tools.
-      // Fall back to unrestricted fork rather than spawning a useless child.
-      return { ...base, fork: true as const };
-    }
+    // sanitized.length > 0 guaranteed by extractSpawnConfig validation
     return {
       ...base,
       toolAllowlist: [...sanitized],
