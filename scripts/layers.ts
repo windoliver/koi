@@ -44,6 +44,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",
   "@koi/skill-tool",

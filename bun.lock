@@ -224,6 +224,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/plugins": {
+      "name": "@koi/plugins",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -894,6 +904,8 @@
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
+
+    "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 

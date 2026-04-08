@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "ignoreDeprecations": "6.0"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../errors" },
+    { "path": "../validation" }
+  ]
+}
