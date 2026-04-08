@@ -40,6 +40,7 @@
     "@koi/sandbox-os": "workspace:*",
     "@koi/session": "workspace:*",
     "@koi/skill-scanner": "workspace:*",
+    "@koi/skill-tool": "workspace:*",
     "@koi/skills-runtime": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",

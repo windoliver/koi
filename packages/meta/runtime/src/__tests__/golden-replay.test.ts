@@ -7247,3 +7247,99 @@ describe("Golden: @koi/query-engine within-turn dedup", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/skill-tool (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skill-tool", () => {
+  test("createSkillTool produces a Skill tool with skill listing in description", async () => {
+    const { createSkillTool } = await import("@koi/skill-tool");
+
+    const mockResolver: import("@koi/skill-tool").SkillResolver = {
+      discover: async () => ({
+        ok: true as const,
+        value: new Map([
+          [
+            "test-skill",
+            {
+              name: "test-skill",
+              description: "A test skill for golden queries",
+              source: "project",
+              dirPath: "/tmp/skills/test-skill",
+            },
+          ],
+        ]),
+      }),
+      load: async (name: string) => ({
+        ok: true as const,
+        value: {
+          name,
+          description: "A test skill",
+          source: "project",
+          dirPath: "/tmp/skills/test-skill",
+          body: "Test skill body",
+        },
+      }),
+    };
+
+    const result = await createSkillTool({
+      resolver: mockResolver,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("Skill");
+      expect(result.value.descriptor.description).toContain("test-skill");
+      expect(result.value.origin).toBe("primordial");
+    }
+  });
+
+  test("Skill tool inline execution returns substituted body", async () => {
+    const { createSkillTool } = await import("@koi/skill-tool");
+
+    const mockResolver: import("@koi/skill-tool").SkillResolver = {
+      discover: async () => ({
+        ok: true as const,
+        value: new Map([
+          [
+            "greet",
+            {
+              name: "greet",
+              description: "Greeting skill",
+              source: "bundled",
+              dirPath: "/tmp/skills/greet",
+            },
+          ],
+        ]),
+      }),
+      load: async () => ({
+        ok: true as const,
+        value: {
+          name: "greet",
+          description: "Greeting skill",
+          source: "bundled",
+          dirPath: "/tmp/skills/greet",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${VAR} pattern
+          body: "Hello from greet skill in ${SKILL_DIR}",
+        },
+      }),
+    };
+
+    const result = await createSkillTool({
+      resolver: mockResolver,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const execResult = (await result.value.execute({ skill: "greet" })) as {
+      readonly ok: boolean;
+      readonly value?: string;
+    };
+    expect(execResult.ok).toBe(true);
+    expect(execResult.value).toBe("Hello from greet skill in /tmp/skills/greet");
+  });
+});
