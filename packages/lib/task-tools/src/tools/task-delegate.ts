@@ -12,17 +12,27 @@ const schema = z.object({
 /**
  * task_delegate — coordinator delegation tool.
  *
- * Records delegation intent in metadata only — does NOT change task status or
- * assignedTo. The task stays `pending` with no `assignedTo`.
+ * Records delegation intent in `metadata.delegatedTo` only — does NOT change
+ * task status or assignedTo. The task stays `pending` with no owner.
  *
- * Design rationale: assigning the coordinator's AgentId as owner breaks the
- * worker/recovery contract. task_update, task_output, and orphan recovery all
- * use assignedTo as source of truth for ownership. Workers can't close tasks
- * they don't own; orphan recovery can't identify stale delegated work.
+ * ## Design: intentionally decoupled from agent_spawn
  *
- * This pure-metadata approach keeps the task available for the worker to claim
- * via task_update(status: in_progress) once spawned, and allows recovery to
- * detect stale pending+delegatedTo tasks normally.
+ * task_delegate and agent_spawn are independent tools. In interactive/manual
+ * mode (like CC's Agent tool), the coordinator model closes the loop:
+ *   1. task_create → task_delegate → agent_spawn → read output → task_update
+ *
+ * For autonomous mode (#1553), a bridge (like v1's dispatchSpawnTasks) will
+ * atomically couple delegate → spawn → auto-complete. That bridge also handles:
+ *   - Clearing stale `metadata.delegatedTo` on crash recovery
+ *   - Passing task_id to the spawned child for deterministic claiming
+ *   - Providing an undelegate path for reassignment
+ *
+ * ## Why metadata-only (not assignedTo)
+ *
+ * Assigning the coordinator's AgentId as owner breaks the worker/recovery
+ * contract: task_update, task_output, and orphan recovery all use assignedTo
+ * as source of truth. Workers can't close tasks they don't own. This approach
+ * keeps the task available for the worker to claim via task_update(in_progress).
  *
  * Rejection cases:
  *   - Task not found
