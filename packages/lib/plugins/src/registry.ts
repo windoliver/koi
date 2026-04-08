@@ -5,6 +5,7 @@
  * and path containment on load().
  */
 
+import { realpath } from "node:fs/promises";
 import type { KoiError, Resolver, Result } from "@koi/core";
 import { assertContained } from "./containment.js";
 import { discoverPlugins } from "./loader.js";
@@ -56,6 +57,12 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
         cachedPlugins = byName;
         cachedErrors = result.value.errors;
 
+        // If any errors are retryable, don't cache this discovery so next call re-scans
+        const hasRetryable = result.value.errors.some((e) => e.error.retryable);
+        if (hasRetryable) {
+          discoverPromise = undefined;
+        }
+
         // Return only available plugins
         return result.value.plugins.filter((p) => p.available);
       } catch {
@@ -102,6 +109,33 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
             message: `Plugin is not available: ${id}`,
             retryable: false,
             context: { pluginId: id, source: meta.source },
+          },
+        };
+      }
+
+      // TOCTOU guard: re-resolve the plugin directory to detect post-discovery swaps
+      let currentDirPath: string;
+      try {
+        currentDirPath = await realpath(meta.dirPath);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin directory no longer resolvable: ${meta.dirPath}`,
+            retryable: false,
+            context: { pluginId: id, dirPath: meta.dirPath },
+          },
+        };
+      }
+      if (currentDirPath !== meta.dirPath) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin directory changed since discovery (possible symlink swap): ${id}`,
+            retryable: false,
+            context: { pluginId: id, expected: meta.dirPath, actual: currentDirPath },
           },
         };
       }

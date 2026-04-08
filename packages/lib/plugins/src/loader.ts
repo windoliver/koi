@@ -47,16 +47,21 @@ function buildSourceRoots(config: PluginRegistryConfig): readonly SourceRoot[] {
 async function scanRoot(
   root: SourceRoot,
   isAvailable: ((manifest: PluginManifest) => boolean) | undefined,
-): Promise<{ readonly plugins: readonly PluginMeta[]; readonly errors: readonly PluginError[] }> {
+): Promise<{
+  readonly plugins: readonly PluginMeta[];
+  readonly errors: readonly PluginError[];
+  readonly rootFailed: boolean;
+}> {
   let entries: readonly string[];
   try {
     entries = await readdir(root.path);
   } catch (err: unknown) {
     // ENOENT = root doesn't exist yet — silently skip
-    if (isEnoent(err)) return { plugins: [], errors: [] };
+    if (isEnoent(err)) return { plugins: [], errors: [], rootFailed: false };
     // Other errors (EACCES, EIO, etc.) — surface so higher-tier failures are visible
     return {
       plugins: [],
+      rootFailed: true,
       errors: [
         {
           dirPath: root.path,
@@ -80,9 +85,10 @@ async function scanRoot(
   try {
     resolvedRoot = await realpath(root.path);
   } catch (err: unknown) {
-    if (isEnoent(err)) return { plugins: [], errors: [] };
+    if (isEnoent(err)) return { plugins: [], errors: [], rootFailed: false };
     return {
       plugins: [],
+      rootFailed: true,
       errors: [
         {
           dirPath: root.path,
@@ -188,7 +194,7 @@ async function scanRoot(
     }),
   );
 
-  return { plugins, errors };
+  return { plugins, errors, rootFailed: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,25 +218,44 @@ export async function discoverPlugins(
 
   const allErrors: PluginError[] = [];
   const byName = new Map<string, PluginMeta>();
-  // Track names that failed at higher-priority tiers to suppress lower-tier fallback.
-  // Uses both plugin name (from validated manifest) and directory basename (for failed manifests).
-  const failedAtHigherTier = new Map<string, PluginSource>();
+  // Track sources where the entire root failed — all lower-tier plugins are suppressed
+  const failedRootSources = new Set<PluginSource>();
+  // Track per-plugin names that failed at higher-priority tiers
+  const failedNameAtTier = new Map<string, PluginSource>();
 
   // Roots are ordered by priority (managed first, bundled last) in buildSourceRoots
   for (const result of results) {
     allErrors.push(...result.errors);
 
-    // Record failed directory names at this tier's priority
+    // If the entire root failed, suppress all lower tiers from providing any plugins
+    if (result.rootFailed) {
+      for (const err of result.errors) {
+        failedRootSources.add(err.source);
+      }
+      continue;
+    }
+
+    // Record per-plugin failed directory names at this tier's priority
     for (const err of result.errors) {
       const basename = err.dirPath.split("/").pop() ?? "";
-      if (basename && !failedAtHigherTier.has(basename)) {
-        failedAtHigherTier.set(basename, err.source);
+      if (basename && !failedNameAtTier.has(basename)) {
+        failedNameAtTier.set(basename, err.source);
       }
     }
 
     for (const plugin of result.plugins) {
-      // Fail closed: if a higher-priority tier had an error for this name, suppress this entry
-      const failedSource = failedAtHigherTier.get(plugin.name);
+      // Fail closed: if any higher-priority root failed entirely, suppress lower-tier plugins
+      let suppressed = false;
+      for (const failedSource of failedRootSources) {
+        if (PRIORITY[failedSource] < PRIORITY[plugin.source]) {
+          suppressed = true;
+          break;
+        }
+      }
+      if (suppressed) continue;
+
+      // Fail closed: if a higher-priority tier had a per-plugin error for this name
+      const failedSource = failedNameAtTier.get(plugin.name);
       if (failedSource !== undefined && PRIORITY[failedSource] < PRIORITY[plugin.source]) {
         continue;
       }
