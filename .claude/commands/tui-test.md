@@ -81,6 +81,26 @@ If the response is still streaming (shows `streaming…` in the status bar), wai
 2. If `--expect` was provided, check that the expected text appears in the output
 3. Report PASS or FAIL with the evidence
 
+**If FAIL — enter the fix loop (Step 4b).**
+
+### Step 4b: Fix loop (on failure)
+
+When a test fails, do NOT just report it. Diagnose and fix:
+
+1. **Build failure** (Step 2 — TUI didn't start): read the error, fix the source code, rebuild (`bun run build`), and retry from Step 2.
+2. **No response** (Step 3 — TUI started but model returned nothing): check `.env` symlink, API key availability, stderr output. Fix and retry from Step 2.
+3. **Wrong response** (Step 4 — response doesn't match `--expect`):
+   - Check if the feature is wired into the TUI. Read `packages/meta/cli/src/tui-command.ts` to see if the relevant middleware/provider/skill is hooked up.
+   - If not wired: wire it into `tui-command.ts`, rebuild, and retry from Step 2.
+   - If wired but not working: read the middleware/provider code, add debug logging, diagnose, fix, rebuild, and retry from Step 2.
+4. **Skill not discovered** (model doesn't see skill content): verify `createSkillsRuntime()` discovers the skill by running a quick inline check:
+   ```bash
+   bun -e 'import{createSkillsRuntime}from"@koi/skills-runtime";const r=await createSkillsRuntime().discover();console.log(r.ok?Object.fromEntries(r.value):r.error)'
+   ```
+   Fix discovery path issues and retry.
+
+**Repeat the fix loop until the test passes. Maximum 5 attempts.** After 5 failures, report what was tried and what's still broken.
+
 ### Step 5: Cleanup
 
 Unless `--no-cleanup` was specified:
@@ -102,6 +122,7 @@ rm -rf ~/.claude/skills/<skill-name>
   Worktree: <name>
   Prompt: "<prompt>"
   Skill: <skill name or "none">
+  Attempts: <N>
 ══════════════════════════════════════
 
 --- Response ---
