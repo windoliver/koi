@@ -117,6 +117,18 @@ export type EngineEvent =
       readonly callId: ToolCallId;
       readonly result: unknown;
     }
+  | {
+      /**
+       * Emitted by the turn runner after a tool has been executed.
+       * Carries the real execution output (stdout, file contents, etc.),
+       * unlike `tool_call_end` which carries model-stream metadata
+       * (`AccumulatedToolCall`) before execution.
+       */
+      readonly kind: "tool_result";
+      readonly callId: ToolCallId;
+      readonly toolName: string;
+      readonly output: unknown;
+    }
   | { readonly kind: "turn_start"; readonly turnIndex: number }
   | { readonly kind: "turn_end"; readonly turnIndex: number; readonly stopBlocked?: true }
   | { readonly kind: "done"; readonly output: EngineOutput }

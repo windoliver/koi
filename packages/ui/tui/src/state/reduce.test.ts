@@ -273,7 +273,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_start args without any deltas are preserved through tool_call_end", () => {
+  test("tool_call_start args without any deltas are preserved through tool_result", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
@@ -292,7 +292,26 @@ describe("reduce — engine_event — tool_call", () => {
       engineEvent({
         kind: "tool_call_end",
         callId: testCallId("call-1"),
-        result: { files: ["a.ts"] },
+        result: { toolName: "ls", callId: "call-1", rawArgs: '{"dir":"."}' },
+      }),
+    );
+    // tool_call_end is no-op — args still preserved from start
+    const midMsg = lastMessage(next);
+    if (midMsg.kind === "assistant") {
+      const block = blockAt(midMsg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("running");
+        expect(block.args).toBe('{"dir":"."}');
+      }
+    }
+    // tool_result sets complete with real output
+    next = reduce(
+      next,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "ls",
+        output: { files: ["a.ts"] },
       }),
     );
     const msg = lastMessage(next);
@@ -330,7 +349,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_end marks tool as complete and stores result", () => {
+  test("tool_call_end keeps block as running (no-op)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "tool_call",
@@ -353,15 +372,70 @@ describe("reduce — engine_event — tool_call", () => {
       state,
       engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: toolResult }),
     );
+    // tool_call_end is a no-op — block stays "running" until tool_result arrives
+    expect(next).toBe(state);
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("running");
+        expect(block.result).toBeUndefined();
+        expect(block.args).toBe('{"dir":"."}'); // args preserved
+      }
+    }
+  });
+
+  test("tool_result marks tool as complete and stores output", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "running",
+        args: '{"dir":"."}',
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const output = { files: ["a.ts", "b.ts"] };
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "ls",
+        output,
+      }),
+    );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
-        expect(block.result).toBe(JSON.stringify(toolResult));
+        expect(block.result).toBe(JSON.stringify(output));
         expect(block.args).toBe('{"dir":"."}'); // args preserved
       }
     }
+  });
+
+  test("tool_result for unknown callId is a no-op", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("unknown-call"),
+        toolName: "ls",
+        output: "data",
+      }),
+    );
+    expect(next).toBe(state);
   });
 
   test("interleaved text_delta and tool_call_delta accumulate to separate blocks", () => {
@@ -469,7 +543,16 @@ describe("reduce — engine_event — full lifecycle", () => {
       engineEvent({
         kind: "tool_call_end",
         callId: testCallId("call-1"),
-        result: { content: "file contents" },
+        result: { toolName: "read_file", callId: "call-1", rawArgs: '{"path":"src/index.ts"}' },
+      }),
+    );
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "read_file",
+        output: { content: "file contents" },
       }),
     );
 
@@ -564,7 +647,7 @@ describe("reduce — engine_event — tool args cap", () => {
 // ---------------------------------------------------------------------------
 
 describe("reduce — engine_event — tool result cap", () => {
-  test("caps tool_call_end result at MAX_TOOL_OUTPUT_CHARS", () => {
+  test("caps tool_result output at MAX_TOOL_OUTPUT_CHARS", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
     ];
@@ -574,7 +657,12 @@ describe("reduce — engine_event — tool result cap", () => {
     const largeResult = "r".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: largeResult }),
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "cat",
+        output: largeResult,
+      }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
@@ -596,7 +684,12 @@ describe("reduce — engine_event — tool result cap", () => {
     const bigObj = { data: "x".repeat(MAX_TOOL_OUTPUT_CHARS + 100) };
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: bigObj }),
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "big",
+        output: bigObj,
+      }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
@@ -608,7 +701,7 @@ describe("reduce — engine_event — tool result cap", () => {
     }
   });
 
-  test("handles function result without crashing", () => {
+  test("handles function output without crashing", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "fn", status: "running" },
     ];
@@ -618,7 +711,12 @@ describe("reduce — engine_event — tool result cap", () => {
     // JSON.stringify(() => {}) returns undefined — must not crash
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: () => {} }),
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "fn",
+        output: () => {},
+      }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
@@ -630,7 +728,7 @@ describe("reduce — engine_event — tool result cap", () => {
     }
   });
 
-  test("handles symbol result without crashing", () => {
+  test("handles symbol output without crashing", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "sym", status: "running" },
     ];
@@ -639,7 +737,12 @@ describe("reduce — engine_event — tool result cap", () => {
     });
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: Symbol("test") }),
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        toolName: "sym",
+        output: Symbol("test"),
+      }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {

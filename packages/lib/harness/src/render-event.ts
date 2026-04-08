@@ -19,6 +19,7 @@ export function shouldRender(event: EngineEvent, verbose: boolean): boolean {
     case "thinking_delta":
     case "tool_call_start":
     case "tool_call_end":
+    case "tool_result":
     case "turn_start":
     case "turn_end":
       return verbose;
@@ -64,6 +65,8 @@ export function renderEngineEvent(
       return verbose ? `\x1b[33m[tool: ${event.toolName}]\x1b[0m ` : null;
     case "tool_call_end":
       return verbose ? `\x1b[2m✓\x1b[0m\n` : null;
+    case "tool_result":
+      return verbose ? `\x1b[32m[result: ${event.toolName}]\x1b[0m\n` : null;
     case "turn_start":
       return verbose ? `\x1b[2m--- turn ${event.turnIndex + 1} ---\x1b[0m\n` : null;
     case "turn_end":

@@ -149,6 +149,7 @@ describe("runTurn", () => {
       "tool_call_start",
       "tool_call_delta",
       "tool_call_end",
+      "tool_result",
       "turn_end",
       // Turn 1
       "turn_start",
@@ -161,9 +162,17 @@ describe("runTurn", () => {
     // Verify tool was called
     expect(toolCalls).toEqual(["readFile"]);
 
+    // Verify tool_result carries real execution output
+    const toolResult = events.find((e) => e.kind === "tool_result");
+    expect(toolResult).toBeDefined();
+    if (toolResult?.kind === "tool_result") {
+      expect(toolResult.toolName).toBe("readFile");
+      expect(toolResult.output).toBe("file-content");
+    }
+
     // Verify turn indices
     expect(events[0]).toMatchObject({ kind: "turn_start", turnIndex: 0 });
-    expect(events[5]).toMatchObject({ kind: "turn_start", turnIndex: 1 });
+    expect(events[6]).toMatchObject({ kind: "turn_start", turnIndex: 1 });
 
     // Verify done
     const done = events.find((e) => e.kind === "done");

@@ -189,6 +189,20 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
+  test("narrows to tool_result with callId, toolName, and output", () => {
+    const event: EngineEvent = {
+      kind: "tool_result",
+      callId: toolCallId("c1"),
+      toolName: "Bash",
+      output: { stdout: "hello", exitCode: 0 },
+    };
+    if (event.kind === "tool_result") {
+      expect(event.callId).toBe(toolCallId("c1"));
+      expect(event.toolName).toBe("Bash");
+      expect(event.output).toEqual({ stdout: "hello", exitCode: 0 });
+    }
+  });
+
   test("narrows to done with EngineOutput", () => {
     const event: EngineEvent = {
       kind: "done",

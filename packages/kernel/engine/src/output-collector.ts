@@ -27,34 +27,25 @@ export interface OutputCollector {
  * and ignores subsequent tool calls/text once the verdict is recorded.
  *
  * If no required tool is specified, falls back to collecting the last
- * tool_call_end result (backward compat).
+ * tool_result output.
  */
 export function createVerdictCollector(requiredToolName: string | undefined): OutputCollector {
   let verdictCaptured = false;
   let verdictOutput = "";
   let textBuffer = "";
-  /** Track the tool name for the current in-flight tool call. */
-  let currentToolCallName: string | undefined;
 
   return {
     observe(event: EngineEvent): void {
       // Once we have the verdict, ignore everything else
       if (verdictCaptured) return;
 
-      if (event.kind === "tool_call_start") {
-        currentToolCallName = event.toolName;
-        return;
-      }
-
-      if (event.kind === "tool_call_end") {
-        const isVerdictTool =
-          requiredToolName !== undefined && currentToolCallName === requiredToolName;
-        currentToolCallName = undefined;
+      if (event.kind === "tool_result") {
+        const isVerdictTool = requiredToolName !== undefined && event.toolName === requiredToolName;
 
         if (isVerdictTool) {
           // Capture the verdict and stop — ignore subsequent events
           verdictCaptured = true;
-          const result = event.result;
+          const result = event.output;
           if (typeof result === "string") {
             verdictOutput = result;
           } else if (typeof result === "object" && result !== null) {
@@ -65,7 +56,7 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
 
         // No required tool specified — fall back to last tool result
         if (requiredToolName === undefined) {
-          const result = event.result;
+          const result = event.output;
           if (typeof result === "string") {
             verdictOutput = result;
           } else if (typeof result === "object" && result !== null) {
@@ -93,7 +84,7 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
 
 /**
  * Simple text collector — accumulates text_delta events and falls back to
- * the last tool_call_end result. No verdict logic, no required tool name.
+ * the last tool_result output. No verdict logic, no required tool name.
  *
  * Used by `createAgentSpawnFn` for general agent-to-agent delegation.
  */
@@ -108,8 +99,8 @@ export function createTextCollector(): OutputCollector {
         return;
       }
 
-      if (event.kind === "tool_call_end") {
-        const result = event.result;
+      if (event.kind === "tool_result") {
+        const result = event.output;
         if (typeof result === "string") {
           lastToolResult = result;
         } else if (typeof result === "object" && result !== null) {

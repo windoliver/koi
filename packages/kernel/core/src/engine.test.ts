@@ -35,6 +35,8 @@ function engineEventLabel(event: EngineEvent): string {
       return "tcd";
     case "tool_call_end":
       return "tce";
+    case "tool_result":
+      return "tcr";
     case "turn_end":
       return "end";
     case "done":
@@ -96,6 +98,16 @@ describe("EngineEvent exhaustiveness", () => {
   test("tool_call_end variant is handled", () => {
     const event: EngineEvent = { kind: "tool_call_end", callId: toolCallId("c1"), result: 42 };
     expect(engineEventLabel(event)).toBe("tce");
+  });
+
+  test("tool_result variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "tool_result",
+      callId: toolCallId("c1"),
+      toolName: "Bash",
+      output: { stdout: "hello", exitCode: 0 },
+    };
+    expect(engineEventLabel(event)).toBe("tcr");
   });
 
   test("turn_end variant is handled", () => {

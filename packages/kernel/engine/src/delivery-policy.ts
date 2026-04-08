@@ -81,19 +81,19 @@ function extractOutputText(output: EngineOutput): string {
 
 /**
  * Consume an async iterable of EngineEvents, returning the done event's output.
- * Accumulates text_delta and tool_call_end results as a fallback so output is not
+ * Accumulates text_delta and tool_result output as a fallback so output is not
  * lost when the final done.output.content is empty (matches createTextCollector logic).
  * Throws if no done event is received (stream ended prematurely).
  */
 async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<EngineOutput> {
   let output: EngineOutput | undefined; // let: assigned inside for-await loop
   let textBuffer = ""; // let: accumulated text_delta fallback
-  let lastToolResult = ""; // let: last tool_call_end fallback
+  let lastToolResult = ""; // let: last tool_result fallback
   for await (const event of stream) {
     if (event.kind === "text_delta") {
       textBuffer += event.delta;
-    } else if (event.kind === "tool_call_end") {
-      const result = event.result;
+    } else if (event.kind === "tool_result") {
+      const result = event.output;
       if (typeof result === "string") {
         lastToolResult = result;
       } else if (typeof result === "object" && result !== null) {

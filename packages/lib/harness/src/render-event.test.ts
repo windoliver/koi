@@ -44,6 +44,17 @@ describe("shouldRender", () => {
     expect(shouldRender(e, true)).toBe(true);
   });
 
+  test("tool_result only renders in verbose mode", () => {
+    const e: EngineEvent = {
+      kind: "tool_result",
+      callId: "c1" as never,
+      toolName: "Bash",
+      output: { stdout: "hello" },
+    };
+    expect(shouldRender(e, false)).toBe(false);
+    expect(shouldRender(e, true)).toBe(true);
+  });
+
   test("tool_call_delta never renders", () => {
     const e: EngineEvent = { kind: "tool_call_delta", callId: "c1" as never, delta: "x" };
     expect(shouldRender(e, false)).toBe(false);
@@ -120,5 +131,27 @@ describe("renderEngineEvent", () => {
     const result = renderEngineEvent(e, true);
     expect(result).not.toBeNull();
     expect(result).toContain("Read");
+  });
+
+  test("tool_result returns null when not verbose", () => {
+    const e: EngineEvent = {
+      kind: "tool_result",
+      callId: "c1" as never,
+      toolName: "Bash",
+      output: "hello",
+    };
+    expect(renderEngineEvent(e, false)).toBeNull();
+  });
+
+  test("tool_result includes tool name when verbose", () => {
+    const e: EngineEvent = {
+      kind: "tool_result",
+      callId: "c1" as never,
+      toolName: "Bash",
+      output: "hello",
+    };
+    const result = renderEngineEvent(e, true);
+    expect(result).not.toBeNull();
+    expect(result).toContain("Bash");
   });
 });

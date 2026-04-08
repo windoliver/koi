@@ -405,6 +405,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
           results.push(result);
           appendToolResult(transcript, result);
+          yield {
+            kind: "tool_result" as const,
+            callId: tc.callId,
+            toolName: tc.toolName,
+            output: response.output,
+          };
 
           // Replicate the real result to skipped duplicates so the model
           // sees the actual output for every callId, not a placeholder.
@@ -421,6 +427,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
               };
               results.push(dupResult);
               appendToolResult(transcript, dupResult);
+              yield {
+                kind: "tool_result" as const,
+                callId: dup.callId,
+                toolName: dup.toolName,
+                output: response.output,
+              };
             }
           }
 
