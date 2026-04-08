@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:42.574Z",
+      "timestamp": "2026-04-08T17:53:27.956Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:42.575Z",
+      "timestamp": "2026-04-08T17:53:27.957Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:42.577Z",
+      "timestamp": "2026-04-08T17:53:27.959Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
       "observation": {
@@ -76,7 +76,7 @@
         "prompt_tokens": 545,
         "completion_tokens": 12
       },
-      "duration_ms": 741,
+      "duration_ms": 775,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -107,7 +107,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T06:51:43.319Z",
+      "timestamp": "2026-04-08T17:53:28.735Z",
       "tool_calls": [
         {
           "tool_call_id": "call_bash_background_3",
@@ -125,16 +125,16 @@
           }
         ]
       },
-      "duration_ms": 2,
+      "duration_ms": 1,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.327Z",
+      "timestamp": "2026-04-08T17:53:28.742Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
-      "duration_ms": 745.635666999995,
+      "duration_ms": 778.8147920000192,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -151,7 +151,7 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.329Z",
+      "timestamp": "2026-04-08T17:53:28.744Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
       "observation": {
@@ -161,7 +161,7 @@
           }
         ]
       },
-      "duration_ms": 2.1819590000086464,
+      "duration_ms": 2.6740419999987353,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -178,10 +178,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.330Z",
+      "timestamp": "2026-04-08T17:53:28.745Z",
       "model_name": "middleware:permissions",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
-      "duration_ms": 745.6243339999928,
+      "duration_ms": 778.792541999981,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -190,7 +190,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631103326,
+        "_original_timestamp": 1775670808741,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -199,7 +199,7 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.331Z",
+      "timestamp": "2026-04-08T17:53:28.746Z",
       "model_name": "middleware:permissions",
       "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
       "observation": {
@@ -209,7 +209,7 @@
           }
         ]
       },
-      "duration_ms": 2.0718329999945126,
+      "duration_ms": 2.591999999975087,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -223,10 +223,11 @@
             "phase": "execute",
             "toolId": "bash_background",
             "action": "allow",
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775631103328,
+        "_original_timestamp": 1775670808743,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -235,10 +236,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.332Z",
+      "timestamp": "2026-04-08T17:53:28.747Z",
       "model_name": "middleware:hooks",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
-      "duration_ms": 745.5300419999985,
+      "duration_ms": 778.6100830000069,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -247,7 +248,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631103324,
+        "_original_timestamp": 1775670808739,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -256,7 +257,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.333Z",
+      "timestamp": "2026-04-08T17:53:28.748Z",
       "model_name": "middleware:hooks",
       "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
       "observation": {
@@ -266,7 +267,7 @@
           }
         ]
       },
-      "duration_ms": 2.0106249999953434,
+      "duration_ms": 2.5062920000054874,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -275,7 +276,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631103325,
+        "_original_timestamp": 1775670808740,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -284,10 +285,10 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.334Z",
+      "timestamp": "2026-04-08T17:53:28.749Z",
       "model_name": "middleware:semantic-retry",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.",
-      "duration_ms": 745.4744999999821,
+      "duration_ms": 778.5403329999826,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -296,7 +297,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631103322,
+        "_original_timestamp": 1775670808737,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -305,7 +306,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:43.335Z",
+      "timestamp": "2026-04-08T17:53:28.750Z",
       "model_name": "middleware:semantic-retry",
       "message": "bash_background({\"command\":\"echo 'hello-from-background'\"})",
       "observation": {
@@ -315,7 +316,7 @@
           }
         ]
       },
-      "duration_ms": 1.922500000015134,
+      "duration_ms": 2.387249999999767,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -324,7 +325,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631103323,
+        "_original_timestamp": 1775670808738,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -333,7 +334,7 @@
     {
       "step_id": 12,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:43.353Z",
+      "timestamp": "2026-04-08T17:53:28.780Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
       "observation": {
@@ -344,10 +345,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 624,
+        "prompt_tokens": 622,
         "completion_tokens": 9
       },
-      "duration_ms": 702,
+      "duration_ms": 616,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -378,7 +379,7 @@
     {
       "step_id": 13,
       "source": "tool",
-      "timestamp": "2026-04-08T06:51:44.056Z",
+      "timestamp": "2026-04-08T17:53:29.397Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_get_13",
@@ -392,7 +393,7 @@
         "results": [
           {
             "source_call_id": "call_task_get_13",
-            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}"
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}"
           }
         ]
       },
@@ -402,17 +403,17 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.063Z",
+      "timestamp": "2026-04-08T17:53:29.404Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "task_get({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}"
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}"
           }
         ]
       },
-      "duration_ms": 0.5965000000142027,
+      "duration_ms": 0.9378750000032596,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -429,17 +430,17 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.064Z",
+      "timestamp": "2026-04-08T17:53:29.405Z",
       "model_name": "middleware:permissions",
       "message": "task_get({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}"
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}"
           }
         ]
       },
-      "duration_ms": 0.5448340000002645,
+      "duration_ms": 0.881374999997206,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -453,10 +454,11 @@
             "phase": "execute",
             "toolId": "task_get",
             "action": "allow",
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775631104062,
+        "_original_timestamp": 1775670809403,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -465,10 +467,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.065Z",
+      "timestamp": "2026-04-08T17:53:29.406Z",
       "model_name": "middleware:permissions",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
-      "duration_ms": 703.9296249999898,
+      "duration_ms": 617.690499999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -477,7 +479,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631104064,
+        "_original_timestamp": 1775670809405,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -486,17 +488,17 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.066Z",
+      "timestamp": "2026-04-08T17:53:29.407Z",
       "model_name": "middleware:hooks",
       "message": "task_get({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}"
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}"
           }
         ]
       },
-      "duration_ms": 0.4869999999937136,
+      "duration_ms": 0.7952090000035241,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -505,7 +507,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631104059,
+        "_original_timestamp": 1775670809400,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -514,10 +516,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.067Z",
+      "timestamp": "2026-04-08T17:53:29.408Z",
       "model_name": "middleware:hooks",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
-      "duration_ms": 703.8158330000006,
+      "duration_ms": 617.5570000000007,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -526,7 +528,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631104061,
+        "_original_timestamp": 1775670809402,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -535,17 +537,17 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.068Z",
+      "timestamp": "2026-04-08T17:53:29.409Z",
       "model_name": "middleware:semantic-retry",
       "message": "task_get({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}"
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}"
           }
         ]
       },
-      "duration_ms": 0.4370420000050217,
+      "duration_ms": 0.7225840000028256,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -554,7 +556,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631104058,
+        "_original_timestamp": 1775670809399,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -563,10 +565,10 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.069Z",
+      "timestamp": "2026-04-08T17:53:29.410Z",
       "model_name": "middleware:semantic-retry",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
-      "duration_ms": 703.787708000018,
+      "duration_ms": 617.5256250000093,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -575,7 +577,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631104060,
+        "_original_timestamp": 1775670809401,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -584,9 +586,9 @@
     {
       "step_id": 21,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:44.138Z",
+      "timestamp": "2026-04-08T17:53:29.421Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775631103319,\"updatedAt\":1775631103325,\"assignedTo\":\"golden-bg-agent\"}}",
+      "message": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"echo 'hello-from-background'\",\"description\":\"echo 'hello-from-background'\",\"retries\":0,\"version\":2,\"dependencies\":[],\"status\":\"completed\",\"createdAt\":1775670808735,\"updatedAt\":1775670808769,\"assignedTo\":\"golden-bg-agent\"}}",
       "observation": {
         "results": [
           {
@@ -595,10 +597,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 699,
+        "prompt_tokens": 696,
         "completion_tokens": 9
       },
-      "duration_ms": 745,
+      "duration_ms": 713,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -629,7 +631,7 @@
     {
       "step_id": 22,
       "source": "tool",
-      "timestamp": "2026-04-08T06:51:44.884Z",
+      "timestamp": "2026-04-08T17:53:30.135Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_output_22",
@@ -643,7 +645,7 @@
         "results": [
           {
             "source_call_id": "call_task_output_22",
-            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}"
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}"
           }
         ]
       },
@@ -653,10 +655,10 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.885Z",
+      "timestamp": "2026-04-08T17:53:30.136Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}",
-      "duration_ms": 703.9572080000071,
+      "duration_ms": 617.7218750000175,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -665,7 +667,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775631104065,
+        "_original_timestamp": 1775670809406,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -674,17 +676,17 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.891Z",
+      "timestamp": "2026-04-08T17:53:30.142Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "task_output({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}"
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}"
           }
         ]
       },
-      "duration_ms": 0.709166999993613,
+      "duration_ms": 1.1060829999914858,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -701,17 +703,17 @@
     {
       "step_id": 25,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.892Z",
+      "timestamp": "2026-04-08T17:53:30.143Z",
       "model_name": "middleware:permissions",
       "message": "task_output({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}"
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}"
           }
         ]
       },
-      "duration_ms": 0.6537499999976717,
+      "duration_ms": 1.0364999999874271,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -725,10 +727,11 @@
             "phase": "execute",
             "toolId": "task_output",
             "action": "allow",
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775631104890,
+        "_original_timestamp": 1775670810141,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -737,10 +740,10 @@
     {
       "step_id": 26,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.893Z",
+      "timestamp": "2026-04-08T17:53:30.144Z",
       "model_name": "middleware:permissions",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 747.0526670000108,
+      "duration_ms": 715.6053339999926,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -749,7 +752,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631104892,
+        "_original_timestamp": 1775670810143,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -758,17 +761,17 @@
     {
       "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.894Z",
+      "timestamp": "2026-04-08T17:53:30.145Z",
       "model_name": "middleware:hooks",
       "message": "task_output({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}"
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}"
           }
         ]
       },
-      "duration_ms": 0.5759170000092126,
+      "duration_ms": 0.9306670000078157,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -777,7 +780,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631104887,
+        "_original_timestamp": 1775670810138,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -786,10 +789,10 @@
     {
       "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.895Z",
+      "timestamp": "2026-04-08T17:53:30.146Z",
       "model_name": "middleware:hooks",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 746.9226250000065,
+      "duration_ms": 715.446249999979,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -798,7 +801,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631104889,
+        "_original_timestamp": 1775670810140,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -807,17 +810,17 @@
     {
       "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.896Z",
+      "timestamp": "2026-04-08T17:53:30.147Z",
       "model_name": "middleware:semantic-retry",
       "message": "task_output({\"task_id\":\"task_1\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}"
+            "content": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}"
           }
         ]
       },
-      "duration_ms": 0.5115829999849666,
+      "duration_ms": 0.8538340000086464,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -826,7 +829,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631104886,
+        "_original_timestamp": 1775670810137,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -835,10 +838,10 @@
     {
       "step_id": 30,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.897Z",
+      "timestamp": "2026-04-08T17:53:30.148Z",
       "model_name": "middleware:semantic-retry",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 746.888707999984,
+      "duration_ms": 715.4091249999765,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -847,7 +850,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631104888,
+        "_original_timestamp": 1775670810139,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -856,21 +859,21 @@
     {
       "step_id": 31,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:44.909Z",
+      "timestamp": "2026-04-08T17:53:30.170Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":5,\"results\":{\"exitCode\":0}}}",
+      "message": "{\"kind\":\"completed\",\"result\":{\"taskId\":\"task_1\",\"output\":\"hello-from-background\\n\",\"durationMs\":34,\"results\":{\"exitCode\":0}}}",
       "observation": {
         "results": [
           {
-            "content": "The stdout contained \"hello-from-background\"."
+            "content": "The stdout contained \"hello-from-background\\n\"."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 748,
-        "completion_tokens": 10
+        "prompt_tokens": 745,
+        "completion_tokens": 12
       },
-      "duration_ms": 1124,
+      "duration_ms": 521,
       "outcome": "success",
       "extra": {
         "totalMessages": 7,
@@ -901,10 +904,10 @@
     {
       "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:44.910Z",
+      "timestamp": "2026-04-08T17:53:30.171Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 747.0918749999837,
+      "duration_ms": 715.665875000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -913,7 +916,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775631104893,
+        "_original_timestamp": 1775670810144,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -922,10 +925,10 @@
     {
       "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:46.036Z",
+      "timestamp": "2026-04-08T17:53:30.694Z",
       "model_name": "middleware:permissions",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 1125.7071660000074,
+      "duration_ms": 522.6693749999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -942,10 +945,10 @@
     {
       "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:46.037Z",
+      "timestamp": "2026-04-08T17:53:30.695Z",
       "model_name": "middleware:hooks",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 1125.6202909999993,
+      "duration_ms": 522.5354999999981,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -954,7 +957,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631106035,
+        "_original_timestamp": 1775670810693,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -963,10 +966,10 @@
     {
       "step_id": 35,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:46.038Z",
+      "timestamp": "2026-04-08T17:53:30.696Z",
       "model_name": "middleware:semantic-retry",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 1125.5777499999967,
+      "duration_ms": 522.4836670000223,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -975,7 +978,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631106034,
+        "_original_timestamp": 1775670810692,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -984,10 +987,10 @@
     {
       "step_id": 36,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:46.039Z",
+      "timestamp": "2026-04-08T17:53:30.697Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You MUST use the bash_background tool to run `echo 'hello-from-background'` in the background. After it returns a taskId, use task_get with that taskId to check status. Then use task_output with the same taskId to get the output. Report what the stdout contained.{\"taskId\":\"task_1\",\"status\":\"in_progress\",\"message\":\"Background task started (id: task_1). Poll with task_get(\\\"task_1\\\") to check status, task_output(\\\"task_1\\\") to read output once completed.\"}{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\"…",
-      "duration_ms": 1125.7254170000087,
+      "duration_ms": 522.7381670000032,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -996,7 +999,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775631106037,
+        "_original_timestamp": 1775670810695,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }

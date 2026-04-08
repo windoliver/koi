@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:36.605Z",
+      "timestamp": "2026-04-08T17:53:21.763Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:36.606Z",
+      "timestamp": "2026-04-08T17:53:21.764Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:36.608Z",
+      "timestamp": "2026-04-08T17:53:21.766Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 260,
         "completion_tokens": 11
       },
-      "duration_ms": 882,
+      "duration_ms": 671,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -83,7 +83,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T06:51:37.491Z",
+      "timestamp": "2026-04-08T17:53:22.438Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Bash_3",
@@ -97,20 +97,20 @@
         "results": [
           {
             "source_call_id": "call_Bash_3",
-            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}"
           }
         ]
       },
-      "duration_ms": 36,
+      "duration_ms": 67,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.530Z",
+      "timestamp": "2026-04-08T17:53:22.511Z",
       "model_name": "hook:on-sandbox-tool",
       "message": "tool.succeeded → on-sandbox-tool",
-      "duration_ms": 2.528875000018161,
+      "duration_ms": 6.096916999988025,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -127,10 +127,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.531Z",
+      "timestamp": "2026-04-08T17:53:22.512Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
-      "duration_ms": 887.1441660000128,
+      "duration_ms": 683.6737089999951,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -139,7 +139,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775631097496,
+        "_original_timestamp": 1775670802451,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -148,17 +148,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.533Z",
+      "timestamp": "2026-04-08T17:53:22.514Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}"
           }
         ]
       },
-      "duration_ms": 39.03650000001653,
+      "duration_ms": 73.99754199999734,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -175,10 +175,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.534Z",
+      "timestamp": "2026-04-08T17:53:22.515Z",
       "model_name": "middleware:permissions",
       "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
-      "duration_ms": 887.1285829999833,
+      "duration_ms": 683.6257500000065,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -187,7 +187,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631097495,
+        "_original_timestamp": 1775670802450,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -196,17 +196,17 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.535Z",
+      "timestamp": "2026-04-08T17:53:22.516Z",
       "model_name": "middleware:permissions",
       "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}"
           }
         ]
       },
-      "duration_ms": 38.973875000025146,
+      "duration_ms": 73.91145799998776,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,10 +220,11 @@
             "phase": "execute",
             "toolId": "Bash",
             "action": "allow",
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775631097532,
+        "_original_timestamp": 1775670802513,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -232,10 +233,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.536Z",
+      "timestamp": "2026-04-08T17:53:22.517Z",
       "model_name": "middleware:hooks",
       "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
-      "duration_ms": 887.0540829999954,
+      "duration_ms": 683.5198329999985,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -244,7 +245,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631097494,
+        "_original_timestamp": 1775670802449,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -253,17 +254,17 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.537Z",
+      "timestamp": "2026-04-08T17:53:22.518Z",
       "model_name": "middleware:hooks",
       "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}"
           }
         ]
       },
-      "duration_ms": 38.87849999999162,
+      "duration_ms": 73.75158300000476,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -276,16 +277,17 @@
           {
             "event": "tool.succeeded",
             "toolId": "Bash",
+            "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-sandbox-tool",
                 "decision": "continue",
-                "durationMs": 2.528875000018161
+                "durationMs": 6.096916999988025
               }
             ]
           }
         ],
-        "_original_timestamp": 1775631097531,
+        "_original_timestamp": 1775670802512,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -294,10 +296,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.538Z",
+      "timestamp": "2026-04-08T17:53:22.519Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
-      "duration_ms": 887.0050409999967,
+      "duration_ms": 683.4272090000159,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -306,7 +308,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631097493,
+        "_original_timestamp": 1775670802448,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -315,17 +317,17 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:37.539Z",
+      "timestamp": "2026-04-08T17:53:22.520Z",
       "model_name": "middleware:semantic-retry",
       "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}"
           }
         ]
       },
-      "duration_ms": 36.113083000003826,
+      "duration_ms": 67.34158300000126,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -334,7 +336,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631097528,
+        "_original_timestamp": 1775670802506,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -343,9 +345,9 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T06:51:37.557Z",
+      "timestamp": "2026-04-08T17:53:22.564Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}",
+      "message": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}",
       "observation": {
         "results": [
           {
@@ -357,7 +359,7 @@
         "prompt_tokens": 304,
         "completion_tokens": 14
       },
-      "duration_ms": 597,
+      "duration_ms": 832,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -376,10 +378,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:38.159Z",
+      "timestamp": "2026-04-08T17:53:23.401Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}",
-      "duration_ms": 598.7630409999983,
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}",
+      "duration_ms": 833.5496670000139,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -396,10 +398,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:38.160Z",
+      "timestamp": "2026-04-08T17:53:23.402Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}",
-      "duration_ms": 598.7417919999862,
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}",
+      "duration_ms": 833.5237079999933,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -408,7 +410,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631098158,
+        "_original_timestamp": 1775670803400,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -417,10 +419,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:38.161Z",
+      "timestamp": "2026-04-08T17:53:23.403Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}",
-      "duration_ms": 598.6008330000041,
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}",
+      "duration_ms": 833.3771669999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -429,7 +431,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631098156,
+        "_original_timestamp": 1775670803398,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -438,10 +440,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T06:51:38.162Z",
+      "timestamp": "2026-04-08T17:53:23.404Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":35}",
-      "duration_ms": 598.5608329999959,
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":66}",
+      "duration_ms": 833.3281660000212,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -450,7 +452,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631098155,
+        "_original_timestamp": 1775670803397,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

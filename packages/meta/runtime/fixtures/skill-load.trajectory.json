@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.130Z",
+      "timestamp": "2026-04-08T17:53:34.462Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.131Z",
+      "timestamp": "2026-04-08T17:53:34.463Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T06:52:21.152Z",
+      "timestamp": "2026-04-08T17:53:34.500Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What are the primary colors? Answer briefly.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 98,
         "completion_tokens": 8
       },
-      "duration_ms": 645,
+      "duration_ms": 651,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -70,10 +70,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.802Z",
+      "timestamp": "2026-04-08T17:53:35.156Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 647.1677499999932,
+      "duration_ms": 652.2607500000158,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +90,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.803Z",
+      "timestamp": "2026-04-08T17:53:35.157Z",
       "model_name": "middleware:permissions",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 647.1471249999886,
+      "duration_ms": 652.2431670000078,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,7 +102,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631141801,
+        "_original_timestamp": 1775670815155,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -111,10 +111,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.804Z",
+      "timestamp": "2026-04-08T17:53:35.158Z",
       "model_name": "middleware:hooks",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 646.9977500000095,
+      "duration_ms": 652.1768750000047,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -123,7 +123,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631141799,
+        "_original_timestamp": 1775670815153,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -132,10 +132,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:21.805Z",
+      "timestamp": "2026-04-08T17:53:35.159Z",
       "model_name": "middleware:semantic-retry",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 646.9385830000101,
+      "duration_ms": 652.1507500000007,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -144,7 +144,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631141798,
+        "_original_timestamp": 1775670815152,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

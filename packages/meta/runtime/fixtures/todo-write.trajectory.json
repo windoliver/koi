@@ -23,7 +23,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:27.565Z",
+      "timestamp": "2026-04-08T17:52:23.590Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -41,7 +41,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:27.566Z",
+      "timestamp": "2026-04-08T17:52:23.591Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -58,7 +58,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T06:50:27.568Z",
+      "timestamp": "2026-04-08T17:52:23.593Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.",
       "observation": {
@@ -72,7 +72,7 @@
         "prompt_tokens": 470,
         "completion_tokens": 24
       },
-      "duration_ms": 942,
+      "duration_ms": 1328,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -99,7 +99,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T06:50:28.511Z",
+      "timestamp": "2026-04-08T17:52:24.922Z",
       "tool_calls": [
         {
           "tool_call_id": "call_TodoWrite_3",
@@ -107,9 +107,9 @@
           "arguments": {
             "todos": [
               {
-                "id": "write-tests",
                 "status": "in_progress",
-                "content": "Write unit tests"
+                "content": "Write unit tests",
+                "id": "write-tests"
               },
               {
                 "status": "pending",
@@ -134,10 +134,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.518Z",
+      "timestamp": "2026-04-08T17:52:24.929Z",
       "model_name": "hook:on-todo-write",
       "message": "tool.succeeded → on-todo-write",
-      "duration_ms": 2.3938340000022436,
+      "duration_ms": 4.820540999993682,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -154,10 +154,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.519Z",
+      "timestamp": "2026-04-08T17:52:24.930Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.",
-      "duration_ms": 946.1654170000111,
+      "duration_ms": 1331.68029199999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -166,7 +166,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775631028517,
+        "_original_timestamp": 1775670744928,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -175,9 +175,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.521Z",
+      "timestamp": "2026-04-08T17:52:24.932Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-tests\",\"status\":\"in_progress\",\"content\":\"Write unit tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"status\":\"in_progress\",\"content\":\"Write unit tests\",\"id\":\"write-tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
       "observation": {
         "results": [
           {
@@ -185,7 +185,7 @@
           }
         ]
       },
-      "duration_ms": 2.9715829999913694,
+      "duration_ms": 5.384957999995095,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -202,10 +202,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.522Z",
+      "timestamp": "2026-04-08T17:52:24.933Z",
       "model_name": "middleware:permissions",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.",
-      "duration_ms": 946.1499579999945,
+      "duration_ms": 1331.6680419999902,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -214,7 +214,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631028516,
+        "_original_timestamp": 1775670744927,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -223,9 +223,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.523Z",
+      "timestamp": "2026-04-08T17:52:24.934Z",
       "model_name": "middleware:permissions",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-tests\",\"status\":\"in_progress\",\"content\":\"Write unit tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"status\":\"in_progress\",\"content\":\"Write unit tests\",\"id\":\"write-tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
       "observation": {
         "results": [
           {
@@ -233,7 +233,7 @@
           }
         ]
       },
-      "duration_ms": 2.881374999997206,
+      "duration_ms": 5.284625000000233,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -247,10 +247,11 @@
             "phase": "execute",
             "toolId": "TodoWrite",
             "action": "allow",
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775631028520,
+        "_original_timestamp": 1775670744931,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -259,10 +260,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.524Z",
+      "timestamp": "2026-04-08T17:52:24.935Z",
       "model_name": "middleware:hooks",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.",
-      "duration_ms": 946.0657080000092,
+      "duration_ms": 1331.6047919999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -271,7 +272,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631028515,
+        "_original_timestamp": 1775670744926,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -280,9 +281,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.525Z",
+      "timestamp": "2026-04-08T17:52:24.936Z",
       "model_name": "middleware:hooks",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-tests\",\"status\":\"in_progress\",\"content\":\"Write unit tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"status\":\"in_progress\",\"content\":\"Write unit tests\",\"id\":\"write-tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
       "observation": {
         "results": [
           {
@@ -290,7 +291,7 @@
           }
         ]
       },
-      "duration_ms": 2.8158340000081807,
+      "duration_ms": 5.222125000000233,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -303,16 +304,17 @@
           {
             "event": "tool.succeeded",
             "toolId": "TodoWrite",
+            "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-todo-write",
                 "decision": "continue",
-                "durationMs": 2.3938340000022436
+                "durationMs": 4.820540999993682
               }
             ]
           }
         ],
-        "_original_timestamp": 1775631028519,
+        "_original_timestamp": 1775670744930,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -321,9 +323,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.526Z",
+      "timestamp": "2026-04-08T17:52:24.937Z",
       "model_name": "middleware:semantic-retry",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-tests\",\"status\":\"in_progress\",\"content\":\"Write unit tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"status\":\"in_progress\",\"content\":\"Write unit tests\",\"id\":\"write-tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-docs\"}]})",
       "observation": {
         "results": [
           {
@@ -331,7 +333,7 @@
           }
         ]
       },
-      "duration_ms": 0.29558299999916926,
+      "duration_ms": 0.29066700000839774,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -340,7 +342,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631028513,
+        "_original_timestamp": 1775670744924,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -349,10 +351,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:28.527Z",
+      "timestamp": "2026-04-08T17:52:24.938Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.",
-      "duration_ms": 946.0162920000002,
+      "duration_ms": 1331.5685830000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -361,7 +363,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631028514,
+        "_original_timestamp": 1775670744925,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -370,7 +372,7 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T06:50:28.530Z",
+      "timestamp": "2026-04-08T17:52:24.964Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"todos\":[{\"id\":\"write-tests\",\"content\":\"Write unit tests\",\"status\":\"in_progress\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}],\"cleared\":false}",
       "observation": {
@@ -381,10 +383,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 539,
+        "prompt_tokens": 536,
         "completion_tokens": 13
       },
-      "duration_ms": 635,
+      "duration_ms": 638,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -411,10 +413,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:29.170Z",
+      "timestamp": "2026-04-08T17:52:25.607Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.{\"todos\":[{\"id\":\"write-tests\",\"content\":\"Write unit tests\",\"status\":\"in_progress\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}],\"cleared\":false}",
-      "duration_ms": 636.6500830000004,
+      "duration_ms": 639.2674580000021,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -431,10 +433,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:29.171Z",
+      "timestamp": "2026-04-08T17:52:25.608Z",
       "model_name": "middleware:permissions",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.{\"todos\":[{\"id\":\"write-tests\",\"content\":\"Write unit tests\",\"status\":\"in_progress\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}],\"cleared\":false}",
-      "duration_ms": 636.628291999994,
+      "duration_ms": 639.251041999989,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -443,7 +445,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631029169,
+        "_original_timestamp": 1775670745606,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -452,10 +454,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:29.172Z",
+      "timestamp": "2026-04-08T17:52:25.609Z",
       "model_name": "middleware:hooks",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.{\"todos\":[{\"id\":\"write-tests\",\"content\":\"Write unit tests\",\"status\":\"in_progress\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}],\"cleared\":false}",
-      "duration_ms": 636.5012910000078,
+      "duration_ms": 639.0969579999946,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -464,7 +466,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631029167,
+        "_original_timestamp": 1775670745604,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -473,10 +475,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T06:50:29.173Z",
+      "timestamp": "2026-04-08T17:52:25.610Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the TodoWrite tool to create a to-do list with two tasks: first 'Write unit tests' with status 'in_progress', and second 'Write documentation' with status 'pending'. After calling the tool, report how many tasks are now in the list.{\"todos\":[{\"id\":\"write-tests\",\"content\":\"Write unit tests\",\"status\":\"in_progress\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}],\"cleared\":false}",
-      "duration_ms": 636.4589170000108,
+      "duration_ms": 639.0643329999875,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -485,7 +487,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631029166,
+        "_original_timestamp": 1775670745603,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

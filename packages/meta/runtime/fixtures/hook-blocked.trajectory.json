@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.223Z",
+      "timestamp": "2026-04-08T17:51:41.987Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.224Z",
+      "timestamp": "2026-04-08T17:51:41.988Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,10 +43,10 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.231Z",
+      "timestamp": "2026-04-08T17:51:41.997Z",
       "model_name": "hook:budget-guard",
       "message": "compact.before → budget-guard",
-      "duration_ms": 6.87670799999978,
+      "duration_ms": 9.31737499999872,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -64,10 +64,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.234Z",
+      "timestamp": "2026-04-08T17:51:42.000Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2?",
-      "duration_ms": 7.262041999998473,
+      "duration_ms": 9.73712499999965,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -84,10 +84,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.235Z",
+      "timestamp": "2026-04-08T17:51:42.001Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2?",
-      "duration_ms": 7.221832999999606,
+      "duration_ms": 9.695707999999286,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -96,7 +96,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775630984233,
+        "_original_timestamp": 1775670701999,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -105,10 +105,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:49:44.236Z",
+      "timestamp": "2026-04-08T17:51:42.002Z",
       "model_name": "middleware:hooks",
       "message": "What is 2+2?",
-      "duration_ms": 7.167875000002823,
+      "duration_ms": 9.637666999995417,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -120,16 +120,20 @@
         "decisions": [
           {
             "event": "compact.before",
+            "aggregated": "block",
+            "reason": "budget exceeded",
+            "hookName": "budget-guard",
             "hooks": [
               {
                 "name": "budget-guard",
                 "decision": "block",
-                "durationMs": 6.87670799999978
+                "durationMs": 9.31737499999872,
+                "reason": "budget exceeded"
               }
             ]
           }
         ],
-        "_original_timestamp": 1775630984232,
+        "_original_timestamp": 1775670701998,
         "__koi": {
           "identifier": "middleware:hooks"
         }

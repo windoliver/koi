@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:18.369Z",
+      "timestamp": "2026-04-08T17:53:31.851Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:18.370Z",
+      "timestamp": "2026-04-08T17:53:31.852Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T06:52:18.373Z",
+      "timestamp": "2026-04-08T17:53:31.854Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Reply with just the number.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 102,
         "completion_tokens": 2
       },
-      "duration_ms": 703,
+      "duration_ms": 532,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -70,10 +70,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:19.082Z",
+      "timestamp": "2026-04-08T17:53:32.392Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 704.5188750000088,
+      "duration_ms": 535.0463750000054,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +90,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:19.083Z",
+      "timestamp": "2026-04-08T17:53:32.393Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 704.445166999998,
+      "duration_ms": 535.0284169999941,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,7 +102,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775631139081,
+        "_original_timestamp": 1775670812391,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -111,10 +111,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:19.084Z",
+      "timestamp": "2026-04-08T17:53:32.394Z",
       "model_name": "middleware:hooks",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 704.2897089999751,
+      "duration_ms": 534.9227499999979,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -123,7 +123,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775631139080,
+        "_original_timestamp": 1775670812390,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -132,10 +132,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:19.085Z",
+      "timestamp": "2026-04-08T17:53:32.395Z",
       "model_name": "middleware:semantic-retry",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 704.2109160000109,
+      "duration_ms": 534.8912920000148,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -144,7 +144,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775631139078,
+        "_original_timestamp": 1775670812388,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -153,10 +153,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T06:52:19.086Z",
+      "timestamp": "2026-04-08T17:53:32.396Z",
       "model_name": "middleware:@koi/session:transcript",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 704.0806250000023,
+      "duration_ms": 534.8433340000047,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -165,7 +165,7 @@
         "phase": "observe",
         "priority": 200,
         "nextCalled": true,
-        "_original_timestamp": 1775631139077,
+        "_original_timestamp": 1775670812387,
         "__koi": {
           "identifier": "middleware:@koi/session:transcript"
         }

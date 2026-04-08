@@ -1,36 +1,36 @@
 {
   "name": "task-board",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775630958763,
+  "recordedAt": 1775670669532,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_pfAyCSrpmHPH8BHHWTs8"
+      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_pfAyCSrpmHPH8BHHWTs8",
+      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_pfAyCSrpmHPH8BHHWTs8",
+      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
       "delta": "{\"subject\":\"Review README\",\"description\":\"Review the README for typos\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_ZfJw3oD8TVF52SP3XOoF"
+      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_ZfJw3oD8TVF52SP3XOoF",
+      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_ZfJw3oD8TVF52SP3XOoF",
+      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
       "delta": "{}"
     },
     {
@@ -40,11 +40,11 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_pfAyCSrpmHPH8BHHWTs8"
+      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_ZfJw3oD8TVF52SP3XOoF"
+      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj"
     },
     {
       "kind": "done",
@@ -52,11 +52,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775630957-wvxqp77OvlNy7RqaFUFO",
+        "responseId": "gen-1775670668-Iz7q1XMsjtgbJRy8wWgp",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_pfAyCSrpmHPH8BHHWTs8",
+            "id": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
             "name": "task_create",
             "arguments": {
               "subject": "Review README",
@@ -65,7 +65,7 @@
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_ZfJw3oD8TVF52SP3XOoF",
+            "id": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
             "name": "task_list",
             "arguments": {}
           }
