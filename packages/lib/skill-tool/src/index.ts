@@ -9,7 +9,7 @@
  *   if (result.ok) { // result.value is a Tool }
  */
 
-export { createSkillTool, createSkillToolProvider } from "./create-skill-tool.js";
+export { createSkillTool } from "./create-skill-tool.js";
 export { formatSkillDescription } from "./format-description.js";
 export { extractSpawnConfig, mapSkillToSpawnRequest } from "./map-spawn.js";
 export { substituteVariables } from "./substitute.js";

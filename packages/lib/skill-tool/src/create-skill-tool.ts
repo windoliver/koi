@@ -7,15 +7,8 @@
  * to SpawnFn when the skill declares an `agent` field in its metadata.
  */
 
-import type {
-  ComponentProvider,
-  JsonObject,
-  KoiError,
-  Result,
-  Tool,
-  ToolExecuteOptions,
-} from "@koi/core";
-import { COMPONENT_PRIORITY, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import type { JsonObject, KoiError, Result, Tool, ToolExecuteOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { z } from "zod";
 import { formatSkillDescription } from "./format-description.js";
 import { extractSpawnConfig, mapSkillToSpawnRequest } from "./map-spawn.js";
@@ -225,39 +218,4 @@ export async function createSkillTool(config: SkillToolConfig): Promise<Result<T
   };
 
   return { ok: true, value: tool };
-}
-
-// ---------------------------------------------------------------------------
-// ComponentProvider factory
-// ---------------------------------------------------------------------------
-
-/**
- * Creates a ComponentProvider that registers the SkillTool in the agent's ECS.
- *
- * This is the primary integration point: pass it to `createKoi({ providers: [...] })`
- * so the model can discover and invoke skills via `Skill(name, args?)`.
- *
- * Calls `createSkillTool()` internally during `attach()`. If discovery fails,
- * the tool is skipped with the error reason (agent assembly continues).
- */
-export function createSkillToolProvider(config: SkillToolConfig): ComponentProvider {
-  return {
-    name: "skill-tool",
-    priority: COMPONENT_PRIORITY.BUNDLED,
-
-    async attach(): Promise<{
-      readonly components: ReadonlyMap<string, unknown>;
-      readonly skipped: readonly { readonly name: string; readonly reason: string }[];
-    }> {
-      const result = await createSkillTool(config);
-      if (!result.ok) {
-        return {
-          components: new Map(),
-          skipped: [{ name: TOOL_NAME, reason: result.error.message }],
-        };
-      }
-      const token = toolToken(TOOL_NAME) as string;
-      return { components: new Map([[token, result.value]]), skipped: [] };
-    },
-  };
 }
