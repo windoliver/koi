@@ -244,6 +244,14 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/skill-tool": {
+      "name": "@koi/skill-tool",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/skills-runtime": {
       "name": "@koi/skills-runtime",
       "version": "0.0.0",
@@ -355,6 +363,7 @@
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -418,6 +427,7 @@
         "@koi/sandbox-os": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/skill-scanner": "workspace:*",
+        "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
@@ -900,6 +910,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/security/skill-scanner"],
+
+    "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
 
