@@ -1,127 +1,133 @@
 ---
 name: tui-test
-description: Launch koi tui in tmux, send a test prompt, capture output, and verify the response. Use for E2E validation of features that affect model behavior (skills, system prompts, middleware).
-allowed-tools: Bash Read Write Edit Glob Grep
+description: Automatically test the current branch's changes in koi tui via tmux. Detects what changed, designs a test, runs it, and fixes bugs until it passes.
+allowed-tools: Bash Read Write Edit Glob Grep Agent
 ---
 
-# TUI E2E Test via tmux
+# TUI E2E Test — Current Branch
 
-You are running an end-to-end test of the `koi tui` interactive terminal through tmux. This validates that features affecting model behavior (skills, system prompts, middleware) actually work in the live TUI.
+You are testing the current branch's changes end-to-end in `koi tui` via tmux. Your job: figure out what changed, design a test that exercises it, run the test, and fix any bugs until it passes.
 
-## Arguments
+## Step 1: Detect what changed
 
-``
+```bash
+MERGE_BASE=$(git merge-base HEAD main)
+git diff --name-only "${MERGE_BASE}...HEAD"
+```
 
-- First argument: the test prompt to send (required)
-- `--skill <path>`: optional path to a SKILL.md to install before testing
-- `--expect <text>`: optional text that must appear in the response
-- `--no-cleanup`: keep the tmux session alive after the test (for manual inspection)
+Read the changed files to understand what feature/fix this branch introduces. Focus on:
+- New or modified middleware → test that it affects model behavior
+- New or modified tools → test that the tool appears and can be invoked
+- New or modified skills → test that skill content reaches the model
+- TUI wiring changes → test that the TUI starts and responds correctly
+- Bug fixes → test the scenario that was broken
 
-If no arguments are provided, ask the user what to test.
+If the changes don't affect TUI behavior (e.g., pure L0 type changes, test-only changes), report "No TUI-visible changes on this branch" and stop.
 
-## Prerequisites
+## Step 2: Design the test
 
-Before launching the TUI, ensure:
+Based on your analysis, decide:
+1. **Prompt**: What to send to the TUI that would exercise the changed feature
+2. **Expectation**: What the response must contain (or how it must be formatted) to prove the feature works
+3. **Skill** (if needed): Whether a temporary SKILL.md needs to be installed to test the feature
 
-1. **Worktree**: You MUST be in a worktree (not the main repo root). If `basename "$PWD"` is `koi`, stop and tell the user to create a worktree first.
-2. **`.env` symlink**: The worktree needs API keys. Check if `.env` exists; if not, find the main repo root via `git worktree list` and symlink:
+Print your test plan:
+```
+Test plan:
+  Feature: <what changed>
+  Prompt: "<prompt>"
+  Expect: <what proves it works>
+  Skill: <skill name or "none">
+```
+
+## Step 3: Prerequisites
+
+1. **Worktree check**: Verify you are in a worktree, not the main repo root:
    ```bash
    MAIN_ROOT=$(git worktree list | head -1 | awk '{print $1}')
-   ln -s "${MAIN_ROOT}/.env" .env
+   if [ "$PWD" = "$MAIN_ROOT" ]; then echo "ERROR: run from a worktree, not main"; exit 1; fi
    ```
-3. **Build**: Run `bun run build` — the TUI loads from built dist files. If build fails, diagnose and fix before proceeding.
-4. **tmux**: Verify tmux is available (`which tmux`).
+2. **`.env`**: If `.env` doesn't exist, symlink from main:
+   ```bash
+   MAIN_ROOT=$(git worktree list | head -1 | awk '{print $1}')
+   [ ! -f .env ] && ln -s "${MAIN_ROOT}/.env" .env
+   ```
+3. **Build**: `bun run build` — if it fails, fix the build error and retry.
 
-## Protocol
-
-### Step 1: Setup
+## Step 4: Run the test
 
 ```bash
 WORKTREE=$(basename "$PWD")
 SESSION="${WORKTREE}-tui-test"
-```
 
-If `--skill` is provided, install the skill:
-```bash
-mkdir -p ~/.claude/skills/<skill-name>
-cp <skill-path> ~/.claude/skills/<skill-name>/SKILL.md
-```
+# Install temp skill if needed
+# mkdir -p ~/.claude/skills/<name> && write SKILL.md
 
-### Step 2: Launch TUI
-
-Kill any existing test session, then launch:
-```bash
+# Launch TUI
 tmux kill-session -t "${SESSION}" 2>/dev/null
 sleep 1
 tmux new-session -d -s "${SESSION}" -x 120 -y 40 \
   "bun run packages/meta/cli/src/bin.ts tui; sleep 30"
 sleep 5
-```
 
-Verify the TUI started by capturing the pane:
-```bash
+# Verify TUI started
 tmux capture-pane -t "${SESSION}" -p | tail -3
-```
+# Must contain: "Type a message..."
 
-Expected: `Type a message... (/ for commands)` in the output. If not present, check stderr and diagnose.
-
-### Step 3: Send prompt and capture
-
-```bash
-tmux send-keys -t "${SESSION}" "<prompt text>" Enter
+# Send prompt
+tmux send-keys -t "${SESSION}" "<prompt>" Enter
 sleep 10
 tmux capture-pane -t "${SESSION}" -p
 ```
 
-If the response is still streaming (shows `streaming…` in the status bar), wait 5 more seconds and re-capture.
+If still streaming (`streaming...` in status bar), wait 5 more seconds and re-capture.
 
-### Step 4: Validate
+## Step 5: Validate
 
-1. Print the captured response
-2. If `--expect` was provided, check that the expected text appears in the output
-3. Report PASS or FAIL with the evidence
+Check if the response matches the expectation. Report result.
 
-**If FAIL — enter the fix loop (Step 4b).**
+**If PASS** — go to Step 7.
 
-### Step 4b: Fix loop (on failure)
+**If FAIL** — go to Step 6.
 
-When a test fails, do NOT just report it. Diagnose and fix:
+## Step 6: Fix loop (max 5 attempts)
 
-1. **Build failure** (Step 2 — TUI didn't start): read the error, fix the source code, rebuild (`bun run build`), and retry from Step 2.
-2. **No response** (Step 3 — TUI started but model returned nothing): check `.env` symlink, API key availability, stderr output. Fix and retry from Step 2.
-3. **Wrong response** (Step 4 — response doesn't match `--expect`):
-   - Check if the feature is wired into the TUI. Read `packages/meta/cli/src/tui-command.ts` to see if the relevant middleware/provider/skill is hooked up.
-   - If not wired: wire it into `tui-command.ts`, rebuild, and retry from Step 2.
-   - If wired but not working: read the middleware/provider code, add debug logging, diagnose, fix, rebuild, and retry from Step 2.
-4. **Skill not discovered** (model doesn't see skill content): verify `createSkillsRuntime()` discovers the skill by running a quick inline check:
+Do NOT just report failure. Diagnose and fix:
+
+1. **TUI didn't start**: Read the build/runtime error. Fix source code. Rebuild. Retry from Step 4.
+2. **No response / API error**: Check `.env` symlink and API key. Fix and retry.
+3. **Feature not working**:
+   - Check if the feature is wired into `packages/meta/cli/src/tui-command.ts`. If not, wire it.
+   - Check if middleware/provider is being called. Add debug logging if needed.
+   - Read the relevant source code, find the bug, fix it, rebuild, retry from Step 4.
+4. **Skill not discovered**: Run discovery check:
    ```bash
-   bun -e 'import{createSkillsRuntime}from"@koi/skills-runtime";const r=await createSkillsRuntime().discover();console.log(r.ok?Object.fromEntries(r.value):r.error)'
+   cd packages/meta/cli && bun -e 'import{createSkillsRuntime}from"@koi/skills-runtime";const r=await createSkillsRuntime().discover();console.log(r.ok?Object.fromEntries(r.value):r.error)'
    ```
-   Fix discovery path issues and retry.
 
-**Repeat the fix loop until the test passes. Maximum 5 attempts.** After 5 failures, report what was tried and what's still broken.
+After each fix: rebuild (`bun run build`) and retry from Step 4.
 
-### Step 5: Cleanup
+**After 5 failed attempts**, report what was tried and what remains broken.
 
-Unless `--no-cleanup` was specified:
+## Step 7: Cleanup
 
 ```bash
 tmux kill-session -t "${SESSION}" 2>/dev/null
 ```
 
-If a skill was installed in Step 1, remove it:
+Remove any temp skills installed in Step 4:
 ```bash
-rm -rf ~/.claude/skills/<skill-name>
+rm -rf ~/.claude/skills/<name>
 ```
 
-## Output format
+## Step 8: Report
 
 ```
 ══════════════════════════════════════
   TUI E2E TEST
-  Worktree: <name>
+  Branch: <branch name>
+  Feature: <what was tested>
   Prompt: "<prompt>"
-  Skill: <skill name or "none">
   Attempts: <N>
 ══════════════════════════════════════
 
@@ -131,12 +137,4 @@ rm -rf ~/.claude/skills/<skill-name>
 --- Result ---
 <PASS | FAIL>: <reason>
 ══════════════════════════════════════
-```
-
-## Example usage
-
-```
-/tui-test "What are the primary colors?" --skill ./my-skill/SKILL.md --expect "bullet"
-/tui-test "Hello" --no-cleanup
-/tui-test "What is 2+2?"
 ```
