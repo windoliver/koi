@@ -79,6 +79,13 @@ function extractOutputText(output: EngineOutput): string {
   return texts.join("\n");
 }
 
+/** Detect AccumulatedToolCall metadata (not execution output). */
+function isAccumulatedToolCallMetadata(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return "rawArgs" in obj && "callId" in obj;
+}
+
 /** Non-throwing serialization of arbitrary tool output to string. */
 function safeSerializeResult(value: unknown): string {
   if (value === undefined || value === null) return "";
@@ -108,8 +115,10 @@ async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<Engine
       // Prefer tool_result (carries real execution output).
       lastToolResult = safeSerializeResult(event.output);
     } else if (event.kind === "tool_call_end") {
-      // Legacy fallback: engine streams that haven't migrated to tool_result.
-      lastToolResult = safeSerializeResult(event.result);
+      // Legacy fallback: skip AccumulatedToolCall metadata (model stream args).
+      if (!isAccumulatedToolCallMetadata(event.result)) {
+        lastToolResult = safeSerializeResult(event.result);
+      }
     } else if (event.kind === "done") {
       output = event.output;
     }

@@ -18,6 +18,17 @@ import type { EngineEvent } from "@koi/core";
  * and catches circular references / BigInt / non-serializable values
  * so observe() never throws while streaming events.
  */
+/**
+ * Detect AccumulatedToolCall metadata objects emitted by consumeModelStream.
+ * These contain parsed args (rawArgs, parsedArgs) from the model stream,
+ * NOT execution output. Must be excluded from verdict/result capture.
+ */
+function isAccumulatedToolCallMetadata(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return "rawArgs" in obj && "callId" in obj;
+}
+
 function safeSerialize(value: unknown): string {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") return value;
@@ -86,16 +97,18 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
       }
 
       // Legacy fallback: engine streams that haven't migrated to tool_result
-      // still carry executed output on tool_call_end.result. Store the output
-      // but do NOT finalize — a subsequent tool_result will overwrite with
-      // real execution output. Only finalize on tool_result to avoid
-      // capturing AccumulatedToolCall metadata as the verdict.
+      // still carry executed output on tool_call_end.result. Skip
+      // AccumulatedToolCall metadata (rawArgs/parsedArgs from the model
+      // stream) — only accept real execution output as fallback.
       if (event.kind === "tool_call_end") {
         const isVerdictTool =
           requiredToolName !== undefined && currentToolCallName === requiredToolName;
         currentToolCallName = undefined;
-        const serialized = safeSerialize(event.result);
 
+        // Skip AccumulatedToolCall metadata — not execution output.
+        if (isAccumulatedToolCallMetadata(event.result)) return;
+
+        const serialized = safeSerialize(event.result);
         if (isVerdictTool || requiredToolName === undefined) {
           verdictOutput = serialized;
         }
@@ -143,7 +156,9 @@ export function createTextCollector(): OutputCollector {
       }
 
       // Legacy fallback: engine streams that haven't migrated to tool_result.
+      // Skip AccumulatedToolCall metadata — not execution output.
       if (event.kind === "tool_call_end") {
+        if (isAccumulatedToolCallMetadata(event.result)) return;
         lastToolResult = safeSerialize(event.result);
         return;
       }
