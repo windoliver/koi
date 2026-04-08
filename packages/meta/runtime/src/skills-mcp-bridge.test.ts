@@ -319,15 +319,18 @@ describe("createSkillsMcpBridge", () => {
 
   // -- error handling --------------------------------------------------------
 
-  test("onChange swallows discover() errors", async () => {
+  test("onChange clears stale skills on discover() error and calls onSyncError", async () => {
     const resolver = createMockResolver([descriptor("srv__tool", "srv")]);
     const runtime = createMockRuntime();
+    const onSyncError = mock((_error: unknown) => {});
     const bridge = createSkillsMcpBridge({
       resolver: resolver as unknown as McpResolver,
       runtime: runtime as unknown as SkillsRuntime,
+      onSyncError,
     });
 
     await bridge.sync();
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
 
     // Next discover throws
     resolver.discover.mockImplementation(() => Promise.reject(new Error("connection lost")));
@@ -336,7 +339,12 @@ describe("createSkillsMcpBridge", () => {
     // Should not throw; wait for async handler
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // registerExternal only called once (initial sync), error swallowed
-    expect(runtime.registerExternal).toHaveBeenCalledTimes(1);
+    // registerExternal called twice: initial sync + clear on error
+    expect(runtime.registerExternal).toHaveBeenCalledTimes(2);
+    const clearCall = runtime.registerExternal.mock.calls[1]?.[0] as readonly SkillMetadata[];
+    expect(clearCall).toHaveLength(0);
+
+    // onSyncError callback invoked
+    expect(onSyncError).toHaveBeenCalledTimes(1);
   });
 });

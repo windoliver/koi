@@ -24,6 +24,8 @@ import type { SkillMetadata, SkillsRuntime } from "@koi/skills-runtime";
 export interface SkillsMcpBridgeConfig {
   readonly resolver: McpResolver;
   readonly runtime: SkillsRuntime;
+  /** Called when a refresh fails. The bridge clears stale skills on failure. */
+  readonly onSyncError?: (error: unknown) => void;
 }
 
 export interface SkillsMcpBridge {
@@ -58,7 +60,7 @@ export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): Sk
 // ---------------------------------------------------------------------------
 
 export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpBridge {
-  const { resolver, runtime } = config;
+  const { resolver, runtime, onSyncError } = config;
 
   let disposed = false;
   let syncInFlight = false;
@@ -85,8 +87,12 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
         const skills = descriptors.map(mapToolDescriptorToSkillMetadata);
         runtime.registerExternal(skills);
       }
-    } catch {
-      // Swallow — resolver.failures exposes server-level errors
+    } catch (error: unknown) {
+      // Clear stale skills on failure — don't advertise unreachable tools
+      if (!disposed && capturedVersion === version) {
+        runtime.registerExternal([]);
+      }
+      onSyncError?.(error);
     } finally {
       syncInFlight = false;
     }
