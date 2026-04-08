@@ -10,13 +10,13 @@
 
 import { readFileSync } from "node:fs";
 
-// Tools that golden query tests validate (interaction + task + spawn)
-const GOLDEN_INTERACTION_TOOLS = [
-  "TodoWrite",
-  "EnterPlanMode",
-  "ExitPlanMode",
-  "AskUserQuestion",
-] as const;
+// Tools that golden query tests validate (interaction + task + spawn).
+// EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally excluded:
+// they are NOT registered in the TUI until real UI dialogs exist (tracked in
+// #1582). EnterPlanMode/ExitPlanMode only flip a boolean without gating
+// Bash/fs access, and AskUserQuestion auto-answers the first option without
+// showing the user the question.
+const GOLDEN_INTERACTION_TOOLS = ["TodoWrite"] as const;
 
 const GOLDEN_TASK_TOOLS = ["task_create", "task_delegate"] as const;
 

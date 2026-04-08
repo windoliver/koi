@@ -84,11 +84,23 @@ export function createTaskDelegateTool(board: ManagedTaskBoard, coordinatorAgent
 
       // Record intended executor in metadata. Preserve any existing metadata.
       // updateOwned is atomic within the lock and verifies we still own the task.
+      // If updateOwned fails, compensate by unassigning so the task returns to
+      // pending — prevents the task being stuck in_progress with no delegatedTo.
       const existingMeta = board.snapshot().get(id)?.metadata ?? {};
-      const metaResult = await board.updateOwned(id, coordinatorAgentId, {
-        metadata: { ...existingMeta, delegatedTo: agent_id },
-      });
+      let metaResult: Awaited<ReturnType<typeof board.updateOwned>>;
+      try {
+        metaResult = await board.updateOwned(id, coordinatorAgentId, {
+          metadata: { ...existingMeta, delegatedTo: agent_id },
+        });
+      } catch (e: unknown) {
+        // Best-effort rollback: if unassign also fails, the board is in a bad
+        // state, but we still surface the original error to the caller.
+        await board.unassign(id).catch(() => undefined);
+        throw e;
+      }
       if (!metaResult.ok) {
+        // Compensating rollback: reset task to pending so it can be re-delegated.
+        await board.unassign(id).catch(() => undefined);
         return { ok: false, error: metaResult.error.message };
       }
 

@@ -25,7 +25,7 @@
  *   web_fetch            — HTTP fetch via @koi/tools-web
  *   Bash                 — shell execution via @koi/tools-bash
  *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
- *   task_create/get/update/list/stop/output/delegate — task management via @koi/task-tools
+ *   task_create, task_get, task_update, task_list, task_stop, task_output, task_delegate — task management via @koi/task-tools
  */
 
 import { readdir } from "node:fs/promises";
@@ -56,15 +56,7 @@ import { createSkillsRuntime } from "@koi/skills-runtime";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashTool } from "@koi/tools-bash";
-import type { TodoItem } from "@koi/tools-builtin";
-import {
-  createAskUserTool,
-  createEnterPlanModeTool,
-  createExitPlanModeTool,
-  createGlobTool,
-  createGrepTool,
-  createTodoTool,
-} from "@koi/tools-builtin";
+import { createGlobTool, createGrepTool, createTodoTool } from "@koi/tools-builtin";
 import { createWebExecutor, createWebFetchTool } from "@koi/tools-web";
 import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
 import {
@@ -97,11 +89,7 @@ const DEFAULT_SYSTEM_PROMPT =
   "to complete tasks. " +
   "Always prefer using tools to gather accurate real-time information rather than " +
   "answering from memory.\n\n" +
-  "For complex tasks that need exploration before implementation:\n" +
-  "- Call EnterPlanMode to switch to read-only planning (no file edits)\n" +
-  "- Use TodoWrite to track your progress across steps\n" +
-  "- When your plan is ready, call ExitPlanMode with the plan content to get approval\n" +
-  "Use these tools naturally — enter plan mode when a task requires thinking first.";
+  "Use TodoWrite to track your progress across multi-step tasks.";
 /**
  * Maximum number of transcript messages sent in each model request.
  * Caps context window to control token costs in long sessions.
@@ -287,45 +275,18 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     agentId: "tui-agent" as AgentId,
   });
 
-  // --- Interaction tools (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion) ---
-  // let: mutable interaction state (per session, reset on agent:clear)
-  let todoItems: readonly TodoItem[] = [];
-  let inPlanMode = false;
-  let planContentMemory: string | undefined;
+  // --- Interaction tools (TodoWrite only) ---
+  // EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally NOT
+  // registered: they require real TUI dialogs to be safe. EnterPlanMode/
+  // ExitPlanMode only flip a boolean without gating Bash/fs access, and
+  // AskUserQuestion auto-answers without showing the user. Tracked in #1582.
+  // let: mutable state (per session, reset on agent:clear)
+  let todoItems: readonly import("@koi/tools-builtin").TodoItem[] = [];
 
   const todoTool = createTodoTool({
     getItems: () => todoItems,
     setItems: (items) => {
       todoItems = items;
-    },
-  });
-  const enterPlanModeTool = createEnterPlanModeTool({
-    isAgentContext: () => false,
-    isInPlanMode: () => inPlanMode,
-    enterPlanMode: () => {
-      inPlanMode = true;
-    },
-  });
-  const exitPlanModeTool = createExitPlanModeTool({
-    isInPlanMode: () => inPlanMode,
-    isTeammate: false,
-    isPlanModeRequired: false,
-    exitPlanMode: () => {
-      inPlanMode = false;
-    },
-    getPlanContent: async () => planContentMemory,
-    savePlanContent: async (content) => {
-      planContentMemory = content;
-    },
-  });
-  // AskUserQuestion: auto-answers with the first option for now.
-  // Proper TUI dialog integration is future work — the tool result shows
-  // the question text so the user sees what was asked.
-  const askUserTool = createAskUserTool({
-    elicit: async (questions) => {
-      return questions.map((q) => ({
-        selected: [q.options[0]?.label ?? ""],
-      }));
     },
   });
 
@@ -339,9 +300,14 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // let: mutable — populated after allTools is built (circular ref: spawn needs tools, tools include spawn)
   let toolRegistryRef: ReadonlyMap<string, Tool> = new Map();
   let toolDescriptorsRef: readonly ToolDescriptor[] = [];
-  // Worker tool set: only execution tools, not coordination tools.
-  // Workers should act (Bash, Glob, Grep, fs, web) — not re-enter plan mode or spawn.
-  const workerToolNames = new Set(["Bash", "Glob", "Grep", "web_fetch"]);
+  // Worker tool set: read-only tools only.
+  // Bash is intentionally excluded from worker tools: child agents run via raw
+  // runTurn without middleware (no exfiltration guard, no permissions, no
+  // transcript), so unsandboxed Bash in a child would be unguarded.
+  // Tracked in #1582 (createKoi migration for worker agents).
+  // TODO(#1582): once workers route through createKoi, re-enable Bash + web_fetch
+  // behind the same middleware stack as the coordinator.
+  const workerToolNames = new Set(["Glob", "Grep"]);
   const realSpawnFn: import("@koi/core").SpawnFn = async (request) => {
     // Filter to worker-appropriate tools (exclude TodoWrite, PlanMode, spawn, task tools)
     const childToolDescriptors = toolDescriptorsRef.filter((t) => workerToolNames.has(t.name));
@@ -419,9 +385,6 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     webFetchTool,
     bashTool,
     todoTool,
-    enterPlanModeTool,
-    exitPlanModeTool,
-    askUserTool,
     ...taskTools,
     ...spawnTools,
   ];

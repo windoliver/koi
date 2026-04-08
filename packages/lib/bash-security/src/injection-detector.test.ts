@@ -29,6 +29,16 @@ describe("detectInjection", () => {
     test("dot-command with space", () => {
       expect(detectInjection(". /tmp/evil.sh").ok).toBe(false);
     });
+
+    // Regression: multiline payload ". script" after a newline bypassed the
+    // original regex which only checked ^, ;, |, & as boundaries.
+    test("dot-command after newline (multiline bypass)", () => {
+      expect(detectInjection("echo ok\n. /tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("dot-command after newline with leading whitespace", () => {
+      expect(detectInjection("ls\n  . /tmp/evil.sh").ok).toBe(false);
+    });
   });
 
   describe("blocks base64 decode pipelines", () => {

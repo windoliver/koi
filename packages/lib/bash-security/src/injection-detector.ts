@@ -21,9 +21,11 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   {
     // source / dot-command executes arbitrary scripts from the filesystem.
     // The dot-command pattern requires `.` at a command boundary (start of line,
-    // after ; | && ||) to avoid false positives on `.` inside quoted strings
-    // (e.g., MIT license text: "Software"), to deal...").
-    regex: /\bsource\b|(?:^|[;|&]\s*)\.\s+\S/,
+    // after ; | && || or a newline) to avoid false positives on `.` inside
+    // quoted strings (e.g., MIT license text: "Software"), to deal...").
+    // \n is included so multiline payloads like "echo ok\n. /tmp/evil.sh"
+    // are caught even without a semicolon separator.
+    regex: /\bsource\b|(?:^|[;|&\n]\s*)\.\s+\S/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },
