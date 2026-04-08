@@ -11,7 +11,7 @@
 
 import type { KoiError, Result, SpawnRequest } from "@koi/core";
 import { substituteVariables } from "./substitute.js";
-import type { LoadedSkill, SpawnConfig } from "./types.js";
+import type { LoadedSkill, SkillMeta, SpawnConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Extract spawn config
@@ -28,7 +28,7 @@ import type { LoadedSkill, SpawnConfig } from "./types.js";
  * Returns `VALIDATION` error if fork is requested but `allowedTools` is empty
  * (ambiguous intent — either list specific tools or remove the field).
  */
-export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiError> {
+export function extractSpawnConfig(skill: SkillMeta): Result<SpawnConfig, KoiError> {
   const agentName = skill.metadata?.agent;
 
   // executionMode is authoritative when present
