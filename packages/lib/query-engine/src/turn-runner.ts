@@ -19,8 +19,8 @@ import { consumeModelStream } from "./consume-stream.js";
 import {
   DEFAULT_DOOM_LOOP_THRESHOLD,
   DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
-  detectDoomLoop,
   parseDoomLoopKey,
+  partitionDoomLoopKeys,
   updateStreaks,
 } from "./doom-loop.js";
 import type { TurnState } from "./turn-machine.js";
@@ -322,7 +322,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // observability. Uses canonicalized JSON of parsed args (recursively sorted
     // keys) to catch semantically identical calls even with different key ordering.
     const seen = new Set<string>();
-    const dedupedToolCalls: typeof validToolCalls = [];
+    // let justified: mutable — doom loop detection may filter out repeated calls
+    let dedupedToolCalls: typeof validToolCalls = [];
     const skippedToolCalls: typeof validToolCalls = [];
     for (const tc of validToolCalls) {
       const canonicalArgs =
@@ -346,8 +347,9 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     // Doom loop detection: check if any deduped tool call has been repeated
-    // across consecutive turns. If so, inject a system message telling the
-    // model to try a different approach, and skip tool execution this turn.
+    // across consecutive turns. Per-key detection blocks individual repeated
+    // calls while allowing new/different calls in the same turn to execute.
+    // If ALL calls are repeated, inject a system message and re-prompt.
     if (dedupedToolCalls.length > 0 && doomLoopThreshold >= 2) {
       const currentKeys = dedupedToolCalls.map((tc) => {
         const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
@@ -356,10 +358,15 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
 
-      const repeatedKey = detectDoomLoop(doomLoopStreaks, currentKeys, doomLoopThreshold);
+      const { repeatedKeys, hasRepeated, allRepeated } = partitionDoomLoopKeys(
+        doomLoopStreaks,
+        currentKeys,
+        doomLoopThreshold,
+      );
 
-      if (repeatedKey !== null && doomLoopInterventions < maxDoomLoopInterventions) {
-        const { toolName } = parseDoomLoopKey(repeatedKey);
+      if (hasRepeated && allRepeated && doomLoopInterventions < maxDoomLoopInterventions) {
+        // ALL calls are repeated — full intervention: re-prompt the model.
+        const { toolName } = parseDoomLoopKey([...repeatedKeys][0] as string);
 
         yield {
           kind: "custom",
@@ -380,7 +387,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           content: [
             {
               kind: "text",
-              text: `[Doom loop detected]: You have called "${toolName}" with the same arguments ${doomLoopThreshold} times consecutively. The tool already returned a result. Stop repeating this call and try a different approach.`,
+              text: `[Doom loop detected]: You have called "${toolName}" with the same arguments ${doomLoopThreshold} turns in a row. Stop repeating this call and try a different approach.`,
             },
           ],
           timestamp: Date.now(),
@@ -388,19 +395,31 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
         doomLoopInterventions++;
 
-        // Re-prompt without consuming the turn budget. Use stop_blocked to
-        // re-enter the loop, but compensate the turnIndex increment so the
-        // doom-loop intervention doesn't count against maxTurns.
+        // Re-prompt without consuming the turn budget.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
         const preTurnIndex = state.turnIndex;
         if (state.stopReason === "completed") {
           state = transitionTurn(state, { kind: "stop_blocked" });
         }
         yield { kind: "turn_end", turnIndex: preTurnIndex };
-        // Compensate: stop_blocked incremented turnIndex, but doom-loop
-        // interventions should not consume the turn budget.
         state = { ...state, turnIndex: preTurnIndex };
         continue;
+      }
+
+      if (hasRepeated && !allRepeated) {
+        // Mixed turn: filter out repeated calls, keep new ones.
+        // Repeated calls are silently dropped — they already ran before.
+        const blockedNames = [...repeatedKeys].map((k) => parseDoomLoopKey(k).toolName);
+        dedupedToolCalls = dedupedToolCalls.filter((tc) => {
+          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
+          const key = `${tc.toolName}\0${cArgs}`;
+          return !repeatedKeys.has(key);
+        });
+        yield {
+          kind: "custom",
+          type: "doom_loop_filtered",
+          data: { blockedTools: blockedNames, turnIndex: state.turnIndex },
+        };
       }
     } else if (dedupedToolCalls.length === 0 && doomLoopThreshold >= 2) {
       // Text-only turn: clear streaks (streak is broken)

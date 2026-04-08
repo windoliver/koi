@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_DOOM_LOOP_THRESHOLD,
   DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
-  detectDoomLoop,
   parseDoomLoopKey,
+  partitionDoomLoopKeys,
   updateStreaks,
 } from "./doom-loop.js";
 
@@ -22,70 +22,87 @@ describe("constants", () => {
 });
 
 // ---------------------------------------------------------------------------
-// detectDoomLoop
+// partitionDoomLoopKeys
 // ---------------------------------------------------------------------------
 
-describe("detectDoomLoop", () => {
+describe("partitionDoomLoopKeys", () => {
   const keyA = 'readFile\0{"path":"/foo"}';
   const keyB = 'writeFile\0{"path":"/bar"}';
 
-  test("returns null when streaks map is empty", () => {
-    expect(detectDoomLoop(new Map(), [keyA], 3)).toBeNull();
+  test("returns no repeated when streaks map is empty", () => {
+    const result = partitionDoomLoopKeys(new Map(), [keyA], 3);
+    expect(result.hasRepeated).toBe(false);
+    expect(result.allRepeated).toBe(false);
+    expect(result.repeatedKeys.size).toBe(0);
   });
 
-  test("returns null when currentKeys is empty", () => {
+  test("returns no repeated when currentKeys is empty", () => {
     const streaks = new Map([[keyA, 5]]);
-    expect(detectDoomLoop(streaks, [], 3)).toBeNull();
+    const result = partitionDoomLoopKeys(streaks, [], 3);
+    expect(result.hasRepeated).toBe(false);
   });
 
-  test("returns null when streak is below threshold", () => {
+  test("returns no repeated when streak is below threshold", () => {
     const streaks = new Map([[keyA, 2]]);
-    expect(detectDoomLoop(streaks, [keyA], 3)).toBeNull();
+    const result = partitionDoomLoopKeys(streaks, [keyA], 3);
+    expect(result.hasRepeated).toBe(false);
   });
 
-  test("returns key when streak reaches threshold", () => {
+  test("marks key as repeated when streak reaches threshold", () => {
     const streaks = new Map([[keyA, 3]]);
-    expect(detectDoomLoop(streaks, [keyA], 3)).toBe(keyA);
+    const result = partitionDoomLoopKeys(streaks, [keyA], 3);
+    expect(result.hasRepeated).toBe(true);
+    expect(result.allRepeated).toBe(true);
+    expect(result.repeatedKeys.has(keyA)).toBe(true);
   });
 
-  test("returns key when streak exceeds threshold", () => {
+  test("marks key as repeated when streak exceeds threshold", () => {
     const streaks = new Map([[keyA, 5]]);
-    expect(detectDoomLoop(streaks, [keyA], 3)).toBe(keyA);
+    const result = partitionDoomLoopKeys(streaks, [keyA], 3);
+    expect(result.hasRepeated).toBe(true);
+    expect(result.allRepeated).toBe(true);
   });
 
-  test("returns first matching key when multiple exceed threshold", () => {
+  test("allRepeated is true when all keys exceed threshold", () => {
     const streaks = new Map([
       [keyA, 3],
       [keyB, 4],
     ]);
-    const result = detectDoomLoop(streaks, [keyA, keyB], 3);
-    expect(result).toBe(keyA);
+    const result = partitionDoomLoopKeys(streaks, [keyA, keyB], 3);
+    expect(result.hasRepeated).toBe(true);
+    expect(result.allRepeated).toBe(true);
+    expect(result.repeatedKeys.size).toBe(2);
   });
 
-  test("returns null with threshold < 2 (disabled)", () => {
+  test("returns no repeated with threshold < 2 (disabled)", () => {
     const streaks = new Map([[keyA, 100]]);
-    expect(detectDoomLoop(streaks, [keyA], 0)).toBeNull();
-    expect(detectDoomLoop(streaks, [keyA], 1)).toBeNull();
+    expect(partitionDoomLoopKeys(streaks, [keyA], 0).hasRepeated).toBe(false);
+    expect(partitionDoomLoopKeys(streaks, [keyA], 1).hasRepeated).toBe(false);
   });
 
   test("ignores keys not in currentKeys", () => {
     const streaks = new Map([[keyA, 10]]);
-    expect(detectDoomLoop(streaks, [keyB], 3)).toBeNull();
+    const result = partitionDoomLoopKeys(streaks, [keyB], 3);
+    expect(result.hasRepeated).toBe(false);
   });
 
-  test("returns null when one key is repeated but another is new (mixed progress)", () => {
+  test("mixed turn: one repeated, one new → hasRepeated but not allRepeated", () => {
     const streaks = new Map([[keyA, 5]]);
-    // keyA is repeated but keyB is new → model is making progress
-    expect(detectDoomLoop(streaks, [keyA, keyB], 3)).toBeNull();
+    const result = partitionDoomLoopKeys(streaks, [keyA, keyB], 3);
+    expect(result.hasRepeated).toBe(true);
+    expect(result.allRepeated).toBe(false);
+    expect(result.repeatedKeys.has(keyA)).toBe(true);
+    expect(result.repeatedKeys.has(keyB)).toBe(false);
   });
 
-  test("returns null when only some keys exceed threshold in mixed turn", () => {
+  test("mixed turn: one exceeds threshold, one below → partial", () => {
     const streaks = new Map([
       [keyA, 3],
       [keyB, 1],
     ]);
-    // keyA exceeds threshold but keyB does not → model is making progress
-    expect(detectDoomLoop(streaks, [keyA, keyB], 3)).toBeNull();
+    const result = partitionDoomLoopKeys(streaks, [keyA, keyB], 3);
+    expect(result.hasRepeated).toBe(true);
+    expect(result.allRepeated).toBe(false);
   });
 });
 

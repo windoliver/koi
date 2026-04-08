@@ -1600,9 +1600,10 @@ describe("runTurn", () => {
       }
     });
 
-    test("mixed-progress turn with one repeated and one new call executes all tools", async () => {
-      // readFile is repeated 3 times but each turn also has a new writeFile call.
-      // Since not ALL calls are repeated, doom loop should NOT trigger.
+    test("mixed turn filters repeated calls but executes new ones", async () => {
+      // readFile("/foo") is repeated 3 times, but each turn also has writeFile
+      // with different args. The repeated readFile should be filtered in turn 3,
+      // while writeFile still executes.
       const toolCalls: string[] = [];
 
       async function* mixedToolStream(
@@ -1641,14 +1642,26 @@ describe("runTurn", () => {
         }),
       );
 
-      // No doom loop event — writeFile args differ each turn
+      // No full doom loop event (not all calls repeated)
       const doomEvent = events.find(
         (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
       );
       expect(doomEvent).toBeUndefined();
 
-      // All 6 tool calls should execute (3x readFile + 3x writeFile)
-      expect(toolCalls.length).toBe(6);
+      // Should have a doom_loop_filtered event for the 3rd turn
+      const filterEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_filtered",
+      );
+      expect(filterEvent).toBeDefined();
+
+      // Turns 1-2: readFile + writeFile execute (4 calls)
+      // Turn 3: only writeFile executes, readFile filtered (1 call)
+      // Total: 5 tool calls (not 6)
+      expect(toolCalls.length).toBe(5);
+      // readFile only executed twice (filtered on 3rd turn)
+      expect(toolCalls.filter((t) => t === "readFile").length).toBe(2);
+      // writeFile executed all 3 times
+      expect(toolCalls.filter((t) => t === "writeFile").length).toBe(3);
     });
   });
 });

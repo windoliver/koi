@@ -15,29 +15,37 @@ export const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
 export const DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS = 2;
 
 /**
- * Check whether ALL keys in `currentKeys` have a consecutive streak
- * >= `threshold` in the streak map. This ensures we only intervene when
- * the model is making zero progress — if even one call is new/different,
- * the model is doing something different and should be allowed to proceed.
+ * Partition `currentKeys` into repeated keys (streak >= threshold) and
+ * non-repeated keys. Returns both sets so the caller can execute
+ * non-repeated calls while blocking repeated ones.
  *
- * Returns the first offending key (`toolName\0canonicalArgs`) or null.
  * Pure function — no mutations.
  */
-export function detectDoomLoop(
+export function partitionDoomLoopKeys(
   streaks: ReadonlyMap<string, number>,
   currentKeys: readonly string[],
   threshold: number,
-): string | null {
-  if (threshold < 2 || currentKeys.length === 0) return null;
+): {
+  readonly repeatedKeys: ReadonlySet<string>;
+  readonly hasRepeated: boolean;
+  readonly allRepeated: boolean;
+} {
+  if (threshold < 2 || currentKeys.length === 0) {
+    return { repeatedKeys: new Set(), hasRepeated: false, allRepeated: false };
+  }
 
-  // let justified: mutable tracker for first offending key
-  let firstRepeated: string | null = null;
+  const repeated = new Set<string>();
   for (const key of currentKeys) {
     const count = streaks.get(key);
-    if (count === undefined || count < threshold) return null; // at least one call is new → no doom loop
-    if (firstRepeated === null) firstRepeated = key;
+    if (count !== undefined && count >= threshold) {
+      repeated.add(key);
+    }
   }
-  return firstRepeated;
+  return {
+    repeatedKeys: repeated,
+    hasRepeated: repeated.size > 0,
+    allRepeated: repeated.size === currentKeys.length,
+  };
 }
 
 /**

@@ -2,8 +2,8 @@ export { consumeModelStream } from "./consume-stream.js";
 export {
   DEFAULT_DOOM_LOOP_THRESHOLD,
   DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS,
-  detectDoomLoop,
   parseDoomLoopKey,
+  partitionDoomLoopKeys,
   updateStreaks,
 } from "./doom-loop.js";
 export type { TurnInput, TurnPhase, TurnState } from "./turn-machine.js";
