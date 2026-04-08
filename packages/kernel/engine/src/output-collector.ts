@@ -20,13 +20,12 @@ import type { EngineEvent } from "@koi/core";
  */
 /**
  * Detect AccumulatedToolCall metadata objects emitted by consumeModelStream.
- * These contain parsed args (rawArgs, parsedArgs) from the model stream,
- * NOT execution output. Must be excluded from verdict/result capture.
+ * These carry the explicit `__kind: "AccumulatedToolCall"` discriminator tag,
+ * NOT real execution output. Must be excluded from verdict/result capture.
  */
 function isAccumulatedToolCallMetadata(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return "rawArgs" in obj && "callId" in obj;
+  return (value as Record<string, unknown>).__kind === "AccumulatedToolCall";
 }
 
 function safeSerialize(value: unknown): string {

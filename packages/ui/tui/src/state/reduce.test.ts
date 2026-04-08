@@ -292,7 +292,12 @@ describe("reduce — engine_event — tool_call", () => {
       engineEvent({
         kind: "tool_call_end",
         callId: testCallId("call-1"),
-        result: { toolName: "ls", callId: "call-1", rawArgs: '{"dir":"."}' },
+        result: {
+          __kind: "AccumulatedToolCall",
+          toolName: "ls",
+          callId: "call-1",
+          rawArgs: '{"dir":"."}',
+        },
       }),
     );
     // tool_call_end is a no-op — block stays running
@@ -362,8 +367,9 @@ describe("reduce — engine_event — tool_call", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
-    // AccumulatedToolCall metadata has rawArgs + callId — should be skipped
+    // AccumulatedToolCall metadata has __kind discriminator — should be skipped
     const metadata = {
+      __kind: "AccumulatedToolCall",
       toolName: "ls",
       callId: "call-1",
       rawArgs: '{"dir":"."}',
@@ -574,7 +580,12 @@ describe("reduce — engine_event — full lifecycle", () => {
       engineEvent({
         kind: "tool_call_end",
         callId: testCallId("call-1"),
-        result: { toolName: "read_file", callId: "call-1", rawArgs: '{"path":"src/index.ts"}' },
+        result: {
+          __kind: "AccumulatedToolCall",
+          toolName: "read_file",
+          callId: "call-1",
+          rawArgs: '{"path":"src/index.ts"}',
+        },
       }),
     );
     state = reduce(

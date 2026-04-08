@@ -312,13 +312,12 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       // If already completed by tool_result, don't overwrite.
       if (tool.block.status === "complete") return state;
 
-      // Detect AccumulatedToolCall metadata — skip it (not execution output).
+      // Detect AccumulatedToolCall metadata via explicit discriminator tag.
       const result = event.result;
       if (
         typeof result === "object" &&
         result !== null &&
-        "rawArgs" in (result as Record<string, unknown>) &&
-        "callId" in (result as Record<string, unknown>)
+        (result as Record<string, unknown>).__kind === "AccumulatedToolCall"
       ) {
         return state;
       }

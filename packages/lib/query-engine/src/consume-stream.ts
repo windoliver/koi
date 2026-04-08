@@ -201,6 +201,7 @@ export async function* consumeModelStream(
           }
 
           const accumulated: AccumulatedToolCall = {
+            __kind: "AccumulatedToolCall",
             toolName,
             callId: chunk.callId,
             rawArgs,

@@ -2,6 +2,9 @@ import type { JsonObject, ToolCallId } from "@koi/core";
 
 /** A completed tool call with accumulated and parsed arguments. */
 export interface AccumulatedToolCall {
+  /** Discriminator tag — allows downstream consumers to distinguish this
+   *  metadata object from real tool execution output on tool_call_end.result. */
+  readonly __kind: "AccumulatedToolCall";
   readonly toolName: string;
   readonly callId: ToolCallId;
   /** The raw JSON string assembled from deltas. */

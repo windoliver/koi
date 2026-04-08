@@ -79,11 +79,10 @@ function extractOutputText(output: EngineOutput): string {
   return texts.join("\n");
 }
 
-/** Detect AccumulatedToolCall metadata (not execution output). */
+/** Detect AccumulatedToolCall metadata via explicit discriminator tag. */
 function isAccumulatedToolCallMetadata(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return "rawArgs" in obj && "callId" in obj;
+  return (value as Record<string, unknown>).__kind === "AccumulatedToolCall";
 }
 
 /** Non-throwing serialization of arbitrary tool output to string. */

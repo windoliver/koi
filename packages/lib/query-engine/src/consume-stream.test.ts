@@ -78,6 +78,7 @@ describe("consumeModelStream", () => {
     expect(endEvent?.kind).toBe("tool_call_end");
     // The result should contain the parsed args
     expect((endEvent as Extract<EngineEvent, { readonly kind: "tool_call_end" }>).result).toEqual({
+      __kind: "AccumulatedToolCall",
       toolName: "write_file",
       callId: callId("tc1"),
       rawArgs: '{"path": "/tmp/x", "content": "hi"}',
