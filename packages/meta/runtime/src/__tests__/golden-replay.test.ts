@@ -1892,21 +1892,29 @@ describe("Golden: @koi/tasks", () => {
 
     const allChunks = stream.read(0);
     expect(allChunks).toHaveLength(2);
-    expect(allChunks[0]!.content).toBe("hello ");
-    expect(allChunks[0]!.offset).toBe(0);
-    expect(allChunks[1]!.content).toBe("world");
+    const chunk0 = allChunks[0];
+    const chunk1 = allChunks[1];
+    expect(chunk0).toBeDefined();
+    expect(chunk1).toBeDefined();
+    if (chunk0 === undefined || chunk1 === undefined) return;
+    expect(chunk0.content).toBe("hello ");
+    expect(chunk0.offset).toBe(0);
+    expect(chunk1.content).toBe("world");
 
     // Each chunk has byteLength
-    expect(allChunks[0]!.byteLength).toBe(6); // "hello " = 6 bytes
-    expect(allChunks[1]!.byteLength).toBe(5); // "world" = 5 bytes
+    expect(chunk0.byteLength).toBe(6); // "hello " = 6 bytes
+    expect(chunk1.byteLength).toBe(5); // "world" = 5 bytes
 
     // Total length is 11 bytes
     expect(stream.length()).toBe(11);
 
     // Delta read from second chunk's offset returns only "world"
-    const deltaChunks = stream.read(allChunks[1]!.offset);
+    const deltaChunks = stream.read(chunk1.offset);
     expect(deltaChunks).toHaveLength(1);
-    expect(deltaChunks[0]!.content).toBe("world");
+    const deltaChunk0 = deltaChunks[0];
+    expect(deltaChunk0).toBeDefined();
+    if (deltaChunk0 === undefined) return;
+    expect(deltaChunk0.content).toBe("world");
   });
 
   test("createTaskRegistry + task kind type guards exercise runtime surface", async () => {
@@ -1935,9 +1943,10 @@ describe("Golden: @koi/tasks", () => {
 
     // Start a task through the lifecycle
     const output = createOutputStream();
-    const state = await registry
-      .get("local_shell")!
-      .start(taskItemId("task_1"), output, { command: "echo test" });
+    const lifecycle = registry.get("local_shell");
+    expect(lifecycle).toBeDefined();
+    if (lifecycle === undefined) return;
+    const state = await lifecycle.start(taskItemId("task_1"), output, { command: "echo test" });
     expect(isLocalShellTask(state)).toBe(true);
     expect(isRuntimeTask(state)).toBe(true);
     expect(state.kind).toBe("local_shell");
@@ -6814,7 +6823,7 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
 
 describe("Golden: @koi/mcp-server", () => {
   test("createMcpServer exposes platform tools when capabilities provided", async () => {
-    const { createMcpServer, createPlatformTools } = await import("@koi/mcp-server");
+    const { createMcpServer } = await import("@koi/mcp-server");
     const { agentId } = await import("@koi/core");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
