@@ -339,14 +339,19 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         rawAdapter.dispose?.() ?? Promise.resolve(),
         filesystemBackend?.dispose?.() ?? Promise.resolve(),
       ]);
-      // Step 2: Now drain stream finalizations (flush + afterFlush) that were
-      // triggered by adapter disposal above.
-      if (activeStreamFinalizations.size > 0) {
-        await Promise.allSettled([...activeStreamFinalizations]);
-      }
-      if (activeFlushes.size > 0) {
-        await Promise.allSettled([...activeFlushes]);
-      }
+      // Step 2: Drain stream finalizations (flush + afterFlush) with a bounded
+      // timeout. Adapters without dispose() or that don't cancel streams would
+      // cause an indefinite hang without this bound. 5s is generous for I/O.
+      const DRAIN_TIMEOUT_MS = 5000;
+      const drainWithTimeout = (promises: Set<Promise<void>>): Promise<unknown> => {
+        if (promises.size === 0) return Promise.resolve();
+        return Promise.race([
+          Promise.allSettled([...promises]),
+          new Promise<void>((r) => setTimeout(r, DRAIN_TIMEOUT_MS)),
+        ]);
+      };
+      await drainWithTimeout(activeStreamFinalizations);
+      await drainWithTimeout(activeFlushes);
       // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
       trajectoryTransport?.close();
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
