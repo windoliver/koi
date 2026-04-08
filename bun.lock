@@ -363,6 +363,7 @@
         "@koi/permissions": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",

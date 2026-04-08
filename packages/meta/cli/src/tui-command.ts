@@ -53,6 +53,7 @@ import {
   createSessionTranscriptMiddleware,
   resumeForSession,
 } from "@koi/session";
+import { createSkillTool } from "@koi/skill-tool";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -315,6 +316,27 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     },
   });
 
+  // --- @koi/skills-runtime: discover + load user skills for system prompt injection ---
+  const skillRuntime = createSkillsRuntime();
+  const skillContent = await (async (): Promise<string> => {
+    const outer = await skillRuntime.loadAll();
+    if (!outer.ok) return "";
+    const parts: string[] = [];
+    for (const [, result] of outer.value) {
+      if (result.ok) parts.push(result.value.body);
+    }
+    return parts.sort().join("\n\n---\n\n");
+  })();
+  const systemPrompt =
+    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+
+  // --- @koi/skill-tool: create Skill meta-tool for on-demand skill loading ---
+  const skillToolResult = await createSkillTool({
+    resolver: skillRuntime,
+    signal: AbortSignal.timeout(300_000),
+  });
+  const skillTool = skillToolResult.ok ? skillToolResult.value : undefined;
+
   // Inline tool registry for the toolCall terminal.
   // fs tools are not in this map — createRuntime wraps them on top via its
   // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
@@ -328,6 +350,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     bashTool,
     todoTool,
     ...taskTools,
+    ...(skillTool !== undefined ? [skillTool] : []),
   ];
   const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>(
     allTools.map((t) => [t.descriptor.name, t]),
@@ -411,22 +434,6 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // JSONL is a journal of everything that happened in this TUI invocation.
   const tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
-
-  // --- @koi/skills-runtime: discover + load user skills for system prompt injection ---
-  // Skills are loaded once at startup and prepended to the system prompt.
-  // Discovery follows standard tier precedence: project > user > bundled.
-  const skillRuntime = createSkillsRuntime();
-  const skillContent = await (async (): Promise<string> => {
-    const outer = await skillRuntime.loadAll();
-    if (!outer.ok) return "";
-    const parts: string[] = [];
-    for (const [, result] of outer.value) {
-      if (result.ok) parts.push(result.value.body);
-    }
-    return parts.sort().join("\n\n---\n\n");
-  })();
-  const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
 
   const runtime = createRuntime({
     adapter: rawEngineAdapter,
