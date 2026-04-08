@@ -76,14 +76,23 @@ interface TuiState {
   // Streaming & tool display (#1581)
   readonly runningToolCount: number;              // O(1) check for spinner activation
   readonly toolsExpanded: boolean;                // Ctrl+E toggle for accordion collapse
+  // Trajectory view data — injected by host via set_trajectory_data
+  readonly trajectorySteps: readonly TrajectoryStepSummary[];
 }
 ```
 
-Thirteen flat fields. `runningToolCount` replaced the O(messages*blocks) `hasRunningTools` scan.
+Fourteen flat fields. `runningToolCount` replaced the O(messages*blocks) `hasRunningTools` scan.
 `toolsExpanded` is the global toggle for tool result accordion collapse (Ctrl+E).
 
 `PlanTask` is a rendering-only type with `id`, `description`, and `status` — the TUI
 never imports `TaskItem` from `@koi/core`.
+
+`TrajectoryStepSummary` is a rendering-only summary of one ATIF trajectory step. Each
+summary carries `stepIndex`, `kind`, `identifier`, `durationMs`, `outcome`, `timestamp`,
+`requestText`, `responseText`, `errorText`, `tokens` (`TrajectoryTokenMetrics`), and
+`middlewareSpan` (`TrajectoryMiddlewareSpan`). `TrajectoryMiddlewareSpan` contains
+`hook` (e.g., `"wrapModelCall"`), `phase`, and `nextCalled`. These types are injected
+by the host — the TUI never reads from the trajectory store directly.
 
 ## Message Model
 
@@ -122,7 +131,7 @@ Two-layer navigation: persistent **views** and transient **modals**.
 
 | Type | Members | Behavior |
 |------|---------|----------|
-| View | `conversation`, `sessions`, `doctor`, `help` | Screen-level, one active |
+| View | `conversation`, `sessions`, `doctor`, `help`, `trajectory` | Screen-level, one active |
 | Modal | `command-palette`, `permission-prompt`, `session-picker` | Overlay, preserves underlying view |
 
 Modals are nullable. Dismissing returns to the underlying view without state loss.
@@ -144,6 +153,7 @@ type TuiAction =
   // Phase 2j-4 — dispatched by host on session start; TUI never does I/O
   | { kind: "set_session_info"; modelName: string; provider: string; sessionName: string }
   | { kind: "set_session_list"; sessions: readonly SessionSummary[] }
+  | { kind: "set_trajectory_data"; steps: readonly TrajectoryStepSummary[] }
 ```
 
 `engine_event` wraps the full `EngineEvent` discriminated union from `@koi/core`.
@@ -211,6 +221,7 @@ dispatch skips notification entirely.
 | `set_session_list` out-of-order | Sorted by `lastActivityAt` desc before storage |
 | `plan_update` event | Replaces `planTasks` with mapped snapshot |
 | `task_progress` event | Patches matching task in `planTasks`; no-op if `planTasks` is null |
+| `set_trajectory_data` with steps | Replaces `trajectorySteps` with new data |
 
 ## Phase 2k: SolidJS Migration + Worker Infrastructure
 
@@ -280,6 +291,7 @@ packages/ui/tui/src/
 │   ├── SessionsView.tsx   ~40 LOC   — sessions screen (reactive list + empty-state)
 │   ├── DoctorView.tsx     ~45 LOC   — system health screen (inlined rows)
 │   ├── HelpView.tsx       ~40 LOC   — help screen (static, zero store reads)
+│   ├── TrajectoryView.tsx ~205 LOC  — ATIF trajectory viewer (scrollable, expandable steps)
 │   └── index.ts           ~7 LOC    — re-exports
 ├── batcher/
 │   └── event-batcher.ts   ~70 LOC   — createEventBatcher: 16ms rate-limiter + flushSync
@@ -318,6 +330,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 | `SessionsView` | Sessions screen | Reactive list with empty-state fallback; `Ctrl+P → Resume session` hint |
 | `DoctorView` | System health screen | Connection status, TTY detection, model, provider; inlined rows (no JSX-as-prop) |
 | `HelpView` | Help screen | Static keybinding table + full `COMMAND_DEFINITIONS` list; zero store reads |
+| `TrajectoryView` | ATIF execution trace | Interactive step list with arrow-key navigation, Enter expand/collapse, scrollable via `createScrollableList`. Shows kind, identifier, duration, outcome (color-coded), token metrics, and MW span metadata. Expanded steps show request/response/error content (capped at 2000 chars). Data injected by host via `set_trajectory_data` |
 
 ### Phase 2j-4: Status bar data flow
 
@@ -491,3 +504,5 @@ subscriptions.
 > **`TextBlock` (text-block.tsx):** `<markdown>` is now gated on BOTH `syntaxStyle` AND `treeSitterClient`. Previously, `<markdown>` activated on `syntaxStyle` alone, but `<markdown>` without `treeSitterClient` silently renders blank paragraph/heading text (only code fences show). The dual-guard restores the prose-renders-correctly invariant: the component falls back to `<text>` when tree-sitter is absent. `treeSitterClient?: TreeSitterClient | undefined` added to `TextBlockProps` and threaded through the entire prop chain down from `CreateTuiAppConfig`. Once `treeSitterClient` is wired in the CLI (#1542), rich markdown rendering activates automatically.
 >
 > **Modal overlay opacity (theme.ts, ConversationView.tsx):** `MODAL_POSITION` constant gained `backgroundColor: "#0D1B2A"` (the `bgElevated` Deep Water color as a literal, required by `--isolatedDeclarations`). `SlashOverlay`'s wrapper box in `ConversationView` now uses `backgroundColor={COLORS.bgElevated}`. These fixes prevent modal content bleeding through transparent overlay regions.
+
+> **Trajectory view (current branch):** Added `TrajectoryView` component, `"trajectory"` view type, `TrajectoryStepSummary` and `TrajectoryMiddlewareSpan` types, `set_trajectory_data` action, and `nav:trajectory` command palette entry. The host injects trajectory step summaries via `set_trajectory_data`; the TUI renders an interactive step list with arrow-key navigation, Enter expand/collapse, outcome coloring, token metrics, and MW span annotations. `TuiState.trajectorySteps` stores the data; `TuiRoot` routes the `"trajectory"` view to `TrajectoryView`.

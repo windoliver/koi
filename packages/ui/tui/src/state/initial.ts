@@ -30,5 +30,6 @@ export function createInitialState(): TuiState {
     planTasks: null,
     runningToolCount: 0,
     toolsExpanded: false,
+    trajectorySteps: [],
   };
 }

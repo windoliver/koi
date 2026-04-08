@@ -4,11 +4,9 @@
  * Wires the TUI application shell:
  *   store + permissionBridge + batcher → createTuiApp → handle.start()
  *
- * Architecture note: this command does NOT route through createKoi / createCliHarness.
- * The TUI owns the full terminal UX including the input box (TUI-owns-UX model),
- * while the harness is designed for the CLI model where the channel handles input
- * and an optional TuiAdapter is a pure renderer. Bridging these two models
- * (implementing TuiAdapter on createTuiApp) is a future issue.
+ * Runtime assembly is delegated to createTuiRuntime() (tui-runtime.ts) which
+ * wires the full L2 tool stack via createKoi. This command owns the TUI UX:
+ * store, event batching, session management, signal handling.
  *
  * Model config is read from environment variables (see env.ts for resolution order):
  *   OPENROUTER_API_KEY — key for OpenRouter (default provider)
@@ -20,47 +18,24 @@
  * The session ID is generated once per TUI process launch; agent:clear / session:new
  * resets the conversation history but continues writing to the same transcript file.
  *
- * Tools wired:
- *   Glob, Grep           — codebase search (cwd-rooted)
- *   web_fetch            — HTTP fetch via @koi/tools-web
- *   Bash                 — shell execution via @koi/tools-bash
- *   fs_read/write/edit   — filesystem via createRuntime({ filesystem })
- *   task_create, task_get, task_update, task_list, task_stop, task_output, task_delegate — task management via @koi/task-tools
+ * Tools wired (via createTuiRuntime):
+ *   Glob, Grep, ToolSearch — codebase search (cwd-rooted)
+ *   web_fetch              — HTTP fetch via @koi/tools-web
+ *   Bash, bash_background  — shell execution via @koi/tools-bash
+ *   fs_read/write/edit     — filesystem via @koi/fs-local
+ *   task_*                 — background task management via @koi/task-tools
  *   agent_spawn — intentionally NOT registered until workers route through createKoi (#1582)
  */
 
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-  AgentId,
-  EngineAdapter,
-  EngineEvent,
-  EngineInput,
-  InboundMessage,
-  SessionTranscript,
-  Tool,
-  ToolDescriptor,
-} from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY, sessionId } from "@koi/core";
-import { createSystemPromptMiddleware } from "@koi/engine";
+import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
+import { sessionId } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
-import { runTurn } from "@koi/query-engine";
-import { createRuntime, createToolDispatcher } from "@koi/runtime";
-import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
-import {
-  createJsonlTranscript,
-  createSessionTranscriptMiddleware,
-  resumeForSession,
-} from "@koi/session";
-import { createSkillTool } from "@koi/skill-tool";
+import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
-import { createTaskTools } from "@koi/task-tools";
-import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashTool } from "@koi/tools-bash";
-import { createGlobTool, createGrepTool, createTodoTool } from "@koi/tools-builtin";
-import { createWebExecutor, createWebFetchTool } from "@koi/tools-web";
-import type { EventBatcher, SessionSummary, TuiStore } from "@koi/tui";
+import type { EventBatcher, SessionSummary, TrajectoryStepSummary, TuiStore } from "@koi/tui";
 import {
   createEventBatcher,
   createInitialState,
@@ -71,12 +46,13 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { resolveApiConfig } from "./env.js";
+import type { TuiRuntimeHandle } from "./tui-runtime.js";
+import { createTuiRuntime } from "./tui-runtime.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_TURNS = 10;
 /**
  * Default system prompt for the TUI agent.
  * Tells the model it has tools available and should use them.
@@ -86,24 +62,61 @@ const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful AI coding assistant with access to tools. " +
   "Use your available tools (Bash for shell commands, Glob/Grep for search, " +
-  "fs_read/fs_write/fs_edit for files, web_fetch for HTTP, " +
-  "task_create/task_list/task_get/task_update/task_stop/task_output for task management) " +
-  "to complete tasks. " +
+  "fs_read/fs_write/fs_edit for files, web_fetch for HTTP) to complete tasks. " +
   "Always prefer using tools to gather accurate real-time information rather than " +
   "answering from memory.\n\n" +
   "Use TodoWrite to track your progress across multi-step tasks.";
-/**
- * Maximum number of transcript messages sent in each model request.
- * Caps context window to control token costs in long sessions.
- * Matches the default for `koi start --context-window`.
- */
-const MAX_TRANSCRIPT_MESSAGES = 100;
 /** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 /** Maximum characters for session name (first user message) in session picker. */
 const SESSION_NAME_MAX = 60;
 /** Maximum characters for session preview (last message) in session picker. */
 const SESSION_PREVIEW_MAX = 80;
+
+// ---------------------------------------------------------------------------
+// Trajectory step mapping
+// ---------------------------------------------------------------------------
+
+/** Annotate tool identifier with sandbox status when visible in response. */
+function annotateSandboxed(step: RichTrajectoryStep): string {
+  if (step.kind === "tool_call" && step.response?.text?.includes('"sandboxed":true')) {
+    return `${step.identifier} (sandboxed)`;
+  }
+  return step.identifier;
+}
+
+/** Map rich trajectory steps to TUI summaries with content for expandable detail. */
+function mapTrajectorySteps(
+  steps: readonly RichTrajectoryStep[],
+): readonly TrajectoryStepSummary[] {
+  return steps.map((step) => ({
+    stepIndex: step.stepIndex,
+    kind: step.kind,
+    identifier: annotateSandboxed(step),
+    durationMs: step.durationMs,
+    outcome: step.outcome,
+    timestamp: step.timestamp,
+    requestText: step.request?.text,
+    responseText: step.response?.text,
+    errorText: step.error?.text,
+    tokens:
+      step.metrics !== undefined
+        ? {
+            promptTokens: step.metrics.promptTokens,
+            completionTokens: step.metrics.completionTokens,
+            cachedTokens: step.metrics.cachedTokens,
+          }
+        : undefined,
+    middlewareSpan:
+      step.metadata !== undefined && step.metadata.type === "middleware_span"
+        ? {
+            hook: step.metadata.hook as string | undefined,
+            phase: step.metadata.phase as string | undefined,
+            nextCalled: step.metadata.nextCalled as boolean | undefined,
+          }
+        : undefined,
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Session list loader
@@ -228,7 +241,9 @@ export async function drainEngineStream(
 /**
  * `koi tui` — launch the full-screen TUI.
  *
- * See architecture note at top of file for why this bypasses createKoi/harness.
+ * Architecture: the TUI owns the full terminal UX (input box, store, events).
+ * Runtime assembly (tools, middleware, providers) is delegated to createTuiRuntime().
+ * The conversation loop is driven by KoiRuntime.run() from @koi/engine.
  */
 export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // TTY check first — createTuiApp will also check, but early exit gives a
@@ -249,213 +264,14 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   }
   const { apiKey, baseUrl, model: modelName } = apiConfigResult.value;
 
-  // ---------------------------------------------------------------------------
-  // 2. Engine adapter — model→tool→model loop via runTurn
-  // ---------------------------------------------------------------------------
-
-  // Mutable conversation history shared across all stream() calls for this session.
-  // Cleared on agent:clear / session:new via resetConversation().
-  // let: justified — splice-reset on clear, never replaced
-  const conversationHistory: InboundMessage[] = [];
-
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
   });
 
-  // Build search, web, and bash tool instances.
-  // fs_read/write/edit are handled by createRuntime({ filesystem }) below.
-  const cwd = process.cwd();
-  const globTool = createGlobTool({ cwd });
-  const grepTool = createGrepTool({ cwd });
-  const webExecutor = createWebExecutor({ allowHttps: true });
-  const webFetchTool = createWebFetchTool(webExecutor, "web", DEFAULT_UNSANDBOXED_POLICY);
-
-  // --- OS sandbox: seatbelt (macOS) / bubblewrap (Linux) ---
-  // When available, all Bash commands run inside the OS sandbox automatically.
-  // Falls back gracefully to the unsandboxed path with only denylist guard.
-  // Profile: restrictive base + network + write paths for workspace/tmp/cache.
-  const osSandboxResult = createOsAdapter();
-  const sandboxAdapter = osSandboxResult.ok ? osSandboxResult.value : undefined;
-  const sandboxProfile = osSandboxResult.ok
-    ? mergeProfile(restrictiveProfile(), {
-        network: { allow: true },
-        filesystem: {
-          allowWrite: [cwd, "/tmp", "/var/folders"],
-        },
-      })
-    : undefined;
-  const bashTool = createBashTool({
-    workspaceRoot: cwd,
-    ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-      ? { sandboxAdapter, sandboxProfile }
-      : {}),
-  });
-
-  // --- Task tools: in-memory board for this session ---
-  const taskStore = createMemoryTaskBoardStore();
-  const taskBoard = await createManagedTaskBoard({ store: taskStore });
-  const taskTools = createTaskTools({
-    board: taskBoard,
-    agentId: "tui-agent" as AgentId,
-  });
-
-  // --- Interaction tools (TodoWrite only) ---
-  // EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally NOT
-  // registered: they require real TUI dialogs to be safe. EnterPlanMode/
-  // ExitPlanMode only flip a boolean without gating Bash/fs access, and
-  // AskUserQuestion auto-answers without showing the user. Tracked in #1582.
-  // let: mutable state (per session, reset on agent:clear)
-  let todoItems: readonly import("@koi/tools-builtin").TodoItem[] = [];
-
-  const todoTool = createTodoTool({
-    getItems: () => todoItems,
-    setItems: (items) => {
-      todoItems = items;
-    },
-  });
-
-  // --- @koi/skills-runtime: discover + load user skills for system prompt injection ---
-  const skillRuntime = createSkillsRuntime();
-  const skillContent = await (async (): Promise<string> => {
-    const outer = await skillRuntime.loadAll();
-    if (!outer.ok) return "";
-    const parts: string[] = [];
-    for (const [, result] of outer.value) {
-      if (result.ok) parts.push(result.value.body);
-    }
-    return parts.sort().join("\n\n---\n\n");
-  })();
-  const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
-
-  // --- @koi/skill-tool: create Skill meta-tool for on-demand skill loading ---
-  const skillToolResult = await createSkillTool({
-    resolver: skillRuntime,
-    signal: AbortSignal.timeout(300_000),
-  });
-  const skillTool = skillToolResult.ok ? skillToolResult.value : undefined;
-
-  // Inline tool registry for the toolCall terminal.
-  // fs tools are not in this map — createRuntime wraps them on top via its
-  // own createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall) chain.
-  // agent_spawn is intentionally NOT registered: child workers only have Glob/Grep
-  // (read-only), but the child prompt says "write files, run commands" which they
-  // can't do. Remove until workers route through createKoi with full middleware (#1582).
-  const allTools: readonly Tool[] = [
-    globTool,
-    grepTool,
-    webFetchTool,
-    bashTool,
-    todoTool,
-    ...taskTools,
-    ...(skillTool !== undefined ? [skillTool] : []),
-  ];
-  const localTools: ReadonlyMap<string, Tool> = new Map<string, Tool>(
-    allTools.map((t) => [t.descriptor.name, t]),
-  );
-
-  const localToolDescriptors: readonly ToolDescriptor[] = allTools.map((t) => t.descriptor);
-
-  const rawEngineAdapter: EngineAdapter = {
-    engineId: "koi-tui",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: {
-      modelCall: modelAdapter.complete,
-      modelStream: modelAdapter.stream,
-      // Route tool calls to the local registry.
-      // createRuntime stacks fs tools on top of this via createToolDispatcher(fsMap, this).
-      toolCall: createToolDispatcher(localTools),
-    },
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const handlers = input.callHandlers;
-      if (handlers === undefined) {
-        throw new Error(
-          "koi-tui adapter: callHandlers required. " +
-            "Ensure the adapter is wrapped via createRuntime.",
-        );
-      }
-      const text = input.kind === "text" ? input.text : "";
-      const stagedUserMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
-
-      let deltaText = "";
-      // Cap context window to MAX_TRANSCRIPT_MESSAGES to control token costs.
-      const contextWindow = [...conversationHistory.slice(-MAX_TRANSCRIPT_MESSAGES), stagedUserMsg];
-
-      return (async function* (): AsyncIterable<EngineEvent> {
-        for await (const event of runTurn({
-          callHandlers: handlers,
-          messages: contextWindow,
-          signal: input.signal,
-          maxTurns: DEFAULT_MAX_TURNS,
-        })) {
-          yield event;
-          if (event.kind === "text_delta") {
-            deltaText += event.delta;
-          }
-          if (event.kind === "done") {
-            // Only persist completed turns — aborted/failed turns must not leave
-            // orphaned user prompts in history.
-            if (event.output.stopReason === "completed") {
-              conversationHistory.push(stagedUserMsg);
-              // Persist the full assistant response including tool calls and results
-              // so the model has complete context in subsequent turns. Without this,
-              // the model loses tool call/result history and may hallucinate.
-              const fullContent = event.output.content;
-              const hasContent = fullContent.length > 0;
-              if (hasContent) {
-                conversationHistory.push({
-                  senderId: "assistant",
-                  timestamp: Date.now(),
-                  content: fullContent,
-                });
-              } else if (deltaText.length > 0) {
-                // Fallback: if done.output.content is empty, use accumulated deltas
-                conversationHistory.push({
-                  senderId: "assistant",
-                  timestamp: Date.now(),
-                  content: [{ kind: "text", text: deltaText }],
-                });
-              }
-            }
-          }
-        }
-      })();
-    },
-  };
-
-  // One session ID per TUI process launch. agent:clear / session:new reset the
-  // conversation history but continue writing to the same transcript file — the
-  // JSONL is a journal of everything that happened in this TUI invocation.
-  const tuiSessionId = sessionId(crypto.randomUUID());
-  const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
-
-  const runtime = createRuntime({
-    adapter: rawEngineAdapter,
-    middleware: [
-      createSessionTranscriptMiddleware({ transcript: jsonlTranscript, sessionId: tuiSessionId }),
-      createSystemPromptMiddleware(systemPrompt),
-    ],
-    // Wire fs_read, fs_write, fs_edit via the meta-runtime filesystem facility.
-    // createRuntime stacks these on top of rawEngineAdapter.terminals.toolCall
-    // via createToolDispatcher(fsToolMap, rawAdapter.terminals.toolCall).
-    filesystem: { backend: "local", operations: ["read", "write", "edit"] },
-    cwd,
-    // Advertise local tools to the model (fs tools are added by createRuntime internally).
-    toolDescriptors: localToolDescriptors,
-    // Enable exfiltration guard: block known secret patterns (API keys, tokens)
-    // from reaching shell commands or web_fetch — prevents accidental credential
-    // leakage even on the user's own machine.
-    exfiltrationGuard: {},
-  });
-
   // ---------------------------------------------------------------------------
-  // 3. TUI state setup
+  // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
   // ---------------------------------------------------------------------------
 
   const store = createStore(createInitialState());
@@ -471,6 +287,47 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // matching the OpenTUI render cadence.
   // let: justified — recreated on resetConversation() to drop stale pre-clear events
   let batcher = createEventBatcher<EngineEvent>(dispatchBatch);
+
+  // One session ID per TUI process launch. agent:clear / session:new reset the
+  // conversation history but continue writing to the same transcript file — the
+  // JSONL is a journal of everything that happened in this TUI invocation.
+  const tuiSessionId = sessionId(crypto.randomUUID());
+  const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
+
+  // ---------------------------------------------------------------------------
+  // 3. Assemble runtime (A1-A: delegate to createTuiRuntime)
+  // ---------------------------------------------------------------------------
+
+  // --- Load skills before runtime creation (same as koi start on main) ---
+  // Skills prepend project/user workflow rules to the system prompt.
+  const skillRuntime = createSkillsRuntime();
+  const skillContent = await (async (): Promise<string> => {
+    const outer = await skillRuntime.loadAll();
+    if (!outer.ok) return "";
+    const parts: string[] = [];
+    for (const [, result] of outer.value) {
+      if (result.ok) parts.push(result.value.body);
+    }
+    return parts.sort().join("\n\n---\n\n");
+  })();
+  const systemPrompt =
+    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+
+  // Runtime assembly happens in parallel with TUI rendering (P2-A).
+  // The runtimeReady promise resolves before the first submit.
+  // let: set once when the promise resolves
+  let runtimeHandle: TuiRuntimeHandle | null = null;
+  const runtimeReady = createTuiRuntime({
+    modelAdapter,
+    modelName,
+    approvalHandler: permissionBridge.handler,
+    cwd: process.cwd(),
+    systemPrompt,
+    session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
+  }).then((handle) => {
+    runtimeHandle = handle;
+    return handle;
+  });
 
   // let: set once after createTuiApp resolves, read in shutdown
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
@@ -488,21 +345,39 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
 
   /**
    * Reset conversation state: abort in-flight stream, drop stale buffered events,
-   * clear store messages, and wipe conversation history.
+   * clear store messages, reset runtime session state, and wipe transcript.
    *
    * Used by agent:clear, session:new, and onSessionSelect.
-   * Null activeController immediately so a fresh submit is unblocked
-   * even if the aborted stream's finally-cleanup settles late.
    */
+  // Promise that resolves when session reset is complete. New submits block on
+  // this to prevent hitting stale task board / trajectory state.
+  // let: justified — replaced on each reset
+  let resetBarrier: Promise<void> = Promise.resolve();
+
   const resetConversation = (): void => {
+    // Abort the active controller first — C4-A ordering constraint requires
+    // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
     store.dispatch({ kind: "clear_messages" });
-    conversationHistory.splice(0);
+    // Clear trajectory data so /trajectory doesn't show prior-session data.
+    store.dispatch({ kind: "set_trajectory_data", steps: [] });
+
+    // Always reset runtime session state — even in the idle case (no active stream).
+    // resetSessionState is async (awaits task board + trajectory prune).
+    // New submits block on resetBarrier before proceeding.
+    if (runtimeHandle !== null) {
+      const idleController = new AbortController();
+      idleController.abort();
+      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(() => {
+        runtimeHandle?.transcript.splice(0);
+      });
+    }
   };
 
   // Idempotent shutdown — called by both system:quit and signal handlers.
@@ -514,8 +389,16 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     try {
       await appHandle?.stop();
       batcher.dispose();
-      await taskBoard[Symbol.asyncDispose]();
-      await runtime.dispose();
+      if (runtimeHandle !== null) {
+        const hadLiveTasks = runtimeHandle.shutdownBackgroundTasks();
+        // Wait for SIGTERM→SIGKILL escalation window so stubborn subprocesses
+        // are killed before we exit. Without this, children that ignore SIGTERM
+        // outlive the TUI as orphans. SIGKILL_ESCALATION_MS = 3000.
+        if (hadLiveTasks) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+        }
+        await runtimeHandle.runtime.dispose();
+      }
     } finally {
       process.exit(0);
     }
@@ -568,6 +451,13 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
         try {
+          // Ensure runtime is ready AND prior reset is complete before hydrating.
+          // Without awaiting resetBarrier, the async transcript.splice(0) from
+          // resetConversation() can wipe the just-loaded history.
+          if (runtimeHandle === null) {
+            await runtimeReady;
+          }
+          await resetBarrier;
           const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
           if (!resumeResult.ok) {
             store.dispatch({
@@ -578,8 +468,10 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
             return;
           }
           // Pre-populate conversation history so the AI has full context.
-          for (const msg of resumeResult.value.messages) {
-            conversationHistory.push(msg);
+          if (runtimeHandle !== null) {
+            for (const msg of resumeResult.value.messages) {
+              runtimeHandle.transcript.push(msg);
+            }
           }
           // Replay messages into the TUI store so the user sees the prior
           // conversation. Tool entries are skipped (display-only limitation).
@@ -606,6 +498,31 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
         return;
       }
 
+      // P2-A: block on runtime assembly if not yet ready.
+      // First submit waits for createTuiRuntime to complete; subsequent
+      // submits use the cached runtimeHandle (already resolved).
+      if (runtimeHandle === null) {
+        try {
+          await runtimeReady;
+        } catch (e: unknown) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RUNTIME_INIT_ERROR",
+            message: `Runtime failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
+          });
+          return;
+        }
+      }
+
+      // runtimeHandle is guaranteed non-null after runtimeReady resolves.
+      // The await above sets runtimeHandle; if it threw, we returned early.
+      if (runtimeHandle === null) return;
+      const handle = runtimeHandle;
+
+      // Wait for any pending session reset to complete before submitting.
+      // Prevents hitting stale task board or trajectory state.
+      await resetBarrier;
+
       store.dispatch({
         kind: "add_user_message",
         id: `user-${Date.now()}`,
@@ -615,12 +532,28 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       const controller = new AbortController();
       activeController = controller;
       try {
-        const stream = runtime.adapter.stream({
+        // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
+        // middleware composition, tool dispatch, and transcript management.
+        const stream = handle.runtime.run({
           kind: "text",
           text,
           signal: controller.signal,
         });
         await drainEngineStream(stream, store, batcher);
+
+        // Refresh trajectory data after each turn so /trajectory view is current.
+        // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
+        // wrapMiddlewareWithTrace records MW spans asynchronously via
+        // void store.append(...). Without the delay, getTrajectorySteps()
+        // reads before all spans are written.
+        void new Promise<void>((resolve) => setTimeout(resolve, 500))
+          .then(() => handle.getTrajectorySteps())
+          .then((steps) => {
+            store.dispatch({
+              kind: "set_trajectory_data",
+              steps: mapTrajectorySteps(steps),
+            });
+          });
       } finally {
         if (activeController === controller) {
           activeController = null;

@@ -31,6 +31,7 @@ export { StatusBar, type StatusBarProps } from "./StatusBar.js";
 export { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
 // Phase 2j-4: Pure helpers (importable without JSX runtime)
 export { formatCost, formatTokens } from "./status-bar-helpers.js";
+export { TrajectoryView } from "./TrajectoryView.js";
 export { TextBlock } from "./text-block.js";
 export { ThinkingBlock } from "./thinking-block.js";
 export { ToolCallBlock } from "./tool-call-block.js";

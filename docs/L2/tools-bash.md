@@ -42,7 +42,8 @@ Output (success):
   "stdout": "On branch main...",
   "stderr": "",
   "exitCode": 0,
-  "durationMs": 42
+  "durationMs": 42,
+  "sandboxed": true
 }
 ```
 
@@ -141,6 +142,14 @@ L0  @koi/core         Tool, ToolExecuteOptions, ManagedTaskBoard, SandboxAdapter
                       DEFAULT_UNSANDBOXED_POLICY, DEFAULT_SANDBOXED_POLICY
 L0u @koi/bash-security  classifyBashCommand(), BashPolicy
 ```
+
+### `sandboxed` field on `BashSuccessResult`
+
+When the Bash tool is configured with a `sandboxAdapter` (OS-level seatbelt or bwrap), the
+success result includes `sandboxed: true`. This boolean is set when `sandboxAdapter` is
+present in the tool config and indicates the command ran inside an OS sandbox. When the
+sandbox adapter is absent, the field is omitted (not `false`). The model and downstream
+consumers can use this to verify confinement status without inspecting the runtime config.
 
 ## Dependencies
 
