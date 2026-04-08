@@ -182,6 +182,9 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
 
   // Track active stream flush promises so dispose() can drain before closing transport.
   const activeFlushes = new Set<Promise<void>>();
+  // Track active stream finalizations (the full finally block, not just flush).
+  // dispose() awaits these so transport is not closed under a stream still flushing.
+  const activeStreamFinalizations = new Set<Promise<void>>();
 
   // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
   // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
@@ -245,6 +248,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     createClock,
     config.onTrajectoryFlushError,
     activeFlushes,
+    activeStreamFinalizations,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -326,8 +330,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
-      // Drain active trajectory flushes before tearing down transport.
-      // This gives in-flight Nexus writes a chance to complete on shutdown.
+      // Drain active stream finalizations (flush + afterFlush) before tearing down
+      // transport. This covers streams whose finally block is in-flight but whose
+      // flush promise hasn't been tracked yet in activeFlushes.
+      if (activeStreamFinalizations.size > 0) {
+        await Promise.allSettled([...activeStreamFinalizations]);
+      }
+      // Also drain any standalone flushes that may have been tracked separately.
       if (activeFlushes.size > 0) {
         await Promise.allSettled([...activeFlushes]);
       }
@@ -753,6 +762,7 @@ function composeMiddlewareIntoAdapter(
   createClock: () => () => number = () => Date.now,
   onFlushError?: (error: unknown) => void,
   flushTracker?: Set<Promise<void>>,
+  streamFinalizationTracker?: Set<Promise<void>>,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -1137,6 +1147,7 @@ function composeMiddlewareIntoAdapter(
         },
         onFlushError,
         flushTracker,
+        streamFinalizationTracker,
       );
     },
   };
@@ -1237,28 +1248,48 @@ async function* wrapStreamWithFlush(
   afterFlush?: () => Promise<void>,
   onFlushError?: (error: unknown) => void,
   flushTracker?: Set<Promise<void>>,
+  streamFinalizationTracker?: Set<Promise<void>>,
 ): AsyncIterable<EngineEvent> {
+  // Deferred resolve: the finalization promise is created immediately and tracked
+  // so dispose() can await it even if the stream hasn't reached its finally block yet.
+  // let: mutable — set once by the finally block's deferred executor.
+  let resolveFinalization: (() => void) | undefined;
+  const finalizationPromise = new Promise<void>((r) => {
+    resolveFinalization = r;
+  });
+  streamFinalizationTracker?.add(finalizationPromise);
+
   try {
     yield* inner;
   } finally {
-    beforeFlush?.();
-    // Surface trajectory flush failures so remote persistence errors are observable.
-    // Prior to Nexus backends this was always in-memory and couldn't fail meaningfully.
-    const flushPromise = (async () => {
-      try {
-        await buffer?.flush();
-      } catch (e: unknown) {
-        if (onFlushError !== undefined) {
-          onFlushError(e);
-        } else {
-          console.error("[koi:runtime] trajectory flush failed:", e);
+    try {
+      beforeFlush?.();
+      // Surface trajectory flush failures so remote persistence errors are observable.
+      // Prior to Nexus backends this was always in-memory and couldn't fail meaningfully.
+      // Cleanup (flushTracker removal + afterFlush) is unconditional via try/finally
+      // so a throwing onFlushError callback cannot leak per-session state.
+      const flushPromise = (async () => {
+        try {
+          await buffer?.flush();
+        } catch (e: unknown) {
+          if (onFlushError !== undefined) {
+            onFlushError(e);
+          } else {
+            console.error("[koi:runtime] trajectory flush failed:", e);
+          }
         }
+      })();
+      flushTracker?.add(flushPromise);
+      try {
+        await flushPromise;
+      } finally {
+        flushTracker?.delete(flushPromise);
+        await afterFlush?.().catch(noop);
       }
-    })();
-    flushTracker?.add(flushPromise);
-    await flushPromise;
-    flushTracker?.delete(flushPromise);
-    await afterFlush?.().catch(noop);
+    } finally {
+      streamFinalizationTracker?.delete(finalizationPromise);
+      resolveFinalization?.();
+    }
   }
 }
 
