@@ -1,6 +1,10 @@
 ---
 name: tui-test
-description: Automatically test the current branch's changes in koi tui via tmux. Detects what changed, designs a test, runs it, and fixes bugs until it passes.
+description: >
+  E2E test the current branch in koi tui via tmux. Auto-detects what changed,
+  designs a test prompt, runs it, and fixes bugs until the test passes.
+  Triggers on: "test with tui", "tui test", "test in tui", "test feature in tui",
+  "tmux test", "e2e test".
 allowed-tools: Bash Read Write Edit Glob Grep Agent
 ---
 
