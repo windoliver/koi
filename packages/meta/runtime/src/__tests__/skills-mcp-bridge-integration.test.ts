@@ -89,8 +89,8 @@ describe("skills-mcp bridge integration", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
     expect(loaded.value.source).toBe("mcp");
-    // Body is the constant safe description, not raw MCP text
-    expect(loaded.value.body).toBe("MCP-provided tool (external).");
+    // Body is empty — MCP skills are metadata-only, not injected into prompts
+    expect(loaded.value.body).toBe("");
 
     bridge.dispose();
 

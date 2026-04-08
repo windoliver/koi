@@ -13,7 +13,11 @@ import { describe, expect, mock, test } from "bun:test";
 import type { ToolDescriptor } from "@koi/core";
 import type { McpResolver } from "@koi/mcp";
 import type { SkillMetadata, SkillsRuntime } from "@koi/skills-runtime";
-import { createSkillsMcpBridge, mapToolDescriptorToSkillMetadata } from "./skills-mcp-bridge.js";
+import {
+  createSkillsMcpBridge,
+  mapToolDescriptorsToSkillMetadata,
+  mapToolDescriptorToSkillMetadata,
+} from "./skills-mcp-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,7 +84,7 @@ describe("mapToolDescriptorToSkillMetadata", () => {
 
     expect(result.name).toBe("myserver__search");
     // Constant safe description — no MCP-controlled strings
-    expect(result.description).toBe("MCP-provided tool (external).");
+    expect(result.description).toBe("");
     expect(result.source).toBe("mcp");
     expect(result.dirPath).toBe("mcp://myserver");
     expect(result.tags).toEqual(["mcp", "myserver", "ai"]);
@@ -112,7 +116,7 @@ describe("mapToolDescriptorToSkillMetadata", () => {
     const result = mapToolDescriptorToSkillMetadata(td);
 
     // Description should be constant, not contain any MCP-controlled text
-    expect(result.description).toBe("MCP-provided tool (external).");
+    expect(result.description).toBe("");
     expect(result.description).not.toContain("IGNORE");
     expect(result.description).not.toContain("srv__evil");
   });
@@ -121,7 +125,7 @@ describe("mapToolDescriptorToSkillMetadata", () => {
     const td = descriptor("orphan__tool");
     const result = mapToolDescriptorToSkillMetadata(td);
 
-    expect(result.description).toBe("MCP-provided tool (external).");
+    expect(result.description).toBe("");
   });
 
   test("sanitizes malicious tool name for prompt injection prevention", () => {
@@ -158,6 +162,39 @@ describe("mapToolDescriptorToSkillMetadata", () => {
     const result = mapToolDescriptorToSkillMetadata(td);
 
     expect(result.executionMode).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapToolDescriptorsToSkillMetadata (batch with collision detection)
+// ---------------------------------------------------------------------------
+
+describe("mapToolDescriptorsToSkillMetadata", () => {
+  test("deduplicates colliding sanitized names (keeps first)", () => {
+    const tools = [descriptor("srv__a b", "srv"), descriptor("srv__ab", "srv")];
+    const result = mapToolDescriptorsToSkillMetadata(tools);
+
+    // Both sanitize to "srv__ab" — only first kept
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe("srv__ab");
+  });
+
+  test("skips descriptors with empty sanitized name", () => {
+    const tools: readonly ToolDescriptor[] = [
+      { name: "!!!$$$", description: "bad", inputSchema: { type: "object", properties: {} } },
+      descriptor("srv__good", "srv"),
+    ];
+    const result = mapToolDescriptorsToSkillMetadata(tools);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe("srv__good");
+  });
+
+  test("passes through non-colliding tools", () => {
+    const tools = [descriptor("alpha__search", "alpha"), descriptor("beta__read", "beta")];
+    const result = mapToolDescriptorsToSkillMetadata(tools);
+
+    expect(result).toHaveLength(2);
   });
 });
 

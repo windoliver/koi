@@ -69,11 +69,37 @@ export function mapToolDescriptorToSkillMetadata(descriptor: ToolDescriptor): Sk
 
   return {
     name: sanitizedName,
-    description: "MCP-provided tool (external).",
+    // Empty description: MCP skills are metadata-only (discovery/querying).
+    // External skill body = description, which gets injected into the system
+    // prompt. Empty string avoids N copies of identical filler per MCP tool.
+    description: "",
     source: "mcp",
     dirPath: `mcp://${server ?? "unknown"}`,
     tags,
   };
+}
+
+/**
+ * Maps descriptors to SkillMetadata, deduplicating after sanitization.
+ * Skips descriptors whose sanitized name is empty or collides with an
+ * earlier entry. Returns the deduplicated list.
+ */
+export function mapToolDescriptorsToSkillMetadata(
+  descriptors: readonly ToolDescriptor[],
+): readonly SkillMetadata[] {
+  const seen = new Set<string>();
+  const result: SkillMetadata[] = [];
+
+  for (const d of descriptors) {
+    const mapped = mapToolDescriptorToSkillMetadata(d);
+    if (mapped.name === "" || seen.has(mapped.name)) {
+      continue; // skip empty or colliding names
+    }
+    seen.add(mapped.name);
+    result.push(mapped);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +127,7 @@ export function createSkillsMcpBridge(config: SkillsMcpBridgeConfig): SkillsMcpB
 
       // Only apply if still current and not disposed
       if (!disposed && capturedVersion === version) {
-        const skills = descriptors.map(mapToolDescriptorToSkillMetadata);
+        const skills = mapToolDescriptorsToSkillMetadata(descriptors);
         runtime.registerExternal(skills);
       }
 
