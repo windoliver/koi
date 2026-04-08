@@ -45,12 +45,18 @@ export function extractSpawnConfig(skill: LoadedSkill): Result<SpawnConfig, KoiE
     };
   }
 
-  if (skill.allowedTools !== undefined && skill.allowedTools.length === 0) {
+  if (skill.allowedTools !== undefined) {
+    // fork: true and toolAllowlist are mutually exclusive in SpawnRequest.
+    // Since fork: true is required for safety (recursion guard + turn cap),
+    // we cannot enforce allowedTools restrictions. Fail closed.
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: `Skill "${skill.name}" has an empty allowed-tools list — this is ambiguous for spawn mode. Either list specific tools or remove the field`,
+        message:
+          skill.allowedTools.length === 0
+            ? `Skill "${skill.name}" has an empty allowed-tools list — ambiguous for spawn mode`
+            : `Skill "${skill.name}" declares allowed-tools but fork mode cannot enforce tool restrictions (fork and toolAllowlist are mutually exclusive). Remove allowed-tools or use inline mode`,
         retryable: false,
         context: { skillName: skill.name },
       },

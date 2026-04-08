@@ -84,6 +84,19 @@ describe("extractSpawnConfig", () => {
       expect(result.error.code).toBe("VALIDATION");
     }
   });
+
+  test("returns VALIDATION when fork skill has non-empty allowedTools", () => {
+    const skill = makeSkill({
+      executionMode: "fork",
+      allowedTools: ["Bash", "Read"],
+    });
+    const result = extractSpawnConfig(skill);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("mutually exclusive");
+    }
+  });
 });
 
 describe("mapSkillToSpawnRequest", () => {

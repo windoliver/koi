@@ -190,10 +190,17 @@ export async function createSkillTool(config: SkillToolConfig): Promise<Result<T
       const spawnResult = extractSpawnConfig(skill);
 
       if (spawnResult.ok) {
-        // Skill wants fork mode
+        // Skill wants fork mode — fail closed if spawnFn is not available
         if (config.spawnFn === undefined) {
-          // No spawnFn available — fall back to inline (fork capability not wired)
-          // This is safe: the skill body is still useful as context
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message: `Skill "${skillName}" requires fork execution but no spawnFn is configured. Wire a SpawnFn or change the skill to inline mode`,
+              retryable: false,
+              context: { skillName },
+            },
+          };
         } else {
           const request = mapSkillToSpawnRequest(skill, skillArgs, spawnResult.value, {
             signal,

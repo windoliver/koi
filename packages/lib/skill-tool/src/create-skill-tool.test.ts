@@ -165,25 +165,24 @@ describe("SkillTool.execute — inline mode", () => {
     }
   });
 
-  test("falls back to inline when skill has agent but no spawnFn", async () => {
+  test("fails closed when fork skill has no spawnFn configured", async () => {
     const skill = makeSkill("fork-skill", {
       body: "Fork body",
       metadata: { agent: "my-agent" },
     });
     const resolver = makeResolver([skill]);
-    // No spawnFn provided
+    // No spawnFn provided — should fail closed, not fall back to inline
     const result = await createSkillTool(makeConfig(resolver));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const execResult = (await result.value.execute({ skill: "fork-skill" })) as Result<
-      string,
-      KoiError
-    >;
-    expect(execResult.ok).toBe(true);
-    if (execResult.ok) {
-      expect(execResult.value).toBe("Fork body");
-    }
+    const execResult = (await result.value.execute({ skill: "fork-skill" })) as {
+      ok: false;
+      error: KoiError;
+    };
+    expect(execResult.ok).toBe(false);
+    expect(execResult.error.code).toBe("VALIDATION");
+    expect(execResult.error.message).toContain("spawnFn");
   });
 });
 
