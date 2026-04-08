@@ -1,15 +1,15 @@
 {
   "name": "spawn-tools",
   "model": "anthropic/claude-sonnet-4-6",
-  "recordedAt": 1775531779429,
+  "recordedAt": 1775630964191,
   "chunks": [
     {
       "kind": "text_delta",
-      "delta": "I'll follow"
+      "delta": "I'll execute"
     },
     {
       "kind": "text_delta",
-      "delta": " these"
+      "delta": " these three"
     },
     {
       "kind": "text_delta",
@@ -21,129 +21,142 @@
     },
     {
       "kind": "text_delta",
-      "delta": " **"
+      "delta": " step"
     },
     {
       "kind": "text_delta",
-      "delta": "Step"
+      "delta": " 1 right"
     },
     {
       "kind": "text_delta",
-      "delta": " 1** —"
+      "delta": " away!"
     },
     {
       "kind": "text_delta",
-      "delta": " creating the task."
+      "delta": "\n\n###"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " Step 1: Creating"
+    },
+    {
+      "kind": "text_delta",
+      "delta": " the Task"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "{\"subject\": "
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "{\"su"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "\"Research"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "bject"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": " cac"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "\": \"Rese"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "hin"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "arch cachin"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "g strate"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "g strategi"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "gies\""
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "es\""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": ", \"descripti"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": ", \"descrip"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "on"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "ti"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "\": \"Investi"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "on\": \"Inve"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "gate "
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "st"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "Redis vs"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "igate Redi"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": " Mem"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "s "
     },
     {
       "kind": "tool_call_delta",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
-      "delta": "cached\"}"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "vs Memcached"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
+      "delta": "\"}"
     },
     {
       "kind": "usage",
-      "inputTokens": 1420,
-      "outputTokens": 103
+      "inputTokens": 1342,
+      "outputTokens": 110
     },
     {
       "kind": "tool_call_end",
-      "callId": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK"
+      "callId": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK"
     },
     {
       "kind": "done",
       "response": {
-        "content": "I'll follow these steps in order. Let me start with **Step 1** — creating the task.",
+        "content": "I'll execute these three steps in order. Let me start with step 1 right away!\n\n### Step 1: Creating the Task",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531777-6oj01JKSzCqWpWRtxIde",
+        "responseId": "gen-1775630962-DKyj1Qthgug3h16WtFYV",
         "richContent": [
           {
             "kind": "text",
-            "text": "I'll follow these steps in order. Let me start with **Step 1** — creating the task."
+            "text": "I'll execute these three steps in order. Let me start with step 1 right away!\n\n### Step 1: Creating the Task"
           },
           {
             "kind": "tool_call",
-            "id": "toolu_vrtx_01NdkWt47TZ7Q2pncATnYSHK",
+            "id": "toolu_vrtx_013GBQjkn93R3XnV7c4wPNgK",
             "name": "task_create",
             "arguments": {
               "subject": "Research caching strategies",
@@ -152,11 +165,11 @@
           }
         ],
         "usage": {
-          "inputTokens": 1420,
-          "outputTokens": 103
+          "inputTokens": 1342,
+          "outputTokens": 110
         },
         "metadata": {
-          "promptPrefixFingerprint": "8513bbb59b94152f4d3e560f298c30e0e7ee53cef074822d3b9e10ac9b0e719a"
+          "promptPrefixFingerprint": "8cd9fc500fd8c7b0874fba3e826c4c859ba64677d07d7e89b8ec5693fedd855c"
         }
       }
     }

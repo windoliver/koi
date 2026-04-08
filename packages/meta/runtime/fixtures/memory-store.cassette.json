@@ -1,69 +1,31 @@
 {
   "name": "memory-store",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775531780401,
+  "recordedAt": 1775630965143,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "memory_store",
-      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf"
+      "callId": "tool_memory_store_p8LM7ixkOiNmQoioEhQn"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
+      "callId": "tool_memory_store_p8LM7ixkOiNmQoioEhQn",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
-      "delta": "{\"type\":\"feedback\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\"}"
-    },
-    {
-      "kind": "tool_call_start",
-      "toolName": "memory_recall",
-      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A"
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
-      "delta": ""
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
-      "delta": "{\"query\":\"testing\"}"
-    },
-    {
-      "kind": "tool_call_start",
-      "toolName": "memory_search",
-      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5"
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
-      "delta": ""
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
-      "delta": "{\"type\":\"feedback\"}"
+      "callId": "tool_memory_store_p8LM7ixkOiNmQoioEhQn",
+      "delta": "{\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"type\":\"feedback\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\"}"
     },
     {
       "kind": "usage",
       "inputTokens": 385,
-      "outputTokens": 55
+      "outputTokens": 45
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf"
-    },
-    {
-      "kind": "tool_call_end",
-      "callId": "tool_memory_recall_8qvdg6HJPard6tAnbz6A"
-    },
-    {
-      "kind": "tool_call_end",
-      "callId": "tool_memory_search_90bJK1K9pjKM3CeNwdk5"
+      "callId": "tool_memory_store_p8LM7ixkOiNmQoioEhQn"
     },
     {
       "kind": "done",
@@ -71,39 +33,23 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531779-yBNQrpuXLLLkRwah3qGh",
+        "responseId": "gen-1775630964-2VIvfB4u3Qd2FRgJPx4w",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_memory_store_OvCMZxNiZbBDCFgfe2Sf",
+            "id": "tool_memory_store_p8LM7ixkOiNmQoioEhQn",
             "name": "memory_store",
             "arguments": {
+              "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
               "type": "feedback",
               "description": "always write failing tests first",
-              "name": "testing approach",
-              "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features."
-            }
-          },
-          {
-            "kind": "tool_call",
-            "id": "tool_memory_recall_8qvdg6HJPard6tAnbz6A",
-            "name": "memory_recall",
-            "arguments": {
-              "query": "testing"
-            }
-          },
-          {
-            "kind": "tool_call",
-            "id": "tool_memory_search_90bJK1K9pjKM3CeNwdk5",
-            "name": "memory_search",
-            "arguments": {
-              "type": "feedback"
+              "name": "testing approach"
             }
           }
         ],
         "usage": {
           "inputTokens": 385,
-          "outputTokens": 55
+          "outputTokens": 45
         },
         "metadata": {
           "promptPrefixFingerprint": "60b5bcc734c67c0fbfeeaf548f952852200c2c1a431d9c8ef7b57cca3d8b748b"

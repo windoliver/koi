@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:30.743Z",
+      "timestamp": "2026-04-08T06:49:44.223Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:30.744Z",
+      "timestamp": "2026-04-08T06:49:44.224Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,10 +43,10 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:30.751Z",
+      "timestamp": "2026-04-08T06:49:44.231Z",
       "model_name": "hook:budget-guard",
       "message": "compact.before → budget-guard",
-      "duration_ms": 6.9646670000001905,
+      "duration_ms": 6.87670799999978,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -64,50 +64,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:30.752Z",
-      "model_name": "middleware:hooks",
-      "message": "What is 2+2?",
-      "duration_ms": 7.155875000000378,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 4,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:30.754Z",
-      "model_name": "middleware:permissions",
-      "message": "What is 2+2?",
-      "duration_ms": 7.20129100000122,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
-      }
-    },
-    {
-      "step_id": 5,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:30.755Z",
+      "timestamp": "2026-04-08T06:49:44.234Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2?",
-      "duration_ms": 7.217625000001135,
+      "duration_ms": 7.262041999998473,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -118,6 +78,60 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:44.235Z",
+      "model_name": "middleware:permissions",
+      "message": "What is 2+2?",
+      "duration_ms": 7.221832999999606,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775630984233,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T06:49:44.236Z",
+      "model_name": "middleware:hooks",
+      "message": "What is 2+2?",
+      "duration_ms": 7.167875000002823,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooks": [
+              {
+                "name": "budget-guard",
+                "decision": "block",
+                "durationMs": 6.87670799999978
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1775630984232,
+        "__koi": {
+          "identifier": "middleware:hooks"
         }
       }
     }

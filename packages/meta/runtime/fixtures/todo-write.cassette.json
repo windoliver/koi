@@ -1,31 +1,31 @@
 {
   "name": "todo-write",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775519009093,
+  "recordedAt": 1775630968470,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "TodoWrite",
-      "callId": "tool_TodoWrite_HNoXpnKCBDeSluttmR9G"
+      "callId": "tool_TodoWrite_Fp02zIvIMBFm5QIHxPzZ"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_TodoWrite_HNoXpnKCBDeSluttmR9G",
+      "callId": "tool_TodoWrite_Fp02zIvIMBFm5QIHxPzZ",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_TodoWrite_HNoXpnKCBDeSluttmR9G",
-      "delta": "{\"todos\":[{\"status\":\"in_progress\",\"activeForm\":\"Writing tests\",\"content\":\"Write unit tests\",\"id\":\"write-unit-tests\"},{\"status\":\"pending\",\"content\":\"Write documentation\",\"id\":\"write-documentation\"}]}"
+      "callId": "tool_TodoWrite_Fp02zIvIMBFm5QIHxPzZ",
+      "delta": "{\"todos\":[{\"activeForm\":\"Writing tests\",\"id\":\"write-tests\",\"status\":\"in_progress\",\"content\":\"Write unit tests\"},{\"id\":\"write-docs\",\"content\":\"Write documentation\",\"status\":\"pending\"}]}"
     },
     {
       "kind": "usage",
       "inputTokens": 191,
-      "outputTokens": 30
+      "outputTokens": 28
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_TodoWrite_HNoXpnKCBDeSluttmR9G"
+      "callId": "tool_TodoWrite_Fp02zIvIMBFm5QIHxPzZ"
     },
     {
       "kind": "done",
@@ -33,24 +33,24 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775519008-4j11bYOVi699FcPw4tef",
+        "responseId": "gen-1775630967-7K6Ffg9YXHq7KLxOZDrM",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_TodoWrite_HNoXpnKCBDeSluttmR9G",
+            "id": "tool_TodoWrite_Fp02zIvIMBFm5QIHxPzZ",
             "name": "TodoWrite",
             "arguments": {
               "todos": [
                 {
-                  "status": "in_progress",
                   "activeForm": "Writing tests",
-                  "content": "Write unit tests",
-                  "id": "write-unit-tests"
+                  "id": "write-tests",
+                  "status": "in_progress",
+                  "content": "Write unit tests"
                 },
                 {
-                  "status": "pending",
+                  "id": "write-docs",
                   "content": "Write documentation",
-                  "id": "write-documentation"
+                  "status": "pending"
                 }
               ]
             }
@@ -58,7 +58,10 @@
         ],
         "usage": {
           "inputTokens": 191,
-          "outputTokens": 30
+          "outputTokens": 28
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "fe4588847a031eb89388a5d8f0343052d4bf87cefc86045c64b9fa92d155c8fd"
         }
       }
     }
