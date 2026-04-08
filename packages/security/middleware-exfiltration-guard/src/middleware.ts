@@ -77,7 +77,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
@@ -106,6 +106,12 @@ export function createExfiltrationGuardMiddleware(
           kinds: ["redaction_failure"],
           action: "block",
         });
+        ctx.reportDecision?.({
+          location: "model-output",
+          matchCount: 0,
+          action: "block",
+          error: "redaction_failure",
+        });
         return sanitizeModelResponse(
           response,
           "[BLOCKED: exfiltration guard redaction engine failure]",
@@ -117,6 +123,11 @@ export function createExfiltrationGuardMiddleware(
           location: "model-output",
           matchCount: result.matchCount,
           kinds: [],
+          action: config.action,
+        });
+        ctx.reportDecision?.({
+          location: "model-output",
+          matchCount: result.matchCount,
           action: config.action,
         });
 
@@ -142,7 +153,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -177,6 +188,13 @@ export function createExfiltrationGuardMiddleware(
             matchCount: result.secretCount,
             kinds,
             action: config.action,
+          });
+          ctx.reportDecision?.({
+            location: "tool-input",
+            toolId: request.toolId,
+            matchCount: result.secretCount,
+            action: config.action,
+            ...(kinds.length > 0 ? { kinds } : {}),
           });
 
           if (config.action === "block") {

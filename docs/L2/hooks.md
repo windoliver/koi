@@ -282,6 +282,53 @@ hook bugs from corrupting request shape or disabling safeguards.
 - **Mid-dispatch guard** — if `ctx.signal` aborts during pre-hook dispatch (registry returns `[]`), throws `AbortError` before `next()`
 - **Post-hook cancel-redaction** — if `ctx.signal` aborts during post-hook dispatch AND a fail-closed hook matches the event, output is redacted to prevent leaking unredacted data past a skipped security hook
 
+### ATIF Trace Integration
+
+When `wrapMiddlewareWithTrace` wraps the hook middleware (as it does in `@koi/runtime`),
+hook execution decisions are captured in ATIF `middleware_span` metadata via
+`ctx.reportDecision`. This surfaces per-hook timing and outcome in trajectory
+documents without polling or introspection on the middleware itself.
+
+**HookFireRecord** — the object pushed per `reportDecision` call:
+
+```typescript
+{
+  event: "tool.before" | "compact.before"; // which lifecycle event fired
+  toolId?: string;                          // present for tool events only
+  hooks: Array<{
+    name: string;                           // hook config name
+    decision: "continue" | "block" | "modify" | "transform" | "error";
+    durationMs: number;                     // wall-clock time for this hook
+    error?: string;                         // only present when decision is "error"
+  }>;
+}
+```
+
+**When it fires:**
+- `wrapToolCall` — after pre-call `tool.before` dispatch (blocking gate results only; post-call hooks are fire-and-forget and not traced)
+- `wrapModelCall` — after pre-call `compact.before` dispatch
+- `wrapModelStream` — after pre-call `compact.before` dispatch (via `dispatchModelPre`)
+
+In ATIF, these appear inside the `decisions` array of a `middleware_span` step
+for the `hooks` middleware:
+
+```json
+{
+  "type": "middleware_span",
+  "middlewareName": "hooks",
+  "hook": "wrapToolCall",
+  "decisions": [
+    {
+      "event": "tool.before",
+      "toolId": "Bash",
+      "hooks": [
+        { "name": "security-reviewer", "decision": "continue", "durationMs": 142 }
+      ]
+    }
+  ]
+}
+```
+
 ### Phase & Priority
 
 The hook middleware runs at `resolve` phase, priority 400. Hooks are

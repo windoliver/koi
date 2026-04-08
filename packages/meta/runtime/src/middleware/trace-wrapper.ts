@@ -15,6 +15,10 @@
  *   - whether next() was called
  *   - outcome (success/failure)
  *   - error message on failure
+ *   - structured decision metadata (via ctx.reportDecision)
+ *
+ * Performance: spans are buffered per-turn and flushed once in onAfterTurn
+ * (one store.append per turn instead of N individual calls).
  */
 
 import type {
@@ -26,6 +30,7 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   RichTrajectoryStep,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -48,16 +53,18 @@ export interface TraceWrapperConfig {
   readonly clock?: () => number;
 }
 
+/** Middleware names excluded from trace wrapping (trajectory recorders themselves). */
+const TRACE_EXCLUDED: ReadonlySet<string> = new Set(["event-trace"]);
+
 /**
  * Wraps a middleware to record every hook invocation as an ATIF trajectory step.
  * The wrapped middleware behaves identically — this is pure observation.
  *
+ * Spans are buffered in-turn and flushed once in onAfterTurn for efficiency.
+ *
  * Apply to all middleware before passing to createKoi() or recomposeChains():
  *   const traced = middleware.map(mw => wrapMiddlewareWithTrace(mw, config));
  */
-/** Middleware names excluded from trace wrapping (trajectory recorders themselves). */
-const TRACE_EXCLUDED: ReadonlySet<string> = new Set(["event-trace"]);
-
 export function wrapMiddlewareWithTrace(
   mw: KoiMiddleware,
   config: TraceWrapperConfig,
@@ -67,8 +74,57 @@ export function wrapMiddlewareWithTrace(
   const { store, docId, captureDeltas } = config;
   const clock = config.clock ?? Date.now;
 
-  function recordStep(step: RichTrajectoryStep): void {
-    void store.append(docId, [step]).catch(() => {});
+  // Issue 7: monotonic span counter — per wrapper instance, reset on each session
+  let spanIndex = 0;
+
+  // Issue 13: buffer spans in-turn, flush once in onAfterTurn
+  const pendingSteps: RichTrajectoryStep[] = [];
+
+  function recordStep(
+    base: Omit<RichTrajectoryStep, "stepIndex" | "metadata">,
+    metadata: JsonObject,
+  ): void {
+    pendingSteps.push({ ...base, stepIndex: spanIndex++, metadata });
+  }
+
+  async function flushSteps(): Promise<void> {
+    if (pendingSteps.length === 0) return;
+    const toFlush = pendingSteps.splice(0);
+    await store.append(docId, toFlush).catch(() => {});
+  }
+
+  // Issue 5: shared metadata builder — eliminates 5× duplication of the base shape
+  function buildSpanMeta(hook: string, nextCalled: boolean, extras?: JsonObject): JsonObject {
+    return {
+      type: "middleware_span",
+      middlewareName: mw.name,
+      hook,
+      phase: mw.phase ?? "resolve",
+      priority: mw.priority ?? 500,
+      nextCalled,
+      ...(extras ?? {}),
+    };
+  }
+
+  // Issue 5: shared base step builder
+  function buildBaseStep(
+    outcome: "success" | "failure",
+    start: number,
+    requestText: string,
+    responseText?: string,
+    errorText?: string,
+  ): Omit<RichTrajectoryStep, "stepIndex" | "metadata"> {
+    return {
+      timestamp: clock(),
+      source: "system",
+      kind: "model_call",
+      identifier: `middleware:${mw.name}`,
+      outcome,
+      durationMs: performance.now() - start,
+      request: { text: requestText },
+      ...(responseText !== undefined ? { response: { text: responseText } } : {}),
+      ...(errorText !== undefined ? { error: { text: errorText } } : {}),
+    };
   }
 
   const wrappedModelCall =
@@ -87,7 +143,7 @@ export function wrapMiddlewareWithTrace(
           let nextCalled = false;
           // Snapshot before middleware for value-based delta detection.
           // Fail-open: if snapshotting throws (circular ref, BigInt), skip deltas.
-          // let: mutable ��� set in try block
+          // let: mutable — set in try block
           let beforeSnapshot: ModelRequestSnapshot | undefined;
           if (captureDeltas === true) {
             try {
@@ -111,53 +167,41 @@ export function wrapMiddlewareWithTrace(
             return next(req);
           };
 
+          // Issue 8: per-call traceCtx — injects reportDecision callback.
+          // MUST be constructed inside the hook invocation (not outer closure)
+          // to ensure concurrent calls get independent decisions arrays.
+          const decisions: JsonObject[] = [];
+          const traceCtx: TurnContext = {
+            ...ctx,
+            reportDecision: (d: JsonObject) => {
+              decisions.push(d);
+            },
+          };
+
           try {
-            const response = await hook(ctx, request, trackedNext);
+            const response = await hook(traceCtx, request, trackedNext);
             const deltaMeta =
               captureDeltas === true && afterSnapshot !== undefined && beforeSnapshot !== undefined
                 ? computeRequestDeltaFromSnapshots(beforeSnapshot, afterSnapshot)
                 : undefined;
-            recordStep({
-              stepIndex: 0,
-              timestamp: clock(),
-              source: "system",
-              kind: "model_call",
-              identifier: `middleware:${mw.name}`,
-              outcome: "success",
-              durationMs: performance.now() - start,
-              request: { text: requestPreview },
-              response: { text: response.content.slice(0, 500) },
-              metadata: {
-                type: "middleware_span",
-                middlewareName: mw.name,
-                hook: "wrapModelCall",
-                phase: mw.phase ?? "resolve",
-                priority: mw.priority ?? 500,
-                nextCalled,
+            recordStep(
+              buildBaseStep("success", start, requestPreview, response.content.slice(0, 500)),
+              buildSpanMeta("wrapModelCall", nextCalled, {
                 ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
-              } as JsonObject,
-            });
+                // Issue 12: decisions preserved in both success and failure paths
+                ...(decisions.length > 0 ? { decisions } : {}),
+              }),
+            );
             return response;
           } catch (error: unknown) {
-            recordStep({
-              stepIndex: 0,
-              timestamp: clock(),
-              source: "system",
-              kind: "model_call",
-              identifier: `middleware:${mw.name}`,
-              outcome: "failure",
-              durationMs: performance.now() - start,
-              request: { text: requestPreview },
-              error: { text: error instanceof Error ? error.message : String(error) },
-              metadata: {
-                type: "middleware_span",
-                middlewareName: mw.name,
-                hook: "wrapModelCall",
-                phase: mw.phase ?? "resolve",
-                priority: mw.priority ?? 500,
-                nextCalled,
-              } as JsonObject,
-            });
+            const errorText = error instanceof Error ? error.message : String(error);
+            recordStep(
+              buildBaseStep("failure", start, requestPreview, undefined, errorText),
+              buildSpanMeta("wrapModelCall", nextCalled, {
+                // Issue 12: decisions accumulated before throw are preserved
+                ...(decisions.length > 0 ? { decisions } : {}),
+              }),
+            );
             throw error;
           }
         }
@@ -206,8 +250,17 @@ export function wrapMiddlewareWithTrace(
             return next(req);
           };
 
+          // Issue 8: per-call traceCtx with independent decisions array
+          const decisions: JsonObject[] = [];
+          const traceCtx: TurnContext = {
+            ...ctx,
+            reportDecision: (d: JsonObject) => {
+              decisions.push(d);
+            },
+          };
+
           try {
-            const response = await hook(ctx, request, trackedNext);
+            const response = await hook(traceCtx, request, trackedNext);
             const outputStr =
               typeof response.output === "string"
                 ? response.output
@@ -228,47 +281,22 @@ export function wrapMiddlewareWithTrace(
             } catch {
               // Fail-open: tracing never breaks the request path
             }
-            recordStep({
-              stepIndex: 0,
-              timestamp: clock(),
-              source: "system",
-              kind: "model_call",
-              identifier: `middleware:${mw.name}`,
-              outcome: "success",
-              durationMs: performance.now() - start,
-              request: { text: requestPreview },
-              response: { text: outputStr.slice(0, 500) },
-              metadata: {
-                type: "middleware_span",
-                middlewareName: mw.name,
-                hook: "wrapToolCall",
-                phase: mw.phase ?? "resolve",
-                priority: mw.priority ?? 500,
-                nextCalled,
+            recordStep(
+              buildBaseStep("success", start, requestPreview, outputStr.slice(0, 500)),
+              buildSpanMeta("wrapToolCall", nextCalled, {
                 ...(deltaMeta !== undefined ? { inputDelta: deltaMeta } : {}),
-              } as JsonObject,
-            });
+                ...(decisions.length > 0 ? { decisions } : {}),
+              }),
+            );
             return response;
           } catch (error: unknown) {
-            recordStep({
-              stepIndex: 0,
-              timestamp: clock(),
-              source: "system",
-              kind: "model_call",
-              identifier: `middleware:${mw.name}`,
-              outcome: "failure",
-              durationMs: performance.now() - start,
-              request: { text: requestPreview },
-              error: { text: error instanceof Error ? error.message : String(error) },
-              metadata: {
-                type: "middleware_span",
-                middlewareName: mw.name,
-                hook: "wrapToolCall",
-                phase: mw.phase ?? "resolve",
-                priority: mw.priority ?? 500,
-                nextCalled,
-              } as JsonObject,
-            });
+            const errorText = error instanceof Error ? error.message : String(error);
+            recordStep(
+              buildBaseStep("failure", start, requestPreview, undefined, errorText),
+              buildSpanMeta("wrapToolCall", nextCalled, {
+                ...(decisions.length > 0 ? { decisions } : {}),
+              }),
+            );
             throw error;
           }
         }
@@ -310,8 +338,17 @@ export function wrapMiddlewareWithTrace(
             return next(req);
           };
 
+          // Issue 8: per-call traceCtx — decisions collected mid-stream via closure
+          const decisions: JsonObject[] = [];
+          const traceCtx: TurnContext = {
+            ...ctx,
+            reportDecision: (d: JsonObject) => {
+              decisions.push(d);
+            },
+          };
+
           // Wrap the stream to record on completion, tracking success/failure/abort
-          const inner = hook(ctx, request, trackedStreamNext);
+          const inner = hook(traceCtx, request, trackedStreamNext);
           return wrapStreamForTrace(inner, (outcome, errorMessage) => {
             const deltaMeta =
               captureDeltas === true &&
@@ -319,26 +356,23 @@ export function wrapMiddlewareWithTrace(
               beforeStreamSnapshot !== undefined
                 ? computeRequestDeltaFromSnapshots(beforeStreamSnapshot, afterStreamSnapshot)
                 : undefined;
-            recordStep({
-              stepIndex: 0,
-              timestamp: clock(),
-              source: "system",
-              kind: "model_call",
-              identifier: `middleware:${mw.name}`,
-              outcome,
-              durationMs: performance.now() - start,
-              request: { text: requestPreview },
-              metadata: {
-                type: "middleware_span",
-                middlewareName: mw.name,
-                hook: "wrapModelStream",
-                phase: mw.phase ?? "resolve",
-                priority: mw.priority ?? 500,
-                nextCalled: true,
+            recordStep(
+              {
+                timestamp: clock(),
+                source: "system",
+                kind: "model_call",
+                identifier: `middleware:${mw.name}`,
+                outcome,
+                durationMs: performance.now() - start,
+                request: { text: requestPreview },
+                ...(errorMessage !== undefined ? { error: { text: errorMessage } } : {}),
+              },
+              buildSpanMeta("wrapModelStream", true, {
                 ...(errorMessage !== undefined ? { error: errorMessage } : {}),
                 ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
-              } as JsonObject,
-            });
+                ...(decisions.length > 0 ? { decisions } : {}),
+              }),
+            );
           });
         }
       : undefined;
@@ -348,6 +382,19 @@ export function wrapMiddlewareWithTrace(
     ...(wrappedModelCall !== undefined ? { wrapModelCall: wrappedModelCall } : {}),
     ...(wrappedToolCall !== undefined ? { wrapToolCall: wrappedToolCall } : {}),
     ...(wrappedModelStream !== undefined ? { wrapModelStream: wrappedModelStream } : {}),
+    // Issue 13: flush buffered spans once per turn (single store.append vs N individual calls)
+    onAfterTurn: async (ctx: TurnContext): Promise<void> => {
+      if (mw.onAfterTurn !== undefined) await mw.onAfterTurn(ctx);
+      await flushSteps();
+    },
+    // Safety net: flush any spans buffered by onSessionStart/onBeforeTurn/onBeforeStop
+    // that don't have an onAfterTurn counterpart (e.g., session start failures).
+    onSessionEnd: async (ctx: SessionContext): Promise<void> => {
+      if (mw.onSessionEnd !== undefined) await mw.onSessionEnd(ctx);
+      await flushSteps();
+      // Reset counter for next session
+      spanIndex = 0;
+    },
   };
 }
 
@@ -361,16 +408,23 @@ function safeStringify(value: unknown, maxLen: number): string {
   }
 }
 
-/** Extract readable text from a ModelRequest's messages. */
+/**
+ * Extract readable text from a ModelRequest's messages.
+ * Issue 14: early-exit accumulator stops iterating once 500 chars are collected.
+ */
 function extractModelRequestText(request: ModelRequest): string {
-  const parts: string[] = [];
-  for (const msg of request.messages) {
+  let buf = "";
+  outer: for (const msg of request.messages) {
     for (const block of msg.content) {
-      if (block.kind === "text") parts.push(block.text);
+      if (block.kind !== "text") continue;
+      buf += block.text;
+      if (buf.length >= 500) {
+        buf = buf.slice(0, 500);
+        break outer;
+      }
     }
   }
-  const full = parts.join("\n");
-  return full.length <= 500 ? full : `${full.slice(0, 500)}…`;
+  return buf.length < 500 ? buf : `${buf}…`;
 }
 
 /** Compare two values by value (JSON serialization for non-primitives). */
@@ -427,7 +481,7 @@ function shallowDiff(before: JsonObject, after: JsonObject): JsonObject | undefi
     ...(Object.keys(changed).length > 0 ? { changed } : {}),
     ...(Object.keys(added).length > 0 ? { added } : {}),
     ...(removed.length > 0 ? { removed } : {}),
-  } as JsonObject;
+  };
 }
 
 /** Safe JSON snapshot for value-based comparison. Never truncated — uses hash for large payloads. */
@@ -453,7 +507,7 @@ function snapshotModelRequest(req: ModelRequest): ModelRequestSnapshot {
       maxTokens: req.maxTokens,
       model: req.model,
       systemPrompt: req.systemPrompt,
-    } as JsonObject,
+    },
     messagesHash: safeSnapshot(req.messages),
     messageCount: req.messages.length,
     metadataSnapshot: structuredClone(req.metadata ?? {}) as JsonObject,

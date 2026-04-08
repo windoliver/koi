@@ -946,6 +946,18 @@ export function createPermissionsMiddleware(
       return true;
     });
 
+    const filteredCount = tools.length - filtered.length;
+    if (filteredCount > 0) {
+      const filteredNames = tools
+        .filter((_, i) => decisions[i]?.effect === "deny")
+        .map((t) => t.name);
+      ctx.reportDecision?.({
+        phase: "filter",
+        totalTools: tools.length,
+        filteredCount,
+        filteredTools: filteredNames,
+      });
+    }
     if (filtered.length === tools.length) return request;
     return { ...request, tools: filtered };
   }
@@ -1038,6 +1050,15 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
       }
+
+      // Report the permission decision for trace recording
+      ctx.reportDecision?.({
+        phase: "execute",
+        toolId: request.toolId,
+        action: decision.effect,
+        ...(decision.effect !== "allow" ? { rule: decision.reason } : {}),
+        source: denialSource(decision),
+      });
 
       if (decision.effect === "deny") {
         getTracker(ctx.session.sessionId as string).record({
@@ -1264,32 +1285,37 @@ export function createPermissionsMiddleware(
       // (Ctrl+C / agent:clear) cannot win approval and execute the tool
       // in what the user now believes is a fresh session.
       ...(ctx.signal !== undefined
-        ? [
-            new Promise<never>((_, reject) => {
-              if (ctx.signal!.aborted) {
-                reject(
-                  new KoiRuntimeError({
-                    code: "PERMISSION",
-                    message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
-                    retryable: false,
-                  }),
-                );
-                return;
-              }
-              ctx.signal!.addEventListener(
-                "abort",
-                () =>
+        ? (() => {
+            // Capture signal before the Promise closure so TypeScript narrows it
+            // to AbortSignal (not AbortSignal | undefined) inside the callback.
+            const turnSignal = ctx.signal;
+            return [
+              new Promise<never>((_, reject) => {
+                if (turnSignal.aborted) {
                   reject(
                     new KoiRuntimeError({
                       code: "PERMISSION",
                       message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
                       retryable: false,
                     }),
-                  ),
-                { once: true },
-              );
-            }),
-          ]
+                  );
+                  return;
+                }
+                turnSignal.addEventListener(
+                  "abort",
+                  () =>
+                    reject(
+                      new KoiRuntimeError({
+                        code: "PERMISSION",
+                        message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
+                        retryable: false,
+                      }),
+                    ),
+                  { once: true },
+                );
+              }),
+            ];
+          })()
         : []),
     ]).finally(() => {
       ac.abort();

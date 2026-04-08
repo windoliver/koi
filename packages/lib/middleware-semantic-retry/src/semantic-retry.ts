@@ -382,6 +382,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         const reason = state.pendingAction.reason;
         state.pendingAction = undefined;
         signalWriter?.clearRetrySignal(sessionId);
+        ctx.reportDecision?.({ action: "abort", reason, retryCount: state.records.length });
         throw new Error(`Semantic retry aborted: ${reason}`);
       }
 
@@ -400,6 +401,13 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         rewriteCtx,
         rewriterTimeoutMs,
       );
+      ctx.reportDecision?.({
+        action: "rewrite",
+        rewriteKind: state.pendingAction.kind,
+        failureClass: lastClass.kind,
+        retryCount: state.records.length,
+        budgetRemaining: minBudget(state.budgets),
+      });
       state.pendingAction = undefined;
 
       try {
@@ -453,6 +461,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           const reason = state.pendingAction.reason;
           state.pendingAction = undefined;
           signalWriter?.clearRetrySignal(sessionId);
+          ctx.reportDecision?.({ action: "abort", reason, retryCount: state.records.length });
           throw new Error(`Semantic retry aborted: ${reason}`);
         }
 
@@ -470,6 +479,13 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           rewriteCtx,
           rewriterTimeoutMs,
         );
+        ctx.reportDecision?.({
+          action: "rewrite",
+          rewriteKind: state.pendingAction.kind,
+          failureClass: lastClass.kind,
+          retryCount: state.records.length,
+          budgetRemaining: minBudget(state.budgets),
+        });
         state.pendingAction = undefined;
       }
 

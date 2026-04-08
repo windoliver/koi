@@ -375,6 +375,18 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       data: buildModelPreData(request),
     });
     const preResults = await registry.execute(sessionId, preEvent);
+    // Report hook fire records for trace recording (ctx may have reportDecision injected by trace wrapper)
+    if (preResults.length > 0) {
+      ctx.reportDecision?.({
+        event: "compact.before",
+        hooks: preResults.map((r) => ({
+          name: r.hookName,
+          decision: r.ok ? r.decision.kind : "error",
+          durationMs: r.durationMs,
+          ...(r.ok === false ? { error: r.error } : {}),
+        })),
+      });
+    }
     const aggregated = aggregateDecisions(preResults);
 
     if (aggregated.decision.kind === "block") {
@@ -483,6 +495,20 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       });
       const preResults = await registry.execute(sessionId, preEvent, ctx.signal);
       const aggregated = aggregateDecisions(preResults);
+
+      // Report pre-call hook fire records for trace recording
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.before",
+          toolId: request.toolId,
+          hooks: preResults.map((r) => ({
+            name: r.hookName,
+            decision: r.ok ? r.decision.kind : "error",
+            durationMs: r.durationMs,
+            ...(r.ok === false ? { error: r.error } : {}),
+          })),
+        });
+      }
 
       if (aggregated.decision.kind === "block") {
         return {
@@ -609,7 +635,38 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const sessionId = ctx.session.sessionId as string;
-      const preResult = await dispatchModelPre(sessionId, ctx, request);
+      const preEvent = buildEvent(ctx.session, "compact.before", {
+        data: buildModelPreData(request),
+      });
+      const preResults = await registry.execute(sessionId, preEvent);
+      // Report model pre-call hook fire records
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "compact.before",
+          hooks: preResults.map((r) => ({
+            name: r.hookName,
+            decision: r.ok ? r.decision.kind : "error",
+            durationMs: r.durationMs,
+            ...(r.ok === false ? { error: r.error } : {}),
+          })),
+        });
+      }
+      const aggregated = aggregateDecisions(preResults);
+      const preResult =
+        aggregated.decision.kind === "block"
+          ? {
+              blocked: true as const,
+              reason: aggregated.decision.reason,
+              hookName: aggregated.hookName,
+            }
+          : aggregated.decision.kind === "modify"
+            ? (() => {
+                const safePatch = filterModelPatch(aggregated.decision.patch);
+                return safePatch !== undefined
+                  ? { blocked: false as const, request: { ...request, ...safePatch } }
+                  : { blocked: false as const, request };
+              })()
+            : { blocked: false as const, request };
 
       if (preResult.blocked) {
         // Observability: emit custom event for telemetry/audit (fire-and-forget)
