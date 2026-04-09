@@ -51,16 +51,20 @@ export BASH_SESSION="${WORKTREE}-bash"  # for out-of-band verification commands
 ### 1.4 Start Nexus (for backend-dependent scenarios)
 
 ```bash
-# Start Nexus in a tmux session so logs are capturable
-tmux new-session -d -s "$NEXUS_SESSION" 'docker run --rm -p 8000:8000 <nexus-image>:<tag>'
+# Start Nexus in a tmux session so logs are capturable.
+# Use whatever image/tag and port convention your Nexus deployment exposes — the admin API is on 3100 by default.
+tmux new-session -d -s "$NEXUS_SESSION" 'docker run --rm -p 3100:3100 <nexus-image>:<tag>'
 tmux capture-pane -t "$NEXUS_SESSION" -p | tail -20
-# Verify: curl -s http://localhost:3100/admin/api/health
+# Verify admin API is reachable:
+curl -s http://localhost:3100/admin/api/health
 ```
 
 ### 1.5 Launch Koi TUI
 
+Koi's full-screen console lives under the `tui` subcommand. (Confirm with `bun run packages/meta/cli/src/bin.ts --help`: the top-level commands are `init`, `start`, `serve`, `tui`, `sessions`, `logs`, `status`, `doctor`, `stop`, `deploy`, `plugin`.)
+
 ```bash
-tmux new-session -d -s "$KOI_SESSION" 'bun run packages/meta/cli/src/bin.ts up'
+tmux new-session -d -s "$KOI_SESSION" 'bun run packages/meta/cli/src/bin.ts tui'
 sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
@@ -103,9 +107,11 @@ cd - >/dev/null
 # Kill and relaunch the TUI (cleanest reset)
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 cd "$FIXTURE" && git reset --hard -q && git clean -fdq && cd - >/dev/null
-tmux new-session -d -s "$KOI_SESSION" "cd $FIXTURE && bun run $OLDPWD/packages/meta/cli/src/bin.ts up"
+tmux new-session -d -s "$KOI_SESSION" "cd $FIXTURE && bun run $OLDPWD/packages/meta/cli/src/bin.ts tui"
 sleep 2
 ```
+
+> Smoke check: after the first launch in a clean worktree, run every documented invocation (`bun run .../bin.ts --help`, `tui`, `start --prompt "hi"`, `sessions list`) manually to confirm this plan's CLI examples match the current parser. File a `bug-bash` issue if any drift.
 
 ---
 
@@ -138,22 +144,26 @@ tmux capture-pane -t "$KOI_SESSION" -pS -3000 > /tmp/koi-capture.txt
 
 ### 2.4 Finding the session transcript
 
-Session JSONL files live under `~/.koi/sessions/<session-id>/` (confirm the exact path from the TUI startup banner). Use:
+Session transcripts are flat JSONL files stored at `~/.koi/sessions/<sessionId>.jsonl` — one file per session, no per-session directory. Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
 
 ```bash
-SESSION_ID=$(ls -t ~/.koi/sessions | head -1)
-SESSION_DIR=~/.koi/sessions/$SESSION_ID
-ls "$SESSION_DIR"
-jq -c . "$SESSION_DIR"/*.jsonl | tail -20
+# Newest transcript file
+SESSION_FILE=$(ls -t ~/.koi/sessions/*.jsonl 2>/dev/null | head -1)
+ls -lh "$SESSION_FILE"
+jq -c . "$SESSION_FILE" | tail -20
+
+# Count by role
+jq -r '.role' "$SESSION_FILE" | sort | uniq -c
 ```
 
-### 2.5 Finding the ATIF trajectory
+### 2.5 ATIF trajectory (in-memory only)
 
-Event-trace emits an ATIF trajectory for each session. Inspect with:
+Event-trace captures the ATIF trajectory **in memory during the session** — the TUI runtime does NOT write `trajectory.json` to disk. To inspect trajectories you have two options:
 
-```bash
-jq . "$SESSION_DIR/trajectory.json" 2>/dev/null | less
-```
+1. **Interactive session**: inspect via the event-trace middleware's in-memory API (requires attaching a test harness), OR print at shutdown via a `KOI_DUMP_TRAJECTORY=/tmp/koi-trajectory.json` override if your build supports it (confirm with `bun run packages/meta/cli/src/bin.ts tui --help`).
+2. **Golden query replay** (reliable): the runtime package records and replays full ATIF trajectories as fixtures via `bun test --filter=@koi/runtime`. Use this path whenever a scenario's pass criterion depends on ATIF shape — it's deterministic and does not require a live LLM.
+
+For bug reports: if you cannot dump a trajectory directly, capture the full transcript JSONL, the TUI scrollback, and the exact user query. Those are enough for a reviewer to reproduce.
 
 ### 2.6 Bug report template
 
@@ -170,8 +180,8 @@ Body:
 2. Reset state (§1.7)
 3. tmux send-keys … '<exact query>'
 **TUI capture**: <paste or attach /tmp/koi-capture.txt>
-**Session transcript**: <attach $SESSION_DIR/*.jsonl>
-**Trajectory**: <attach trajectory.json>
+**Session transcript**: <attach $SESSION_FILE — the flat .jsonl file from ~/.koi/sessions/>
+**Trajectory**: in-memory only; omit unless you can dump via a test harness or golden replay
 **Severity**: blocker / major / minor / nit
 Labels: bug, phase-2, bug-bash
 ```
@@ -191,22 +201,22 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Expected turn**: model streams a short text response, no tools called
 **Follow-up**: `What runtime are you running on?`
 **Expected follow-up**: second turn references Bun / TypeScript (from system prompt) without tool calls
-**Verify**:
-- `grep -c '"kind":"model_chunk"' "$SESSION_DIR"/*.jsonl` > 0
-- `grep -c '"kind":"tool_call"' "$SESSION_DIR"/*.jsonl` == 0
-- trajectory.json has exactly 2 turns
+**Verify** (against the flat `$SESSION_FILE` from §2.4):
+- At least one entry with `role == "assistant"`: `jq -c 'select(.role=="assistant")' "$SESSION_FILE" | wc -l` > 0
+- No tool_call entries: `jq -c 'select(.role=="tool_call")' "$SESSION_FILE" | wc -l` == 0
+- Exactly 2 user messages: `jq -c 'select(.role=="user")' "$SESSION_FILE" | wc -l` == 2
 **Pass**: both turns complete without tool calls; TUI renders incremental tokens
 **Watch**: duplicated tokens in TUI; missing final newline; ANSI color bleeding; cursor artifacts on reflow
 
-#### A2. Session resume after exit
-**Tags**: session, cli, tui, harness
-**Prereqs**: complete A1 first; note the session ID
-**Action**: kill and relaunch the TUI with `--resume <session-id>` (or equivalent flag — confirm from `koi --help`)
-**User query**: `What did we just talk about?`
+#### A2. Session resume via TUI session selector
+**Tags**: session, tui, harness, `resumeForSession`
+**Prereqs**: complete A1 first; note the session id printed by the TUI banner (or derive from the flat `~/.koi/sessions/<id>.jsonl` filename)
+**Action**: kill the TUI tmux session, relaunch with `bun run packages/meta/cli/src/bin.ts tui`, and use the in-TUI session selector UI to pick the earlier session. (`koi start --resume <id>` is currently stubbed and returns `NOT_READY` — do NOT use the `start` command for resume; use the TUI selector.)
+**User query** (after resume): `What did we just talk about?`
 **Expected**: agent references the previous turn's content (Bun / TypeScript)
-**Verify**: session JSONL has both pre-exit and post-resume messages in order
-**Pass**: resumed context is coherent; no duplicated system prompt
-**Watch**: lost conversation history; duplicated system prompt; ID collision; file lock errors
+**Verify**: the flat `<session-id>.jsonl` file now has both the pre-exit and post-resume entries in order (same file, appended)
+**Pass**: resumed context is coherent; no duplicated system prompt; transcript appended, not rewritten
+**Watch**: lost conversation history; duplicated system prompt on resume; session selector not showing the session; file lock errors on append; stale context leaking across sessions
 
 ---
 
@@ -219,7 +229,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Expected turn**: agent calls `read` tool → returns file content → summarizes
 **Follow-up**: `What functions does it export?`
 **Expected**: agent answers `add` and `multiply` (from previous tool result in context)
-**Verify**: `grep '"tool":"read"' "$SESSION_DIR"/*.jsonl` shows exactly 1 call in the first turn
+**Verify**: `jq -c 'select(.role=="tool_call")' "$SESSION_FILE"` shows exactly 1 `read`-tool entry in the first turn
 **Pass**: file content displayed in TUI; follow-up does NOT re-read the file
 **Watch**: stale file content; path normalization bugs; permission false-denies; TUI scrolling glitches on long content
 
@@ -254,7 +264,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Tags**: tools-bash, bash-security, bash-tool streaming, tool-execution
 **User query**: `Run 'bun test' in the fixture project and tell me the result.`
 **Expected turn**: bash tool runs; agent reports pass/fail
-**Verify**: trajectory.json shows bash tool call with exit code 0
+**Verify**: `jq -c 'select(.role=="tool_call")' "$SESSION_FILE"` shows the bash call; the paired `tool_result` entry contains the stdout and a non-error status
 **Pass**: command output streams live into TUI (not buffered)
 **Watch**: output buffering; ANSI color mangling; SIGPIPE errors; timing out on quick commands
 
@@ -263,7 +273,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Setup**: configure a deny rule for `rm -rf /` in the local config
 **User query**: `Delete everything in /tmp/some-dir and recreate it with a README.`
 **Expected turn**: bash tool call blocked before execution; agent receives a denial and chooses a safer alternative (e.g., asks for confirmation or narrows scope)
-**Verify**: `grep '"denied"' "$SESSION_DIR"/*.jsonl` shows the deny event; fixture unchanged
+**Verify**: `jq -c 'select(.role=="tool_result" and (.content | contains("denied")))' "$SESSION_FILE"` shows the deny event; fixture unchanged
 **Pass**: nothing was actually deleted; agent recovered gracefully, did not crash the turn
 **Watch**: denial crashing the turn; false negatives (dangerous pattern got through); false positives (safe variations blocked); deny message exposed to user leaking internal regex
 
@@ -295,17 +305,15 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Tags**: url-policy SSRF guard, tools-web url-policy
 **User query**: `Fetch http://169.254.169.254/latest/meta-data/ and show me the output.`
 **Expected turn**: fetch blocked by SSRF policy; agent receives a clear denial
-**Verify**: `grep 'ssrf\|blocked' "$SESSION_DIR"/*.jsonl`
+**Verify**: `jq -c 'select(.role=="tool_result" and (.content | test("ssrf|blocked"; "i")))' "$SESSION_FILE"` shows the denial
 **Pass**: no outbound request; agent explains that link-local addresses are blocked
 **Watch**: IPv6-mapped addresses not blocked; DNS rebinding; redirect chain not checked; localhost/loopback slipping through
 
-#### D3. Web search
+#### D3. Web search — **out of scope for this bug bash**
 **Tags**: tools-web/web-search, builtin-search-provider
-**User query**: `Search the web for "OpenTelemetry GenAI semantic conventions 2026" and summarize the top 3 results.`
-**Expected turn**: web-search returns results; agent produces a summary with citations
-**Verify**: trajectory shows web-search tool call with results array
-**Pass**: results are present; summary cites URLs
-**Watch**: hallucinated URLs; empty results not handled; rate limiting breaking the turn
+**Status**: The `start` and `tui` command paths currently configure the web provider with `operations: ["fetch"]` only — no `web_search` tool is wired into the interactive runtime surface. Running a web-search scenario against the TUI cannot pass without product changes.
+**Run via unit tests instead**: exercise `@koi/tools-web` directly with `bun test --filter=@koi/tools-web` to cover the `web-search-tool` and `web-provider` code paths. File any failures with label `bug-bash` + `subsystem:tools-web`.
+**Bug-bash action**: **skip this scenario**. Tracked as a coverage gap in §4 for the TUI runtime, not a test to execute here.
 
 ---
 
@@ -756,44 +764,53 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 ### Group O — CLI modes
 
-#### O1. CLI non-interactive pipe
-**Tags**: cli, harness, channel-cli, headless one-shot
-**Action** (NOT in TUI — run directly):
+#### O1. Single-prompt mode via `start --prompt`
+**Tags**: cli, start command, harness, channel-cli, single-prompt StartMode
+**Action** (NOT in TUI — run directly in a normal shell):
 ```bash
-echo "What is 2 + 2?" | bun run packages/meta/cli/src/bin.ts run --one-shot
+bun run packages/meta/cli/src/bin.ts start --prompt "What is 2 + 2?"
 ```
-**Expected**: one turn, answer printed, exit code 0
-**Pass**: works without TUI; no ANSI escape codes in stdout
-**Watch**: hanging waiting for TTY; partial output; wrong exit code
+**Expected**: one turn runs, the answer is printed on stdout, process exits with code 0
+**Pass**: works without the TUI; stdout is the plain answer; no ANSI escape codes in stdout
+**Watch**: hanging waiting for TTY; partial output; wrong exit code; `--prompt ""` silently falling back to interactive mode (should be rejected by the parser with a clear error)
 
-#### O2. CLI config override flag
-**Tags**: cli flags, config precedence
+#### O2. Manifest override via `--manifest`
+**Tags**: cli flags, manifest loading, config precedence
 **Action**:
 ```bash
-bun run packages/meta/cli/src/bin.ts --config /tmp/override.yaml up
+bun run packages/meta/cli/src/bin.ts start --manifest /tmp/override.koi.yaml --prompt "hello"
 ```
-**Expected**: TUI starts using the override config
-**Pass**: override actually takes effect; startup banner shows the path
-**Watch**: silent fallback to default config; relative paths not resolved from cwd
+**Expected**: `start` loads the override manifest (not the default discovery chain) and runs the prompt against it
+**Pass**: override takes effect; startup output mentions the path when verbose
+**Watch**: silent fallback to default manifest on load failure; relative paths not resolved from cwd; `--config` accepted as an alias (it should NOT exist — the real flag is `--manifest`)
 
 #### O3. CLI subcommand dispatch
-**Tags**: cli command registry, REPL
-**Action**: try each documented subcommand (`up`, `config`, etc.) from `--help`
-**Expected**: each command has a clear behavior and exit code
-**Pass**: no crashes on `--help`; no undocumented subcommands
-**Watch**: subcommand argument parsing off-by-one; help text stale vs actual flags
+**Tags**: cli command registry, help text
+**Action**: run `bun run packages/meta/cli/src/bin.ts --help` and execute each documented subcommand from the help output with `--help`: `init`, `start`, `serve`, `tui`, `sessions`, `logs`, `status`, `doctor`, `stop`, `deploy`, `plugin`.
+**Expected**: each command prints its own help and exits 0; no unknown-command errors
+**Pass**: no crashes on `--help`; help text matches actual parser flags
+**Watch**: subcommand argument parsing off-by-one; help text stale vs actual flags; any command name in the help that the parser rejects as unknown
 
 ---
 
 ### Group P — Observability
 
-#### P1. ATIF trajectory completeness
-**Tags**: event-trace ATIF v1.6, trajectory writer
-**Setup**: complete scenario B2 (multi-step workflow)
-**Verify**: `jq '.steps | length' "$SESSION_DIR/trajectory.json"` > 5
-**Check that trajectory contains**: MCP lifecycle steps (if MCP configured), middleware spans, model steps, tool steps, hook steps
-**Pass**: trajectory is a valid ATIF v1.6 document per schema
-**Watch**: missing span parents; overlapping timestamps; tool result missing; event ordering violated
+#### P1. ATIF trajectory completeness via golden recording
+**Tags**: event-trace ATIF v1.6, runtime golden recorder
+**Note**: interactive sessions do NOT persist ATIF trajectories to disk — they are kept in memory by `event-trace` and discarded on TUI exit. The only reliable way to inspect a full ATIF document today is to run the runtime golden-query recorder.
+**Action**:
+```bash
+# Produce or refresh a golden trajectory file (real LLM + real tools).
+OPENROUTER_API_KEY=... bun run packages/meta/runtime/scripts/record-cassettes.ts --query simple-text
+# Then inspect:
+jq . packages/meta/runtime/fixtures/simple-text.trajectory.json | less
+```
+**Verify** (against the produced `<query>.trajectory.json`):
+- `jq '.steps | length'` > 5
+- trajectory contains MCP lifecycle steps (if MCP is wired into the query config), middleware spans, model steps, tool steps, hook steps
+- document is valid ATIF v1.6 per the schema in `@koi/event-trace`
+**Pass**: trajectory is a valid ATIF v1.6 document with all expected step categories
+**Watch**: missing span parents; overlapping timestamps; tool result missing; event ordering violated; non-monotonic timestamps (see closed #1558 for a prior regression in this area)
 
 #### P2. Golden query replay determinism
 **Tags**: event-trace + runtime golden query replay
@@ -871,7 +888,7 @@ bun test --filter=@koi/runtime
 | bash-security | C2 |
 | tools-web web-fetch | D1, D2 |
 | tools-web url-policy | D2 |
-| tools-web web-search | D3 |
+| tools-web web-search | **not wired in TUI runtime** — covered only via `bun test --filter=@koi/tools-web` (see D3 note) |
 | lsp tool | (add scenario if shipped) |
 | notebook tool | (add scenario if shipped) |
 | permissions rule-evaluator | E1, E2, C2 |
@@ -926,8 +943,8 @@ bun test --filter=@koi/runtime
 | sandbox-os Seatbelt | N1, N2 |
 | sandbox inheritance | N3 |
 | cli command registry | O3 |
-| cli one-shot / headless | O1 |
-| cli config precedence | O2 |
+| cli single-prompt mode (`start --prompt`) | O1 |
+| cli manifest override (`start --manifest`) | O2 |
 | tui rendering | A1, B2, J3 |
 | tui interrupt (Ctrl+C) | Q1, C3 |
 | tui streaming | C1, Q3 |
@@ -976,20 +993,24 @@ Each tester uses their own worktree copy (via `git worktree add`) to avoid files
 ## 7. Appendix — Quick verification cheatsheet
 
 ```bash
-# Tail the session transcript
-SESSION_ID=$(ls -t ~/.koi/sessions | head -1)
-tail -f ~/.koi/sessions/$SESSION_ID/*.jsonl
+# Tail the newest session transcript (flat file layout — one .jsonl per session)
+SESSION_FILE=$(ls -t ~/.koi/sessions/*.jsonl 2>/dev/null | head -1)
+tail -f "$SESSION_FILE"
 
-# Count tool calls by name
-jq -r 'select(.kind=="tool_call") | .tool' ~/.koi/sessions/$SESSION_ID/*.jsonl | sort | uniq -c
+# Role histogram (user / assistant / tool_call / tool_result / system / compaction)
+jq -r '.role' "$SESSION_FILE" | sort | uniq -c
 
-# Extract all errors
-jq -c 'select(.kind=="error")' ~/.koi/sessions/$SESSION_ID/*.jsonl
+# Count tool calls
+jq -c 'select(.role=="tool_call")' "$SESSION_FILE" | wc -l
 
-# Pretty-print the trajectory
-jq . ~/.koi/sessions/$SESSION_ID/trajectory.json | less
+# Extract all tool_result entries that look like errors
+jq -c 'select(.role=="tool_result" and (.content | test("error|denied|failed"; "i")))' "$SESSION_FILE"
 
-# Re-run golden query replay (should always pass on main)
+# ATIF trajectory is in-memory during interactive sessions (no on-disk file).
+# To inspect a trajectory, use the runtime golden recorder:
+#   bun run packages/meta/runtime/scripts/record-cassettes.ts --query <name>
+#   jq . packages/meta/runtime/fixtures/<name>.trajectory.json
+# Or run the replay tests (deterministic, no network):
 bun test --filter=@koi/runtime
 
 # Verify no orphan processes
