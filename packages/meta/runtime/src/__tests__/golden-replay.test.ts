@@ -8029,7 +8029,7 @@ describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/plugins (2 queries: manifest validation + registry)
+// L2 golden queries: @koi/plugins (4 queries: manifest validation + registry + lifecycle + toggle)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/plugins", () => {
@@ -8116,6 +8116,125 @@ describe("Golden: @koi/plugins", () => {
     // No error steps
     const errorSteps = traj.steps.filter((s) => s.outcome === "error");
     expect(errorSteps).toHaveLength(0);
+  });
+
+  test("installPlugin + listPlugins lifecycle round-trip", async () => {
+    const { mkdir, rm, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { installPlugin, listPlugins, removePlugin, createPluginRegistry } = await import(
+      "@koi/plugins"
+    );
+
+    const tmpRoot = join(
+      import.meta.dir,
+      `../../fixtures/tmpkoi-golden-lifecycle-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const sourceDir = join(tmpRoot, "source", "golden-plugin");
+    const userRoot = join(tmpRoot, "user-plugins");
+
+    try {
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify({ name: "golden-plugin", version: "1.0.0", description: "Golden test" }),
+        "utf-8",
+      );
+
+      const registry = createPluginRegistry({ userRoot });
+      const config = { userRoot, registry };
+
+      // Install
+      const installResult = await installPlugin(config, sourceDir);
+      expect(installResult.ok).toBe(true);
+      if (installResult.ok) {
+        expect(installResult.value.name).toBe("golden-plugin");
+        expect(installResult.value.version).toBe("1.0.0");
+      }
+
+      // List shows installed plugin as enabled
+      const listResult = await listPlugins(config);
+      expect(listResult.ok).toBe(true);
+      if (listResult.ok) {
+        expect(listResult.value.length).toBe(1);
+        expect(listResult.value[0]?.meta.name).toBe("golden-plugin");
+        expect(listResult.value[0]?.enabled).toBe(true);
+      }
+
+      // Remove
+      const removeResult = await removePlugin(config, "golden-plugin");
+      expect(removeResult.ok).toBe(true);
+
+      // List is empty after removal
+      const listAfter = await listPlugins(config);
+      expect(listAfter.ok).toBe(true);
+      if (listAfter.ok) {
+        expect(listAfter.value.length).toBe(0);
+      }
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("enablePlugin / disablePlugin toggle state correctly", async () => {
+    const { mkdir, rm, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const {
+      installPlugin,
+      enablePlugin,
+      disablePlugin,
+      listPlugins,
+      removePlugin,
+      createPluginRegistry,
+    } = await import("@koi/plugins");
+
+    const tmpRoot = join(
+      import.meta.dir,
+      `../../fixtures/tmpkoi-golden-toggle-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const sourceDir = join(tmpRoot, "source", "toggle-plugin");
+    const userRoot = join(tmpRoot, "user-plugins");
+
+    try {
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify({ name: "toggle-plugin", version: "1.0.0", description: "Toggle test" }),
+        "utf-8",
+      );
+
+      const registry = createPluginRegistry({ userRoot });
+      const config = { userRoot, registry };
+
+      await installPlugin(config, sourceDir);
+
+      // Disable
+      const disableResult = await disablePlugin(config, "toggle-plugin");
+      expect(disableResult.ok).toBe(true);
+
+      // List shows disabled
+      const list1 = await listPlugins(config);
+      expect(list1.ok).toBe(true);
+      if (list1.ok) {
+        const entry = list1.value.find((e) => e.meta.name === "toggle-plugin");
+        expect(entry?.enabled).toBe(false);
+      }
+
+      // Re-enable
+      const enableResult = await enablePlugin(config, "toggle-plugin");
+      expect(enableResult.ok).toBe(true);
+
+      // List shows enabled again
+      const list2 = await listPlugins(config);
+      expect(list2.ok).toBe(true);
+      if (list2.ok) {
+        const entry = list2.value.find((e) => e.meta.name === "toggle-plugin");
+        expect(entry?.enabled).toBe(true);
+      }
+
+      await removePlugin(config, "toggle-plugin");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 
