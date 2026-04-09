@@ -162,7 +162,7 @@ describe("createPluginRegistry", () => {
     expect(plugins[0]?.name).toBe("available");
   });
 
-  test("load() rejects unavailable plugins with PERMISSION error", async () => {
+  test("load() rejects unavailable plugins with NOT_FOUND", async () => {
     await writePlugin(bundledRoot, "gated", {
       name: "gated",
       version: "1.0.0",
@@ -175,8 +175,8 @@ describe("createPluginRegistry", () => {
     const result = await registry.load("gated");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("not available");
+      // Unavailable plugins are excluded from discovery, so load returns NOT_FOUND
+      expect(result.error.code).toBe("NOT_FOUND");
     }
   });
 

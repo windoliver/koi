@@ -176,6 +176,23 @@ async function scanRoot(
       }
 
       const manifest = result.value;
+
+      // Enforce directory name === manifest name for reliable fail-closed shadowing
+      const dirName = basename(resolvedDir);
+      if (dirName !== manifest.name) {
+        errors.push({
+          dirPath: resolvedDir,
+          source: root.source,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Plugin directory "${dirName}" does not match manifest name "${manifest.name}"`,
+            retryable: false,
+            context: { dirPath: resolvedDir, dirName, manifestName: manifest.name },
+          },
+        });
+        return;
+      }
+
       let available = true;
       if (isAvailable) {
         try {
@@ -208,7 +225,29 @@ async function scanRoot(
     }),
   );
 
-  return { plugins, errors, rootFailed: false };
+  // Detect same-tier duplicate manifest names — fail closed instead of nondeterministic
+  const seenNames = new Map<string, string>(); // name → dirPath of first occurrence
+  const deduped: PluginMeta[] = [];
+  for (const plugin of plugins) {
+    const existing = seenNames.get(plugin.name);
+    if (existing !== undefined) {
+      errors.push({
+        dirPath: plugin.dirPath,
+        source: root.source,
+        error: {
+          code: "CONFLICT" as const,
+          message: `Duplicate plugin name "${plugin.name}" in ${root.source} root (also in ${existing})`,
+          retryable: false,
+          context: { pluginName: plugin.name, firstDir: existing, duplicateDir: plugin.dirPath },
+        },
+      });
+      continue;
+    }
+    seenNames.set(plugin.name, plugin.dirPath);
+    deduped.push(plugin);
+  }
+
+  return { plugins: deduped, errors, rootFailed: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +312,9 @@ export async function discoverPlugins(
       if (failedSource !== undefined && PRIORITY[failedSource] < PRIORITY[plugin.source]) {
         continue;
       }
+
+      // Only available plugins can win the slot — unavailable ones don't shadow lower tiers
+      if (!plugin.available) continue;
 
       const existing = byName.get(plugin.name);
       if (existing === undefined || PRIORITY[plugin.source] < PRIORITY[existing.source]) {

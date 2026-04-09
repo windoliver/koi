@@ -112,7 +112,7 @@ describe("discoverPlugins", () => {
   });
 
   test("per-plugin errors collected — bad manifest does not block others", async () => {
-    await writePlugin(bundledRoot, "good", MANIFEST_A);
+    await writePlugin(bundledRoot, "plugin-a", MANIFEST_A);
     // Invalid manifest — missing required fields
     const badDir = join(bundledRoot, "bad");
     await mkdir(badDir, { recursive: true });
@@ -128,7 +128,7 @@ describe("discoverPlugins", () => {
     }
   });
 
-  test("isAvailable() false marks plugin as unavailable", async () => {
+  test("isAvailable() false excludes plugin from results", async () => {
     await writePlugin(bundledRoot, "plugin-a", MANIFEST_A);
     await writePlugin(bundledRoot, "plugin-b", MANIFEST_B);
 
@@ -138,16 +138,16 @@ describe("discoverPlugins", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const pluginA = result.value.plugins.find((p) => p.name === "plugin-a");
-      const pluginB = result.value.plugins.find((p) => p.name === "plugin-b");
-      expect(pluginA?.available).toBe(false);
-      expect(pluginB?.available).toBe(true);
+      // Unavailable plugins are excluded from the result
+      expect(result.value.plugins).toHaveLength(1);
+      expect(result.value.plugins[0]?.name).toBe("plugin-b");
+      expect(result.value.plugins[0]?.available).toBe(true);
     }
   });
 
   test("directories without plugin.json are skipped", async () => {
     await mkdir(join(bundledRoot, "no-manifest"), { recursive: true });
-    await writePlugin(bundledRoot, "valid", MANIFEST_A);
+    await writePlugin(bundledRoot, "plugin-a", MANIFEST_A);
 
     const result = await discoverPlugins({ bundledRoot });
     expect(result.ok).toBe(true);
