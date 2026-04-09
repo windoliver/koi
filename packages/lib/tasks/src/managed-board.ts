@@ -390,6 +390,60 @@ export async function createManagedTaskBoard(
 
     kill: (taskId) => applyMutation((b) => b.kill(taskId)),
 
+    killIfPending: (taskId, options) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status !== "pending") {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot kill task '${taskId}': status is '${task.status}', expected 'pending'`,
+              retryable: false,
+            },
+          };
+        }
+        // Verify expected kind if provided and task has metadata.kind.
+        // Reject on mismatch; allow through if task has no persisted kind
+        // (metadata.kind is optional/advisory).
+        const expectedKind = options?.expectedKind;
+        if (expectedKind !== undefined) {
+          const persistedKind = (task.metadata as Readonly<Record<string, unknown>> | undefined)
+            ?.kind as string | undefined;
+          if (persistedKind !== undefined && persistedKind !== expectedKind) {
+            return {
+              ok: false,
+              error: {
+                code: "CONFLICT",
+                message: `Task '${taskId}' has kind '${persistedKind}', expected '${expectedKind}'`,
+                retryable: false,
+              },
+            };
+          }
+        }
+        // No dependency readiness check: unsupported/unrunnable tasks should
+        // be killed immediately regardless of prerequisite state. The board's
+        // kill() will correctly propagate unreachable to dependents.
+        // Merge metadata patch into existing metadata (preserves existing keys)
+        const metadataPatch = options?.metadata;
+        // let justified: board is immutable — each mutation returns a new board
+        let current = b;
+        if (metadataPatch !== undefined) {
+          const existing = (task.metadata ?? {}) as Readonly<Record<string, unknown>>;
+          const merged = { ...existing, ...metadataPatch };
+          const updateResult = current.update(taskId, { metadata: merged });
+          if (!updateResult.ok) return updateResult;
+          current = updateResult.value;
+        }
+        return current.kill(taskId);
+      }),
+
     killOwnedTask: (taskId, agentId) =>
       applyMutation((b) => {
         const task = b.get(taskId);

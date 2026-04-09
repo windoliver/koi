@@ -16,7 +16,14 @@
 export { createFileTaskBoardStore, type FileTaskBoardStoreConfig } from "./file-store.js";
 export { matchesFilter } from "./filter.js";
 // Lifecycles
+export { registerDefaultLifecycles } from "./lifecycles/defaults.js";
 export { createLocalShellLifecycle, type LocalShellConfig } from "./lifecycles/local-shell.js";
+export {
+  createUnsupportedLifecycle,
+  isUnsupportedLifecycle,
+  UNSUPPORTED_LIFECYCLE_MARKER,
+  UNSUPPORTED_LIFECYCLE_MARKER_KEY,
+} from "./lifecycles/unsupported.js";
 export {
   createManagedTaskBoard,
   type ManagedTaskBoard,

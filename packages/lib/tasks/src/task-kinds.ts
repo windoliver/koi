@@ -10,6 +10,7 @@
  */
 
 import type { TaskItemId, TaskKindName } from "@koi/core";
+import { isValidTaskKindName } from "@koi/core";
 import type { TaskOutputStream } from "./output-stream.js";
 
 // ---------------------------------------------------------------------------
@@ -89,17 +90,10 @@ export interface TeammateIdentity {
 // Type guards
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set<string>([
-  "local_shell",
-  "local_agent",
-  "remote_agent",
-  "in_process_teammate",
-  "dream",
-]);
-
 export function isRuntimeTask(value: unknown): value is RuntimeTask {
   if (typeof value !== "object" || value === null) return false;
-  return VALID_KINDS.has((value as Readonly<Record<string, unknown>>).kind as string);
+  const kind = (value as Readonly<Record<string, unknown>>).kind;
+  return typeof kind === "string" && isValidTaskKindName(kind);
 }
 
 export function isLocalShellTask(value: unknown): value is LocalShellTask {
