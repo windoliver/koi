@@ -1391,3 +1391,137 @@ describe("startedAt", () => {
     expect(board.get(taskItemId("a"))?.startedAt).toBe(7000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// blockedBy + cache (#1557 review fix 14A)
+// ---------------------------------------------------------------------------
+
+describe("blockedBy", () => {
+  test("returns undefined for tasks with no dependencies", () => {
+    const r = createTaskBoard().add(input("a"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.blockedBy(taskItemId("a"))).toBeUndefined();
+  });
+
+  test("returns the first incomplete dep for a pending task", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b"));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a", "b"]));
+    if (!r3.ok) return;
+    expect(r3.value.blockedBy(taskItemId("c"))).toBe(taskItemId("a"));
+  });
+
+  test("returns the next incomplete dep after the first completes", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b"));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a", "b"]));
+    if (!r3.ok) return;
+    const r4 = r3.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r4.ok) return;
+    const r5 = r4.value.complete(taskItemId("a"), result("a"));
+    if (!r5.ok) return;
+    // Now `a` is complete; `b` is the blocker
+    expect(r5.value.blockedBy(taskItemId("c"))).toBe(taskItemId("b"));
+  });
+
+  test("returns undefined when all deps are completed (task is ready)", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r3.ok) return;
+    const r4 = r3.value.complete(taskItemId("a"), result("a"));
+    if (!r4.ok) return;
+    expect(r4.value.blockedBy(taskItemId("b"))).toBeUndefined();
+  });
+
+  test("returns undefined for non-pending tasks", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) return;
+    // in_progress → no blocker
+    expect(r2.value.blockedBy(taskItemId("a"))).toBeUndefined();
+  });
+
+  test("returns undefined for unknown task IDs", () => {
+    const board = createTaskBoard();
+    expect(board.blockedBy(taskItemId("nonexistent"))).toBeUndefined();
+  });
+
+  test("repeated calls on the same snapshot return consistent answers (cache hit)", () => {
+    // The cache is internal — we can't directly observe hits, but we CAN verify
+    // that repeated calls return the same value AND that mutating the board
+    // (which produces a new snapshot) returns a possibly different value.
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+
+    // Pre-completion: 5 calls all return "a"
+    for (let i = 0; i < 5; i++) {
+      expect(r2.value.blockedBy(taskItemId("b"))).toBe(taskItemId("a"));
+    }
+
+    // After completion (new board snapshot), the cache is fresh
+    const r3 = r2.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r3.ok) return;
+    const r4 = r3.value.complete(taskItemId("a"), result("a"));
+    if (!r4.ok) return;
+    expect(r4.value.blockedBy(taskItemId("b"))).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lazy reverse adjacency (#1557 review fix 13A)
+// ---------------------------------------------------------------------------
+//
+// The reverse adjacency map is built only when fail()/kill()/dependentsOf() is
+// called — never on assign/complete/update/etc. We can't directly observe "did
+// the build happen" from outside the closure, but we CAN verify the queries
+// that DO need it still work correctly. Combined with the existing 100+ board
+// tests (which cover all mutation paths), this proves the lazy build doesn't
+// break anything.
+
+describe("lazy reverse adjacency", () => {
+  test("dependentsOf works after a series of assign-only mutations", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a"]));
+    if (!r3.ok) return;
+    // The reverse adj has not been built yet — these mutations don't need it.
+    // Now ask for dependentsOf — it should build the adj on first call.
+    expect(r3.value.dependentsOf(taskItemId("a"))).toHaveLength(2);
+  });
+
+  test("kill cascade still computes unreachable correctly", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["b"]));
+    if (!r3.ok) return;
+    // Kill `a` — `b` and `c` become unreachable. This exercises the
+    // lazy reverse adj for the first time.
+    const r4 = r3.value.kill(taskItemId("a"));
+    if (!r4.ok) return;
+    const unreachable = r4.value.unreachable().map((t) => t.id);
+    expect(unreachable).toContain(taskItemId("b"));
+    expect(unreachable).toContain(taskItemId("c"));
+  });
+});

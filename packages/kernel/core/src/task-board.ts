@@ -298,6 +298,15 @@ export interface TaskBoard {
   readonly killed: () => readonly Task[];
   readonly unreachable: () => readonly Task[];
   readonly dependentsOf: (taskId: TaskItemId) => readonly Task[];
+  /**
+   * Returns the first dependency of `taskId` that is not yet `completed`,
+   * or `undefined` if the task is ready / not pending / not found.
+   *
+   * Implementations may cache results per board snapshot — boards are
+   * immutable, so the answer never changes for a given (snapshot, taskId)
+   * pair. This makes repeated polling (e.g. TUI `task_list`) cheap.
+   */
+  readonly blockedBy: (taskId: TaskItemId) => TaskItemId | undefined;
   readonly all: () => readonly Task[];
   readonly size: () => number;
 }

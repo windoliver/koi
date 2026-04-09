@@ -236,7 +236,41 @@ function createBoardFromState(
 ): TaskBoard {
   const maxRetries = config.maxRetries ?? DEFAULT_TASK_BOARD_CONFIG.maxRetries ?? 3;
   const now = (): number => Date.now();
-  const reverseAdj = buildReverseAdjacency(items);
+
+  // Lazy reverse adjacency — only built on demand for fail()/kill()/dependentsOf().
+  // Most mutations (assign, complete, update, etc.) never touch it, so most boards
+  // skip the O(V+E) build entirely. Each board snapshot is immutable, so the cache
+  // is safe for the board's lifetime — no invalidation logic required.
+  // let justified: lazy initialization, populated at most once per board snapshot.
+  let _reverseAdj: ReadonlyMap<TaskItemId, readonly TaskItemId[]> | undefined;
+  const getReverseAdj = (): ReadonlyMap<TaskItemId, readonly TaskItemId[]> => {
+    if (_reverseAdj === undefined) _reverseAdj = buildReverseAdjacency(items);
+    return _reverseAdj;
+  };
+
+  // Per-snapshot cache for blockedBy() lookups.
+  // Sentinel: a missing key means "not yet computed"; null means "no blocker".
+  // Boards are immutable, so this cache stays valid for the snapshot's lifetime.
+  // Hot path: TUI poll → task_list → toTaskSummary → board.blockedBy() per pending task.
+  const blockedByCache = new Map<TaskItemId, TaskItemId | null>();
+  const computeBlockedBy = (taskId: TaskItemId): TaskItemId | undefined => {
+    const cached = blockedByCache.get(taskId);
+    if (cached !== undefined) return cached === null ? undefined : cached;
+    const task = items.get(taskId);
+    if (task === undefined || task.status !== "pending") {
+      blockedByCache.set(taskId, null);
+      return undefined;
+    }
+    for (const dep of task.dependencies) {
+      const depTask = items.get(dep);
+      if (depTask !== undefined && depTask.status !== "completed") {
+        blockedByCache.set(taskId, dep);
+        return dep;
+      }
+    }
+    blockedByCache.set(taskId, null);
+    return undefined;
+  };
 
   function transitionTask(
     taskId: TaskItemId,
@@ -532,7 +566,7 @@ function createBoardFromState(
         taskId,
         result.value.items,
         unreachableIds,
-        reverseAdj,
+        getReverseAdj(),
       );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
@@ -558,7 +592,7 @@ function createBoardFromState(
         taskId,
         result.value.items,
         unreachableIds,
-        reverseAdj,
+        getReverseAdj(),
       );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
@@ -647,7 +681,7 @@ function createBoardFromState(
     },
 
     dependentsOf(taskId: TaskItemId): readonly Task[] {
-      const depIds = reverseAdj.get(taskId) ?? [];
+      const depIds = getReverseAdj().get(taskId) ?? [];
       const result: Task[] = [];
       for (const id of depIds) {
         const task = items.get(id);
@@ -655,6 +689,8 @@ function createBoardFromState(
       }
       return result;
     },
+
+    blockedBy: computeBlockedBy,
 
     all(): readonly Task[] {
       return [...items.values()];
