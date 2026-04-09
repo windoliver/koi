@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:16.879Z",
+      "timestamp": "2026-04-09T01:40:32.158Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:16.880Z",
+      "timestamp": "2026-04-09T01:40:32.159Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T04:31:16.887Z",
+      "timestamp": "2026-04-09T01:40:32.165Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 7 + 3? Reply with just the number.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 103,
         "completion_tokens": 3
       },
-      "duration_ms": 514,
+      "duration_ms": 443,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -70,10 +70,9 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:17.403Z",
+      "timestamp": "2026-04-09T01:40:32.611Z",
       "model_name": "middleware:semantic-retry",
-      "message": "What is 7 + 3? Reply with just the number.",
-      "duration_ms": 514.8131669999998,
+      "duration_ms": 445.69950000000017,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +89,9 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:17.404Z",
+      "timestamp": "2026-04-09T01:40:32.612Z",
       "model_name": "middleware:hooks",
-      "message": "What is 7 + 3? Reply with just the number.",
-      "duration_ms": 515.1007079999999,
+      "duration_ms": 446.32279200000016,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -110,10 +108,9 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:17.405Z",
+      "timestamp": "2026-04-09T01:40:32.613Z",
       "model_name": "middleware:permissions",
-      "message": "What is 7 + 3? Reply with just the number.",
-      "duration_ms": 515.7364579999999,
+      "duration_ms": 447.16700000000014,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -130,10 +127,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T04:31:17.406Z",
+      "timestamp": "2026-04-09T01:40:32.614Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "What is 7 + 3? Reply with just the number.",
-      "duration_ms": 516.9473330000001,
+      "duration_ms": 448.5727079999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
