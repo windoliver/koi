@@ -77,7 +77,6 @@ import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import { createSkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -698,20 +697,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
   // in createKoi — tracked as a known limitation. The system prompt skill snapshot
   // (built in tui-command.ts) is also static for the process lifetime.
-  const skillsRuntime = createSkillsRuntime({
-    projectRoot: join(cwd, ".claude", "skills"),
-    userRoot: join(homedir(), ".claude", "skills"),
-  });
   // AbortController for skill loading — lives for the entire runtime lifetime.
   // Not rotated on session reset (skill loading is stateless file reads).
   const skillAbortController = new AbortController();
-  const skillToolResult = await createSkillTool({
-    resolver: skillsRuntime,
-    signal: skillAbortController.signal,
-    // No spawnFn — fork-mode skills are filtered out of discovery since the TUI
-    // cannot execute them (stubSpawnFn always returns EXTERNAL error).
-  });
-  const skillProvider = skillToolResult.ok
+  // skillsRuntime is provided by the caller (tui-command.ts) — reuse it for
+  // both MCP bridge wiring and the Skill meta-tool.
+  const skillToolResult =
+    skillsRuntime !== undefined
+      ? await createSkillTool({
+          resolver: skillsRuntime,
+          signal: skillAbortController.signal,
+          // No spawnFn — fork-mode skills are filtered out of discovery since the TUI
+          // cannot execute them (stubSpawnFn always returns EXTERNAL error).
+        })
+      : undefined;
+  const skillProvider = skillToolResult?.ok
     ? createSingleToolProvider({
         name: "skill",
         toolName: "Skill",
