@@ -379,6 +379,33 @@ export interface HookEnvPolicy {
 }
 
 // ---------------------------------------------------------------------------
+// Hook policy — tier-based execution control for managed environments
+// ---------------------------------------------------------------------------
+
+/**
+ * Policy controlling which hook tiers are active.
+ *
+ * Tiers (managed > user > session) are an L2 runtime concept — this interface
+ * only carries the policy flags. The `actor` parameter is passed out-of-band
+ * to the L2 `applyPolicy()` function to determine semantics:
+ *
+ * - `disableAllHooks` + actor "managed" → kills ALL hooks (nuclear switch)
+ * - `disableAllHooks` + actor "user" → kills user + session hooks; managed survive
+ * - `managedOnly` → only managed-tier hooks run
+ * - Otherwise: filter on `allowUserHooks` (default true) and `allowSessionHooks` (default true)
+ */
+export interface HookPolicy {
+  /** Kill switch — scope depends on actor (see doc above). */
+  readonly disableAllHooks?: boolean | undefined;
+  /** When true, only managed-tier hooks run. User + session tiers are suppressed. */
+  readonly managedOnly?: boolean | undefined;
+  /** When true, user-tier hooks are allowed. Default: true. */
+  readonly allowUserHooks?: boolean | undefined;
+  /** When true, session-tier hooks are allowed. Default: true. */
+  readonly allowSessionHooks?: boolean | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Hook decision — structured response from hook executors
 // ---------------------------------------------------------------------------
 
