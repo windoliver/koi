@@ -28,7 +28,7 @@
  * - CONFLICT: treated as a per-task race — skip and continue.
  */
 
-import type { AgentId, KoiError, ManagedTaskBoard, TaskItemId } from "@koi/core";
+import type { AgentId, KoiError, ManagedTaskBoard, Task, TaskItemId } from "@koi/core";
 
 /**
  * Error codes that indicate a per-task state change rather than store degradation.
@@ -41,6 +41,16 @@ import type { AgentId, KoiError, ManagedTaskBoard, TaskItemId } from "@koi/core"
  * error, not a benign race, and should stop recovery.
  */
 const TASK_RACE_CODES = new Set<KoiError["code"]>(["NOT_FOUND", "VALIDATION"]);
+
+/**
+ * Extract `metadata.delegatedTo` as a string, or `undefined` if absent/malformed.
+ * The delegation record is set by `task_delegate` in `@koi/task-tools` as part
+ * of the two-package coordinator-fan-out contract.
+ */
+function readDelegatedTo(task: Task): string | undefined {
+  const raw = task.metadata?.delegatedTo;
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
 
 export interface OrphanRecoveryResult {
   /**
@@ -107,4 +117,96 @@ export async function recoverOrphanedTasks(
   }
 
   return { killed: [], requeued, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Stale delegation cleanup (#1557 review fix 4A revised)
+// ---------------------------------------------------------------------------
+//
+// `task_delegate` (in `@koi/task-tools`) records a coordinator's intent to
+// assign a pending task to a child agent by writing `metadata.delegatedTo`.
+// The task stays `pending` with no `assignedTo` until the child claims it
+// via `task_update(status: "in_progress")`. If the child crashes or never
+// spawns, the task sits with a stale `delegatedTo` forever — blocking any
+// future attempt to re-delegate it (task_delegate rejects tasks that are
+// already delegated).
+//
+// `recoverOrphanedTasks` above handles the `in_progress` side of the split:
+// tasks whose running worker is no longer alive. This function handles the
+// `pending` side: tasks whose intended worker never claimed them.
+//
+// The two together form the complete delegation recovery contract. Both
+// should be called by a coordinator on restart, in order:
+//   1. `recoverOrphanedTasks(board, currentCoordinator)` — unassign in_progress
+//   2. `recoverStaleDelegations(board, liveAgentIds)` — clear pending delegations
+
+export interface StaleDelegationResult {
+  /**
+   * Task IDs whose `metadata.delegatedTo` was cleared because the delegated
+   * agent is not in the live set. Each task is still `pending` — the caller
+   * may now re-delegate via a fresh `task_delegate` call.
+   */
+  readonly cleared: readonly TaskItemId[];
+  /**
+   * Task IDs whose metadata patch failed with a store-layer error. Processing
+   * stops at the first store-layer failure; the caller should log and retry.
+   */
+  readonly failed: readonly TaskItemId[];
+}
+
+/**
+ * Find every pending task whose `metadata.delegatedTo` points at an agent
+ * that is NOT in `liveAgentIds`, and clear that field so the task can be
+ * re-delegated.
+ *
+ * `liveAgentIds` should contain the IDs of every child agent that the new
+ * coordinator believes is currently alive. A common choice is "empty set"
+ * (clear every stale delegation unconditionally) for a cold restart, or
+ * the output of an agent-registry scan for a warm restart.
+ *
+ * Per-task races (NOT_FOUND, VALIDATION) are skipped — the task may have
+ * completed/failed between the snapshot read and the update. Store-layer
+ * errors (EXTERNAL, INTERNAL, CONFLICT) stop processing and are reported
+ * in `failed`.
+ *
+ * Design note: this is a no-op for tasks that are NOT pending, so it's
+ * safe to call alongside `recoverOrphanedTasks` in either order.
+ */
+export async function recoverStaleDelegations(
+  board: ManagedTaskBoard,
+  liveAgentIds: ReadonlySet<string>,
+): Promise<StaleDelegationResult> {
+  const snapshot = board.snapshot();
+  const stale = snapshot.pending().filter((task) => {
+    const delegatedTo = readDelegatedTo(task);
+    return delegatedTo !== undefined && !liveAgentIds.has(delegatedTo);
+  });
+  if (stale.length === 0) {
+    return { cleared: [], failed: [] };
+  }
+
+  const cleared: TaskItemId[] = [];
+  const failed: TaskItemId[] = [];
+
+  for (const task of stale) {
+    // Build a new metadata object without delegatedTo — preserve every other key.
+    const existing = task.metadata ?? {};
+    const nextMetadata: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(existing)) {
+      if (k !== "delegatedTo") nextMetadata[k] = v;
+    }
+    const result = await board.update(task.id, { metadata: nextMetadata });
+    if (result.ok) {
+      cleared.push(task.id);
+    } else if (TASK_RACE_CODES.has(result.error.code)) {
+      // Benign per-task race — task completed/disappeared between snapshot and patch.
+      continue;
+    } else {
+      // Store-layer error — stop to avoid further ops on a degraded store.
+      failed.push(task.id);
+      break;
+    }
+  }
+
+  return { cleared, failed };
 }

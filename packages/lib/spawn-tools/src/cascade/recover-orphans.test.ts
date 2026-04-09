@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ManagedTaskBoard, TaskItemId } from "@koi/core";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { recoverOrphanedTasks } from "./recover-orphans.js";
+import { recoverOrphanedTasks, recoverStaleDelegations } from "./recover-orphans.js";
 
 function agentId(id: string): import("@koi/core").AgentId {
   return id as import("@koi/core").AgentId;
@@ -308,5 +308,209 @@ describe("recoverOrphanedTasks", () => {
     expect(requeuedSet.has(id1)).toBe(true);
     expect(requeuedSet.has(id2)).toBe(true);
     expect(requeuedSet.has(id3)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recoverStaleDelegations (#1557 review fix 4A revised)
+// ---------------------------------------------------------------------------
+//
+// The `task_delegate` tool in @koi/task-tools records a coordinator's intent
+// to assign a pending task to a child agent via metadata.delegatedTo, but
+// leaves task.assignedTo untouched. If the child crashes before claiming,
+// the task sits with a stale delegatedTo that blocks re-delegation. This
+// function handles that cleanup on restart, complementing
+// recoverOrphanedTasks (which handles in_progress orphans).
+
+describe("recoverStaleDelegations", () => {
+  /**
+   * Add a pending task and set metadata.delegatedTo without changing status.
+   * Mirrors what task_delegate does in production.
+   */
+  async function addDelegatedTask(
+    board: ManagedTaskBoard,
+    description: string,
+    delegatedTo: string,
+  ): Promise<TaskItemId> {
+    const id = await board.nextId();
+    await board.add({ id, description, metadata: { delegatedTo } });
+    return id;
+  }
+
+  test("clears delegatedTo when the intended worker is not in the live set", async () => {
+    const board = await freshBoard();
+    const id1 = await addDelegatedTask(board, "Task 1", "dead-worker");
+    const id2 = await addDelegatedTask(board, "Task 2", "another-dead-worker");
+
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    expect(result.failed).toHaveLength(0);
+    expect(result.cleared).toHaveLength(2);
+
+    const cleared = new Set<TaskItemId>(result.cleared);
+    expect(cleared.has(id1)).toBe(true);
+    expect(cleared.has(id2)).toBe(true);
+
+    // Task is still pending and delegatedTo is gone
+    const snap = board.snapshot();
+    const t1 = snap.get(id1);
+    expect(t1?.status).toBe("pending");
+    expect(t1?.metadata?.delegatedTo).toBeUndefined();
+  });
+
+  test("preserves delegation for workers still in the live set", async () => {
+    const board = await freshBoard();
+    const idLive = await addDelegatedTask(board, "Live task", "live-worker");
+    const idDead = await addDelegatedTask(board, "Dead task", "dead-worker");
+
+    const result = await recoverStaleDelegations(board, new Set<string>(["live-worker"]));
+    expect(result.cleared).toHaveLength(1);
+    expect(result.cleared[0]).toBe(idDead);
+
+    // Live delegation preserved
+    expect(board.snapshot().get(idLive)?.metadata?.delegatedTo).toBe("live-worker");
+    // Dead delegation cleared
+    expect(board.snapshot().get(idDead)?.metadata?.delegatedTo).toBeUndefined();
+  });
+
+  test("leaves non-pending tasks alone even if they have a delegatedTo", async () => {
+    const board = await freshBoard();
+    const pendingId = await addDelegatedTask(board, "Pending", "dead-worker");
+    const inProgressId = await addDelegatedTask(board, "In progress", "dead-worker");
+    // Start the second one so it becomes in_progress
+    await board.assign(inProgressId, agentId("some-agent"));
+
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    // Only the pending task is cleared
+    expect(result.cleared).toEqual([pendingId]);
+    // In-progress task still has its metadata — this function doesn't touch it
+    expect(board.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBe("dead-worker");
+  });
+
+  test("preserves other metadata keys when clearing delegatedTo", async () => {
+    const board = await freshBoard();
+    const id = await board.nextId();
+    await board.add({
+      id,
+      description: "Task with rich metadata",
+      metadata: { delegatedTo: "dead-worker", kind: "research", priority: 5 },
+    });
+
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    expect(result.cleared).toEqual([id]);
+    const task = board.snapshot().get(id);
+    expect(task?.metadata?.delegatedTo).toBeUndefined();
+    expect(task?.metadata?.kind).toBe("research");
+    expect(task?.metadata?.priority).toBe(5);
+  });
+
+  test("returns empty result when no pending tasks have a delegation", async () => {
+    const board = await freshBoard();
+    await addTask(board, "Plain pending task");
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    expect(result.cleared).toEqual([]);
+    expect(result.failed).toEqual([]);
+  });
+
+  test("skips malformed delegatedTo (not a string)", async () => {
+    const board = await freshBoard();
+    const id = await board.nextId();
+    // Plant a non-string delegatedTo via the board (test-only edge case)
+    await board.add({
+      id,
+      description: "Malformed",
+      metadata: { delegatedTo: 42 as unknown as string },
+    });
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    // Malformed values are treated as "no delegation" → skipped
+    expect(result.cleared).toEqual([]);
+  });
+
+  test("stops on store-layer error and reports failed ID", async () => {
+    const realBoard = await freshBoard();
+    const id1 = await addDelegatedTask(realBoard, "Task 1", "dead");
+    const id2 = await addDelegatedTask(realBoard, "Task 2", "dead");
+
+    // Wrap update() with a proxy that rejects with EXTERNAL (simulated store outage)
+    const failingBoard: ManagedTaskBoard = {
+      ...realBoard,
+      update: async () => ({
+        ok: false as const,
+        error: {
+          code: "EXTERNAL" as const,
+          message: "store I/O",
+          retryable: true,
+        },
+      }),
+    };
+
+    const result = await recoverStaleDelegations(failingBoard, new Set<string>());
+    // Processing stops at the first store error
+    expect(result.cleared).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    // The real board state is unchanged (the proxy only intercepted update)
+    expect(realBoard.snapshot().get(id1)?.metadata?.delegatedTo).toBe("dead");
+    expect(realBoard.snapshot().get(id2)?.metadata?.delegatedTo).toBe("dead");
+  });
+
+  test("skips per-task races (VALIDATION) and keeps processing", async () => {
+    const realBoard = await freshBoard();
+    const id1 = await addDelegatedTask(realBoard, "Task 1", "dead");
+    const id2 = await addDelegatedTask(realBoard, "Task 2", "dead");
+    const id3 = await addDelegatedTask(realBoard, "Task 3", "dead");
+
+    // Fail id2 with VALIDATION (simulates "task completed mid-recovery").
+    // id1 and id3 should still be cleared on the real board.
+    const skippingBoard: ManagedTaskBoard = {
+      ...realBoard,
+      update: async (taskId, patch) => {
+        if (taskId === id2) {
+          return {
+            ok: false as const,
+            error: {
+              code: "VALIDATION" as const,
+              message: "task no longer pending",
+              retryable: false,
+            },
+          };
+        }
+        return realBoard.update(taskId, patch);
+      },
+    };
+
+    const result = await recoverStaleDelegations(skippingBoard, new Set<string>());
+    // id1 and id3 cleared, id2 skipped (not in cleared OR failed)
+    expect(result.failed).toHaveLength(0);
+    const cleared = new Set<TaskItemId>(result.cleared);
+    expect(cleared.has(id1)).toBe(true);
+    expect(cleared.has(id2)).toBe(false);
+    expect(cleared.has(id3)).toBe(true);
+  });
+
+  test("cooperates with recoverOrphanedTasks — pending and in_progress both recover", async () => {
+    // Scenario: coordinator crashes. On restart:
+    //  - tasks A, B are in_progress assigned to dead children → orphan recovery
+    //  - tasks C, D are pending with delegatedTo=dead → stale delegation cleanup
+    // Both functions run to completion without interfering.
+    const board = await freshBoard();
+    const idA = await addTask(board, "In-progress A");
+    const idB = await addTask(board, "In-progress B");
+    const idC = await addDelegatedTask(board, "Pending C", "dead-delegated-1");
+    const idD = await addDelegatedTask(board, "Pending D", "dead-delegated-2");
+
+    await board.assign(idA, agentId("dead-child-a"));
+    await board.assign(idB, agentId("dead-child-b"));
+
+    const newCoord = agentId("new-coord");
+    const orphanResult = await recoverOrphanedTasks(board, newCoord);
+    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+
+    // Orphan recovery: both in_progress tasks → pending, same IDs
+    expect(orphanResult.requeued).toHaveLength(2);
+    expect(board.snapshot().get(idA)?.status).toBe("pending");
+    expect(board.snapshot().get(idB)?.status).toBe("pending");
+    // Stale delegation cleanup: both delegated-pending tasks cleared
+    expect(staleResult.cleared).toHaveLength(2);
+    expect(board.snapshot().get(idC)?.metadata?.delegatedTo).toBeUndefined();
+    expect(board.snapshot().get(idD)?.metadata?.delegatedTo).toBeUndefined();
   });
 });
