@@ -396,6 +396,7 @@
         "@koi/lsp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
+        "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -447,6 +448,7 @@
         "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
@@ -460,8 +462,10 @@
         "@koi/mcp-server": "workspace:*",
         "@koi/memory": "workspace:*",
         "@koi/memory-fs": "workspace:*",
+        "@koi/memory-team-sync": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
+        "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
@@ -491,6 +495,14 @@
         "@modelcontextprotocol/sdk": "1.12.1",
       },
     },
+    "packages/mm/dream": {
+      "name": "@koi/dream",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/mm/memory": {
       "name": "@koi/memory",
       "version": "0.0.0",
@@ -506,12 +518,29 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/mm/memory-team-sync": {
+      "name": "@koi/memory-team-sync",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
+      },
+    },
     "packages/mm/memory-tools": {
       "name": "@koi/memory-tools",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/tools-core": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-extraction": {
+      "name": "@koi/middleware-extraction",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
     },
     "packages/mm/model-openai-compat": {
@@ -887,6 +916,8 @@
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
+    "@koi/dream": ["@koi/dream@workspace:packages/mm/dream"],
+
     "@koi/edit-match": ["@koi/edit-match@workspace:packages/lib/edit-match"],
 
     "@koi/engine": ["@koi/engine@workspace:packages/kernel/engine"],
@@ -929,9 +960,13 @@
 
     "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/mm/memory-fs"],
 
+    "@koi/memory-team-sync": ["@koi/memory-team-sync@workspace:packages/mm/memory-team-sync"],
+
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
 
     "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
+
+    "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
 
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 

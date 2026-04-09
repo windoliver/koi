@@ -58,6 +58,84 @@ function validateWarningThreshold(
 }
 
 // ---------------------------------------------------------------------------
+// Iteration Guard — stream timeout helpers
+// ---------------------------------------------------------------------------
+
+interface EffectiveTimeout {
+  readonly ms: number;
+  readonly source: "wall_clock" | "inactivity";
+}
+
+/**
+ * Compute the effective timeout for the next awaited operation based on both
+ * wall-clock and inactivity limits. Returns the tighter of the two with its
+ * source, or undefined if no timeout enforcement is active.
+ */
+function computeEffectiveTimeout(
+  limits: IterationLimits,
+  startedAt: number,
+  lastActivityMs: number,
+): EffectiveTimeout | undefined {
+  const now = Date.now();
+  // let justified: mutable tracking of best (smallest) timeout candidate
+  let bestMs: number | undefined;
+  let bestSource: "wall_clock" | "inactivity" = "wall_clock";
+
+  // Wall-clock remaining
+  const wallRemaining = limits.maxDurationMs - (now - startedAt);
+  if (wallRemaining <= 0) {
+    return { ms: 0, source: "wall_clock" };
+  }
+  bestMs = wallRemaining;
+  bestSource = "wall_clock";
+
+  // Inactivity remaining
+  if (limits.maxInactivityMs !== undefined) {
+    const inactivityRemaining = limits.maxInactivityMs - (now - lastActivityMs);
+    if (inactivityRemaining <= 0) {
+      return { ms: 0, source: "inactivity" };
+    }
+    if (inactivityRemaining < bestMs) {
+      bestMs = inactivityRemaining;
+      bestSource = "inactivity";
+    }
+  }
+
+  return bestMs !== undefined ? { ms: bestMs, source: bestSource } : undefined;
+}
+
+/**
+ * Create a promise that rejects after `ms` milliseconds with a TIMEOUT error.
+ * The timer is unref'd so it doesn't keep the process alive.
+ */
+function createTimeoutRejection(
+  timeout: EffectiveTimeout,
+  limits: IterationLimits,
+): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    const timer = setTimeout(() => {
+      const message =
+        timeout.source === "inactivity"
+          ? `Inactivity timeout: no activity for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
+          : `Duration limit exceeded: ${limits.maxDurationMs}ms wall-clock limit reached`;
+      reject(
+        KoiRuntimeError.from("TIMEOUT", message, {
+          retryable: false,
+          context:
+            timeout.source === "inactivity"
+              ? { maxInactivityMs: limits.maxInactivityMs }
+              : { maxDurationMs: limits.maxDurationMs },
+        }),
+      );
+    }, timeout.ms);
+    // Unref so the timer doesn't prevent process exit
+    if (typeof timer === "object" && "unref" in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Iteration Guard
 // ---------------------------------------------------------------------------
 
@@ -70,8 +148,15 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
   // let justified: mutable counters reset per session via onSessionStart
   let turns = 0;
   let totalTokens = 0;
-  // let justified: mutable timestamp reset per session via onSessionStart
+  // let justified: mutable timestamps reset per session via onSessionStart
   let startedAt = Date.now();
+  // let justified: mutable inactivity tracker — reset on every model chunk and tool call
+  let lastActivityMs = Date.now();
+
+  /** Reset the inactivity timer. Called on model stream chunks and tool call boundaries. */
+  function touchActivity(): void {
+    lastActivityMs = Date.now();
+  }
 
   function checkLimits(): void {
     if (turns >= limits.maxTurns) {
@@ -81,6 +166,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       });
     }
 
+    // Hard wall-clock safety cap — always enforced
     const elapsed = Date.now() - startedAt;
     if (elapsed >= limits.maxDurationMs) {
       throw KoiRuntimeError.from(
@@ -91,6 +177,21 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
           context: { elapsedMs: elapsed, maxDurationMs: limits.maxDurationMs },
         },
       );
+    }
+
+    // Inactivity check — fires when no events emitted for maxInactivityMs
+    if (limits.maxInactivityMs !== undefined) {
+      const idle = Date.now() - lastActivityMs;
+      if (idle >= limits.maxInactivityMs) {
+        throw KoiRuntimeError.from(
+          "TIMEOUT",
+          `Inactivity timeout: no activity for ${idle}ms (limit: ${limits.maxInactivityMs}ms)`,
+          {
+            retryable: false,
+            context: { idleMs: idle, maxInactivityMs: limits.maxInactivityMs },
+          },
+        );
+      }
     }
 
     if (totalTokens >= limits.maxTokens) {
@@ -119,12 +220,22 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       turns = 0;
       totalTokens = 0;
       startedAt = Date.now();
+      lastActivityMs = Date.now();
     },
 
     wrapModelCall: async (_ctx, request, next) => {
       checkLimits();
+      touchActivity();
 
-      const response = await next(request);
+      // Race the model call against inactivity + wall-clock timeouts.
+      // Without this, a non-streaming provider that stops responding would
+      // hang the session indefinitely (same risk as stalled streams).
+      const timeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
+      const response =
+        timeout === undefined
+          ? await next(request)
+          : await Promise.race([next(request), createTimeoutRejection(timeout, limits)]);
+      touchActivity();
 
       trackUsage(response.usage?.inputTokens ?? 0, response.usage?.outputTokens ?? 0);
 
@@ -133,20 +244,49 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 
     wrapModelStream: (_ctx, request, next) => {
       checkLimits();
+      touchActivity();
 
       return {
         async *[Symbol.asyncIterator]() {
-          for await (const chunk of next(request)) {
-            yield chunk;
-            if (chunk.kind === "done") {
-              trackUsage(
-                chunk.response.usage?.inputTokens ?? 0,
-                chunk.response.usage?.outputTokens ?? 0,
-              );
+          const iter = next(request)[Symbol.asyncIterator]();
+          try {
+            for (;;) {
+              // Race the next chunk against inactivity + wall-clock timeouts.
+              // Without this, a stalled provider stream would hang indefinitely.
+              const chunkTimeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
+              const result =
+                chunkTimeout === undefined
+                  ? await iter.next()
+                  : await Promise.race([iter.next(), createTimeoutRejection(chunkTimeout, limits)]);
+              if (result.done) break;
+              const chunk = result.value;
+              touchActivity();
+              yield chunk;
+              if (chunk.kind === "done") {
+                trackUsage(
+                  chunk.response.usage?.inputTokens ?? 0,
+                  chunk.response.usage?.outputTokens ?? 0,
+                );
+              }
             }
+          } finally {
+            // Cancel the underlying provider stream on timeout or early exit
+            // to prevent leaked connections and background token consumption.
+            await iter.return?.();
           }
         },
       };
+    },
+
+    wrapToolCall: async (_ctx, request, next) => {
+      checkLimits();
+      touchActivity();
+      const response = await next(request);
+      // Reset activity after successful completion — the tool executed and
+      // committed side effects. Throwing here would discard a valid result.
+      // Limits are re-checked at the next model/tool boundary.
+      touchActivity();
+      return response;
     },
   };
 }

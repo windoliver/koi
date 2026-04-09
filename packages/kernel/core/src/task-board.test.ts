@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   isTerminalTaskStatus,
+  isValidTaskKindName,
   isValidTransition,
+  TASK_KIND_NAMES,
+  type TaskKindName,
   type TaskStatus,
+  taskItemId,
+  VALID_TASK_KIND_NAMES,
   VALID_TASK_TRANSITIONS,
 } from "./task-board.js";
 
@@ -81,4 +86,82 @@ describe("isValidTransition", () => {
       });
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// taskItemId — branded constructor
+// ---------------------------------------------------------------------------
+
+describe("taskItemId", () => {
+  test("returns the same string value", () => {
+    expect(taskItemId("abc") as string).toBe("abc");
+  });
+
+  test("round-trips through string coercion", () => {
+    const id = taskItemId("task_42");
+    expect(String(id)).toBe("task_42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TaskKindName — runtime validation
+// ---------------------------------------------------------------------------
+
+const ALL_KIND_NAMES: TaskKindName[] = [
+  "local_shell",
+  "local_agent",
+  "remote_agent",
+  "in_process_teammate",
+  "dream",
+];
+
+describe("TASK_KIND_NAMES / VALID_TASK_KIND_NAMES", () => {
+  test("TASK_KIND_NAMES tuple and VALID_TASK_KIND_NAMES set are mechanically in sync", () => {
+    expect(VALID_TASK_KIND_NAMES.size).toBe(TASK_KIND_NAMES.length);
+    for (const kind of TASK_KIND_NAMES) {
+      expect(VALID_TASK_KIND_NAMES.has(kind)).toBe(true);
+    }
+  });
+
+  test("contains exactly the 5 defined kind names", () => {
+    expect(VALID_TASK_KIND_NAMES.size).toBe(5);
+    for (const kind of ALL_KIND_NAMES) {
+      expect(VALID_TASK_KIND_NAMES.has(kind)).toBe(true);
+    }
+  });
+
+  test("TASK_KIND_NAMES is frozen (immutable at runtime)", () => {
+    expect(Object.isFrozen(TASK_KIND_NAMES)).toBe(true);
+  });
+
+  test("VALID_TASK_KIND_NAMES has ReadonlySet API (.has method)", () => {
+    expect(typeof VALID_TASK_KIND_NAMES.has).toBe("function");
+    expect(VALID_TASK_KIND_NAMES.has("local_shell")).toBe(true);
+    expect(VALID_TASK_KIND_NAMES.has("bogus")).toBe(false);
+  });
+});
+
+describe("isValidTaskKindName", () => {
+  test.each(ALL_KIND_NAMES)("returns true for valid kind '%s'", (kind) => {
+    expect(isValidTaskKindName(kind)).toBe(true);
+  });
+
+  test("returns false for empty string", () => {
+    expect(isValidTaskKindName("")).toBe(false);
+  });
+
+  test("returns false for arbitrary string", () => {
+    expect(isValidTaskKindName("bogus_kind")).toBe(false);
+  });
+
+  test("returns false for close misspelling", () => {
+    expect(isValidTaskKindName("local_shel")).toBe(false);
+    expect(isValidTaskKindName("localshell")).toBe(false);
+    expect(isValidTaskKindName("LOCAL_SHELL")).toBe(false);
+  });
+
+  test("returns false for partial match", () => {
+    expect(isValidTaskKindName("local")).toBe(false);
+    expect(isValidTaskKindName("dream_task")).toBe(false);
+  });
 });

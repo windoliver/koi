@@ -255,13 +255,14 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge. Renders `plan_update`/`task_progress` in verbose mode (#1555) |
 | `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
-| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop + doom loop detection (#1593) |
+| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop, doom loop detection (#1593), tool arg type coercion (#1611) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
-| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
+| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |

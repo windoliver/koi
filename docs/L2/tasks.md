@@ -251,3 +251,57 @@ Lint configured with `biome check --vcs-enabled=false src/` to avoid biome VCS r
 - `archive/v1/packages/fs/store-fs/src/fs-store.ts` — File-based brick store with atomic
   writes and hash sharding. We reused the atomic-write pattern but dropped hash sharding
   (unnecessary at task-board scale).
+
+## Task Kind Validation & Lifecycle Stubs (#1242)
+
+### L0 Runtime Guard
+
+`isValidTaskKindName(value: string): value is TaskKindName` — runtime narrowing guard
+in `@koi/core`. Validates arbitrary strings (e.g., from `task.metadata.kind`) against
+the closed `TaskKindName` union. `VALID_TASK_KIND_NAMES: ReadonlySet<string>` is the
+single source of truth — L2 packages import it instead of maintaining local copies.
+
+### Unsupported Lifecycle Stubs
+
+`createUnsupportedLifecycle(kind)` creates a `TaskKindLifecycle` whose `start()` rejects
+with `Task kind "${kind}" is not yet implemented`. Use for kinds that are defined in the
+type system but not yet runnable (e.g., `dream`, `local_agent`).
+
+### Default Registration
+
+`registerDefaultLifecycles(registry)` registers all 5 `TaskKindName` values:
+
+| Kind | Lifecycle |
+|------|-----------|
+| `local_shell` | Real — `createLocalShellLifecycle()` |
+| `local_agent` | Stub — rejects on start |
+| `remote_agent` | Stub — rejects on start |
+| `in_process_teammate` | Stub — rejects on start |
+| `dream` | Stub — rejects on start |
+
+### Boundary Validation in TaskRunner
+
+`TaskRunner.start()` validates the `kind` parameter before registry lookup:
+
+- `VALIDATION` error — string is not a valid `TaskKindName` (boundary issue, e.g., typo)
+- `NOT_FOUND` error — valid kind but no lifecycle registered (configuration issue)
+
+This two-level check gives callers actionable diagnostics.
+
+For unsupported kinds (registered stub lifecycles), `TaskRunner.start()` atomically
+kills the task via `board.killIfPending()` with rejection metadata (`rejectedKind`,
+`rejectedReason`). The kill is guarded by `expectedKind` — if the task has
+`metadata.kind` and it doesn't match, a `CONFLICT` error is returned instead of killing.
+
+### Known Design Considerations
+
+**Runtime kind authority**: `TaskRunner.start(taskId, kind)` trusts the explicit `kind`
+parameter as the runtime lifecycle selector. `task.metadata.kind` is optional/advisory
+and used for mismatch protection when present. A follow-up issue should formalize whether
+`metadata.kind` becomes mandatory for tasks that use the runner, or whether a dedicated
+`runtimeKind` field should be added to the `Task` type.
+
+**Killed vs failed for unsupported kinds**: Unsupported tasks are marked `killed` (the
+only valid transition from `pending`). The rejection reason is stored in `metadata.rejectedReason`.
+Downstream consumers should check this field for killed tasks to distinguish unsupported-kind
+rejections from manual cancellations.
