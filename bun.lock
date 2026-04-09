@@ -196,6 +196,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hook-prompt": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
