@@ -5,7 +5,7 @@
  * performing runtime type narrowing on raw JsonObject args from the LLM.
  */
 
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { JsonObject } from "@koi/core";
 import type { CellType } from "./notebook-parser.js";
@@ -43,11 +43,13 @@ export function parsePath(args: JsonObject, key: string, cwd?: string): ParseRes
         },
       };
     }
-    // Canonical check: resolve symlinks in the parent directory
+    // Canonical check: resolve symlinks in the parent directory AND final target
     try {
+      const canonicalCwd = realpathSync(normalizedCwd);
+
+      // Check parent directory (always exists for valid paths)
       const parentDir = dirname(resolved);
       const canonicalParent = realpathSync(parentDir);
-      const canonicalCwd = realpathSync(normalizedCwd);
       if (!canonicalParent.startsWith(`${canonicalCwd}/`) && canonicalParent !== canonicalCwd) {
         return {
           ok: false,
@@ -56,6 +58,26 @@ export function parsePath(args: JsonObject, key: string, cwd?: string): ParseRes
             code: "VALIDATION",
           },
         };
+      }
+
+      // Check final target if it already exists — defeats final-hop symlinks
+      // (e.g., <cwd>/notes.ipynb -> /etc/passwd)
+      try {
+        const stat = lstatSync(resolved);
+        if (stat.isSymbolicLink()) {
+          const canonicalTarget = realpathSync(resolved);
+          if (!canonicalTarget.startsWith(`${canonicalCwd}/`) && canonicalTarget !== canonicalCwd) {
+            return {
+              ok: false,
+              err: {
+                error: `${key} is a symlink escaping the workspace root (target: ${canonicalTarget})`,
+                code: "VALIDATION",
+              },
+            };
+          }
+        }
+      } catch {
+        // File doesn't exist yet — parent check is sufficient for new files
       }
     } catch {
       // Parent doesn't exist — lexical check above is sufficient

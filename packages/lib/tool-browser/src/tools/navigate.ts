@@ -84,7 +84,11 @@ export function createBrowserNavigateTool(
         const finalScheme = validateUrlScheme(result.value.url);
         if (!finalScheme.ok) {
           // Navigate to about:blank to unload the forbidden page
-          await driver.navigate("about:blank", {}).catch(() => {});
+          try {
+            await Promise.resolve(driver.navigate("about:blank", {}));
+          } catch {
+            /* best-effort cleanup */
+          }
           return {
             error: `Navigation redirected to a disallowed scheme: ${result.value.url}`,
             code: "PERMISSION",
@@ -92,7 +96,11 @@ export function createBrowserNavigateTool(
         }
         const finalAllowed = await isUrlAllowed(result.value.url);
         if (!finalAllowed) {
-          await driver.navigate("about:blank", {}).catch(() => {});
+          try {
+            await Promise.resolve(driver.navigate("about:blank", {}));
+          } catch {
+            /* best-effort cleanup */
+          }
           return {
             error: `Navigation redirected to a disallowed URL: ${result.value.url}`,
             code: "PERMISSION",
