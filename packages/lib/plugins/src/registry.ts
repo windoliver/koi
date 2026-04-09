@@ -36,7 +36,6 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
   let discoverPromise: Promise<readonly PluginMeta[]> | undefined;
   let cachedPlugins: ReadonlyMap<string, PluginMeta> | undefined;
   let cachedErrors: readonly PluginError[] = [];
-  const loadCache = new Map<string, Promise<Result<LoadedPlugin, KoiError>>>();
 
   const discover = async (): Promise<readonly PluginMeta[]> => {
     if (discoverPromise !== undefined) {
@@ -80,158 +79,142 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
   };
 
   const load = async (id: string): Promise<Result<LoadedPlugin, KoiError>> => {
-    const existing = loadCache.get(id);
-    if (existing !== undefined) {
-      return existing;
+    // Every load() re-validates from disk — no caching of loaded plugins.
+    // This ensures TOCTOU protection and reflects current filesystem state.
+
+    // Ensure discovery has run
+    await discover();
+
+    const meta = cachedPlugins?.get(id);
+    if (meta === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Plugin not found: ${id}`,
+          retryable: false,
+          context: { pluginId: id },
+        },
+      };
     }
 
-    const promise = (async (): Promise<Result<LoadedPlugin, KoiError>> => {
-      // Ensure discovery has run
-      await discover();
-
-      const meta = cachedPlugins?.get(id);
-      if (meta === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "NOT_FOUND",
-            message: `Plugin not found: ${id}`,
-            retryable: false,
-            context: { pluginId: id },
-          },
-        };
-      }
-
-      // Enforce availability gate — unavailable plugins cannot be loaded
-      if (!meta.available) {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Plugin is not available: ${id}`,
-            retryable: false,
-            context: { pluginId: id, source: meta.source },
-          },
-        };
-      }
-
-      // TOCTOU guard: re-resolve the plugin directory to detect post-discovery swaps
-      let currentDirPath: string;
-      try {
-        currentDirPath = await realpath(meta.dirPath);
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Plugin directory no longer resolvable: ${meta.dirPath}`,
-            retryable: false,
-            context: { pluginId: id, dirPath: meta.dirPath },
-          },
-        };
-      }
-      if (currentDirPath !== meta.dirPath) {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Plugin directory changed since discovery (possible symlink swap): ${id}`,
-            retryable: false,
-            context: { pluginId: id, expected: meta.dirPath, actual: currentDirPath },
-          },
-        };
-      }
-
-      // TOCTOU guard: re-read manifest to detect content changes since discovery
-      try {
-        const manifestFile = Bun.file(join(meta.dirPath, "plugin.json"));
-        const rawManifest: unknown = await manifestFile.json();
-        const revalidated = validatePluginManifest(rawManifest);
-        if (!revalidated.ok) {
-          return revalidated;
-        }
-        // Verify the manifest name hasn't changed (identity check)
-        if (revalidated.value.name !== meta.name) {
-          return {
-            ok: false,
-            error: {
-              code: "PERMISSION",
-              message: `Plugin manifest identity changed since discovery: expected "${meta.name}", got "${revalidated.value.name}"`,
-              retryable: false,
-              context: { pluginId: id, expected: meta.name, actual: revalidated.value.name },
-            },
-          };
-        }
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Plugin manifest unreadable at load time: ${id}`,
-            retryable: false,
-            context: { pluginId: id, dirPath: meta.dirPath },
-          },
-        };
-      }
-
-      // Resolve skill paths with containment check
-      const skillPaths: string[] = [];
-      for (const relPath of meta.manifest.skills ?? []) {
-        const contained = await assertContained(relPath, meta.dirPath);
-        if (!contained.ok) {
-          return contained;
-        }
-        skillPaths.push(contained.value);
-      }
-
-      // Resolve hooks path
-      let hookConfigPath: string | undefined;
-      if (meta.manifest.hooks !== undefined) {
-        const contained = await assertContained(meta.manifest.hooks, meta.dirPath);
-        if (!contained.ok) {
-          return contained;
-        }
-        hookConfigPath = contained.value;
-      }
-
-      // Resolve MCP servers path
-      let mcpConfigPath: string | undefined;
-      if (meta.manifest.mcpServers !== undefined) {
-        const contained = await assertContained(meta.manifest.mcpServers, meta.dirPath);
-        if (!contained.ok) {
-          return contained;
-        }
-        mcpConfigPath = contained.value;
-      }
-
-      const loaded: LoadedPlugin = {
-        ...meta,
-        skillPaths,
-        hookConfigPath,
-        mcpConfigPath,
-        middlewareNames: meta.manifest.middleware ?? [],
+    // Enforce availability gate — unavailable plugins cannot be loaded
+    if (!meta.available) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Plugin is not available: ${id}`,
+          retryable: false,
+          context: { pluginId: id, source: meta.source },
+        },
       };
+    }
 
-      return { ok: true, value: loaded } as Result<LoadedPlugin, KoiError>;
-    })();
+    // TOCTOU guard: re-resolve the plugin directory to detect post-discovery swaps
+    let currentDirPath: string;
+    try {
+      currentDirPath = await realpath(meta.dirPath);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Plugin directory no longer resolvable: ${meta.dirPath}`,
+          retryable: false,
+          context: { pluginId: id, dirPath: meta.dirPath },
+        },
+      };
+    }
+    if (currentDirPath !== meta.dirPath) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Plugin directory changed since discovery (possible symlink swap): ${id}`,
+          retryable: false,
+          context: { pluginId: id, expected: meta.dirPath, actual: currentDirPath },
+        },
+      };
+    }
 
-    loadCache.set(id, promise);
-
-    // Remove failed loads from cache so they can be retried after filesystem changes
-    promise.then((resolved) => {
-      if (!resolved.ok) {
-        loadCache.delete(id);
+    // Re-read and re-validate manifest from disk — use fresh manifest for path resolution
+    let freshManifest: typeof meta.manifest;
+    try {
+      const manifestFile = Bun.file(join(meta.dirPath, "plugin.json"));
+      const rawManifest: unknown = await manifestFile.json();
+      const revalidated = validatePluginManifest(rawManifest);
+      if (!revalidated.ok) {
+        return revalidated;
       }
-    });
+      if (revalidated.value.name !== meta.name) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin manifest identity changed since discovery: expected "${meta.name}", got "${revalidated.value.name}"`,
+            retryable: false,
+            context: { pluginId: id, expected: meta.name, actual: revalidated.value.name },
+          },
+        };
+      }
+      freshManifest = revalidated.value;
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Plugin manifest unreadable at load time: ${id}`,
+          retryable: false,
+          context: { pluginId: id, dirPath: meta.dirPath },
+        },
+      };
+    }
 
-    return promise;
+    // Resolve paths using the fresh manifest (not stale discovery-time manifest)
+    const skillPaths: string[] = [];
+    for (const relPath of freshManifest.skills ?? []) {
+      const contained = await assertContained(relPath, meta.dirPath);
+      if (!contained.ok) {
+        return contained;
+      }
+      skillPaths.push(contained.value);
+    }
+
+    let hookConfigPath: string | undefined;
+    if (freshManifest.hooks !== undefined) {
+      const contained = await assertContained(freshManifest.hooks, meta.dirPath);
+      if (!contained.ok) {
+        return contained;
+      }
+      hookConfigPath = contained.value;
+    }
+
+    let mcpConfigPath: string | undefined;
+    if (freshManifest.mcpServers !== undefined) {
+      const contained = await assertContained(freshManifest.mcpServers, meta.dirPath);
+      if (!contained.ok) {
+        return contained;
+      }
+      mcpConfigPath = contained.value;
+    }
+
+    const loaded: LoadedPlugin = {
+      ...meta,
+      manifest: freshManifest,
+      skillPaths,
+      hookConfigPath,
+      mcpConfigPath,
+      middlewareNames: freshManifest.middleware ?? [],
+    };
+
+    return { ok: true, value: loaded };
   };
 
   const invalidate = (): void => {
     discoverPromise = undefined;
     cachedPlugins = undefined;
     cachedErrors = [];
-    loadCache.clear();
   };
 
   const errors = (): readonly PluginError[] => cachedErrors;

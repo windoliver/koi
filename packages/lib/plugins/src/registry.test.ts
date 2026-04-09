@@ -231,11 +231,16 @@ describe("createPluginRegistry", () => {
     expect(a).toBe(b); // Same reference = deduped
   });
 
-  test("concurrent load() calls return same result", async () => {
+  test("concurrent load() calls both succeed independently", async () => {
     await writePlugin(bundledRoot, "test-plugin", MANIFEST);
     const registry = createPluginRegistry({ bundledRoot });
 
     const [a, b] = await Promise.all([registry.load("test-plugin"), registry.load("test-plugin")]);
-    expect(a).toBe(b); // Same reference = deduped
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    // Both re-validate from disk independently (no stale cache)
+    if (a.ok && b.ok) {
+      expect(a.value.name).toBe(b.value.name);
+    }
   });
 });
