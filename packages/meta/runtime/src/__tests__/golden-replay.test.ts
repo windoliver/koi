@@ -8029,7 +8029,7 @@ describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/plugins (4 queries: manifest validation + registry + lifecycle + toggle)
+// L2 golden queries: @koi/plugins (5 queries: manifest validation + registry + trajectory + lifecycle + toggle + lifecycle-trajectory)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/plugins", () => {
@@ -8235,6 +8235,76 @@ describe("Golden: @koi/plugins", () => {
     } finally {
       await rm(tmpRoot, { recursive: true, force: true });
     }
+  });
+
+  test("plugin-lifecycle trajectory has correct ATIF structure and all steps pass", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-lifecycle.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: {
+          readonly results: readonly { readonly content: string }[];
+        };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to plugin_lifecycle exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("plugin_lifecycle");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — all lifecycle steps passed
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly allPassed: boolean;
+      readonly stepCount: number;
+      readonly steps: readonly {
+        readonly step: string;
+        readonly ok: boolean;
+        readonly detail: string;
+      }[];
+    };
+    expect(output.allPassed).toBe(true);
+    expect(output.stepCount).toBe(7);
+
+    // Verify each lifecycle step
+    const stepNames = output.steps.map((s) => s.step);
+    expect(stepNames).toEqual([
+      "install",
+      "list",
+      "disable",
+      "list-after-disable",
+      "enable",
+      "remove",
+      "list-after-remove",
+    ]);
+    for (const step of output.steps) {
+      expect(step.ok).toBe(true);
+    }
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-lifecycle",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
   });
 });
 

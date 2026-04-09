@@ -78,7 +78,15 @@ import {
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { createPluginRegistry, validatePluginManifest } from "@koi/plugins";
+import {
+  createPluginRegistry,
+  disablePlugin,
+  enablePlugin,
+  installPlugin,
+  listPlugins,
+  removePlugin,
+  validatePluginManifest,
+} from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import {
@@ -3137,6 +3145,163 @@ const queries: readonly QueryConfig[] = [
           });
           if (!result.ok)
             throw new Error(`Failed to build validate_plugin tool: ${result.error.message}`);
+          return result.value;
+        },
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // plugin-lifecycle: exercises @koi/plugins install, list, enable/disable, remove
+  {
+    name: "plugin-lifecycle",
+    prompt:
+      "Use the plugin_lifecycle tool to install a plugin, list plugins, disable it, re-enable it, and remove it. Report each step's result.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-plugin-lifecycle",
+        cmd: ["echo", "lifecycle-step"],
+        filter: { events: ["tool.succeeded"], tools: ["plugin_lifecycle"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "plugin-lifecycle",
+        toolName: "plugin_lifecycle",
+        createTool: () => {
+          const result = buildTool({
+            name: "plugin_lifecycle",
+            description:
+              "Runs a full plugin lifecycle: install → list → disable → enable → remove, exercising @koi/plugins lifecycle operations.",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              required: [],
+            },
+            origin: "primordial",
+            execute: async () => {
+              const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+              const { join } = await import("node:path");
+              const { tmpdir } = await import("node:os");
+
+              const tmpRoot = await mkdtemp(join(tmpdir(), "koi-golden-lifecycle-"));
+              const userRoot = join(tmpRoot, "user-plugins");
+              const sourceDir = join(tmpRoot, "source", "lifecycle-plugin");
+
+              try {
+                // Create source plugin
+                await mkdir(sourceDir, { recursive: true });
+                await writeFile(
+                  join(sourceDir, "plugin.json"),
+                  JSON.stringify({
+                    name: "lifecycle-plugin",
+                    version: "1.0.0",
+                    description: "Golden lifecycle test plugin",
+                  }),
+                );
+
+                const registry = createPluginRegistry({ userRoot });
+                const config = { userRoot, registry };
+                const steps: {
+                  readonly step: string;
+                  readonly ok: boolean;
+                  readonly detail: string;
+                }[] = [];
+
+                // Install — verify API success AND returned metadata
+                const installResult = await installPlugin(config, sourceDir);
+                const installOk =
+                  installResult.ok &&
+                  installResult.value.name === "lifecycle-plugin" &&
+                  installResult.value.version === "1.0.0";
+                steps.push({
+                  step: "install",
+                  ok: installOk,
+                  detail: installResult.ok
+                    ? `${installResult.value.name}@${installResult.value.version}`
+                    : installResult.error.message,
+                });
+
+                // List — verify exactly 1 plugin, enabled, correct name
+                const listResult = await listPlugins(config);
+                const listOk =
+                  listResult.ok &&
+                  listResult.value.length === 1 &&
+                  listResult.value[0]?.meta.name === "lifecycle-plugin" &&
+                  listResult.value[0]?.enabled === true;
+                steps.push({
+                  step: "list",
+                  ok: listOk,
+                  detail: listResult.ok
+                    ? `count=${String(listResult.value.length)}, enabled=${String(listResult.value[0]?.enabled)}`
+                    : listResult.error.message,
+                });
+
+                // Disable — verify API success
+                const disableResult = await disablePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "disable",
+                  ok: disableResult.ok,
+                  detail: disableResult.ok ? "disabled" : disableResult.error.message,
+                });
+
+                // List after disable — verify plugin shows as disabled
+                const listAfterDisable = await listPlugins(config);
+                const disableListOk =
+                  listAfterDisable.ok &&
+                  listAfterDisable.value.length === 1 &&
+                  listAfterDisable.value[0]?.enabled === false;
+                steps.push({
+                  step: "list-after-disable",
+                  ok: disableListOk,
+                  detail: listAfterDisable.ok
+                    ? `enabled=${String(listAfterDisable.value[0]?.enabled)}`
+                    : listAfterDisable.error.message,
+                });
+
+                // Enable — verify API success
+                const enableResult = await enablePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "enable",
+                  ok: enableResult.ok,
+                  detail: enableResult.ok ? "enabled" : enableResult.error.message,
+                });
+
+                // Remove — verify API success
+                const removeResult = await removePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "remove",
+                  ok: removeResult.ok,
+                  detail: removeResult.ok ? "removed" : removeResult.error.message,
+                });
+
+                // Final list — verify empty
+                const finalList = await listPlugins(config);
+                const finalListOk = finalList.ok && finalList.value.length === 0;
+                steps.push({
+                  step: "list-after-remove",
+                  ok: finalListOk,
+                  detail: finalList.ok
+                    ? `count=${String(finalList.value.length)}`
+                    : finalList.error.message,
+                });
+
+                return {
+                  allPassed: steps.every((s) => s.ok),
+                  stepCount: steps.length,
+                  steps,
+                };
+              } finally {
+                await rm(tmpRoot, { recursive: true, force: true });
+              }
+            },
+          });
+          if (!result.ok)
+            throw new Error(`Failed to build plugin_lifecycle tool: ${result.error.message}`);
           return result.value;
         },
       }),
