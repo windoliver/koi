@@ -341,3 +341,39 @@ describe("listPlugins", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// createGatedRegistry — fail-closed on corrupt state
+// ---------------------------------------------------------------------------
+
+describe("createGatedRegistry", () => {
+  const { createGatedRegistry } = require("./lifecycle.js") as typeof import("./lifecycle.js");
+
+  beforeEach(async () => {
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  test("blocks all plugins when state file is corrupt (fail-closed)", async () => {
+    await writePluginJson(join(userRoot, "my-plugin"), "my-plugin");
+    // Write corrupt state file
+    await writeFile(join(userRoot, "state.json"), "not json{{{", "utf-8");
+
+    const registry = createGatedRegistry({ userRoot }, userRoot);
+    const plugins = await registry.discover();
+    expect(plugins).toHaveLength(0);
+  });
+
+  test("returns plugins normally when state file is missing (first run)", async () => {
+    await writePluginJson(join(userRoot, "my-plugin"), "my-plugin");
+    // No state.json — first run, readPluginState returns empty set
+
+    const registry = createGatedRegistry({ userRoot }, userRoot);
+    const plugins = await registry.discover();
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0]?.name).toBe("my-plugin");
+  });
+});

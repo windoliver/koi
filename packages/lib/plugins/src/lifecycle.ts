@@ -180,7 +180,7 @@ export async function installPlugin(
 
   // Copy source to userRoot/<name>/
   try {
-    await cp(sourcePath, destPath, { recursive: true });
+    await cp(sourcePath, destPath, { recursive: true, dereference: true });
   } catch (err: unknown) {
     return {
       ok: false,
@@ -441,7 +441,7 @@ export async function updatePlugin(
 
   // Copy to staging
   try {
-    await cp(sourcePath, stagingPath, { recursive: true });
+    await cp(sourcePath, stagingPath, { recursive: true, dereference: true });
   } catch (err: unknown) {
     await rm(stagingPath, { recursive: true, force: true });
     return {
@@ -591,10 +591,11 @@ export function createGatedRegistry(
     isAvailable: (manifest) => {
       const parentGate = registryConfig.isAvailable;
       if (parentGate !== undefined && !parentGate(manifest)) return false;
-      // Before first successful read, disabledCache is undefined — treat as empty
-      // (state.json doesn't exist yet means all plugins enabled by default).
-      // After first read, retain last known good set on subsequent failures.
-      if (disabledCache === undefined) return true;
+      // Before first successful read, disabledCache is undefined.
+      // readPluginState returns empty set for ENOENT (first run), so undefined
+      // here means a real read failure (corrupt JSON, permission denied).
+      // Fail closed: block all plugins until state is readable.
+      if (disabledCache === undefined) return false;
       return !disabledCache.has(manifest.name);
     },
   };
