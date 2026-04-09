@@ -65,6 +65,7 @@ import {
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createExtractionMiddleware } from "@koi/middleware-extraction";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -809,6 +810,31 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
+  // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
+  // Wraps the in-memory memory backend as a MemoryComponent for the extraction
+  // middleware. Extracted learnings are stored as standard MemoryRecord entries.
+  const extractionMw = createExtractionMiddleware({
+    memory: {
+      async recall() {
+        const result = await memoryBackend.recall("", undefined);
+        if (!result.ok) return [];
+        return result.value.map((r: MemoryRecord) => ({
+          content: r.content,
+          score: 1.0,
+          record: r,
+        }));
+      },
+      async store(content: string, options?: { readonly category?: string | undefined }) {
+        memoryBackend.store({
+          name: `extracted-${Date.now()}`,
+          description: options?.category ?? "extracted learning",
+          type: "feedback",
+          content,
+        });
+      },
+    },
+  });
+
   // --- Optional middleware: system prompt + session transcript (C3-A) ---
   // These are provided by the caller (tui-command.ts) so the runtime factory
   // doesn't need to know about session storage paths or prompt content.
@@ -837,6 +863,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     hookObserverMw,
     permMw,
     exfiltrationGuardMw,
+    extractionMw,
     semanticRetryMw,
     ...(goalMw !== undefined ? [goalMw] : []),
     ...optionalMiddleware,
