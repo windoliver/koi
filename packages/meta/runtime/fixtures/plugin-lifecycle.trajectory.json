@@ -1,0 +1,422 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "plugin-lifecycle",
+  "agent": {
+    "name": "golden-plugin-lifecycle",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "plugin_lifecycle",
+        "description": "Runs a full plugin lifecycle: install → list → disable → enable → remove, exercising @koi/plugins lifecycle operations."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:19.246Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:19.247Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-09T06:31:19.256Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the plugin_lifecycle tool to install a plugin, list plugins, disable it, re-enable it, and remove it. Report each step's result.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 163,
+        "completion_tokens": 3
+      },
+      "duration_ms": 1224,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "plugin_lifecycle",
+            "description": "Runs a full plugin lifecycle: install → list → disable → enable → remove, exercising @koi/plugins lifecycle operations."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "ce17d161b79c5d44d8a272aa15851cbec88e3d89ed531bf98e3723aba2f83dff"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.484Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 1227.8952500000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.485Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 1228.2707500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.486Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 1229.5263339999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.487Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 1230.8489580000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-09T06:31:20.488Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_plugin_lifecycle_7",
+          "function_name": "plugin_lifecycle",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_plugin_lifecycle_7",
+            "content": "{\"allPassed\":true,\"stepCount\":7,\"steps\":[{\"step\":\"install\",\"ok\":true,\"detail\":\"lifecycle-plugin@1.0.0\"},{\"step\":\"list\",\"ok\":true,\"detail\":\"1 plugins, enabled=1\"},{\"step\":\"disable\",\"ok\":true,\"detail\":\"disabled\"},{\"step\":\"list-after-disable\",\"ok\":true,\"detail\":\"enabled=0, disabled=1\"},{\"step\":\"enable\",\"ok\":true,\"detail\":\"enabled\"},{\"step\":\"remove\",\"ok\":true,\"detail\":\"removed\"},{\"step\":\"list-after-remove\",\"ok\":true,\"detail\":\"0 plugins\"}]}"
+          }
+        ]
+      },
+      "duration_ms": 6,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775716280483
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.490Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "plugin_lifecycle({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.817500000000109,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.491Z",
+      "model_name": "hook:on-plugin-lifecycle",
+      "message": "tool.succeeded → on-plugin-lifecycle",
+      "duration_ms": 1.4286670000001322,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-plugin-lifecycle",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-plugin-lifecycle"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.492Z",
+      "model_name": "middleware:hooks",
+      "message": "plugin_lifecycle({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 8.97058300000026,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.493Z",
+      "model_name": "middleware:permissions",
+      "message": "plugin_lifecycle({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.819166999999652,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:20.494Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "plugin_lifecycle({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.163125000000036,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-09T06:31:20.496Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"allPassed\":true,\"stepCount\":7,\"steps\":[{\"step\":\"install\",\"ok\":true,\"detail\":\"lifecycle-plugin@1.0.0\"},{\"step\":\"list\",\"ok\":true,\"detail\":\"1 plugins, enabled=1\"},{\"step\":\"disable\",\"ok\":true,\"detail\":\"disabled\"},{\"step\":\"list-after-disable\",\"ok\":true,\"detail\":\"enabled=0, disabled=1\"},{\"step\":\"enable\",\"ok\":true,\"detail\":\"enabled\"},{\"step\":\"remove\",\"ok\":true,\"detail\":\"removed\"},{\"step\":\"list-after-remove\",\"ok\":true,\"detail\":\"0 plugins\"}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "The plugin lifecycle was executed successfully. All steps passed: install, list, disable, list-after-disable, enable, remove, and list-after-remove."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 262,
+        "completion_tokens": 34
+      },
+      "duration_ms": 778,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "plugin_lifecycle",
+            "description": "Runs a full plugin lifecycle: install → list → disable → enable → remove, exercising @koi/plugins lifecycle operations."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "ce17d161b79c5d44d8a272aa15851cbec88e3d89ed531bf98e3723aba2f83dff"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:21.276Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 782.713041,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:21.277Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 782.9572080000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:21.278Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 783.1615419999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-09T06:31:21.279Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 783.255709,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

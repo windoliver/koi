@@ -243,9 +243,14 @@ than string-matching error messages.
 ## Security
 
 - **HTTPS-only URLs** — HTTP loopback allowed only in dev mode (`NODE_ENV=development|test` or `KOI_DEV=1`)
+- **DNS-level SSRF guard** — pre-flight DNS resolution validates all resolved IPs against blocked CIDR ranges (RFC 1918, CGNAT, link-local/cloud metadata, TEST-NETs, broadcast). IPv6 transition mechanisms handled: IPv4-mapped (all forms), IPv4-compatible, 6to4 (2002::/16), NAT64 (64:ff9b::/96). Zone IDs stripped before validation. Narrow loopback allowed (127.0.0.1, ::1 only)
+- **IP pinning** — HTTP hook URLs are rewritten to the resolved IP with the original hostname in the `Host` header, closing the DNS rebinding TOCTOU gap. HTTPS skips pinning (Bun TLS SNI unverified with IP URLs)
 - **No redirects** — `fetch()` uses `redirect: "error"` to prevent SSRF via 30x
-- **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook
+- **Header injection prevention** — expanded header values are validated for CRLF/NUL control characters (fail-closed). Reserved headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`) are rejected at both schema and runtime
+- **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook. Double-whitelist model: per-hook `allowedEnvVars` intersected with system-wide `HookEnvPolicy`
+- **Bounded response body** — HTTP hook responses are read via streaming with a 64KB byte-level cap. Truncated responses fail the hook (fail-closed) to prevent oversized responses from silently downgrading a `block` decision to `continue`
 - **Trusted identity** — registry binds `agentId` at registration and overwrites caller-supplied identity on execute
+- **Injectable DNS resolver** — `DnsResolverFn` parameter on `CreateHookMiddlewareOptions` allows custom resolvers for testing or environments with special DNS infrastructure. Defaults to `Bun.dns.lookup`
 
 ## Middleware Dispatch
 
@@ -406,6 +411,8 @@ advisory agent hooks.
 | `hook-executor.ts` | `HookExecutor` interface — extensible executor dispatch contract |
 | `prompt-adapter.ts` | `PromptExecutorAdapter` — bridges `@koi/hook-prompt` into `HookExecutor` with abort handling, token budgeting, payload capping |
 | `hook-validation.ts` | Shared validation — URL policy, timeout resolution, fail mode defaults |
+| `ssrf.ts` | DNS-level SSRF guard — IP validation, DNS resolution, IP pinning |
+| `header-sanitize.ts` | Header injection prevention — CRLF/NUL validation, reserved header blocking |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
 | `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
 | `middleware.ts` | `createHookMiddleware()` — KoiMiddleware bridging hooks to engine lifecycle |

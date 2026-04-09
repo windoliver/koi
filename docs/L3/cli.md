@@ -101,6 +101,29 @@ koi admin                          # Manifest-backed admin server on :9200
 koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 ```
 
+### `koi plugin`
+
+Plugin lifecycle management. Subcommands operate on `~/.koi/plugins/` (user root).
+
+```bash
+koi plugin install <path>         # Copy plugin from local directory
+koi plugin remove <name>          # Remove installed plugin
+koi plugin enable <name>          # Enable a disabled plugin
+koi plugin disable <name>         # Disable a plugin
+koi plugin update <name> <path>   # Rollback-safe update from new source
+koi plugin list [--json]          # List plugins with enabled/disabled status
+```
+
+Install copies the source directory into `~/.koi/plugins/<name>/` with TOCTOU validation and symlink dereferencing (`dereference: true`).
+Update uses a backup+rename swap with automatic rollback on failure and crash recovery via `recoverOrphanedUpdates()`.
+Enable/disable persists state in `~/.koi/plugins/state.json`; all plugins are enabled by default.
+Name validation rejects non-kebab-case names to prevent path traversal.
+The gated registry fails closed on corrupt state — all plugins blocked until `state.json` is readable.
+
+**Session activation:** When `koi tui` or `koi start` launches, `loadPluginComponents()` discovers
+enabled plugins via `createGatedRegistry` and wires their skills, hooks, and MCP servers into the
+session. Plugin middleware names are collected but not resolved (no factory registry yet).
+
 ### `koi tui`
 
 Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
@@ -156,6 +179,7 @@ Engine adapter is wired directly from environment variables. Manifest-based
 - **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - **Hook loading:** At startup, `loadHooks()` reads `~/.koi/hooks.json` (if present) and passes the loaded hooks to `createHookMiddleware()`. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
+- **Plugin activation:** At startup, `loadPluginComponents()` discovers enabled plugins from `~/.koi/plugins/` via `createGatedRegistry` and merges their components into the session: plugin hooks are prepended to user hooks before `createHookMiddleware()`; plugin MCP server configs create additional `McpConnection`s and a separate `McpComponentProvider`; plugin skill directories are scanned for `SKILL.md` files and registered via `skillsRuntime.registerExternal()`. Plugin MCP connections are cleaned up on shutdown alongside workspace MCP.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
 - `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.
@@ -268,7 +292,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
-| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter |
+| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279) |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory` |
 
 > **`@koi/sandbox-os` Linux backend hardening (PR #1617, issue #1339):** No CLI wiring changes. Internal improvements to the integrated `@koi/sandbox-os` L2 package: AppArmor usability probe (real `bwrap --unshare-all` smoke-test replaces sysctl-only check), per-exec named systemd transient scopes (`--unit=koi-sb-<id>`) for cgroup teardown on abort, `denyRead` file vs. directory differentiation (`--bind /dev/null` for files like `~/.netrc`/`~/.npmrc`; `--tmpfs` for directories), and `/bin/bash` absolute path in the ulimit wrapper. Linux bwrap confinement behavior in `tui-command.ts` improves on Ubuntu 24.04+ and systems with systemd user sessions.
