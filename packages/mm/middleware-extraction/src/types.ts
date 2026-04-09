@@ -44,6 +44,11 @@ export interface ExtractionMiddlewareConfig {
   readonly maxSessionOutputs?: number | undefined;
   /** Max bytes per tool output before truncation for LLM pass. Default: 10_000. */
   readonly maxOutputSizeBytes?: number | undefined;
+  /**
+   * Tool IDs whose outputs should trigger extraction.
+   * Default: ["Spawn", "agent_spawn", "task_delegate"] — the runtime's spawn-family tools.
+   */
+  readonly spawnToolIds?: readonly string[] | undefined;
 }
 
 /** Minimal interface for hot-memory cache invalidation. */

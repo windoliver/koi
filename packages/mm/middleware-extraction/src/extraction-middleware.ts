@@ -23,8 +23,8 @@ import { createDefaultExtractor } from "./extract-regex.js";
 import type { ExtractionCandidate, ExtractionMiddlewareConfig } from "./types.js";
 import { EXTRACTION_DEFAULTS } from "./types.js";
 
-/** Tool IDs that represent spawn-family operations. */
-const SPAWN_TOOL_IDS = new Set(["task", "parallel_task", "delegate"]);
+/** Default tool IDs that represent spawn-family operations in the Koi runtime. */
+const DEFAULT_spawnToolIds: readonly string[] = ["Spawn", "agent_spawn", "task_delegate"];
 
 /** Converts tool output to string for extraction. */
 function outputToString(output: unknown): string {
@@ -54,6 +54,7 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
   const maxSessionOutputs = config.maxSessionOutputs ?? EXTRACTION_DEFAULTS.maxSessionOutputs;
   const maxOutputSizeBytes = config.maxOutputSizeBytes ?? EXTRACTION_DEFAULTS.maxOutputSizeBytes;
   const extractionMaxTokens = config.extractionMaxTokens ?? EXTRACTION_DEFAULTS.extractionMaxTokens;
+  const spawnToolIds = new Set(config.spawnToolIds ?? DEFAULT_spawnToolIds);
 
   // Per-session output accumulator — keyed by SessionId to prevent cross-session bleed.
   const sessionOutputsMap = new Map<SessionId, string[]>();
@@ -150,7 +151,7 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
       const response: ToolResponse = await next(request);
 
       // Only intercept spawn-family tools
-      if (!SPAWN_TOOL_IDS.has(request.toolId)) {
+      if (!spawnToolIds.has(request.toolId)) {
         return response;
       }
 

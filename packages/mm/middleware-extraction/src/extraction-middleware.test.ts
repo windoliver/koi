@@ -66,7 +66,7 @@ function createTurnCtx(): TurnContext {
   };
 }
 
-function spawnToolRequest(toolId: string = "task"): ToolRequest {
+function spawnToolRequest(toolId: string = "Spawn"): ToolRequest {
   return {
     toolId,
     input: { agentName: "worker" },

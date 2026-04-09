@@ -38,8 +38,9 @@ interface MemoryCluster {
 }
 
 /**
- * Groups memories by pairwise similarity. Simple greedy single-linkage:
- * each memory joins the first cluster where it's similar enough to any member.
+ * Groups memories by pairwise similarity using complete-linkage:
+ * a memory joins a cluster only if it is similar to ALL existing members.
+ * This prevents bridge items from chaining unrelated memories together.
  */
 function clusterBySimilarity(
   memories: readonly MemoryRecord[],
@@ -49,17 +50,18 @@ function clusterBySimilarity(
   const clusters: Array<{ members: MemoryRecord[] }> = [];
 
   for (const memory of memories) {
-    // let justified: search for existing cluster to join
+    // let justified: search for existing cluster to join (complete-linkage)
     let joined = false;
     for (const cluster of clusters) {
-      for (const member of cluster.members) {
-        if (similarity(memory.content, member.content) >= threshold) {
-          cluster.members.push(memory);
-          joined = true;
-          break;
-        }
+      // Complete-linkage: must be similar to ALL members, not just one
+      const allSimilar = cluster.members.every(
+        (member) => similarity(memory.content, member.content) >= threshold,
+      );
+      if (allSimilar) {
+        cluster.members.push(memory);
+        joined = true;
+        break;
       }
-      if (joined) break;
     }
 
     if (!joined) {
@@ -205,11 +207,20 @@ export async function runDreamConsolidation(config: DreamConfig): Promise<DreamR
         continue;
       }
 
+      // Enforce type safety: the merged type MUST match the cluster's original type.
+      // Clusters are already partitioned by type, so all members share the same type.
+      // This prevents LLM hallucination from reclassifying memories across trust boundaries.
+      const clusterType = cluster.members[0]?.type;
+      if (clusterType === undefined || mergeResult.type !== clusterType) {
+        unchangedCount += cluster.members.length;
+        continue;
+      }
+
       // Write merged memory
       await config.writeMemory({
         name: mergeResult.name,
         description: mergeResult.description,
-        type: mergeResult.type,
+        type: clusterType,
         content: mergeResult.content,
       });
 
