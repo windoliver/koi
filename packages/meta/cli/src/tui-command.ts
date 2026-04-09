@@ -477,7 +477,13 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       // Snapshot the current transcript as TranscriptEntry list. The runtime's
       // `transcript` array holds InboundMessage[] (the live context window);
       // we load the durable entries from the JSONL file for a complete copy.
-      const loadResult = await jsonlTranscript.load(tuiSessionId);
+      //
+      // IMPORTANT: load from runtime.sessionId, NOT tuiSessionId. The session
+      // middleware uses ctx.session.sessionId (= runtime's internal factory
+      // sessionId) to route transcript writes. tuiSessionId is a separate
+      // identifier that no file is keyed by.
+      const activeSessionId = sessionId(runtimeHandle.runtime.sessionId);
+      const loadResult = await jsonlTranscript.load(activeSessionId);
       if (!loadResult.ok) {
         store.dispatch({
           kind: "add_error",

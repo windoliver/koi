@@ -2267,6 +2267,89 @@ describe("reduce — engine_event — spawn", () => {
     expect(next.activeSpawns.has("child-2")).toBe(false);
   });
 
+  test("set_spawn_terminal with outcome='failed' renders spawn block as failed", () => {
+    // Regression for round 6 adversarial review: previously the bridge collapsed
+    // complete/failed into "terminated" → always rendered as "complete".
+    // The new set_spawn_terminal action preserves the outcome.
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-fail",
+        agentName: "failer",
+        description: "will fail",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-fail",
+          { agentName: "failer", description: "will fail", startedAt: Date.now() - 200 },
+        ],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-fail",
+      outcome: "failed",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      expect(spawnBlock?.kind).toBe("spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        expect(spawnBlock.status).toBe("failed");
+        expect(spawnBlock.stats).toBeDefined();
+      }
+    }
+    expect(next.activeSpawns.has("child-fail")).toBe(false);
+  });
+
+  test("set_spawn_terminal with outcome='complete' renders spawn block as complete", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-ok",
+        agentName: "worker",
+        description: "will succeed",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-ok",
+          { agentName: "worker", description: "will succeed", startedAt: Date.now() - 500 },
+        ],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-ok",
+      outcome: "complete",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        expect(spawnBlock.status).toBe("complete");
+      }
+    }
+    expect(next.activeSpawns.has("child-ok")).toBe(false);
+  });
+
+  test("set_spawn_terminal is a no-op when agentId is not in activeSpawns", () => {
+    const state = createInitialState();
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "unknown",
+      outcome: "failed",
+    });
+    expect(next).toBe(state);
+  });
+
   test("agent_status_changed (running) is a no-op for non-terminal status", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0" })],
