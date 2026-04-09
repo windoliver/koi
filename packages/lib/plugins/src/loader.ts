@@ -54,7 +54,8 @@ async function scanRoot(
 }> {
   let entries: readonly string[];
   try {
-    entries = await readdir(root.path);
+    const dirents = await readdir(root.path, { withFileTypes: true });
+    entries = dirents.filter((d) => d.isDirectory() || d.isSymbolicLink()).map((d) => d.name);
   } catch (err: unknown) {
     // ENOENT = root doesn't exist yet — silently skip
     if (isEnoent(err)) return { plugins: [], errors: [], rootFailed: false };
