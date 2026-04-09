@@ -1,6 +1,6 @@
 # @koi/spawn-tools
 
-LLM-callable agent spawn tool + coordinator orchestration utilities — `agent_spawn`, `TaskCascade`, `recoverOrphanedTasks`.
+LLM-callable agent spawn tool + coordinator orchestration utilities — `agent_spawn`, `TaskCascade`, `recoverOrphanedTasks`, `recoverStaleDelegations`.
 
 ## Layer
 
@@ -126,7 +126,37 @@ restarts.
 ```
 
 On restart: call `recoverOrphanedTasks` to reset any tasks left in_progress from the
-previous session, then resume from step 3.
+previous session, then optionally call `recoverStaleDelegations` to clear any pending
+tasks whose intended child never claimed them, then resume from step 3.
+
+## Restart recovery — two composable helpers
+
+Restart recovery is split across two helpers that can be called in any order and
+any number of times:
+
+### `recoverOrphanedTasks(board, coordinatorAgentId)`
+
+Finds every `in_progress` task whose `assignedTo` is not the current coordinator and
+calls `board.unassign()` to move it back to `pending`. Preserves the task ID (no
+kill+recreate). Returns `{ requeued, failed, killed }`. Use on every coordinator
+restart to clean up children that were running when the previous coordinator crashed.
+
+### `recoverStaleDelegations(board, liveAgentIds)` (#1557 review)
+
+Finds every `pending` task whose `metadata.delegatedTo` is stale (delegated to an
+agent not in `liveAgentIds`) or malformed (non-string, null, empty string) and clears
+the marker so the task can be re-delegated. Scope is **pending-only** — the
+`@koi/task-board` layer already enforces the invariant that `delegatedTo` is a
+pending-only marker by stripping it at every `in_progress` entry/exit (`assign`,
+`unassign`, retryable `fail`, snapshot-loader normalization). So the recovery helper
+only has to worry about tasks that were delegated but never claimed. Returns
+`{ cleared, failed }`.
+
+### Two-package contract with `@koi/task-tools`
+
+`task_delegate` in `@koi/task-tools` writes `metadata.delegatedTo` on pending tasks;
+this package clears the marker during restart recovery. The full invariant is
+documented in the `stripDelegatedTo` helper in `@koi/task-board`.
 
 ## Relationship to Other Packages
 

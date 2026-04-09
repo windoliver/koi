@@ -12,6 +12,7 @@ import type { JsonObject, Tool } from "@koi/core";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { z } from "zod";
 import { createTaskTools } from "./create-task-tools.js";
+import type { TaskToolsConfig } from "./types.js";
 
 async function freshResultsDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "koi-task-tools-test-"));
@@ -21,7 +22,9 @@ function agentId(id: string): import("@koi/core").AgentId {
   return id as import("@koi/core").AgentId;
 }
 
-/** Tools are always 7 elements — assert here once rather than using ! at every callsite. */
+/** Named tool record — replaces positional destructuring so adding/reordering
+ * tools can't silently drop a test. Each tool is looked up by its descriptor
+ * name, so the test cares only about identity not array position. */
 interface ToolSet {
   readonly tools: readonly Tool[];
   readonly create: Tool;
@@ -33,23 +36,47 @@ interface ToolSet {
   readonly delegate: Tool;
 }
 
+/** Expected count of tools returned by createTaskTools — single source of truth. */
+const EXPECTED_TOOL_COUNT = 7;
+
+/**
+ * Build a ToolSet from a TaskToolsConfig by looking up each tool by name.
+ * Throws immediately on a missing tool or a count mismatch, so tests fail
+ * loudly if the tool set drifts instead of silently dropping entries.
+ */
+function createNamedTaskTools(config: TaskToolsConfig): ToolSet {
+  const tools = createTaskTools(config);
+  if (tools.length !== EXPECTED_TOOL_COUNT) {
+    throw new Error(
+      `Expected ${String(EXPECTED_TOOL_COUNT)} task tools, got ${String(tools.length)}`,
+    );
+  }
+  const byName = new Map(tools.map((t) => [t.descriptor.name, t] as const));
+  const lookup = (name: string): Tool => {
+    const tool = byName.get(name);
+    if (tool === undefined) {
+      throw new Error(`Task tool not found: ${name}`);
+    }
+    return tool;
+  };
+  return {
+    tools,
+    create: lookup("task_create"),
+    get: lookup("task_get"),
+    update: lookup("task_update"),
+    list: lookup("task_list"),
+    stop: lookup("task_stop"),
+    output: lookup("task_output"),
+    delegate: lookup("task_delegate"),
+  };
+}
+
 async function setup(): Promise<ToolSet> {
   const store = createMemoryTaskBoardStore();
   // Use a real resultsDir — task_update(status: completed) now requires durable storage
   const resultsDir = await freshResultsDir();
   const board = await createManagedTaskBoard({ store, resultsDir });
-  const tools = createTaskTools({ board, agentId: agentId("agent-1") });
-  if (tools.length < 7) throw new Error("Expected 7 task tools");
-  const [create, get, update, list, stop, output, delegate] = tools as [
-    Tool,
-    Tool,
-    Tool,
-    Tool,
-    Tool,
-    Tool,
-    Tool,
-  ];
-  return { tools, create, get, update, list, stop, output, delegate };
+  return createNamedTaskTools({ board, agentId: agentId("agent-1") });
 }
 
 async function exec(tool: Tool, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -265,6 +292,39 @@ describe("task_update", () => {
     const r2 = await exec(update, { task_id: id, status: "completed", output: "Auth done" });
     expect(r2.ok).toBe(true);
     expect((r2.task as Record<string, unknown>).status).toBe("completed");
+  });
+
+  // Regression for review issue 7A: durationMs must reflect time since the task
+  // entered in_progress, NOT time since the most recent updatedAt patch. Before
+  // the fix, an activeForm patch mid-run would silently shorten the reported
+  // durationMs because it bumped task.updatedAt and task-update.ts subtracted
+  // from updatedAt instead of startedAt.
+  test("durationMs is anchored to startedAt, not bumped by activeForm patch", async () => {
+    const { create, update } = await setup();
+    const r1 = await exec(create, { subject: "Auth", description: "Do auth" });
+    const id = (r1.task as Record<string, unknown>).id as string;
+
+    // Enter in_progress — startedAt fixes here.
+    await exec(update, { task_id: id, status: "in_progress" });
+
+    // Spend some "wall time" running.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Patch activeForm — this bumps updatedAt but MUST NOT bump startedAt.
+    await exec(update, { task_id: id, active_form: "Almost done" });
+
+    // Spend a tiny bit more wall time so updatedAt diverges further.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Complete. The reported durationMs must be ≥ the total time spent in
+    // progress (~35ms), not just the time since the last patch (~5ms).
+    const r2 = await exec(update, { task_id: id, status: "completed", output: "done" });
+    expect(r2.ok).toBe(true);
+    const result = (r2 as Record<string, unknown>).result as Record<string, unknown>;
+    expect(typeof result.durationMs).toBe("number");
+    // Lower bound: at least 30ms (the first sleep) — proves the patch did not reset the clock.
+    // Upper bound is loose to tolerate scheduler jitter.
+    expect(result.durationMs as number).toBeGreaterThanOrEqual(30);
   });
 
   test("status completed without output returns error", async () => {
@@ -568,9 +628,7 @@ describe("verification nudge", () => {
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
-    const tools = createTaskTools({ board, agentId: agentId("agent-1") });
-    if (tools.length < 6) throw new Error("Expected 6 tools");
-    const [create, , update] = tools as [Tool, Tool, Tool, Tool, Tool, Tool];
+    const { create, update } = createNamedTaskTools({ board, agentId: agentId("agent-1") });
     return { create, update };
   }
 
@@ -813,24 +871,14 @@ describe("task_output — resultSchemas validation", () => {
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
-    const tools = createTaskTools({
+    const named = createNamedTaskTools({
       board,
       agentId: agentId("agent-1"),
       resultSchemas: {
         research: z.object({ count: z.number(), summary: z.string() }),
       },
     });
-    if (tools.length < 7) throw new Error("Expected 7 task tools");
-    const [create, get, update, list, stop, output, delegate] = tools as [
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-    ];
-    return { tools, create, get, update, list, stop, output, delegate, boardRef: board };
+    return { ...named, boardRef: board };
   }
 
   test("returns completed result with no error when results match schema", async () => {
@@ -940,20 +988,11 @@ describe("task_output — offset reads", () => {
       },
     };
 
-    const tools = createTaskTools({
+    const { create, update, output } = createNamedTaskTools({
       board,
       agentId: agentId("agent-1"),
       outputReader,
     });
-    const [create, _get, update, _list, _stop, output] = tools as [
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-      Tool,
-    ];
     return { create, update, output };
   }
 

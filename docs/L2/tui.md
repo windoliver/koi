@@ -283,6 +283,7 @@ packages/ui/tui/src/
 ├── components/
 │   ├── text-block.tsx     ~20 LOC   — text/markdown renderer
 │   ├── thinking-block.tsx ~15 LOC   — dimmed thinking display
+│   ├── spinners.ts        ~45 LOC   — shared spinner presets + DEFAULT_SPINNER
 │   ├── tool-call-block.tsx ~55 LOC  — tool lifecycle (spinner/result/error)
 │   ├── error-block.tsx    ~30 LOC   — styled error display
 │   ├── message-row.tsx    ~90 LOC   — turn router; <Switch><Match> for kind routing
@@ -506,3 +507,5 @@ subscriptions.
 > **Modal overlay opacity (theme.ts, ConversationView.tsx):** `MODAL_POSITION` constant gained `backgroundColor: "#0D1B2A"` (the `bgElevated` Deep Water color as a literal, required by `--isolatedDeclarations`). `SlashOverlay`'s wrapper box in `ConversationView` now uses `backgroundColor={COLORS.bgElevated}`. These fixes prevent modal content bleeding through transparent overlay regions.
 
 > **Trajectory view (current branch):** Added `TrajectoryView` component, `"trajectory"` view type, `TrajectoryStepSummary` and `TrajectoryMiddlewareSpan` types, `set_trajectory_data` action, and `nav:trajectory` command palette entry. The host injects trajectory step summaries via `set_trajectory_data`; the TUI renders an interactive step list with arrow-key navigation, Enter expand/collapse, outcome coloring, token metrics, and MW span annotations. `TuiState.trajectorySteps` stores the data; `TuiRoot` routes the `"trajectory"` view to `TrajectoryView`.
+
+> **Spinner config unified (current branch):** Extracted the braille spinner frames and tick interval from `ToolCallBlock`, `MessageRow`, and `MessageList` into a shared `src/components/spinners.ts`. Ships five presets (`braille`, `dots`, `line`, `arc`, `circle`) as `Readonly<Record<SpinnerName, Spinner>>` and a `DEFAULT_SPINNER` pointer. `ToolCallBlock` (running tool) and `MessageRow` (thinking indicator) both read from `DEFAULT_SPINNER.frames`; `MessageList` derives its `SPINNER_FRAME_COUNT` and `SPINNER_INTERVAL_MS` from `DEFAULT_SPINNER.frames.length` and `DEFAULT_SPINNER.intervalMs` so the single global `spinnerFrame` tick loop auto-adjusts when the default preset is swapped. No behavior change: default stays `braille`. Note: the `as const satisfies Record<string, Spinner>` pattern was rejected by `isolatedDeclarations` for exported consts, so the module uses a declared `SpinnerName` union plus `Readonly<Record<SpinnerName, Spinner>>` annotation instead.

@@ -133,6 +133,20 @@ export interface Task {
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /**
+   * Wall-clock timestamp when the task most recently entered `in_progress`.
+   *
+   * Set on every `pending → in_progress` transition (initial assignment AND
+   * retry-after-failure). Not bumped by `update()` patches such as `activeForm`
+   * — those bump `updatedAt` only. Use this (rather than `updatedAt`) to compute
+   * accurate `durationMs` on completion.
+   *
+   * `undefined` for tasks that were created but never assigned, and for tasks
+   * loaded from snapshots that pre-date this field (the board's snapshot
+   * loader backfills it from `updatedAt` only when the persisted status is
+   * `in_progress`, so the legacy approximation stays close to wall time).
+   */
+  readonly startedAt?: number | undefined;
 }
 
 /**
@@ -284,6 +298,15 @@ export interface TaskBoard {
   readonly killed: () => readonly Task[];
   readonly unreachable: () => readonly Task[];
   readonly dependentsOf: (taskId: TaskItemId) => readonly Task[];
+  /**
+   * Returns the first dependency of `taskId` that is not yet `completed`,
+   * or `undefined` if the task is ready / not pending / not found.
+   *
+   * Implementations may cache results per board snapshot — boards are
+   * immutable, so the answer never changes for a given (snapshot, taskId)
+   * pair. This makes repeated polling (e.g. TUI `task_list`) cheap.
+   */
+  readonly blockedBy: (taskId: TaskItemId) => TaskItemId | undefined;
   readonly all: () => readonly Task[];
   readonly size: () => number;
 }
