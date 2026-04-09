@@ -7443,7 +7443,6 @@ describe("Golden: @koi/skill-tool", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // L0+L3 golden queries: outcome-linkage (#1465)
 // ---------------------------------------------------------------------------
 
@@ -7655,5 +7654,42 @@ describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
     // Should have a model call step
     const modelStep = trajectory.steps.find((s) => s.source === "agent");
     expect(modelStep).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/plugins (2 queries: manifest validation + registry)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/plugins", () => {
+  test("validatePluginManifest accepts valid manifest and rejects invalid", async () => {
+    const { validatePluginManifest } = await import("@koi/plugins");
+
+    const valid = validatePluginManifest({
+      name: "test-plugin",
+      version: "1.0.0",
+      description: "A test plugin",
+    });
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.value.name).toBe("test-plugin");
+      expect(valid.value.version).toBe("1.0.0");
+    }
+
+    const invalid = validatePluginManifest({ name: "Bad Name!" });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("createPluginRegistry discovers from filesystem and returns empty for no roots", async () => {
+    const { createPluginRegistry } = await import("@koi/plugins");
+
+    const registry = createPluginRegistry({});
+    const plugins = await registry.discover();
+    expect(Array.isArray(plugins)).toBe(true);
+    expect(plugins).toHaveLength(0);
+    expect(registry.errors()).toHaveLength(0);
   });
 });
