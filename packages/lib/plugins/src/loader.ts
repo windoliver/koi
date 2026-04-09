@@ -3,7 +3,7 @@
  */
 
 import { readdir, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { pluginId } from "./plugin-id.js";
 import { validatePluginManifest } from "./schema.js";
@@ -151,14 +151,18 @@ async function scanRoot(
         if (!exists) return;
         raw = await file.json();
       } catch (err: unknown) {
-        // Manifest exists but is unreadable/malformed — record error
+        // Distinguish I/O errors (retryable) from parse errors (not retryable)
+        const isIoError =
+          err instanceof Error &&
+          "code" in err &&
+          typeof (err as { code: unknown }).code === "string";
         errors.push({
           dirPath: resolvedDir,
           source: root.source,
           error: {
-            code: "VALIDATION" as const,
+            code: isIoError ? ("INTERNAL" as const) : ("VALIDATION" as const),
             message: `Failed to read plugin.json: ${err instanceof Error ? err.message : String(err)}`,
-            retryable: false,
+            retryable: isIoError,
             context: { dirPath: resolvedDir },
           },
         });
@@ -247,9 +251,9 @@ export async function discoverPlugins(
 
     // Record per-plugin failed directory names at this tier's priority
     for (const err of result.errors) {
-      const basename = err.dirPath.split("/").pop() ?? "";
-      if (basename && !failedNameAtTier.has(basename)) {
-        failedNameAtTier.set(basename, err.source);
+      const dirName = basename(err.dirPath);
+      if (dirName && !failedNameAtTier.has(dirName)) {
+        failedNameAtTier.set(dirName, err.source);
       }
     }
 
