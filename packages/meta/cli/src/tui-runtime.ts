@@ -37,6 +37,7 @@ import type {
   MemoryRecordInput,
   ModelAdapter,
   RichTrajectoryStep,
+  SessionContext,
   SessionId,
   SessionTranscript,
   SpawnFn,
@@ -46,6 +47,8 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   agentId as makeAgentId,
   memoryRecordId,
+  runId,
+  sessionId,
 } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
@@ -702,7 +705,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const skillToolResult = await createSkillTool({
     resolver: skillsRuntime,
     signal: skillAbortController.signal,
-    spawnFn: stubSpawnFn,
+    // No spawnFn — fork-mode skills are filtered out of discovery since the TUI
+    // cannot execute them (stubSpawnFn always returns EXTERNAL error).
   });
   const skillProvider = skillToolResult.ok
     ? createSingleToolProvider({
@@ -856,6 +860,20 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
       // 5. Invalidate skills-runtime cache so new-session discovers fresh skills.
       skillsRuntime.invalidate();
+
+      // 5b. Reset goal middleware state so completed goals, reminder backoff, and
+      //     drift state don't carry into the new session. Cycle onSessionEnd →
+      //     onSessionStart to tear down old state and reinitialize fresh.
+      if (goalMw?.onSessionEnd !== undefined && goalMw.onSessionStart !== undefined) {
+        const resetCtx: SessionContext = {
+          agentId: tuiAgentId,
+          sessionId: sessionId(runtime.sessionId),
+          runId: runId("reset"),
+          metadata: {},
+        };
+        await goalMw.onSessionEnd(resetCtx);
+        await goalMw.onSessionStart(resetCtx);
+      }
 
       // 6. Clear trajectory store — AWAITED so new-session steps can't be pruned.
       await trajectoryStore.prune(Date.now() + 86_400_000);
