@@ -29,6 +29,17 @@ export {
   resolveFileSystemAsync,
   validateFileSystemConfig,
 } from "./resolve-filesystem.js";
+// Skills-MCP bridge
+export type {
+  MapToolDescriptorsResult,
+  SkillsMcpBridge,
+  SkillsMcpBridgeConfig,
+} from "./skills-mcp-bridge.js";
+export {
+  createSkillsMcpBridge,
+  mapToolDescriptorsToSkillMetadata,
+  mapToolDescriptorToSkillMetadata,
+} from "./skills-mcp-bridge.js";
 
 // Stubs (for direct use in tests)
 export { createStubAdapter } from "./stubs/stub-adapter.js";
@@ -43,6 +54,10 @@ export type { AtifDocument } from "./trajectory/atif-types.js";
 export { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 export type { NexusTrajectoryConfig } from "./trajectory/nexus-delegate.js";
 export { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
+// Outcome linkage (#1465)
+export { createInMemoryOutcomeStore } from "./trajectory/outcome-memory-store.js";
+export type { NexusOutcomeConfig } from "./trajectory/outcome-nexus-delegate.js";
+export { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
 
 // Types
 export type {

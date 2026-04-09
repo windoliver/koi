@@ -9,10 +9,10 @@ describe("createOutputStream", () => {
 
     const chunks = stream.read(0);
     expect(chunks).toHaveLength(2);
-    expect(chunks[0]!.content).toBe("hello ");
-    expect(chunks[0]!.offset).toBe(0);
-    expect(chunks[1]!.content).toBe("world");
-    expect(chunks[1]!.offset).toBe(6);
+    expect(chunks[0]?.content).toBe("hello ");
+    expect(chunks[0]?.offset).toBe(0);
+    expect(chunks[1]?.content).toBe("world");
+    expect(chunks[1]?.offset).toBe(6);
   });
 
   test("read from mid-offset returns only content after that offset", () => {
@@ -23,8 +23,8 @@ describe("createOutputStream", () => {
 
     const chunks = stream.read(3);
     expect(chunks).toHaveLength(2);
-    expect(chunks[0]!.content).toBe("bbb");
-    expect(chunks[1]!.content).toBe("ccc");
+    expect(chunks[0]?.content).toBe("bbb");
+    expect(chunks[1]?.content).toBe("ccc");
   });
 
   test("read from offset beyond end returns empty", () => {
@@ -58,10 +58,10 @@ describe("createOutputStream", () => {
     stream.write("second");
 
     expect(received).toHaveLength(2);
-    expect(received[0]!.content).toBe("first");
-    expect(received[0]!.offset).toBe(0);
-    expect(received[1]!.content).toBe("second");
-    expect(received[1]!.offset).toBe(5);
+    expect(received[0]?.content).toBe("first");
+    expect(received[0]?.offset).toBe(0);
+    expect(received[1]?.content).toBe("second");
+    expect(received[1]?.offset).toBe(5);
   });
 
   test("unsubscribe stops notifications", () => {
@@ -111,7 +111,7 @@ describe("createOutputStream", () => {
     // Reading from 0 should start from earliest available (offset 10)
     const chunks = stream.read(0);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]!.offset).toBeGreaterThanOrEqual(10);
+    expect(chunks[0]?.offset).toBeGreaterThanOrEqual(10);
   });
 
   test("read from evicted offset returns from earliest available", () => {
@@ -136,6 +136,7 @@ describe("createOutputStream", () => {
     stream.write("b");
 
     const chunks = stream.read(0);
+    // biome-ignore lint/style/noNonNullAssertion: test — two chunks guaranteed by writes above
     expect(chunks[0]!.timestamp).toBeLessThanOrEqual(chunks[1]!.timestamp);
   });
 

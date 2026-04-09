@@ -76,6 +76,7 @@ import {
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { createPluginRegistry, validatePluginManifest } from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import {
@@ -113,6 +114,7 @@ import { createInteractionProvider } from "../src/create-interaction-provider.js
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../src/middleware/trace-wrapper.js";
+import { createSkillsMcpBridge } from "../src/skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../src/trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../src/trajectory/fs-delegate.js";
 
@@ -1394,6 +1396,16 @@ const skillToolProvider = createSingleToolProvider({
 console.log(
   `SkillTool golden query: Skill tool created, advertising ${discoverResult.value.size} skill(s)`,
 );
+
+// ---------------------------------------------------------------------------
+// Skills-MCP bridge setup (reuses MCP server tools as skills via bridge)
+// ---------------------------------------------------------------------------
+
+// Create a separate skill runtime for the bridge test (no filesystem skills)
+const bridgeSkillRuntime = createSkillsRuntime({ bundledRoot: null });
+
+// Bridge will be wired after MCP provider is created (needs resolver)
+// See the skills-mcp-bridge query injection below the MCP provider setup
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2787,6 +2799,21 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
+  // skills-mcp-bridge: @koi/runtime bridge — MCP tools registered as skills
+  //   createSkillsMcpBridge maps McpResolver tools → SkillMetadata and registers
+  //   them via registerExternal(). Trajectory proves: MCP lifecycle connect,
+  //   bridge sync, model call succeeds with bridge wired. Actual MCP skill
+  //   registration is validated in standalone golden-replay tests (no LLM needed).
+  {
+    name: "skills-mcp-bridge",
+    prompt: "What is 7 + 3? Reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // Set dynamically below (after MCP + bridge setup)
+  },
+
   // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
   {
     name: "mcp-server-send",
@@ -2804,6 +2831,88 @@ const queries: readonly QueryConfig[] = [
       },
     ],
     providers: [], // Set dynamically below (after MCP server setup)
+    maxTurns: 2,
+  },
+
+  // plugin-validate: exercises @koi/plugins manifest validation + registry discovery
+  {
+    name: "plugin-validate",
+    prompt:
+      'Use the validate_plugin tool to check this manifest: {"name": "hello-world", "version": "1.0.0", "description": "A greeting plugin"}. Report whether it is valid.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-plugin-validate",
+        cmd: ["echo", "plugin-validated"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "plugin-validator",
+        toolName: "validate_plugin",
+        createTool: () => {
+          const result = buildTool({
+            name: "validate_plugin",
+            description:
+              "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                manifest: {
+                  type: "object",
+                  description: "The plugin manifest to validate",
+                },
+              },
+              required: ["manifest"],
+            },
+            origin: "primordial",
+            execute: async (args: JsonObject) => {
+              const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+              const { join } = await import("node:path");
+              const { tmpdir } = await import("node:os");
+
+              const validation = validatePluginManifest(args.manifest);
+
+              // Create a real plugin root with a seeded plugin for non-trivial discovery
+              const pluginRoot = await mkdtemp(join(tmpdir(), "koi-golden-plugins-"));
+              const seededDir = join(pluginRoot, "seeded-plugin");
+              await mkdir(seededDir, { recursive: true });
+              await writeFile(
+                join(seededDir, "plugin.json"),
+                JSON.stringify({
+                  name: "seeded-plugin",
+                  version: "0.1.0",
+                  description: "Golden test plugin",
+                }),
+              );
+
+              const registry = createPluginRegistry({ bundledRoot: pluginRoot });
+              const plugins = await registry.discover();
+              const errors = registry.errors();
+
+              // Cleanup temp dir
+              await rm(pluginRoot, { recursive: true, force: true });
+
+              return {
+                valid: validation.ok,
+                error: validation.ok ? undefined : validation.error.message,
+                pluginName: validation.ok ? validation.value.name : undefined,
+                discoveredCount: plugins.length,
+                discoveredNames: plugins.map((p) => p.name),
+                errorCount: errors.length,
+              };
+            },
+          });
+          if (!result.ok)
+            throw new Error(`Failed to build validate_plugin tool: ${result.error.message}`);
+          return result.value;
+        },
+      }),
+    ],
     maxTurns: 2,
   },
 ];
@@ -3021,6 +3130,50 @@ if (mcpQuery !== undefined) {
   (mcpQuery as { providers: ComponentProvider[] }).providers = [mcpSetup.provider];
 }
 
+// Wire skills-mcp bridge: MCP resolver tools → skill registry via bridge
+{
+  const bridgeMcpServer = createTestMcpServer();
+  const [bridgeClientSide, bridgeServerSide] = InMemoryTransport.createLinkedPair();
+  await bridgeMcpServer.connect(bridgeServerSide);
+  const bridgeConn = createMcpConnection(
+    resolveServerConfig({ kind: "stdio", name: "bridge-mcp", command: "echo" }),
+    undefined,
+    {
+      createClient: () => new McpSdkClient({ name: "bridge-client", version: "1.0.0" }) as never,
+      createTransport: () => ({
+        start: async () => {},
+        close: async () => {
+          await bridgeClientSide.close();
+        },
+        sdkTransport: bridgeClientSide,
+        get sessionId() {
+          return undefined;
+        },
+        onEvent: () => () => {},
+      }),
+    },
+  );
+  const bridgeResolver = createMcpResolver([bridgeConn]);
+  const bridge = createSkillsMcpBridge({
+    resolver: bridgeResolver,
+    runtime: bridgeSkillRuntime,
+  });
+  await bridge.sync();
+  // Verify MCP tools appeared as skills
+  const bridgeDiscovered = await bridgeSkillRuntime.discover();
+  if (bridgeDiscovered.ok) {
+    const mcpSkills = [...bridgeDiscovered.value.values()].filter((s) => s.source === "mcp");
+    console.log(
+      `Skills-MCP bridge: ${mcpSkills.length} MCP tools registered as skills: [${mcpSkills.map((s) => s.name).join(", ")}]`,
+    );
+  }
+  const bridgeProvider = createSkillProvider(bridgeSkillRuntime);
+  const bridgeQuery = queries.find((q) => q.name === "skills-mcp-bridge");
+  if (bridgeQuery !== undefined) {
+    (bridgeQuery as { providers: ComponentProvider[] }).providers = [bridgeProvider];
+  }
+}
+
 // Also record a cassette for MCP tool-use (model sees the MCP tool)
 const mcpToolDescriptors = await mcpSetup.provider.attach({
   pid: { id: "record" as never, name: "record", type: "worker", depth: 0 },
@@ -3217,6 +3370,19 @@ await recordCassette("skill-tool-use", () =>
       },
     ],
     tools: [skillTool.descriptor],
+  }),
+);
+
+// skills-mcp-bridge: text-only response (bridge registers MCP tools as skills)
+await recordCassette("skills-mcp-bridge", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text: "What is 7 + 3? Reply with just the number." }],
+      },
+    ],
   }),
 );
 

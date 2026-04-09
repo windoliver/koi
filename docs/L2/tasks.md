@@ -238,6 +238,10 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 | `@koi/tasks` (future: reconciliation) | #1429 — transition guards and DAG validation will consume the store |
 | `@koi/core` `TaskStore` | **Separate domain** — scheduler task persistence (`ScheduledTask`), not task board |
 
+## Code Quality
+
+Lint configured with `biome check --vcs-enabled=false src/` to avoid biome VCS resolution issues in git worktrees. All non-null assertions in source replaced with proper guards; test files use `biome-ignore` where the assertion is guarded by setup.
+
 ## v1 Reference
 
 - `archive/v1/packages/sched/scheduler/src/sqlite-store.ts` — SQLite-backed scheduler

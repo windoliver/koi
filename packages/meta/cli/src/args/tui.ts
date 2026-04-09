@@ -5,14 +5,23 @@ export interface TuiFlags extends BaseFlags {
   readonly command: "tui";
   readonly agent: string | undefined;
   readonly session: string | undefined;
+  readonly goal: readonly string[];
 }
 
 export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags {
-  type V = { readonly agent: string | undefined; readonly session: string | undefined };
+  type V = {
+    readonly agent: string | undefined;
+    readonly session: string | undefined;
+    readonly goal: string[] | undefined;
+  };
   const { values } = typedParseArgs<V>(
     {
       args: rest,
-      options: { agent: { type: "string" }, session: { type: "string" } },
+      options: {
+        agent: { type: "string" },
+        session: { type: "string" },
+        goal: { type: "string", multiple: true },
+      },
       allowPositionals: true,
     },
     "tui",
@@ -23,6 +32,7 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     help: g.help,
     agent: values.agent,
     session: values.session,
+    goal: values.goal ?? [],
   };
 }
 

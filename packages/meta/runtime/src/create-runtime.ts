@@ -62,6 +62,7 @@ import {
 import { createAtifDocumentStore } from "./trajectory/atif-store.js";
 import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
+import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
 import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
@@ -179,6 +180,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const trajectoryResolution = resolveTrajectoryStore(config);
   const trajectoryStore = trajectoryResolution?.store;
   const trajectoryTransport = trajectoryResolution?.transport;
+
+  // Create outcome store when Nexus trajectory transport is available (#1465).
+  // Shares the same transport. Scoped under the same namespace as trajectories
+  // to preserve tenant isolation: {trajectoryBasePath}/outcomes/
+  const trajectoryBasePath = config.trajectoryNexus?.basePath ?? "trajectories";
+  const outcomeStore =
+    trajectoryTransport !== undefined
+      ? createNexusOutcomeDelegate({
+          transport: trajectoryTransport,
+          basePath: `${trajectoryBasePath}/outcomes`,
+        })
+      : undefined;
 
   // Track active stream flush promises so dispose() can drain before closing transport.
   const activeFlushes = new Set<Promise<void>>();
@@ -322,6 +335,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     middleware,
     debugInfo,
     trajectoryStore,
+    outcomeStore,
     spawnProvider,
     agentWarnings,
     agentConflicts,

@@ -150,7 +150,6 @@ export function wrapMiddlewareWithTrace(
             // model step. MW spans only capture the middleware's own behavior.
             const modelDecision = nextCalled ? "allowed" : "blocked";
             recordStep({
-              stepIndex: 0,
               timestamp: clock(),
               source: "system",
               kind: "model_call",
@@ -174,7 +173,6 @@ export function wrapMiddlewareWithTrace(
           } catch (error: unknown) {
             const errorText = error instanceof Error ? error.message : String(error);
             recordStep({
-              stepIndex: 0,
               timestamp: clock(),
               source: "system",
               kind: "model_call",
@@ -271,7 +269,6 @@ export function wrapMiddlewareWithTrace(
             // MW decision — not the full tool output (that's on the tool step).
             const decision = nextCalled ? "allowed" : "blocked";
             recordStep({
-              stepIndex: 0,
               timestamp: clock(),
               source: "system",
               kind: "model_call",
@@ -295,7 +292,6 @@ export function wrapMiddlewareWithTrace(
           } catch (error: unknown) {
             const errorText = error instanceof Error ? error.message : String(error);
             recordStep({
-              stepIndex: 0,
               timestamp: clock(),
               source: "system",
               kind: "model_call",
@@ -376,7 +372,6 @@ export function wrapMiddlewareWithTrace(
             // step itself. MW spans only capture the middleware's own behavior
             // (duration, outcome, nextCalled, deltas).
             recordStep({
-              stepIndex: 0,
               timestamp: clock(),
               source: "system",
               kind: "model_call",

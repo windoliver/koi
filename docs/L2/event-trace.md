@@ -134,6 +134,7 @@ keys are persisted in the trajectory to prevent trust-boundary expansion:
 | `hookName` | Which hook blocked the call |
 | `reason` | Denial explanation from guards |
 | `committedButRedacted` | Output redacted after tool side effects committed |
+| `decisionCorrelationId` | Outcome linkage (#1465) — opt-in, sourced only from `request.metadata` (never response). Validated as bounded non-empty non-whitespace string (max 256 chars). Invalid IDs surface `decisionCorrelationIdPruned: true` diagnostic marker |
 
 All other transient metadata (correlation IDs, cache hints, etc.) is filtered out.
 Property checks use `Object.hasOwn` for prototype-pollution safety.

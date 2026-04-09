@@ -5,7 +5,13 @@
  * Suitable for tests and short-lived agent sessions.
  */
 
-import type { Task, TaskBoardStore, TaskBoardStoreEvent, TaskBoardStoreFilter, TaskItemId } from "@koi/core";
+import type {
+  Task,
+  TaskBoardStore,
+  TaskBoardStoreEvent,
+  TaskBoardStoreFilter,
+  TaskItemId,
+} from "@koi/core";
 import { taskItemId } from "@koi/core";
 import { createMemoryChangeNotifier } from "@koi/validation";
 import { matchesFilter } from "./filter.js";
