@@ -133,6 +133,20 @@ function parseMergeResponse(response: string): MergeResult | undefined {
  *
  * This is a standalone async function — no middleware coupling.
  * Call from a scheduler, daemon, or CLI command.
+ *
+ * **Concurrency:** Callers MUST ensure mutual exclusion — only one consolidation
+ * run at a time. Use config.lockDir with a cross-process lock, or the scheduler's
+ * built-in exclusion when available. Without external locking, concurrent runs can
+ * double-merge clusters.
+ *
+ * **Idempotency:** Merges embed source IDs in content as provenance comments.
+ * This is a best-effort marker — the current MemoryRecordInput API lacks a structured
+ * `supersedes` field. A future L0 extension should add CAS/version-based deletes and
+ * structured supersession metadata for fully idempotent consolidation.
+ *
+ * **Stale snapshot:** Operations use a point-in-time snapshot. Records modified by
+ * other writers during consolidation may be deleted based on stale state. Callers
+ * should schedule dream runs during low-activity windows (e.g., nightly).
  */
 export async function runDreamConsolidation(config: DreamConfig): Promise<DreamResult> {
   const startTime = config.now ?? Date.now();
