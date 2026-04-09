@@ -114,13 +114,22 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             // corrupt the transcript. Commit user + assistant atomically so a
             // failed turn leaves no orphaned user prompt for the next turn.
             if (event.output.stopReason === "completed") {
-              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
               transcript.push(stagedUserMsg);
-              if (assistantText.length > 0) {
+              // Preserve the full assistant content including tool_call and
+              // tool_result blocks so follow-up turns see tool history.
+              // Fall back to accumulated deltas only when content is empty.
+              const fullContent = event.output.content;
+              if (fullContent.length > 0) {
                 transcript.push({
                   senderId: "assistant",
                   timestamp: Date.now(),
-                  content: [{ kind: "text", text: assistantText }],
+                  content: fullContent,
+                });
+              } else if (deltaText.length > 0) {
+                transcript.push({
+                  senderId: "assistant",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text", text: deltaText }],
                 });
               }
             }

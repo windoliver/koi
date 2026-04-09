@@ -39,7 +39,6 @@ function AssistantBlock(props: {
           <TextBlock
             text={b().text}
             syntaxStyle={props.syntaxStyle}
-            treeSitterClient={props.treeSitterClient}
             streaming={props.streaming}
           />
         )}

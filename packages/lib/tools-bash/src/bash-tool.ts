@@ -89,6 +89,8 @@ interface BashSuccessResult {
   readonly timedOut?: true;
   readonly truncated?: true;
   readonly truncatedNote?: string;
+  /** True when the command ran inside an OS sandbox (seatbelt/bwrap). */
+  readonly sandboxed?: boolean;
 }
 
 /** Shape of the bash tool's JSON output when the command is blocked. */
@@ -272,6 +274,7 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
         stderr: raw.stderr,
         exitCode: raw.exitCode,
         durationMs: raw.durationMs,
+        ...(sandboxAdapter !== undefined ? { sandboxed: true } : {}),
         ...(raw.timedOut ? { timedOut: true as const } : {}),
         ...(raw.truncated
           ? {

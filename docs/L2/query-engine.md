@@ -82,6 +82,39 @@ callId pairing consistent for session-repair.
 - **Transcript**: all tool call intents (including skipped) appear in the assistant message;
   skipped calls get the real tool output replicated under their callId.
 
+## Doom Loop Detection
+
+`runTurn` detects when the model calls the same tool with identical arguments across
+consecutive turns (#1593). Uses per-key streak counters (`Map<string, number>`) with
+configurable threshold (default 3) and per-key intervention budgets (default 2).
+
+### Behavior
+
+- **All-repeated turns**: When every deduped call exceeds the streak threshold,
+  the runner injects a `system:doom-loop` message and re-prompts via `stop_blocked`.
+  Tool call intents and synthetic blocked results are recorded in the transcript.
+- **Mixed turns**: When only some calls are repeated, the repeated calls are filtered
+  out and receive synthetic results; new calls execute normally.
+- **Budget reset**: Intervention budgets reset when no keys exceed the threshold
+  (model moved on) or on text-only turns.
+
+### Config
+
+- `doomLoopThreshold` — consecutive turns before intervention (default 3, 0/1 disables)
+- `maxDoomLoopInterventions` — per-key cap before letting calls through (default 2)
+
+### Public API
+
+- `partitionDoomLoopKeys(streaks, currentKeys, threshold)` — partition keys into repeated/non-repeated
+- `updateStreaks(streaks, currentKeys)` — update streak counters (returns new Map)
+- `parseDoomLoopKey(key)` — split `toolName\0canonicalArgs` key
+- `DEFAULT_DOOM_LOOP_THRESHOLD`, `DEFAULT_MAX_DOOM_LOOP_INTERVENTIONS`
+
+### Observability
+
+- `{ kind: "custom", type: "doom_loop_detected", data: { toolNames, consecutiveTurns, turnIndex } }` — full intervention
+- `{ kind: "custom", type: "doom_loop_filtered", data: { blockedTools, turnIndex } }` — mixed-turn filtering
+
 ## Not in scope
 
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.

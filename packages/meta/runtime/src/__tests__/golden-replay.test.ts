@@ -1892,29 +1892,21 @@ describe("Golden: @koi/tasks", () => {
 
     const allChunks = stream.read(0);
     expect(allChunks).toHaveLength(2);
-    const chunk0 = allChunks[0];
-    const chunk1 = allChunks[1];
-    expect(chunk0).toBeDefined();
-    expect(chunk1).toBeDefined();
-    if (chunk0 === undefined || chunk1 === undefined) return;
-    expect(chunk0.content).toBe("hello ");
-    expect(chunk0.offset).toBe(0);
-    expect(chunk1.content).toBe("world");
+    expect(allChunks[0]?.content).toBe("hello ");
+    expect(allChunks[0]?.offset).toBe(0);
+    expect(allChunks[1]?.content).toBe("world");
 
     // Each chunk has byteLength
-    expect(chunk0.byteLength).toBe(6); // "hello " = 6 bytes
-    expect(chunk1.byteLength).toBe(5); // "world" = 5 bytes
+    expect(allChunks[0]?.byteLength).toBe(6); // "hello " = 6 bytes
+    expect(allChunks[1]?.byteLength).toBe(5); // "world" = 5 bytes
 
     // Total length is 11 bytes
     expect(stream.length()).toBe(11);
 
     // Delta read from second chunk's offset returns only "world"
-    const deltaChunks = stream.read(chunk1.offset);
+    const deltaChunks = stream.read(allChunks[1]?.offset ?? 0);
     expect(deltaChunks).toHaveLength(1);
-    const deltaChunk0 = deltaChunks[0];
-    expect(deltaChunk0).toBeDefined();
-    if (deltaChunk0 === undefined) return;
-    expect(deltaChunk0.content).toBe("world");
+    expect(deltaChunks[0]?.content).toBe("world");
   });
 
   test("createTaskRegistry + task kind type guards exercise runtime surface", async () => {
@@ -1943,13 +1935,15 @@ describe("Golden: @koi/tasks", () => {
 
     // Start a task through the lifecycle
     const output = createOutputStream();
-    const lifecycle = registry.get("local_shell");
-    expect(lifecycle).toBeDefined();
-    if (lifecycle === undefined) return;
-    const state = await lifecycle.start(taskItemId("task_1"), output, { command: "echo test" });
-    expect(isLocalShellTask(state)).toBe(true);
-    expect(isRuntimeTask(state)).toBe(true);
-    expect(state.kind).toBe("local_shell");
+    const state = await registry
+      .get("local_shell")
+      ?.start(taskItemId("task_1"), output, { command: "echo test" });
+    expect(state).toBeDefined();
+    if (state !== undefined) {
+      expect(isLocalShellTask(state)).toBe(true);
+      expect(isRuntimeTask(state)).toBe(true);
+      expect(state.kind).toBe("local_shell");
+    }
   });
 });
 
@@ -6322,6 +6316,97 @@ describe("Golden: @koi/session — session-resume trajectory", () => {
     // Model should mention 10 (prior 3+7) and 40 (new 15+25)
     expect(lastContent).toContain("10");
     expect(lastContent).toContain("40");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// system:* sender preservation across persist/resume
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/session — system-sender-resume trajectory", () => {
+  type Step = {
+    readonly source: string;
+    readonly tool_calls?: readonly {
+      readonly function_name: string;
+      readonly arguments?: Record<string, unknown>;
+    }[];
+    readonly observation?: {
+      readonly results?: readonly { readonly content: string }[];
+    };
+    readonly extra?: {
+      readonly type?: string;
+      readonly middlewareName?: string;
+      readonly hook?: string;
+    };
+  };
+
+  const loadTrajectory = async (): Promise<readonly Step[]> => {
+    const doc = (await Bun.file(`${FIXTURES}/system-sender-resume.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly steps: readonly Step[];
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    return doc.steps;
+  };
+
+  test("system:doom-loop sender survives persist/resume cycle", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("sr-e1"),
+        role: "user" as const,
+        content: "test",
+        timestamp: 1000,
+      },
+      {
+        id: transcriptEntryId("sr-e2"),
+        role: "system" as const,
+        content: "[System note]: Session checkpoint saved.",
+        timestamp: 2000,
+        metadata: { senderId: "system:doom-loop" },
+      },
+    ];
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const systemMsg = result.value.messages.find((m) => m.senderId === "system:doom-loop");
+      expect(systemMsg).toBeDefined();
+      expect(systemMsg?.content[0]).toMatchObject({
+        kind: "text",
+        text: "[System note]: Session checkpoint saved.",
+      });
+    }
+  });
+
+  test("plain system entries without metadata.senderId are still replayed as user", async () => {
+    const { resumeFromTranscript } = await import("@koi/session");
+    const { transcriptEntryId } = await import("@koi/core");
+
+    const entries = [
+      {
+        id: transcriptEntryId("sr-plain-e1"),
+        role: "system" as const,
+        content: "caller-controlled system message",
+        timestamp: 1000,
+      },
+    ];
+    const result = resumeFromTranscript(entries);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const msg = result.value.messages[0];
+      expect(msg?.senderId).toBe("user");
+    }
+  });
+
+  test("trajectory has add_numbers tool call after resumed doom-loop context", async () => {
+    const steps = await loadTrajectory();
+    const toolStep = steps.find(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "add_numbers"),
+    );
+    // The model should still use add_numbers despite the prior doom-loop warning
+    expect(toolStep).toBeDefined();
   });
 });
 

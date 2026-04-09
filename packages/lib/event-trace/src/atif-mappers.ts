@@ -21,6 +21,7 @@ import type {
   AtifStep,
   AtifStepFlat,
   AtifStepMetrics,
+  AtifSystemStep,
   AtifToolCall,
   AtifToolStep,
 } from "./atif-types.js";
@@ -151,6 +152,7 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
         timestamp,
         message: step.request?.text ?? "",
         ...systemOptionalBase,
+        ...pickDefined({ observation: buildObservation(step) }),
       };
     }
   }
@@ -327,7 +329,10 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
         kind: recoveredKind,
         identifier: recoveredIdentifier,
         outcome: step.outcome ?? "success",
-        request: { text: step.message },
+        ...pickDefined({
+          request: step.message !== undefined ? ({ text: step.message } as RichContent) : undefined,
+          response: extractObservationResponse(step),
+        }),
       };
     }
   }
@@ -368,7 +373,9 @@ function inferOutcomeFromAgentOrTool(
   return "failure";
 }
 
-function extractObservationResponse(step: AtifAgentStep | AtifToolStep): RichContent | undefined {
+function extractObservationResponse(
+  step: AtifAgentStep | AtifToolStep | AtifSystemStep,
+): RichContent | undefined {
   if (step.observation?.results !== undefined && step.observation.results.length > 0) {
     const firstResult = step.observation.results[0];
     if (firstResult !== undefined) {
@@ -454,6 +461,7 @@ export function parseStep(flat: AtifStepFlat): AtifStep {
           duration_ms: flat.duration_ms,
           outcome: flat.outcome,
           extra: flat.extra,
+          observation: flat.observation,
         }),
       };
   }

@@ -80,51 +80,14 @@ export function wrapMiddlewareWithTrace(
   // Issue 13: buffer spans in-turn, flush once in onAfterTurn
   const pendingSteps: RichTrajectoryStep[] = [];
 
-  function recordStep(
-    base: Omit<RichTrajectoryStep, "stepIndex" | "metadata">,
-    metadata: JsonObject,
-  ): void {
-    pendingSteps.push({ ...base, stepIndex: spanIndex++, metadata });
+  function recordStep(step: Omit<RichTrajectoryStep, "stepIndex">): void {
+    pendingSteps.push({ ...step, stepIndex: spanIndex++ });
   }
 
   async function flushSteps(): Promise<void> {
     if (pendingSteps.length === 0) return;
     const toFlush = pendingSteps.splice(0);
     await store.append(docId, toFlush).catch(() => {});
-  }
-
-  // Issue 5: shared metadata builder — eliminates 5× duplication of the base shape
-  function buildSpanMeta(hook: string, nextCalled: boolean, extras?: JsonObject): JsonObject {
-    return {
-      type: "middleware_span",
-      middlewareName: mw.name,
-      hook,
-      phase: mw.phase ?? "resolve",
-      priority: mw.priority ?? 500,
-      nextCalled,
-      ...(extras ?? {}),
-    };
-  }
-
-  // Issue 5: shared base step builder
-  function buildBaseStep(
-    outcome: "success" | "failure",
-    start: number,
-    requestText: string,
-    responseText?: string,
-    errorText?: string,
-  ): Omit<RichTrajectoryStep, "stepIndex" | "metadata"> {
-    return {
-      timestamp: clock(),
-      source: "system",
-      kind: "model_call",
-      identifier: `middleware:${mw.name}`,
-      outcome,
-      durationMs: performance.now() - start,
-      request: { text: requestText },
-      ...(responseText !== undefined ? { response: { text: responseText } } : {}),
-      ...(errorText !== undefined ? { error: { text: errorText } } : {}),
-    };
   }
 
   const wrappedModelCall =
@@ -137,7 +100,6 @@ export function wrapMiddlewareWithTrace(
           const hook = mw.wrapModelCall;
           if (hook === undefined) return next(request);
 
-          const requestPreview = extractModelRequestText(request);
           const start = performance.now();
           // let: mutable — tracks whether next() was called and captures modified request
           let nextCalled = false;
@@ -184,24 +146,52 @@ export function wrapMiddlewareWithTrace(
               captureDeltas === true && afterSnapshot !== undefined && beforeSnapshot !== undefined
                 ? computeRequestDeltaFromSnapshots(beforeSnapshot, afterSnapshot)
                 : undefined;
-            recordStep(
-              buildBaseStep("success", start, requestPreview, response.content.slice(0, 500)),
-              buildSpanMeta("wrapModelCall", nextCalled, {
+            // ModelCall spans: omit request/response — those are on the
+            // model step. MW spans only capture the middleware's own behavior.
+            const modelDecision = nextCalled ? "allowed" : "blocked";
+            recordStep({
+              stepIndex: 0,
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "success",
+              durationMs: performance.now() - start,
+              response: { text: modelDecision },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "wrapModelCall",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                nextCalled,
                 ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
                 // Issue 12: decisions preserved in both success and failure paths
                 ...(decisions.length > 0 ? { decisions } : {}),
-              }),
-            );
+              },
+            });
             return response;
           } catch (error: unknown) {
             const errorText = error instanceof Error ? error.message : String(error);
-            recordStep(
-              buildBaseStep("failure", start, requestPreview, undefined, errorText),
-              buildSpanMeta("wrapModelCall", nextCalled, {
-                // Issue 12: decisions accumulated before throw are preserved
+            recordStep({
+              stepIndex: 0,
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "failure",
+              durationMs: performance.now() - start,
+              error: { text: errorText },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "wrapModelCall",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                nextCalled,
                 ...(decisions.length > 0 ? { decisions } : {}),
-              }),
-            );
+              },
+            });
             throw error;
           }
         }
@@ -261,10 +251,6 @@ export function wrapMiddlewareWithTrace(
 
           try {
             const response = await hook(traceCtx, request, trackedNext);
-            const outputStr =
-              typeof response.output === "string"
-                ? response.output
-                : safeStringify(response.output, 500);
             // let: mutable — computed in try block for fail-open safety
             let deltaMeta: JsonObject | undefined;
             try {
@@ -281,22 +267,53 @@ export function wrapMiddlewareWithTrace(
             } catch {
               // Fail-open: tracing never breaks the request path
             }
-            recordStep(
-              buildBaseStep("success", start, requestPreview, outputStr.slice(0, 500)),
-              buildSpanMeta("wrapToolCall", nextCalled, {
+            // Tool spans: request shows tool+args (concise), response shows
+            // MW decision — not the full tool output (that's on the tool step).
+            const decision = nextCalled ? "allowed" : "blocked";
+            recordStep({
+              stepIndex: 0,
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "success",
+              durationMs: performance.now() - start,
+              request: { text: requestPreview },
+              response: { text: decision },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "wrapToolCall",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                nextCalled,
                 ...(deltaMeta !== undefined ? { inputDelta: deltaMeta } : {}),
                 ...(decisions.length > 0 ? { decisions } : {}),
-              }),
-            );
+              },
+            });
             return response;
           } catch (error: unknown) {
             const errorText = error instanceof Error ? error.message : String(error);
-            recordStep(
-              buildBaseStep("failure", start, requestPreview, undefined, errorText),
-              buildSpanMeta("wrapToolCall", nextCalled, {
+            recordStep({
+              stepIndex: 0,
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "failure",
+              durationMs: performance.now() - start,
+              request: { text: requestPreview },
+              error: { text: errorText },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "wrapToolCall",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                nextCalled,
                 ...(decisions.length > 0 ? { decisions } : {}),
-              }),
-            );
+              },
+            });
             throw error;
           }
         }
@@ -312,7 +329,6 @@ export function wrapMiddlewareWithTrace(
           const hook = mw.wrapModelStream;
           if (hook === undefined) return next(request);
 
-          const requestPreview = extractModelRequestText(request);
           const start = performance.now();
 
           // Track modified request for delta capture in stream path.
@@ -349,30 +365,36 @@ export function wrapMiddlewareWithTrace(
 
           // Wrap the stream to record on completion, tracking success/failure/abort
           const inner = hook(traceCtx, request, trackedStreamNext);
-          return wrapStreamForTrace(inner, (outcome, errorMessage) => {
+          return wrapStreamForTrace(inner, (outcome, errorMessage, _responseText) => {
             const deltaMeta =
               captureDeltas === true &&
               afterStreamSnapshot !== undefined &&
               beforeStreamSnapshot !== undefined
                 ? computeRequestDeltaFromSnapshots(beforeStreamSnapshot, afterStreamSnapshot)
                 : undefined;
-            recordStep(
-              {
-                timestamp: clock(),
-                source: "system",
-                kind: "model_call",
-                identifier: `middleware:${mw.name}`,
-                outcome,
-                durationMs: performance.now() - start,
-                request: { text: requestPreview },
-                ...(errorMessage !== undefined ? { error: { text: errorMessage } } : {}),
-              },
-              buildSpanMeta("wrapModelStream", true, {
+            // ModelStream spans: omit request/response — those are on the model
+            // step itself. MW spans only capture the middleware's own behavior
+            // (duration, outcome, nextCalled, deltas).
+            recordStep({
+              stepIndex: 0,
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome,
+              durationMs: performance.now() - start,
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "wrapModelStream",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                nextCalled: true,
                 ...(errorMessage !== undefined ? { error: errorMessage } : {}),
                 ...(deltaMeta !== undefined ? { requestDelta: deltaMeta } : {}),
                 ...(decisions.length > 0 ? { decisions } : {}),
-              }),
-            );
+              },
+            });
           });
         }
       : undefined;
@@ -574,29 +596,48 @@ function computeRequestDeltaFromSnapshots(
   }
 }
 
-/** Passthrough wrapper that records stream outcome (success/failure/early-return). */
+/** Passthrough wrapper that records stream outcome and accumulates response text. */
 async function* wrapStreamForTrace(
   inner: AsyncIterable<ModelChunk>,
-  onComplete: (outcome: "success" | "failure", errorMessage?: string) => void,
+  onComplete: (
+    outcome: "success" | "failure",
+    errorMessage?: string,
+    responseText?: string,
+  ) => void,
 ): AsyncIterable<ModelChunk> {
   // let: mutable — tracks whether onComplete was already called
   let recorded = false;
+  // Accumulate text_delta chunks for response capture (capped at 500 chars)
+  const textParts: string[] = [];
+  // let: mutable — running length to avoid repeated join for cap check
+  let textLen = 0;
+  const TEXT_CAP = 500;
   try {
-    yield* inner;
+    for await (const chunk of inner) {
+      if (chunk.kind === "text_delta" && textLen < TEXT_CAP) {
+        textParts.push(chunk.delta);
+        textLen += chunk.delta.length;
+      }
+      yield chunk;
+    }
     recorded = true;
-    onComplete("success");
+    const responseText = textParts.join("").slice(0, TEXT_CAP);
+    onComplete("success", undefined, responseText.length > 0 ? responseText : undefined);
   } catch (error: unknown) {
     recorded = true;
     const message = error instanceof Error ? error.message : String(error);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
-    onComplete("failure", isAbort ? "interrupted" : message);
+    const responseText = textParts.join("").slice(0, TEXT_CAP);
+    onComplete(
+      "failure",
+      isAbort ? "interrupted" : message,
+      responseText.length > 0 ? responseText : undefined,
+    );
     throw error;
   } finally {
-    // Consumer-driven generator closure (return() called without exhaustion).
-    // This is normal control flow — the caller consumed enough events and stopped.
-    // Record as success, not failure, to avoid poisoning telemetry.
     if (!recorded) {
-      onComplete("success");
+      const responseText = textParts.join("").slice(0, TEXT_CAP);
+      onComplete("success", undefined, responseText.length > 0 ? responseText : undefined);
     }
   }
 }

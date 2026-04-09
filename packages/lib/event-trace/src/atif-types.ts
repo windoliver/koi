@@ -94,10 +94,12 @@ export interface AtifUserStep extends AtifStepBase {
   readonly message: string;
 }
 
-/** System step — system-level event or instruction. */
+/** System step — system-level event or instruction (including MW span responses). */
 export interface AtifSystemStep extends AtifStepBase {
   readonly source: "system";
   readonly message: string;
+  /** Observation for system steps — MW span response content from trace wrapper. */
+  readonly observation?: AtifObservation;
 }
 
 /** Discriminated union of all ATIF step variants. */

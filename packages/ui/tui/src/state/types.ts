@@ -31,7 +31,7 @@ export const MAX_SESSIONS = 50;
 // ---------------------------------------------------------------------------
 
 /** Screen-level views — one active at a time. */
-export type TuiView = "conversation" | "sessions" | "doctor" | "help";
+export type TuiView = "conversation" | "sessions" | "doctor" | "help" | "trajectory";
 
 /** Risk level for permission prompts — computed by permissions middleware. */
 export type PermissionRiskLevel = "low" | "medium" | "high";
@@ -206,6 +206,51 @@ export interface TuiState {
   readonly runningToolCount: number;
   /** Whether tool result bodies are expanded (Ctrl+E toggle). */
   readonly toolsExpanded: boolean;
+  /** Trajectory steps for /trajectory view — injected by host via set_trajectory_data. */
+  readonly trajectorySteps: readonly TrajectoryStepSummary[];
+}
+
+/** Summary of a trajectory step for display in the TUI /trajectory view. */
+export interface TrajectoryStepSummary {
+  /** Step index in the trajectory. */
+  readonly stepIndex: number;
+  /** Step kind: "model_call", "tool_call", "system", etc. */
+  readonly kind: string;
+  /** Tool name (for tool steps) or model identifier (for model steps). */
+  readonly identifier: string;
+  /** Duration in milliseconds. */
+  readonly durationMs: number | undefined;
+  /** Outcome: "success", "failure", "retry", or undefined. */
+  readonly outcome: string | undefined;
+  /** Timestamp of the step (epoch ms). */
+  readonly timestamp: number;
+  /** Request content — tool arguments (JSON) or model prompt text. */
+  readonly requestText: string | undefined;
+  /** Response content — tool result or model output text. */
+  readonly responseText: string | undefined;
+  /** Error content when outcome is "failure". */
+  readonly errorText: string | undefined;
+  /** Token metrics for model steps. */
+  readonly tokens: TrajectoryTokenMetrics | undefined;
+  /** Middleware span metadata (hook name, phase, nextCalled, decision). */
+  readonly middlewareSpan: TrajectoryMiddlewareSpan | undefined;
+}
+
+/** Metadata for a middleware span trajectory step. */
+export interface TrajectoryMiddlewareSpan {
+  /** Which hook fired: "wrapModelCall", "wrapToolCall", "wrapModelStream". */
+  readonly hook: string | undefined;
+  /** Middleware phase: "intercept", "resolve", "observe". */
+  readonly phase: string | undefined;
+  /** Whether next() was called (false = middleware blocked the chain). */
+  readonly nextCalled: boolean | undefined;
+}
+
+/** Token metrics for a single trajectory step. */
+export interface TrajectoryTokenMetrics {
+  readonly promptTokens: number | undefined;
+  readonly completionTokens: number | undefined;
+  readonly cachedTokens: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +295,11 @@ export type TuiAction =
     }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | { readonly kind: "toggle_tools_expanded" }
+  | {
+      /** Injected by the host with trajectory step summaries for /trajectory view. */
+      readonly kind: "set_trajectory_data";
+      readonly steps: readonly TrajectoryStepSummary[];
+    }
   | {
       /**
        * Replays loaded session history into the message list.
