@@ -23,16 +23,9 @@ import type {
   TaskBoardConfig,
   TaskBoardEvent,
   TaskBoardStore,
-  TaskInput,
-  TaskItemId,
-  TaskPatch,
   TaskResult,
 } from "@koi/core";
-import {
-  buildPlanUpdate,
-  createTaskBoard,
-  mapTaskBoardEventToEngineEvents,
-} from "@koi/task-board";
+import { buildPlanUpdate, createTaskBoard, mapTaskBoardEventToEngineEvents } from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -195,9 +188,7 @@ export async function createManagedTaskBoard(
   if (resultsDir !== undefined) {
     await mkdir(resultsDir, { recursive: true });
     const allResults = await loadResultsFromDir(resultsDir);
-    const completedIds = new Set(
-      items.filter((t) => t.status === "completed").map((t) => t.id),
-    );
+    const completedIds = new Set(items.filter((t) => t.status === "completed").map((t) => t.id));
     initialResults = allResults.filter((r) => completedIds.has(r.taskId));
   }
 
@@ -231,7 +222,7 @@ export async function createManagedTaskBoard(
   ): Promise<Result<TaskBoard, KoiError>> {
     // Chain behind any in-flight mutation
     const prev = pending;
-    let release: () => void;
+    let release: (() => void) | undefined;
     pending = new Promise<void>((r) => {
       release = r;
     });
@@ -305,7 +296,7 @@ export async function createManagedTaskBoard(
         },
       };
     } finally {
-      release!();
+      release?.();
     }
   }
 
@@ -345,9 +336,7 @@ export async function createManagedTaskBoard(
     complete: (taskId, taskResult) =>
       applyMutation(
         (b) => b.complete(taskId, taskResult),
-        resultsDir !== undefined
-          ? async () => persistResult(resultsDir, taskResult)
-          : undefined,
+        resultsDir !== undefined ? async () => persistResult(resultsDir, taskResult) : undefined,
       ),
 
     completeOwnedTask: (taskId, agentId, taskResult) =>
@@ -372,9 +361,7 @@ export async function createManagedTaskBoard(
           }
           return b.complete(taskId, taskResult);
         },
-        resultsDir !== undefined
-          ? async () => persistResult(resultsDir, taskResult)
-          : undefined,
+        resultsDir !== undefined ? async () => persistResult(resultsDir, taskResult) : undefined,
       ),
 
     fail: (taskId, error) => applyMutation((b) => b.fail(taskId, error)),
