@@ -286,5 +286,64 @@ describe("createExtractionMiddleware", () => {
       await mw.onSessionEnd?.(createSessionCtx());
       expect(modelCall).toHaveBeenCalledTimes(1);
     });
+
+    test("excludes preference learnings (user type) from persistence", async () => {
+      const memory = createMockMemory();
+      const modelResponse = JSON.stringify([
+        { content: "User prefers tabs", category: "preference" },
+        { content: "Always validate input", category: "heuristic" },
+      ]);
+      const modelCall = createMockModelCall(modelResponse);
+      const mw = createExtractionMiddleware({ memory, modelCall });
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => toolResponse("did work"));
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      // Only the heuristic should be stored, not the preference (user type)
+      expect(memory.stored).toHaveLength(1);
+      expect(memory.stored[0]?.content).toBe("Always validate input");
+    });
+  });
+
+  describe("session isolation", () => {
+    test("interleaved sessions do not share output buffers", async () => {
+      const memory = createMockMemory();
+      const modelCall = createMockModelCall("[]");
+      const mw = createExtractionMiddleware({ memory, modelCall });
+
+      const sessA = createSessionCtx({ sessionId: "sess-a" as never });
+      const sessB = createSessionCtx({ sessionId: "sess-b" as never });
+      const turnA: TurnContext = {
+        session: sessA,
+        turnIndex: 0,
+        turnId: "turn-a" as never,
+        messages: [],
+        metadata: {},
+      };
+      const turnB: TurnContext = {
+        session: sessB,
+        turnIndex: 0,
+        turnId: "turn-b" as never,
+        messages: [],
+        metadata: {},
+      };
+
+      await mw.onSessionStart?.(sessA);
+      await mw.onSessionStart?.(sessB);
+
+      // Session A accumulates an output
+      const nextA = mock(async () => toolResponse("output from A"));
+      await mw.wrapToolCall?.(turnA, spawnToolRequest(), nextA);
+
+      // Session B ends — should NOT trigger LLM call (B has no outputs)
+      await mw.onSessionEnd?.(sessB);
+      expect(modelCall).not.toHaveBeenCalled();
+
+      // Session A ends — should trigger LLM call (A has an output)
+      await mw.onSessionEnd?.(sessA);
+      expect(modelCall).toHaveBeenCalledTimes(1);
+    });
   });
 });

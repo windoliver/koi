@@ -13,6 +13,7 @@ import type {
   CapabilityFragment,
   KoiMiddleware,
   SessionContext,
+  SessionId,
   ToolRequest,
   ToolResponse,
   TurnContext,
@@ -42,9 +43,11 @@ function outputToString(output: unknown): string {
  * Creates the extraction middleware.
  *
  * Session lifecycle:
- * - onSessionStart: initializes session state (output accumulator)
+ * - onSessionStart: initializes per-session state (output accumulator)
  * - wrapToolCall: intercepts spawn-family tools, extracts via regex, accumulates for LLM
  * - onSessionEnd: runs LLM extraction over accumulated outputs, cleans up state
+ *
+ * State is keyed by SessionId to prevent cross-session bleed under concurrency.
  */
 export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): KoiMiddleware {
   const extractor = config.extractor ?? createDefaultExtractor();
@@ -52,16 +55,29 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
   const maxOutputSizeBytes = config.maxOutputSizeBytes ?? EXTRACTION_DEFAULTS.maxOutputSizeBytes;
   const extractionMaxTokens = config.extractionMaxTokens ?? EXTRACTION_DEFAULTS.extractionMaxTokens;
 
-  // Session-scoped state — initialized in onSessionStart, cleaned in onSessionEnd.
-  // let justified: mutable session state for output accumulation across tool calls
-  let sessionOutputs: string[] = [];
+  // Per-session output accumulator — keyed by SessionId to prevent cross-session bleed.
+  const sessionOutputsMap = new Map<SessionId, string[]>();
 
-  /** Persists a batch of extraction candidates to memory. */
+  /**
+   * Persists a batch of extraction candidates to memory.
+   *
+   * Candidates mapped to MemoryType "user" (e.g., preference learnings) are
+   * excluded because MemoryComponent.store() does not support specifying the
+   * storage type. Storing them without "user" type would allow them to bypass
+   * team-sync type guards that block "user" memories from leaving the local store.
+   */
   async function persistCandidates(candidates: readonly ExtractionCandidate[]): Promise<void> {
     // let justified: mutable flag tracking whether any store succeeded
     let stored = false;
 
     for (const candidate of candidates) {
+      // Skip candidates that require "user" type isolation — MemoryComponent.store()
+      // cannot set the record type, so these would be stored without the correct
+      // privacy boundary and could leak through team sync.
+      if (candidate.memoryType === "user") {
+        continue;
+      }
+
       try {
         await config.memory.store(candidate.content, {
           category: candidate.category,
@@ -89,13 +105,13 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
       };
     },
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
-      sessionOutputs = [];
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      sessionOutputsMap.set(ctx.sessionId, []);
     },
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      const outputs = sessionOutputs;
-      sessionOutputs = []; // Clean up before async work
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const outputs = sessionOutputsMap.get(ctx.sessionId) ?? [];
+      sessionOutputsMap.delete(ctx.sessionId); // Clean up before async work
 
       // Skip LLM extraction if no model call or no accumulated outputs
       if (config.modelCall === undefined || outputs.length === 0) {
@@ -127,7 +143,7 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: (request: ToolRequest) => Promise<ToolResponse>,
     ): Promise<ToolResponse> {
@@ -143,9 +159,15 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
         return response;
       }
 
-      // Accumulate output for post-session LLM extraction (bounded)
-      if (config.modelCall !== undefined && sessionOutputs.length < maxSessionOutputs) {
-        sessionOutputs = [...sessionOutputs, outputStr];
+      // Accumulate output for post-session LLM extraction (bounded, per-session)
+      const sessionId = ctx.session.sessionId;
+      const outputs = sessionOutputsMap.get(sessionId);
+      if (
+        config.modelCall !== undefined &&
+        outputs !== undefined &&
+        outputs.length < maxSessionOutputs
+      ) {
+        sessionOutputsMap.set(sessionId, [...outputs, outputStr]);
       }
 
       // Extract learnings via regex (real-time)

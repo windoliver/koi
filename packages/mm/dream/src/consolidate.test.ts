@@ -212,4 +212,27 @@ describe("runDreamConsolidation", () => {
     expect(result.unchanged).toBe(2);
     expect(result.merged).toBe(0);
   });
+
+  test("never merges user and non-user memories even when content is similar", async () => {
+    const memories = [
+      createMemory("u1", "always validate input at boundaries", "user", 2),
+      createMemory("f1", "always validate input at boundaries", "feedback", 2),
+    ];
+    const modelCall = createMockModelCall({
+      name: "Merged",
+      description: "Merged",
+      type: "feedback",
+      content: "Merged content",
+    });
+    const config = createConfig(memories, modelCall, {
+      mergeThreshold: 0.3,
+    });
+    const result = await runDreamConsolidation(config);
+
+    // Both should remain unchanged — different types prevent clustering
+    expect(result.merged).toBe(0);
+    expect(result.unchanged).toBe(2);
+    // Model should not even be called since no multi-member clusters
+    expect(modelCall).not.toHaveBeenCalled();
+  });
 });

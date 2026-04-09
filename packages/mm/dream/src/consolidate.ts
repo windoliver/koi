@@ -158,8 +158,19 @@ export async function runDreamConsolidation(config: DreamConfig): Promise<DreamR
     }
   }
 
-  // Step 3: Cluster active memories by similarity
-  const clusters = clusterBySimilarity(active, mergeThreshold, similarity);
+  // Step 3: Partition by type, then cluster within each type.
+  // This prevents mixed-type merges (e.g., private "user" merged with "feedback"),
+  // which would break trust boundaries.
+  const byType = new Map<string, MemoryRecord[]>();
+  for (const memory of active) {
+    const group = byType.get(memory.type) ?? [];
+    group.push(memory);
+    byType.set(memory.type, group);
+  }
+
+  const clusters: readonly MemoryCluster[] = [...byType.values()].flatMap((group) =>
+    clusterBySimilarity(group, mergeThreshold, similarity),
+  );
 
   // Step 4: Merge multi-member clusters via LLM
   // let justified: mutable counter for merged cluster count
