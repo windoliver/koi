@@ -37,7 +37,6 @@ import type {
   MemoryRecordInput,
   ModelAdapter,
   RichTrajectoryStep,
-  SessionContext,
   SessionId,
   SessionTranscript,
   SpawnFn,
@@ -47,8 +46,6 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   agentId as makeAgentId,
   memoryRecordId,
-  runId,
-  sessionId,
 } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
@@ -864,24 +861,20 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       });
       boardRef.current = newBoard;
 
-      // 5. Invalidate skills-runtime cache so new-session discovers fresh skills.
-      skillsRuntime.invalidate();
-
-      // 5b. Reset goal middleware state so completed goals, reminder backoff, and
-      //     drift state don't carry into the new session. Cycle onSessionEnd →
-      //     onSessionStart to tear down old state and reinitialize fresh.
-      if (goalMw?.onSessionEnd !== undefined && goalMw.onSessionStart !== undefined) {
-        const resetCtx: SessionContext = {
-          agentId: tuiAgentId,
-          sessionId: sessionId(runtime.sessionId),
-          runId: runId("reset"),
-          metadata: {},
-        };
-        await goalMw.onSessionEnd(resetCtx);
-        await goalMw.onSessionStart(resetCtx);
-      }
-
-      // 6. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      //
+      // Known limitation: goal middleware state and skill surfaces are NOT reset
+      // on session:new / agent:clear. Goal state (completed items, reminder
+      // backoff, drift) persists across TUI session resets. Skill descriptor
+      // listing and system prompt skill snapshot are static for the process
+      // lifetime. Both require a full TUI restart to refresh.
+      //
+      // Manual lifecycle hook cycling (onSessionEnd/onSessionStart) is unsafe
+      // here because the aborted run's engine finally block also calls
+      // onSessionEnd on the same sessionId, creating a race that can delete
+      // freshly-initialized goal state. Rebuilding the runtime on reset would
+      // fix both, but requires createKoi to support hot-swapping — tracked as
+      // a known limitation.
       await trajectoryStore.prune(Date.now() + 86_400_000);
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
