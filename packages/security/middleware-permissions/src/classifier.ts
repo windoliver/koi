@@ -52,8 +52,8 @@ export const DEFAULT_GROUPS: Readonly<Record<string, readonly string[]>> = {
   db: ["db:*"],
   db_read: ["db:query", "db:read", "db:select"],
   db_write: ["db:write", "db:insert", "db:update", "db:delete"],
-  lsp: ["lsp/*"],
-  mcp: ["mcp/*"],
+  lsp: ["lsp/*", "lsp__*"],
+  mcp: ["mcp/*", "mcp__*"],
 } as const;
 
 // ---------------------------------------------------------------------------

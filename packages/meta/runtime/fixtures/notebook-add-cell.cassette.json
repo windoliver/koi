@@ -1,0 +1,87 @@
+{
+  "name": "notebook-add-cell",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775628923840,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "notebook_add_cell",
+      "callId": "tool_notebook_add_cell_6za3dl8vGWd8lSvupKIn"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_add_cell_6za3dl8vGWd8lSvupKIn",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_add_cell_6za3dl8vGWd8lSvupKIn",
+      "delta": "{\"index\":1,\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\",\"source\":\"print('added by golden query')\",\"cell_type\":\"code\"}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "notebook_read",
+      "callId": "tool_notebook_read_bxSial26R6O7BsvXPYvB"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_read_bxSial26R6O7BsvXPYvB",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_read_bxSial26R6O7BsvXPYvB",
+      "delta": "{\"path\":\"/tmp/koi-golden-notebook-1775628921644.ipynb\"}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 202,
+      "outputTokens": 72
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_notebook_add_cell_6za3dl8vGWd8lSvupKIn"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_notebook_read_bxSial26R6O7BsvXPYvB"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775628922-F1sRqyt35ydrVgfZuis8",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_notebook_add_cell_6za3dl8vGWd8lSvupKIn",
+            "name": "notebook_add_cell",
+            "arguments": {
+              "index": 1,
+              "path": "/tmp/koi-golden-notebook-1775628921644.ipynb",
+              "source": "print('added by golden query')",
+              "cell_type": "code"
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_notebook_read_bxSial26R6O7BsvXPYvB",
+            "name": "notebook_read",
+            "arguments": {
+              "path": "/tmp/koi-golden-notebook-1775628921644.ipynb"
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 202,
+          "outputTokens": 72
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "eda87086aff8c4e4cb3db774d11dbd8d554397ff5e508100d28f90bc1a34d2da"
+        }
+      }
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 import type { SandboxProfile } from "@koi/core";
 
+import { stripGlobSuffix } from "../path-utils.js";
+
 /**
  * macOS uses top-level symlinks that seatbelt does NOT resolve:
  *   /var  → /private/var
@@ -47,7 +49,7 @@ function resolvePath(path: string, home: string | undefined): string | null {
   }
 
   // Strip glob suffix — use the base directory as a subpath rule
-  resolved = resolved.replace(/\/?\*.*$/, "");
+  resolved = stripGlobSuffix(resolved);
 
   return canonicalizeMacOsPath(resolved);
 }

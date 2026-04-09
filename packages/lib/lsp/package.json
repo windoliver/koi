@@ -1,0 +1,28 @@
+{
+  "name": "@koi/lsp",
+  "description": "LSP client tools: hover, definition, references, diagnostics, symbols",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "koi": {
+    "optional": true
+  }
+}
