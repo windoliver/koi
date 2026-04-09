@@ -364,6 +364,13 @@ export function createExfiltrationGuardMiddleware(
                 kinds: ["buffer_overflow"],
                 action: "block",
               });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: 0,
+                action: "block",
+                reason: "buffer_overflow",
+                bufferLength: buffer.length,
+              });
               yield {
                 kind: "error",
                 message:
@@ -390,6 +397,13 @@ export function createExfiltrationGuardMiddleware(
                 action: config.action,
               });
             }
+            ctx.reportDecision?.({
+              location: "model-output-stream",
+              matchCount: overflowResult.matchCount > 0 ? overflowResult.matchCount : 0,
+              action: config.action,
+              reason: "buffer_overflow",
+              bufferLength: buffer.length,
+            });
             if (config.action === "redact") {
               // Only emit user-visible text (redacted). Never emit the full buffer as
               // text_delta — it contains thinking/tool_call content that must stay hidden.
@@ -504,6 +518,12 @@ export function createExfiltrationGuardMiddleware(
                   kinds: [],
                   action: config.action,
                 });
+                ctx.reportDecision?.({
+                  location: "model-output-stream",
+                  matchCount: doneResult.matchCount,
+                  action: config.action,
+                  reason: "done_payload_secrets",
+                });
                 if (config.action === "block") {
                   yield {
                     kind: "error",
@@ -550,6 +570,13 @@ export function createExfiltrationGuardMiddleware(
             matchCount: Math.max(0, result.matchCount),
             kinds: result.matchCount === -1 ? ["redaction_failure"] : [],
             action: config.action,
+          });
+          ctx.reportDecision?.({
+            location: "model-output-stream",
+            matchCount: Math.max(0, result.matchCount),
+            action: config.action,
+            reason: result.matchCount === -1 ? "redaction_failure" : "stream_end_secrets",
+            bufferLength: buffer.length,
           });
           if (config.action === "block") {
             yield {

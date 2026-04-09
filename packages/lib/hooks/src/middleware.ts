@@ -552,7 +552,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
           ...(aggregated.decision.kind === "block"
             ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
             : {}),
-          ...(aggregated.decision.kind === "modify" ? { patch: aggregated.decision.patch } : {}),
+          ...(aggregated.decision.kind === "modify"
+            ? { patch: safePreview(aggregated.decision.patch, 300) }
+            : {}),
           hooks: preResults.map((r) => buildHookRecord(r)),
         });
       }
