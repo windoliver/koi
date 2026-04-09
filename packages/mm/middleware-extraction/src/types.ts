@@ -49,6 +49,11 @@ export interface ExtractionMiddlewareConfig {
    * Default: ["Spawn", "agent_spawn", "task_delegate"] — the runtime's spawn-family tools.
    */
   readonly spawnToolIds?: readonly string[] | undefined;
+  /**
+   * Namespace for stored memories — isolates extracted learnings per agent/team/tenant.
+   * Passed through to MemoryComponent.store(). If omitted, uses the backend default.
+   */
+  readonly namespace?: string | undefined;
 }
 
 /** Minimal interface for hot-memory cache invalidation. */

@@ -216,15 +216,17 @@ export async function runDreamConsolidation(config: DreamConfig): Promise<DreamR
         continue;
       }
 
-      // Write-ahead: create merged record FIRST, then delete originals.
-      // If write fails, nothing is lost — originals survive intact.
-      // If some deletes fail after write, we have temporary duplicates
-      // (safe: next consolidation run will re-cluster and merge them).
+      // Write-ahead with supersession: create merged record with source IDs
+      // recorded in supersedes, then best-effort delete originals.
+      // The supersedes list makes the merge idempotent — if a source survives
+      // deletion, next consolidation can detect the existing supersession link
+      // and skip re-merging already-represented records.
+      const sourceIds = cluster.members.map((m) => m.id);
       await config.writeMemory({
         name: mergeResult.name,
         description: mergeResult.description,
         type: clusterType,
-        content: mergeResult.content,
+        content: `${mergeResult.content}\n\n<!-- supersedes: ${sourceIds.join(", ")} -->`,
       });
 
       // Best-effort delete of originals — duplicates are safe, data loss is not.
@@ -232,7 +234,7 @@ export async function runDreamConsolidation(config: DreamConfig): Promise<DreamR
         try {
           await config.deleteMemory(member.id);
         } catch (_e: unknown) {
-          // Swallow — surviving originals will be re-merged on next run
+          // Swallow — surviving originals carry supersedes provenance
         }
       }
 
