@@ -28,7 +28,7 @@
  * - CONFLICT: treated as a per-task race — skip and continue.
  */
 
-import type { AgentId, KoiError, ManagedTaskBoard, TaskItemId } from "@koi/core";
+import type { AgentId, KoiError, ManagedTaskBoard, Task, TaskItemId } from "@koi/core";
 
 /**
  * Error codes that indicate a per-task state change rather than store degradation.
@@ -107,4 +107,129 @@ export async function recoverOrphanedTasks(
   }
 
   return { killed: [], requeued, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Stale delegation cleanup (#1557 review fix 4A revised)
+// ---------------------------------------------------------------------------
+//
+// `task_delegate` (in `@koi/task-tools`) records a coordinator's intent to
+// assign a pending task to a child agent by writing `metadata.delegatedTo`.
+// The task stays `pending` with no `assignedTo` until the child claims it
+// via `task_update(status: "in_progress")`. If the child crashes or never
+// spawns, the task sits with a stale `delegatedTo` forever — blocking any
+// future attempt to re-delegate it (`task_delegate` rejects ANY task that
+// already has a `delegatedTo` key set, regardless of type or value).
+//
+// **Scope: pending tasks only.** The board layer (`@koi/task-board`)
+// enforces the invariant that `delegatedTo` is a pending-only marker by
+// stripping it at every entry to / exit from `in_progress` (assign,
+// unassign, retryable fail, snapshot-load normalization). Any in_progress
+// task the board hands us has already shed its delegation, and any
+// in_progress → pending transition — including `unassign` triggered by
+// `recoverOrphanedTasks` — strips the marker at the board level. This
+// helper's scope is therefore limited to pending tasks that were delegated
+// and never claimed.
+//
+// Composition is order-independent: run this helper and `recoverOrphanedTasks`
+// in any order, any number of times, and the end state is the same.
+//
+// Malformed values (non-string, empty string, null) are ALSO cleared because
+// `task_delegate` rejects any present `delegatedTo` key. A legacy/corrupted
+// value that passed a shape check would still block delegation; a recovery
+// pass that "reported success" while leaving it untouched is a silent trap.
+
+export interface StaleDelegationResult {
+  /**
+   * Task IDs whose `metadata.delegatedTo` was cleared. Each task keeps its
+   * `pending` status — only the delegation marker is removed. Callers may
+   * now re-delegate via a fresh `task_delegate` call.
+   */
+  readonly cleared: readonly TaskItemId[];
+  /**
+   * Task IDs whose metadata patch failed with a store-layer error. Processing
+   * stops at the first store-layer failure; the caller should log and retry.
+   */
+  readonly failed: readonly TaskItemId[];
+}
+
+/**
+ * Predicate: should this pending task's `metadata.delegatedTo` be cleared?
+ *
+ * Scope is pending-only: the board layer strips `delegatedTo` on every
+ * in_progress entry/exit, so in_progress tasks never have a marker for
+ * this helper to worry about.
+ *
+ * Clears when:
+ *   - the marker is malformed (non-string, null, empty) — `task_delegate`
+ *     rejects any present key regardless of type, so a legacy corrupted
+ *     value would still block delegation
+ *   - the marker is a well-formed string but the referenced agent is not
+ *     in `liveAgentIds` (i.e., the delegated child is gone)
+ */
+function needsClear(task: Task, liveAgentIds: ReadonlySet<string>): boolean {
+  if (task.status !== "pending") return false;
+  const metadata = task.metadata;
+  if (metadata === undefined || !("delegatedTo" in metadata)) return false;
+  const value = metadata.delegatedTo;
+  // Malformed markers always need cleanup.
+  if (typeof value !== "string" || value.length === 0) return true;
+  // Well-formed delegation: clear only if the delegated agent is dead.
+  return !liveAgentIds.has(value);
+}
+
+/**
+ * Find every pending task whose `metadata.delegatedTo` is stale or
+ * malformed and clear that field so the task can be re-delegated.
+ *
+ * `liveAgentIds` should contain the IDs of every child agent that the new
+ * coordinator believes is currently alive. A common choice is "empty set"
+ * (clear every delegation unconditionally) for a cold restart, or the output
+ * of an agent-registry scan for a warm restart.
+ *
+ * Per-task races (NOT_FOUND, VALIDATION) are skipped — the task may have
+ * completed/failed between the snapshot read and the update. Store-layer
+ * errors (EXTERNAL, INTERNAL, CONFLICT) stop processing and are reported
+ * in `failed`.
+ *
+ * **Order-independent with `recoverOrphanedTasks`.** The board layer
+ * enforces that in_progress tasks never carry `delegatedTo`, and that any
+ * in_progress → pending transition (including unassign from orphan
+ * recovery) strips the marker. So this helper only needs to worry about
+ * pending tasks that were delegated and never claimed.
+ */
+export async function recoverStaleDelegations(
+  board: ManagedTaskBoard,
+  liveAgentIds: ReadonlySet<string>,
+): Promise<StaleDelegationResult> {
+  const snapshot = board.snapshot();
+  const stale = snapshot.pending().filter((task) => needsClear(task, liveAgentIds));
+  if (stale.length === 0) {
+    return { cleared: [], failed: [] };
+  }
+
+  const cleared: TaskItemId[] = [];
+  const failed: TaskItemId[] = [];
+
+  for (const task of stale) {
+    // Build a new metadata object without delegatedTo — preserve every other key.
+    const { delegatedTo: _discard, ...nextMetadata } = (task.metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
+    void _discard;
+    const result = await board.update(task.id, { metadata: nextMetadata });
+    if (result.ok) {
+      cleared.push(task.id);
+    } else if (TASK_RACE_CODES.has(result.error.code)) {
+      // Benign per-task race — task completed/disappeared between snapshot and patch.
+      continue;
+    } else {
+      // Store-layer error — stop to avoid further ops on a degraded store.
+      failed.push(task.id);
+      break;
+    }
+  }
+
+  return { cleared, failed };
 }

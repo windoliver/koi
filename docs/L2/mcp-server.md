@@ -170,3 +170,12 @@ Security was validated by Codex adversarial review before implementation:
 4. **Transport-agnostic** — The server accepts any MCP SDK `Transport`. Stdio is provided as a convenience
 5. **No L1 dependency** — The server only needs an `Agent` entity (L0 type) and optional L0 subsystem handles
 6. **Capability gating** — Only tools for provided subsystem handles are registered. If `platform.mailbox` is undefined, mailbox tools are not exposed
+
+## Notes (#1557 review — PR #1659)
+
+No behavioral changes in this package. Two mock `TaskBoard` fixtures in
+`contract.test.ts` and `platform-tools.test.ts` were updated to include a
+`blockedBy: () => undefined` stub — the `TaskBoard` interface gained a
+`blockedBy(taskId)` method in `@koi/task-board` (review issue 14A) and these
+fixtures need to satisfy the new interface shape. No runtime logic or public
+surface touched.

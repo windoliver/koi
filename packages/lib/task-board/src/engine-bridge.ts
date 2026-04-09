@@ -69,58 +69,51 @@ export function buildPlanUpdate(
 }
 
 // ---------------------------------------------------------------------------
-// Previous status derivation
+// Status transition derivation
 // ---------------------------------------------------------------------------
 
-/** Derives previousStatus from event kind. Deterministic for all except task:killed. */
-function derivePreviousStatus(event: TaskBoardEvent, board: TaskBoard): TaskStatus {
+/**
+ * Single source of truth for the `(previousStatus, newStatus)` pair per event kind.
+ *
+ * Replaces the prior pair of mirror-image switches (`derivePreviousStatus` and
+ * `deriveNewStatus`) so adding a new `TaskBoardEvent` kind only requires updating
+ * one switch — and TypeScript's exhaustiveness checking will fail compilation if
+ * any kind is missed.
+ *
+ * Two cases are dynamic and need access to the event payload or board state:
+ * - `task:killed` — previous status comes from the event payload (preserves
+ *   the pre-kill state, which can be either `pending` or `in_progress`).
+ * - `task:updated` — both before and after are the task's current status,
+ *   because `update()` patches metadata only and never changes status.
+ */
+function resolveStatusTransition(
+  event: TaskBoardEvent,
+  board: TaskBoard,
+): readonly [previousStatus: TaskStatus, newStatus: TaskStatus] {
   switch (event.kind) {
     case "task:added":
-      return "pending";
+      return ["pending", "pending"];
     case "task:assigned":
-      return "pending";
+      return ["pending", "in_progress"];
     case "task:unassigned":
-      return "in_progress";
+      return ["in_progress", "pending"];
     case "task:completed":
-      return "in_progress";
+      return ["in_progress", "completed"];
     case "task:failed":
-      return "in_progress";
+      return ["in_progress", "failed"];
     case "task:retried":
-      return "in_progress";
+      return ["in_progress", "pending"];
     case "task:killed":
-      return event.previousStatus;
+      return [event.previousStatus, "killed"];
     case "task:unreachable":
-      return "pending";
+      return ["pending", "pending"];
     case "task:updated": {
-      const task = board.get(event.taskId);
-      return task?.status ?? "pending";
+      const status = board.get(event.taskId)?.status ?? "pending";
+      return [status, status];
     }
-  }
-}
-
-/** Derives the new status after the event. */
-function deriveNewStatus(event: TaskBoardEvent, board: TaskBoard): TaskStatus {
-  switch (event.kind) {
-    case "task:added":
-      return "pending";
-    case "task:assigned":
-      return "in_progress";
-    case "task:unassigned":
-      return "pending";
-    case "task:completed":
-      return "completed";
-    case "task:failed":
-      return "failed";
-    case "task:retried":
-      return "pending";
-    case "task:killed":
-      return "killed";
-    case "task:unreachable":
-      return "pending";
-    case "task:updated": {
-      const task = board.get(event.taskId);
-      return task?.status ?? "pending";
-    }
+    // No `default` case — TypeScript's exhaustiveness check enforces that
+    // every TaskBoardEvent kind has an explicit return above. Adding a new
+    // kind to TaskBoardEvent without updating this switch is a compile error.
   }
 }
 
@@ -174,8 +167,7 @@ export function mapTaskBoardEventToEngineEvents(
 ): readonly EngineEvent[] {
   const timestamp = clock();
   const taskId = event.kind === "task:added" ? event.task.id : event.taskId;
-  const previousStatus = derivePreviousStatus(event, board);
-  const status = deriveNewStatus(event, board);
+  const [previousStatus, status] = resolveStatusTransition(event, board);
   const subject = deriveSubject(event, board);
   const activeForm = deriveActiveForm(event, board);
 

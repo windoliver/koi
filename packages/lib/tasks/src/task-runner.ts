@@ -72,6 +72,26 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
   const pendingExits = new Map<TaskItemId, number>();
   // Tasks intentionally stopped — prevents stale pendingExits entries
   const stoppedTaskIds = new Set<TaskItemId>();
+  // IDs the runner itself is currently writing to the board. When store.watch
+  // fires a terminal event for an ID in this set, handleStoreEvent skips the
+  // cleanup because the runner already triggered the transition itself. This
+  // is defense in depth against double-stop (the "delete from activeTasks
+  // before board.X" pattern already prevents most cases, but selfWriteIds
+  // protects any future code path that forgets the ordering dance).
+  const selfWriteIds = new Set<TaskItemId>();
+
+  /**
+   * Wrap a board mutation so the resulting store watch event is skipped by
+   * handleStoreEvent. `try/finally` ensures the flag is cleared even on throw.
+   */
+  async function withSelfWrite<T>(taskId: TaskItemId, call: () => Promise<T>): Promise<T> {
+    selfWriteIds.add(taskId);
+    try {
+      return await call();
+    } finally {
+      selfWriteIds.delete(taskId);
+    }
+  }
 
   // Subscribe to store events for external reconciliation
   const unsubscribe = store.watch(handleStoreEvent);
@@ -81,6 +101,9 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
 
     const item = event.item;
     if (!isTerminalTaskStatus(item.status)) return;
+    // Self-write skip: the runner caused this transition itself (via
+    // withSelfWrite), so no external reconciliation is needed.
+    if (selfWriteIds.has(item.id)) return;
     if (!activeTasks.has(item.id)) return;
 
     // Task was terminated externally — clean up runtime state
@@ -145,33 +168,35 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     const capturedOutput = bufferedChunks.map((c) => c.content).join("");
     const durationMs = Date.now() - task.startedAt;
 
-    try {
-      if (code === 0) {
-        const result = await board.completeOwnedTask(taskId, agentId, {
-          taskId,
-          output: capturedOutput || `Process exited with code 0`,
-          durationMs,
-          metadata: { exitCode: code },
-        });
-        // If completion fails (e.g. ownership changed), try to kill as fallback
-        if (!result.ok) {
-          await board.kill(taskId).catch(() => {});
+    await withSelfWrite(taskId, async () => {
+      try {
+        if (code === 0) {
+          const result = await board.completeOwnedTask(taskId, agentId, {
+            taskId,
+            output: capturedOutput || `Process exited with code 0`,
+            durationMs,
+            metadata: { exitCode: code },
+          });
+          // If completion fails (e.g. ownership changed), try to kill as fallback
+          if (!result.ok) {
+            await board.kill(taskId).catch(() => {});
+          }
+        } else {
+          const result = await board.failOwnedTask(taskId, agentId, {
+            code: "EXTERNAL",
+            message: capturedOutput || `Process exited with code ${String(code)}`,
+            retryable: false,
+            context: { exitCode: code },
+          });
+          if (!result.ok) {
+            await board.kill(taskId).catch(() => {});
+          }
         }
-      } else {
-        const result = await board.failOwnedTask(taskId, agentId, {
-          code: "EXTERNAL",
-          message: capturedOutput || `Process exited with code ${String(code)}`,
-          retryable: false,
-          context: { exitCode: code },
-        });
-        if (!result.ok) {
-          await board.kill(taskId).catch(() => {});
-        }
+      } catch {
+        // Last resort: try to kill the task so it's not stuck in_progress
+        await board.kill(taskId).catch(() => {});
       }
-    } catch {
-      // Last resort: try to kill the task so it's not stuck in_progress
-      await board.kill(taskId).catch(() => {});
-    }
+    });
   }
 
   const start = async (
@@ -210,10 +235,12 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     // match when metadata.kind exists, stores rejection reason, and kills.
     if (isUnsupportedLifecycle(lifecycle)) {
       const reason = `Task kind "${kind}" is not yet implemented`;
-      const killResult = await board.killIfPending(taskId, {
-        expectedKind: kind,
-        metadata: { rejectedKind: kind, rejectedReason: reason },
-      });
+      const killResult = await withSelfWrite(taskId, () =>
+        board.killIfPending(taskId, {
+          expectedKind: kind,
+          metadata: { rejectedKind: kind, rejectedReason: reason },
+        }),
+      );
       if (!killResult.ok) return killResult;
 
       return {
@@ -223,7 +250,7 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     }
 
     // Transition board first — validates ownership, single-in-progress, etc.
-    const boardResult = await board.startTask(taskId, agentId);
+    const boardResult = await withSelfWrite(taskId, () => board.startTask(taskId, agentId));
     if (!boardResult.ok) return boardResult;
 
     // Create output stream and start the lifecycle.
@@ -248,12 +275,27 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
 
       return { ok: true, value: state };
     } catch (err: unknown) {
-      // Lifecycle failed to start — fail the task on the board
+      // Lifecycle failed to start — fail the task on the board so it doesn't
+      // remain stuck in_progress. Mirror the natural-exit fallback chain:
+      // try failOwnedTask first; if that fails (e.g., store I/O error, version
+      // conflict), fall back to board.kill() so the task lands in a terminal
+      // state no matter what.
       const message = err instanceof Error ? err.message : String(err);
-      await board.failOwnedTask(taskId, agentId, {
-        code: "EXTERNAL",
-        message: `Lifecycle start failed: ${message}`,
-        retryable: false,
+      await withSelfWrite(taskId, async () => {
+        try {
+          const failResult = await board.failOwnedTask(taskId, agentId, {
+            code: "EXTERNAL",
+            message: `Lifecycle start failed: ${message}`,
+            retryable: false,
+          });
+          if (!failResult.ok) {
+            await board.kill(taskId).catch(() => {});
+          }
+        } catch {
+          // failOwnedTask itself threw — last-resort kill so the task is not
+          // stranded in_progress with no runtime handle.
+          await board.kill(taskId).catch(() => {});
+        }
       });
       return {
         ok: false,
@@ -287,7 +329,9 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
 
     // Transition board — if this fails, the task is already removed from
     // active tracking (watcher won't double-stop) but we report the error.
-    const boardResult = await board.killOwnedTask(taskId, agentId);
+    // withSelfWrite adds the belt-and-suspenders skip-set so any future
+    // callers that forget to activeTasks.delete first are still safe.
+    const boardResult = await withSelfWrite(taskId, () => board.killOwnedTask(taskId, agentId));
 
     // Clean up runtime state regardless of board result.
     // Wrap in try/catch so lifecycle failures don't reject the promise.

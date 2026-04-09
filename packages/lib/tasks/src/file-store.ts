@@ -8,6 +8,34 @@
  * Layout: `<baseDir>/task_<N>.json`
  * Startup: scan filenames only (no content reads), compute HWM from IDs.
  * Cache: populated lazily on first get()/list(), write-through on put()/delete().
+ *
+ * ## Recovery model (single-writer, crash-tolerant, not multi-process)
+ *
+ * This store is designed for **one writer per `baseDir`** — typically a single
+ * ManagedTaskBoard in a single process. A PID-based lock file (`<baseDir>/.lock`)
+ * is acquired on construction and released on dispose. If a second store tries
+ * to attach to the same directory while a live PID holds the lock, construction
+ * throws with a clear error. If the holder's PID is dead (crash recovery), the
+ * stale lock is reclaimed automatically.
+ *
+ * **Crash boundaries**:
+ * - Mid-write crash (between `Bun.write(tmpPath)` and `rename`): the orphaned
+ *   `.tmp` file is cleaned on startup. The old task JSON is untouched.
+ * - Mid-mutation crash (during a `ManagedTaskBoard.persistBoardDiff` batch):
+ *   tasks written before the crash are on disk with their new versions;
+ *   tasks after are stale. On restart, the board reloads whatever's on disk.
+ *   Consumers should call `recoverOrphanedTasks()` after restart to reset any
+ *   in-progress tasks whose owners are no longer alive.
+ * - Lock-file crash: the next `createFileTaskBoardStore()` call detects the
+ *   dead PID and reclaims the lock automatically.
+ *
+ * **Not guaranteed**:
+ * - Atomic multi-file transactions. A partial `addAll` crash leaves a prefix
+ *   of tasks on disk.
+ * - Multi-process coordination. The lock is best-effort single-process safety;
+ *   truly concurrent processes on the same `baseDir` can race during the
+ *   check-then-write window.
+ * - Automatic replay of crashed mutations. The caller owns recovery.
  */
 
 import { mkdir, readdir, rename, unlink } from "node:fs/promises";
@@ -33,7 +61,26 @@ export interface FileTaskBoardStoreConfig {
   readonly baseDir: string;
   /** Delete orphaned .tmp files on startup. Default: true. */
   readonly cleanOrphanedTmp?: boolean | undefined;
+  /**
+   * Acquire a single-process PID lock on construction. Default: true.
+   *
+   * When enabled, a `.lock` file is written to `baseDir` on creation and
+   * deleted on dispose. Creating a second store for the same `baseDir` while
+   * a live PID holds the lock throws. Stale locks (dead PID) are reclaimed
+   * automatically. Set to `false` only for test harnesses that deliberately
+   * create overlapping stores on throwaway directories.
+   */
+  readonly lock?: boolean | undefined;
 }
+
+/** Shape of the single-writer lock file. */
+interface LockFileContents {
+  readonly pid: number;
+  readonly ctime: number;
+}
+
+/** Max in-flight file reads during cache hydration — bounds I/O fan-out. */
+const ENSURE_CACHE_CONCURRENCY = 32;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -41,6 +88,22 @@ export interface FileTaskBoardStoreConfig {
 
 const TASK_FILE_REGEX = /^task_(\d+)\.json$/;
 const TMP_FILE_REGEX = /\.tmp$/;
+const LOCK_FILE_NAME = ".lock";
+
+/**
+ * Safe-ID shape accepted by the file store. Keeps path traversal impossible:
+ * the branded TaskItemId type has no runtime validation (it's an identity cast
+ * in L0), so any call site that constructs `taskItemId("../../etc/passwd")`
+ * would otherwise write outside baseDir. Defense in depth: reject anything
+ * that doesn't match the canonical `task_<N>` shape at the I/O boundary.
+ */
+const SAFE_TASK_ID_REGEX = /^task_\d+$/;
+
+function assertSafeTaskId(id: TaskItemId): void {
+  if (!SAFE_TASK_ID_REGEX.test(id)) {
+    throw new Error(`Unsafe task id: "${id}" — file store requires the canonical task_<N> format`);
+  }
+}
 
 /** Extract the numeric ID from a task filename, or undefined if not a task file. */
 function extractIdNumber(filename: string): number | undefined {
@@ -75,6 +138,63 @@ async function atomicWrite(baseDir: string, id: TaskItemId, content: string): Pr
       /* may not exist */
     }
     throw new Error(`Atomic write failed for ${finalPath}`, { cause: err });
+  }
+}
+
+/** Test whether a PID refers to a live process. Signal 0 never sends a signal. */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Acquire the single-writer lock on `baseDir`. Throws if held by a live PID.
+ * Stale locks (dead PID, malformed file) are reclaimed automatically.
+ *
+ * Note: this is best-effort single-process safety. Two processes hitting
+ * this function simultaneously can still race — there's a check-then-write
+ * window. Good enough to catch the common "oops, two ManagedTaskBoards"
+ * mistake; not a substitute for an OS-level advisory lock.
+ */
+async function acquireLock(baseDir: string): Promise<void> {
+  const lockPath = join(baseDir, LOCK_FILE_NAME);
+  const existingFile = Bun.file(lockPath);
+  if (await existingFile.exists()) {
+    let existing: LockFileContents | undefined;
+    try {
+      existing = (await existingFile.json()) as LockFileContents;
+    } catch {
+      // Malformed lock file — treat as stale and overwrite
+    }
+    if (existing !== undefined && typeof existing.pid === "number" && isPidAlive(existing.pid)) {
+      // Same-process collision is still a bug — two ManagedTaskBoards pointing
+      // at the same baseDir will corrupt each other even in one process, so
+      // the lock fires regardless of whether the holder is us or someone else.
+      const since =
+        typeof existing.ctime === "number" ? new Date(existing.ctime).toISOString() : "unknown";
+      throw new Error(
+        `TaskBoardStore lock held by live process ${String(existing.pid)} (since ${since}). ` +
+          `Another ManagedTaskBoard is already writing to ${baseDir}. ` +
+          `Release it by disposing the other store, or delete ${lockPath} if the holder crashed.`,
+      );
+    }
+    // Dead PID or malformed — reclaim
+  }
+  const content: LockFileContents = { pid: process.pid, ctime: Date.now() };
+  await Bun.write(lockPath, JSON.stringify(content));
+}
+
+/** Release the single-writer lock. Best-effort — errors are swallowed. */
+async function releaseLock(baseDir: string): Promise<void> {
+  try {
+    await unlink(join(baseDir, LOCK_FILE_NAME));
+  } catch {
+    /* lock may already be gone — fine */
   }
 }
 
@@ -126,10 +246,16 @@ async function readTaskFile(filePath: string): Promise<Task | undefined> {
 export async function createFileTaskBoardStore(
   config: FileTaskBoardStoreConfig,
 ): Promise<TaskBoardStore> {
-  const { baseDir, cleanOrphanedTmp = true } = config;
+  const { baseDir, cleanOrphanedTmp = true, lock = true } = config;
 
   // Ensure base directory exists
   await mkdir(baseDir, { recursive: true });
+
+  // Acquire the single-writer lock BEFORE any other startup work, so a
+  // concurrent second construction fails fast without side effects.
+  if (lock) {
+    await acquireLock(baseDir);
+  }
 
   // Scan filenames to compute HWM and build known-IDs set
   const knownIds = new Set<TaskItemId>();
@@ -144,6 +270,10 @@ export async function createFileTaskBoardStore(
   // Startup scan: filenames only, no content reads
   const entries = await readdir(baseDir);
   for (const entry of entries) {
+    // Skip lock file and any other dotfile — they are not task records
+    if (entry === LOCK_FILE_NAME || entry.startsWith(".")) {
+      continue;
+    }
     if (cleanOrphanedTmp && TMP_FILE_REGEX.test(entry)) {
       // Best-effort cleanup of orphaned temp files
       try {
@@ -166,10 +296,17 @@ export async function createFileTaskBoardStore(
   /** IDs whose on-disk files are corrupt/unreadable. */
   const corruptIds = new Set<TaskItemId>();
 
-  /** Ensure the cache is populated (read all files once). */
+  /**
+   * Ensure the cache is populated (read all files once).
+   *
+   * Bounds concurrency to `ENSURE_CACHE_CONCURRENCY` in-flight reads so a
+   * board with thousands of tasks cannot exhaust file descriptors or saturate
+   * the event loop on first access. The loader is single-pass — each ID is
+   * read at most once per cache hydration.
+   */
   async function ensureCache(): Promise<void> {
     if (cachePopulated) return;
-    const loadPromises = [...knownIds].map(async (id) => {
+    const loadOne = async (id: TaskItemId): Promise<void> => {
       const item = await readTaskFile(join(baseDir, taskFilename(id)));
       if (item !== undefined) {
         cache.set(id, item);
@@ -180,8 +317,12 @@ export async function createFileTaskBoardStore(
           corruptIds.add(id);
         }
       }
-    });
-    await Promise.all(loadPromises);
+    };
+    const ids = [...knownIds];
+    for (let offset = 0; offset < ids.length; offset += ENSURE_CACHE_CONCURRENCY) {
+      const batch = ids.slice(offset, offset + ENSURE_CACHE_CONCURRENCY);
+      await Promise.all(batch.map(loadOne));
+    }
     cachePopulated = true;
   }
 
@@ -198,6 +339,9 @@ export async function createFileTaskBoardStore(
   // -- Store methods --------------------------------------------------------
 
   const get = async (id: TaskItemId): Promise<Task | undefined> => {
+    // Boundary validation: defense in depth against path traversal via
+    // malformed TaskItemId. Safe IDs never reach disk I/O.
+    assertSafeTaskId(id);
     // Check cache first
     if (cache.has(id)) {
       return cache.get(id);
@@ -215,6 +359,7 @@ export async function createFileTaskBoardStore(
   };
 
   const put = async (item: Task): Promise<void> => {
+    assertSafeTaskId(item.id);
     // Stale-write guard: reject same or older version (single-writer safety net,
     // not multi-process CAS — two processes can still race the read-then-write).
     // When cache is cold for a known ID, read from disk to catch stale snapshots.
@@ -251,6 +396,7 @@ export async function createFileTaskBoardStore(
   };
 
   const del = async (id: TaskItemId): Promise<void> => {
+    assertSafeTaskId(id);
     if (!knownIds.has(id)) return;
     try {
       await unlink(join(baseDir, taskFilename(id)));
@@ -300,6 +446,9 @@ export async function createFileTaskBoardStore(
   const dispose = async (): Promise<void> => {
     cache.clear();
     knownIds.clear();
+    if (lock) {
+      await releaseLock(baseDir);
+    }
   };
 
   return {

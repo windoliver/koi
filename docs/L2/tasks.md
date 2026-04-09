@@ -305,3 +305,72 @@ and used for mismatch protection when present. A follow-up issue should formaliz
 only valid transition from `pending`). The rejection reason is stored in `metadata.rejectedReason`.
 Downstream consumers should check this field for killed tasks to distinguish unsupported-kind
 rejections from manual cancellations.
+
+## Review hardening (#1557 review — PR #1659)
+
+Multiple safety, performance, and test-infrastructure improvements landed as a review
+punch list. Each item is a narrow fix to the already-shipped package rather than a
+feature addition.
+
+### Path-traversal defense (file-store)
+
+`createFileTaskBoardStore` now calls `assertSafeTaskId` at every I/O boundary
+(`get`/`put`/`delete`). Task IDs must match `^task_\d+$`; anything else throws at the
+boundary. Defense in depth against `TaskItemId` being a branded-but-unvalidated string.
+
+### Single-writer PID lock
+
+A `.lock` file containing `{pid, ctime}` is written to `baseDir` on construction and
+released on dispose. Second store instances against the same directory fail fast with
+a clear error; dead-PID and malformed locks are reclaimed automatically. Use `lock: false`
+to disable for tests that deliberately overlap stores. Documented crash-recovery
+boundaries are in the file-store source header.
+
+### Bounded I/O concurrency
+
+`ensureCache` now processes task files in batches of 32 instead of an unbounded
+`Promise.all`. Boards with thousands of tasks can't exhaust file descriptors on first
+access.
+
+### Output stream deque eviction
+
+`createOutputStream` uses a head-pointer/deque pattern for eviction instead of
+`chunks.slice(1)`. Eviction is now O(1) amortized; worst-case workloads with oversized
+writes drop from O(N²) to O(N).
+
+### TaskRunner selfWriteIds skip-set
+
+The runner's internal board mutations are tagged with a `selfWriteIds` set; the store's
+watch reconciler skips events for IDs in that set. Prevents double-stop on self-writes
+and protects future code paths that forget the delete-before-board.X ordering.
+
+### Start-path fallback chain
+
+The `TaskRunner.start()` catch now mirrors `handleNaturalExit`'s three-tier fallback
+(try `failOwnedTask`, fall back to `kill()`, then swallow). A cascading store failure
+during lifecycle start leaves the task in a terminal state instead of stuck `in_progress`.
+
+### Event-buffering invariant tests
+
+`managed-board.test.ts` gained 6 tests pinning the "observer notifications fire only
+after persistence succeeds" invariant, backed by a reusable `createFlakyStore` helper
+(in `src/test-helpers.ts`) that injects controllable put() failures.
+
+### Race-condition test coverage
+
+`task-runner.test.ts` was rewritten to use a real in-memory `ManagedTaskBoard` instead
+of fully mocked internals. 6 new race tests cover: fast-exit drain, post-stop natural
+exit, cascading-failure fallback, `handleNaturalExit` complete-returns-ok-false fallback,
+outer-catch fallback, and the selfWriteIds skip-set.
+
+### Local-shell branch coverage
+
+`local-shell.test.ts` gained 6 tests for previously-uncovered paths: timeout abort,
+`onExit` exit-code propagation, env vars reaching the subprocess, multibyte UTF-8
+output across chunk boundaries, stop-verify via `proc.exited` timing, and natural-exit
+`onExit` firing.
+
+### Test count delta
+
+- Before: 73 `@koi/tasks` tests
+- After: **159** tests (+86)
