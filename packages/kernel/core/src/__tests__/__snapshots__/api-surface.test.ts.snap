@@ -1111,6 +1111,79 @@ declare function nexusPath(raw: string): NexusPath;
 declare const MAX_NEXUS_PATH_LENGTH = 512;
 
 /**
+ * Outcome linkage types — connect agent decisions to downstream business results (Layer 0).
+ *
+ * Provides correlation infrastructure for external systems to report outcomes
+ * against specific decisions identified by DecisionCorrelationId.
+ *
+ * Format-agnostic: no ATIF concepts. ATIF document linkage is handled in runtime.
+ */
+
+declare const __decisionCorrelationBrand: unique symbol;
+/**
+ * Branded string type for decision correlation identifiers.
+ * Used to link agent decisions to downstream business outcomes.
+ */
+type DecisionCorrelationId = string & {
+    readonly [__decisionCorrelationBrand]: "DecisionCorrelationId";
+};
+/** Create a branded DecisionCorrelationId from a plain string. */
+declare function decisionCorrelationId(id: string): DecisionCorrelationId;
+/** Business outcome valence reported by external systems. */
+type OutcomeValence = "positive" | "negative" | "neutral" | "mixed";
+/**
+ * A reported business outcome linked to a decision via correlation ID.
+ *
+ * Written by external systems (or the future \`report_outcome\` tool) to
+ * record what happened as a result of an agent decision.
+ */
+interface OutcomeReport {
+    /** The decision this outcome is linked to. */
+    readonly correlationId: DecisionCorrelationId;
+    /** Business outcome valence. */
+    readonly outcome: OutcomeValence;
+    /** Domain-specific KPI metrics (e.g., revenue, resolution time). */
+    readonly metrics: Readonly<Record<string, number>>;
+    /** Human-readable description of the outcome. */
+    readonly description: string;
+    /** Identity of who reported this outcome. */
+    readonly reportedBy: string;
+    /** Timestamp when the outcome was reported (ms since epoch). */
+    readonly timestamp: number;
+    /** Opaque extension data for domain-specific fields. */
+    readonly metadata?: JsonObject | undefined;
+}
+/**
+ * Input for reporting an outcome (before persistence adds internal fields).
+ * The \`correlationId\` is a plain string here — callers are responsible for
+ * providing a valid ID that matches a \`decisionCorrelationId\` on a trajectory step.
+ */
+interface OutcomeReportInput {
+    /** Plain string correlation ID (will be branded on persistence). */
+    readonly correlationId: string;
+    /** Business outcome valence. */
+    readonly outcome: OutcomeValence;
+    /** Domain-specific KPI metrics. */
+    readonly metrics: Readonly<Record<string, number>>;
+    /** Human-readable description. */
+    readonly description: string;
+    /** Identity of who reported this outcome. */
+    readonly reportedBy: string;
+}
+/**
+ * Persistence backend for outcome reports.
+ *
+ * MVP surface: put + get only. Enumeration and deletion deferred until
+ * a concrete consumer needs them.
+ */
+interface OutcomeStore {
+    /** Write an outcome report. Overwrites any existing report for the same correlation ID. */
+    readonly put: (report: OutcomeReport) => Promise<void>;
+    /** Get an outcome by correlation ID. Returns undefined if not found. */
+    readonly get: (correlationId: string) => Promise<OutcomeReport | undefined>;
+}
+
+/**
  * PermissionEscalation — coordinator→worker runtime permission escalation contract (L0).
  *
  * Defines the typed request/decision flow for workers that encounter a capability
@@ -2096,7 +2169,7 @@ declare function validateSessionIdSyntax(id: string, name?: string): Result<void
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompactResult, type CompensatingOp, ComponentProvider, type ContentReplacement, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, type NexusPath, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, type PermissionEscalation, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, TaskBoardSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validateSessionIdSyntax, validation };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompactResult, type CompensatingOp, ComponentProvider, type ContentReplacement, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, type DecisionCorrelationId, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, type NexusPath, type NodeCapability, type NodeId, type OutcomeReport, type OutcomeReportInput, type OutcomeStore, type OutcomeValence, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, type PermissionEscalation, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, TaskBoardSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, decisionCorrelationId, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validateSessionIdSyntax, validation };
 "
 `;
 

@@ -16,4 +16,7 @@ export type {
 export { createFsAtifDelegate } from "./fs-delegate.js";
 export type { NexusTrajectoryConfig } from "./nexus-delegate.js";
 export { createNexusAtifDelegate } from "./nexus-delegate.js";
+export { createInMemoryOutcomeStore } from "./outcome-memory-store.js";
+export type { NexusOutcomeConfig } from "./outcome-nexus-delegate.js";
+export { createNexusOutcomeDelegate } from "./outcome-nexus-delegate.js";
 export { decodeDocId, docIdToFilename, encodeDocId, filenameToDocId } from "./path-encoding.js";

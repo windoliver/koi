@@ -87,6 +87,9 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   // spawn.ts: validateSpawnRequest() is a pure validation helper (no side effects,
   // operates only on L0 types) — same category as validation-utils.ts.
   "spawn.ts",
+  // outcome-linkage.ts: decisionCorrelationId() is a branded type constructor
+  // (identity cast) — same category as agentId(), sessionId() in ecs.ts.
+  "outcome-linkage.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

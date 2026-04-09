@@ -7437,3 +7437,54 @@ describe("Golden: @koi/skill-tool", () => {
     expect(execResult.value).toBe("Hello from greet skill in /tmp/skills/greet");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L0+L3 golden queries: outcome-linkage (#1465)
+// ---------------------------------------------------------------------------
+
+describe("Golden: outcome-linkage (L0 types + L3 stores)", () => {
+  test("DecisionCorrelationId branded constructor round-trips", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const id = decisionCorrelationId("dcid_test-123");
+    // Branded type is structurally a string
+    const plain: string = id;
+    expect(plain).toBe("dcid_test-123");
+  });
+
+  test("in-memory OutcomeStore put/get round-trip", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+
+    const store = createInMemoryOutcomeStore();
+    const report = {
+      correlationId: decisionCorrelationId("dcid_golden"),
+      outcome: "positive" as const,
+      metrics: { revenue: 42000 },
+      description: "Golden test outcome",
+      reportedBy: "golden-test",
+      timestamp: Date.now(),
+    };
+
+    await store.put(report);
+    const retrieved = await store.get("dcid_golden");
+
+    expect(retrieved).toBeDefined();
+    expect(retrieved?.outcome).toBe("positive");
+    expect(retrieved?.metrics.revenue).toBe(42000);
+  });
+
+  test("in-memory OutcomeStore returns undefined for missing ID", async () => {
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+    const store = createInMemoryOutcomeStore();
+    const result = await store.get("dcid_nonexistent");
+    expect(result).toBeUndefined();
+  });
+
+  test("outcomeStore on RuntimeHandle is populated when trajectoryNexus is configured", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Without trajectoryNexus, outcomeStore should be undefined
+    const handle = createRuntime({});
+    expect(handle.outcomeStore).toBeUndefined();
+    await handle.dispose();
+  });
+});

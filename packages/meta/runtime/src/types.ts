@@ -13,6 +13,7 @@ import type {
   FileSystemBackend,
   FileSystemConfig,
   KoiMiddleware,
+  OutcomeStore,
   ReportStore,
   RetrySignalReader,
   RichTrajectoryStep,
@@ -324,6 +325,13 @@ export interface RuntimeHandle {
    * files were silently skipped — callers should log or surface these to operators.
    */
   readonly agentConflicts: readonly RegistryConflictWarning[];
+
+  /**
+   * Outcome store for decision-to-business-outcome correlation (#1465).
+   * Only populated when config.trajectoryNexus is provided (shares transport).
+   * Phase 1: put + get only. Stores at /outcomes/{correlationId}.json.
+   */
+  readonly outcomeStore: OutcomeStore | undefined;
 
   /**
    * Resolved filesystem backend. Only populated when filesystem is explicitly
