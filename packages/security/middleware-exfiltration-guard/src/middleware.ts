@@ -173,6 +173,13 @@ export function createExfiltrationGuardMiddleware(
             kinds: ["redaction_failure"],
             action: "block",
           });
+          ctx.reportDecision?.({
+            location: "tool-input",
+            toolId: request.toolId,
+            matchCount: 0,
+            action: "block",
+            error: "redaction_failure",
+          });
           return {
             output: {
               error: "Exfiltration guard: redaction engine failure — request blocked (fail-closed)",
