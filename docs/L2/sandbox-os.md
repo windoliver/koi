@@ -35,13 +35,15 @@ L2  @koi/sandbox-os
 ```
 src/
   index.ts                    public re-exports
-  detect.ts                   detectPlatform(), checkAvailability() — 3-stage detection
+  detect.ts                   detectPlatform(), checkAvailability() — 4-stage detection
   profiles.ts                 preset constructors + SENSITIVE_CREDENTIAL_PATHS
   validate.ts                 validateProfile() — absolute paths, model compatibility
   normalize.ts                normalizeResult() — AdapterResult → SandboxError
+  path-utils.ts               stripGlobSuffix(), hasGlobPattern()
   platform/
     seatbelt.ts               generateSeatbeltProfile(), buildSeatbeltPrefix()
-    bwrap.ts                  buildBwrapPrefix(), buildBwrapSuffix()
+    bwrap.ts                  buildBwrapPrefix(), buildBwrapSuffix(), ensureDenyReadPaths(),
+                              buildSystemdRunArgs(profile, unitName?)
   adapter.ts                  createOsAdapter() — factory; exports SandboxOsAdapter
 ```
 
@@ -95,7 +97,7 @@ const adapter = result.value;
 
 ### `detectPlatform(): Result<SandboxPlatform, KoiError>`
 
-Pure OS detection (no filesystem I/O). Three-stage:
+OS detection with an AppArmor usability probe on Linux. Four-stage:
 
 1. **OS check** — `process.platform`:
    - `"darwin"` → `"seatbelt"`
@@ -104,12 +106,20 @@ Pure OS detection (no filesystem I/O). Three-stage:
 
 2. **WSL check** (Linux only) — reads `/proc/version`:
    - WSL1 (contains `"Microsoft"`) → typed error: "WSL1 not supported — bwrap requires kernel namespaces. Use WSL2."
-   - WSL2 → `"bwrap"`
-   - native Linux → `"bwrap"`
+   - WSL2 → proceed to architecture check
+   - native Linux → proceed to architecture check
 
 3. **Architecture check** (Linux only):
-   - `ia32` / `x86` 32-bit → typed error: "32-bit x86 not supported — seccomp socketcall bypass risk."
+   - `ia32` / `x86` 32-bit → typed error: "32-bit x86 not supported."
    - `x64`, `arm64` → proceed
+
+4. **AppArmor probe** (Linux only, cached) — Ubuntu 23.10+ restricts unprivileged user namespaces:
+   - Reads `/proc/sys/kernel/apparmor_restrict_unprivileged_userns`; if `"1"`, runs a real
+     `bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp -- true` probe
+     (same namespace flags as production — avoids false positives from sysctl-only check)
+   - Probe exits 0 (AppArmor profile grants `userns`) → `"bwrap"`
+   - Probe exits non-zero → typed error `APPARMOR_RESTRICTED`; message includes remediation steps
+   - Both results cached per-process (sysctl and D-Bus session don't change at runtime)
 
 ### `checkAvailability(): Result<PlatformInfo, KoiError>`
 
@@ -143,8 +153,14 @@ Validates the profile before any platform-specific code runs. Returns typed erro
 
 - **Relative paths**: any entry in `allowRead`, `denyRead`, `allowWrite`, `denyWrite`
   that does not start with `/` or `~/`. Reject with `code: "VALIDATION"`.
+- **Glob patterns**: any path entry containing `*`, `?`, `[`, `]`, `{`, `}` — bwrap mounts
+  paths literally; globs are silently wrong. Reject with `code: "VALIDATION"`.
 - **Model compatibility**: `defaultReadAccess: "closed"` on `"seatbelt"` is rejected —
   macOS dyld requires broad read access (deny-default for reads breaks system frameworks).
+- **bash wrapper prerequisite**: closed-mode bwrap with `maxPids` or `maxOpenFiles` requires
+  a `/bin/bash -c` wrapper (ulimit -u is bash-only; Ubuntu /bin/sh is dash). Rejected unless
+  `/bin/bash`, `/bin`, `/usr`, or `/` is in `allowRead`. Use `defaultReadAccess: "open"` to
+  avoid this constraint.
 - **Empty required fields**: `defaultReadAccess` is required (no default).
 
 ### `collectStream(stream, budget, onChunk?): Promise<{ text: string; truncated: boolean }>`
@@ -429,14 +445,16 @@ Platform-agnostic tests (profile validation, `normalizeResult`, preset construct
 
 | Area | Tests |
 |------|-------|
-| `detectPlatform` | macOS → seatbelt; Linux → bwrap; Windows → error; WSL1 → error; ia32 → error |
+| `detectPlatform` | macOS → seatbelt; Linux → bwrap; Windows → error; WSL1 → error; ia32 → error; AppArmor sysctl=1 + probe fail → APPARMOR_RESTRICTED; AppArmor sysctl=1 + probe pass → bwrap |
 | `checkAvailability` | binary found → `available: true`; binary missing → `available: false` with reason |
 | `validateProfile` | relative path rejected; `~/` accepted; absolute accepted; `closed` on seatbelt → error; `closed` on bwrap → valid; `open` on bwrap → valid |
 | `normalizeResult` | 6 branch tests + 2 priority tests (timedOut+nonzero → TIMEOUT, oomKilled+nonzero → OOM) |
 | `restrictiveProfile` | SENSITIVE_CREDENTIAL_PATHS all appear in denyRead; extraDenyRead appended |
 | `mergeProfile` | partial filesystem override preserves unset base fields; full override replaces; env merges correctly |
-| bwrap deny ordering | `--tmpfs /home/.ssh` index > `--ro-bind /home /home` index in generated args |
-| bwrap resource limits | maxPids set without maxOpenFiles still applies ulimit via sh wrapper |
+| bwrap deny ordering | `--tmpfs <dir>` index > `--ro-bind <parent>` index; file entries emit `--bind /dev/null` |
+| bwrap deny non-existent | non-existent denyRead paths produce no args (bwrap can't mount missing paths) |
+| bwrap resource limits | maxPids set → `/bin/bash -c "ulimit -u ... && exec ..."` wrapper; absolute path required |
+| `buildSystemdRunArgs` | null when no maxMemoryMb; `--unit=<name>` present when unitName passed, absent otherwise |
 | platform × model compat | 4 combinations (open/closed × seatbelt/bwrap) tested via injected PlatformInfo |
 | seatbelt path canonicalization | `/tmp`, `/var`, `/etc` paths rewritten to `/private/*`; non-symlink paths pass through unchanged |
 | `opts.home` override | `generateSeatbeltProfile({...}, { home: "/custom" })` expands `~/` without reading `process.env.HOME` |
@@ -525,8 +543,45 @@ operation, so `denyRead` entries were previously ineffective. The fix ensures
 credential paths are correctly blocked. Specificity rules apply: rules with a path
 predicate (subpath/literal) take precedence over the broad `(allow file-read-data)`.
 
+### Linux bubblewrap (bwrap) backend
+
+The bwrap backend uses `--unshare-all` + `--ro-bind / /` (open mode) or explicit mounts
+(closed mode). Key implementation details:
+
+**`denyRead` mount handling** — `denyRead` entries can be directories (`~/.ssh`) or files
+(`~/.netrc`). The handling differs:
+- **Directories** → `--tmpfs <path>` overlays an empty tmpfs, hiding the directory tree.
+- **Regular files** → `--bind /dev/null <path>` masks the file with an empty read-only file.
+  This correctly handles credential files like `~/.netrc`, `~/.npmrc`, `~/.pypirc`.
+- **Non-existent paths** → skipped; `--tmpfs` on a non-existent path crashes bwrap.
+
+`ensureDenyReadPaths()` runs before `buildBwrapPrefix()` to pre-create *missing directory*
+mount points (bwrap cannot `mkdir` after `--ro-bind / /`). Only paths that do not already
+exist are created — existing files are never overwritten with directories.
+
+**Closed mode** — only explicit `allowRead` paths are mounted. `buildBwrapPrefix` omits the
+`--ro-bind / /` root bind; `/dev`, `/proc`, `/tmp` are always added via their overlays.
+`PATH` is not auto-set in closed mode — callers must supply `profile.env.PATH`.
+
+**Ulimit wrapper** — when `maxPids` or `maxOpenFiles` is set, `buildBwrapSuffix()` wraps
+the command in `/bin/bash -c "ulimit ... && exec ..."`. The absolute path `/bin/bash` is
+required because `--clearenv` removes `PATH` inside the sandbox.
+
+**systemd-run scope lifecycle** — when `maxMemoryMb` is set and `systemd-run --user` is
+available (verified via a `probeSystemdRunUser()` D-Bus session probe at adapter creation),
+each `exec()` call is wrapped in a named transient scope:
+```
+systemd-run --user --scope --unit=koi-sb-<id> -p MemoryMax=<N>M -- bwrap ...
+```
+The per-exec unit name allows `abortHandler` to stop the entire cgroup via
+`systemctl --user stop koi-sb-<id>`, killing grandchild processes that survive
+`proc.kill()` (SIGTERM to the bwrap wrapper PID).
+
+`probeSystemdRunUser()` is called at `createOsAdapter()` time to verify the D-Bus user
+session is reachable. `Bun.which("systemd-run")` alone is insufficient in CI/container
+environments where the binary exists but no user session is running.
+
 ## Tracking
 
-- Issue: #1336 (v2 Phase 2f-1)
-- Platform backends follow in the next sub-issue (#1337 or similar)
+- Issue: #1336 (v2 Phase 2f-1), #1339 (v2 Phase 2f-3 — Linux bwrap backend)
 - Cloud backends: `@koi/sandbox-docker`, `@koi/sandbox-e2b`, etc. (separate issues)
