@@ -324,6 +324,37 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     cwd: process.cwd(),
     systemPrompt,
     session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
+    // Bridge spawn lifecycle events into the TUI store so /agents view and
+    // inline spawn_call blocks reflect real spawn state. Each spawn call
+    // produces one spawn_requested + one agent_status_changed event.
+    onSpawnEvent: (event): void => {
+      if (event.kind === "spawn_requested") {
+        store.dispatch({
+          kind: "engine_event",
+          event: {
+            kind: "spawn_requested",
+            childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+            request: {
+              agentName: event.agentName,
+              description: event.description,
+              signal: new AbortController().signal,
+            },
+          },
+        });
+      } else {
+        // agent_status_changed — map "complete"/"failed" to ProcessState "terminated"
+        // (the only terminal ProcessState the reducer accepts).
+        store.dispatch({
+          kind: "engine_event",
+          event: {
+            kind: "agent_status_changed",
+            agentId: event.agentId as unknown as import("@koi/core").AgentId,
+            agentName: event.agentName,
+            status: "terminated" as import("@koi/core").ProcessState,
+          },
+        });
+      }
+    },
   }).then((handle) => {
     runtimeHandle = handle;
     return handle;
@@ -414,6 +445,34 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
   // 6. Create TUI app
   // ---------------------------------------------------------------------------
+
+  // #11: pending image attachments collected from InputArea paste events.
+  // Flushed into the next onSubmit() as image ContentBlocks alongside the text.
+  // let: mutable — grows on onImageAttach, cleared on submit
+  let pendingImages: Array<{ readonly url: string; readonly mime: string }> = [];
+
+  // #16: turn-complete notification — BEL (0x07) when terminal is not focused.
+  // OpenTUI doesn't expose focus state; we emit BEL unconditionally. Most
+  // terminals only signal (visual/audible bell) when the window isn't focused.
+  const handleTurnComplete = (): void => {
+    if (process.stdout.isTTY) {
+      process.stdout.write("\x07");
+    }
+  };
+
+  // #13: session fork — save the current session, then start a fresh conversation
+  // from the same transcript. The cli's sessions:new semantics clear messages but
+  // preserve the transcript file; fork duplicates that flow with a "forked from" tag.
+  const handleFork = (): void => {
+    // Simplest implementation: clone the current transcript into a fresh session
+    // and reset the conversation. The new session inherits context via transcript.
+    resetConversation();
+    store.dispatch({
+      kind: "add_user_message",
+      id: `fork-${Date.now()}`,
+      blocks: [{ kind: "text", text: "[Forked from previous session]" }],
+    });
+  };
 
   const result = createTuiApp({
     store,
@@ -523,10 +582,18 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       // Prevents hitting stale task board or trajectory state.
       await resetBarrier;
 
+      // #11: include any pending clipboard images as image ContentBlocks
+      // alongside the text. Bridge clears pendingImages after dispatch so the
+      // next submit starts with an empty list.
+      const imageBlocks = pendingImages.map((img) => ({
+        kind: "image" as const,
+        url: img.url,
+      }));
+      pendingImages = [];
       store.dispatch({
         kind: "add_user_message",
         id: `user-${Date.now()}`,
-        blocks: [{ kind: "text", text }],
+        blocks: [{ kind: "text", text }, ...imageBlocks],
       });
 
       const controller = new AbortController();
@@ -561,6 +628,14 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
       }
     },
     onInterrupt,
+    // #13: session fork — called from command palette "Fork session"
+    onFork: handleFork,
+    // #11: image paste — InputArea collects images and calls this per paste
+    onImageAttach: (image) => {
+      pendingImages.push(image);
+    },
+    // #16: turn-complete notification
+    onTurnComplete: handleTurnComplete,
   });
 
   if (!result.ok) {

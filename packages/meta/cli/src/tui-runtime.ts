@@ -207,6 +207,20 @@ export interface TuiRuntimeConfig {
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Observer for spawn lifecycle events emitted by the Spawn tool executor.
+   * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
+   * EngineEvents into the store so /agents and inline spawn_call blocks update.
+   */
+  readonly onSpawnEvent?:
+    | ((event: {
+        readonly kind: "spawn_requested" | "agent_status_changed";
+        readonly agentId: string;
+        readonly agentName: string;
+        readonly description: string;
+        readonly status?: "running" | "complete" | "failed";
+      }) => void)
+    | undefined;
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
@@ -604,6 +618,26 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
+  // --- Optional middleware: system prompt + session transcript (C3-A) ---
+  // These are provided by the caller (tui-command.ts) so the runtime factory
+  // doesn't need to know about session storage paths or prompt content.
+  // Built here (before spawnToolProvider) so spawned children can inherit the
+  // same system prompt + session middleware as the parent — otherwise children
+  // run with no tool-usage guidance and fall back to raw text completion.
+  const optionalMiddleware = [
+    ...(config.systemPrompt !== undefined
+      ? [createSystemPromptMiddleware(config.systemPrompt)]
+      : []),
+    ...(config.session !== undefined
+      ? [
+          createSessionTranscriptMiddleware({
+            transcript: config.session.transcript,
+            sessionId: config.session.sessionId,
+          }),
+        ]
+      : []),
+  ];
+
   // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
   // Uses createAgentResolver (built-in + project/user definitions) + createSpawnToolProvider.
   // The child adapter creates a fresh context per stream() call (no shared transcript)
@@ -667,31 +701,18 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
       },
     },
-    // Inherit the full security middleware stack so children are subject to the
-    // same approval, secret-scanning, and hook guardrails as the parent.
-    inheritedMiddleware: [permMw, exfiltrationGuardMw, hookMw],
+    // Inherit the full security + behavioral middleware stack: permissions,
+    // secret-scanning, hooks, system prompt (tool-usage guidance), session
+    // transcript. Ensures spawned children follow the same envelope as the parent.
+    inheritedMiddleware: [permMw, exfiltrationGuardMw, hookMw, ...optionalMiddleware],
     // Enable dynamic agent creation: unknown names create ad-hoc agents from
     // the description (Claude Code behavior). Built-in and project/user-defined
     // agents still resolve normally with their authored prompts and ceilings.
     allowDynamicAgents: true,
+    // Side-channel spawn event observer — bridge dispatches these into the
+    // TUI store so /agents and inline spawn_call blocks reflect real state.
+    ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   });
-
-  // --- Optional middleware: system prompt + session transcript (C3-A) ---
-  // These are provided by the caller (tui-command.ts) so the runtime factory
-  // doesn't need to know about session storage paths or prompt content.
-  const optionalMiddleware = [
-    ...(config.systemPrompt !== undefined
-      ? [createSystemPromptMiddleware(config.systemPrompt)]
-      : []),
-    ...(config.session !== undefined
-      ? [
-          createSessionTranscriptMiddleware({
-            transcript: config.session.transcript,
-            sessionId: config.session.sessionId,
-          }),
-        ]
-      : []),
-  ];
 
   // --- Wrap middleware with trace for full ATIF instrumentation ---
   // Same pattern as golden-query recording: each middleware hook invocation
