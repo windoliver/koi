@@ -107,6 +107,7 @@ import { createInteractionProvider } from "../src/create-interaction-provider.js
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../src/middleware/trace-wrapper.js";
+import { createSkillsMcpBridge } from "../src/skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../src/trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../src/trajectory/fs-delegate.js";
 
@@ -1368,6 +1369,16 @@ const skillToolProvider = createSingleToolProvider({
 console.log(
   `SkillTool golden query: Skill tool created, advertising ${discoverResult.value.size} skill(s)`,
 );
+
+// ---------------------------------------------------------------------------
+// Skills-MCP bridge setup (reuses MCP server tools as skills via bridge)
+// ---------------------------------------------------------------------------
+
+// Create a separate skill runtime for the bridge test (no filesystem skills)
+const bridgeSkillRuntime = createSkillsRuntime({ bundledRoot: null });
+
+// Bridge will be wired after MCP provider is created (needs resolver)
+// See the skills-mcp-bridge query injection below the MCP provider setup
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2761,6 +2772,21 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
+  // skills-mcp-bridge: @koi/runtime bridge — MCP tools registered as skills
+  //   createSkillsMcpBridge maps McpResolver tools → SkillMetadata and registers
+  //   them via registerExternal(). Trajectory proves: MCP lifecycle connect,
+  //   bridge sync, model call succeeds with bridge wired. Actual MCP skill
+  //   registration is validated in standalone golden-replay tests (no LLM needed).
+  {
+    name: "skills-mcp-bridge",
+    prompt: "What is 7 + 3? Reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // Set dynamically below (after MCP + bridge setup)
+  },
+
   // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
   {
     name: "mcp-server-send",
@@ -2995,6 +3021,50 @@ if (mcpQuery !== undefined) {
   (mcpQuery as { providers: ComponentProvider[] }).providers = [mcpSetup.provider];
 }
 
+// Wire skills-mcp bridge: MCP resolver tools → skill registry via bridge
+{
+  const bridgeMcpServer = createTestMcpServer();
+  const [bridgeClientSide, bridgeServerSide] = InMemoryTransport.createLinkedPair();
+  await bridgeMcpServer.connect(bridgeServerSide);
+  const bridgeConn = createMcpConnection(
+    resolveServerConfig({ kind: "stdio", name: "bridge-mcp", command: "echo" }),
+    undefined,
+    {
+      createClient: () => new McpSdkClient({ name: "bridge-client", version: "1.0.0" }) as never,
+      createTransport: () => ({
+        start: async () => {},
+        close: async () => {
+          await bridgeClientSide.close();
+        },
+        sdkTransport: bridgeClientSide,
+        get sessionId() {
+          return undefined;
+        },
+        onEvent: () => () => {},
+      }),
+    },
+  );
+  const bridgeResolver = createMcpResolver([bridgeConn]);
+  const bridge = createSkillsMcpBridge({
+    resolver: bridgeResolver,
+    runtime: bridgeSkillRuntime,
+  });
+  await bridge.sync();
+  // Verify MCP tools appeared as skills
+  const bridgeDiscovered = await bridgeSkillRuntime.discover();
+  if (bridgeDiscovered.ok) {
+    const mcpSkills = [...bridgeDiscovered.value.values()].filter((s) => s.source === "mcp");
+    console.log(
+      `Skills-MCP bridge: ${mcpSkills.length} MCP tools registered as skills: [${mcpSkills.map((s) => s.name).join(", ")}]`,
+    );
+  }
+  const bridgeProvider = createSkillProvider(bridgeSkillRuntime);
+  const bridgeQuery = queries.find((q) => q.name === "skills-mcp-bridge");
+  if (bridgeQuery !== undefined) {
+    (bridgeQuery as { providers: ComponentProvider[] }).providers = [bridgeProvider];
+  }
+}
+
 // Also record a cassette for MCP tool-use (model sees the MCP tool)
 const mcpToolDescriptors = await mcpSetup.provider.attach({
   pid: { id: "record" as never, name: "record", type: "worker", depth: 0 },
@@ -3191,6 +3261,19 @@ await recordCassette("skill-tool-use", () =>
       },
     ],
     tools: [skillTool.descriptor],
+  }),
+);
+
+// skills-mcp-bridge: text-only response (bridge registers MCP tools as skills)
+await recordCassette("skills-mcp-bridge", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text: "What is 7 + 3? Reply with just the number." }],
+      },
+    ],
   }),
 );
 

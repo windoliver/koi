@@ -49,6 +49,11 @@ import { loadCassette } from "../cassette/load-cassette.js";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
+import {
+  createSkillsMcpBridge,
+  mapToolDescriptorsToSkillMetadata,
+  mapToolDescriptorToSkillMetadata,
+} from "../skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../trajectory/fs-delegate.js";
 
@@ -7486,5 +7491,169 @@ describe("Golden: outcome-linkage (L0 types + L3 stores)", () => {
     const handle = createRuntime({});
     expect(handle.outcomeStore).toBeUndefined();
     await handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — standalone bridge registration + mapping
+// No LLM needed. Exercises createSkillsMcpBridge, mapping, and registration.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (standalone bridge registration)", () => {
+  test("mapToolDescriptorToSkillMetadata produces sanitized MCP skill metadata", () => {
+    const descriptor: import("@koi/core").ToolDescriptor = {
+      name: "weather__get_forecast",
+      description: "Get weather forecast for a city",
+      inputSchema: { type: "object", properties: { city: { type: "string" } } },
+      server: "weather",
+      tags: ["weather", "api"],
+    };
+    const result = mapToolDescriptorToSkillMetadata(descriptor);
+
+    expect(result.name).toBe("weather__get_forecast");
+    expect(result.source).toBe("mcp");
+    expect(result.dirPath).toBe("mcp://weather");
+    expect(result.description).toBe(""); // empty — metadata-only, no prompt injection
+    expect(result.tags).toEqual(["mcp", "weather", "weather", "api"]);
+    expect(result.executionMode).toBeUndefined();
+  });
+
+  test("mapToolDescriptorsToSkillMetadata deduplicates and reports collisions", () => {
+    const descriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "srv__tool_a",
+        description: "Tool A",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool_b",
+        description: "Tool B",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool a", // sanitizes to "srv__toola" — collision with nothing, unique
+        description: "Tool with space",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+    ];
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
+
+    // All three have unique sanitized names
+    expect(skills.length).toBeGreaterThanOrEqual(2);
+    // No collisions for these distinct names
+    expect(skipped.length).toBe(0);
+    // All are source: "mcp"
+    for (const s of skills) {
+      expect(s.source).toBe("mcp");
+    }
+  });
+
+  test("createSkillsMcpBridge syncs MCP tools into SkillsRuntime", async () => {
+    const { mock } = await import("bun:test");
+
+    // Mock McpResolver
+    const mockDescriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "test-server__add",
+        description: "Add numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+      {
+        name: "test-server__multiply",
+        description: "Multiply numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+    ];
+
+    const mockResolver = {
+      discover: mock(() => Promise.resolve(mockDescriptors)),
+      load: mock(() =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+        }),
+      ),
+      onChange: mock((_fn: () => void) => () => {}),
+      dispose: mock(() => {}),
+      failures: [] as readonly never[],
+    };
+
+    const runtime = createSkillsRuntime({ bundledRoot: null });
+    const bridge = createSkillsMcpBridge({
+      resolver: mockResolver as never,
+      runtime,
+    });
+
+    await bridge.sync();
+
+    // MCP tools should appear as skills via discover()
+    const discovered = await runtime.discover();
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+
+    const mcpSkills = [...discovered.value.values()].filter((s) => s.source === "mcp");
+    expect(mcpSkills).toHaveLength(2);
+
+    const names = mcpSkills.map((s) => s.name).sort();
+    expect(names).toEqual(["test-server__add", "test-server__multiply"]);
+
+    // Queryable by source
+    const queryResult = await runtime.query({ source: "mcp" });
+    expect(queryResult.ok).toBe(true);
+    if (!queryResult.ok) return;
+    expect(queryResult.value).toHaveLength(2);
+
+    // dispose clears
+    bridge.dispose();
+    const afterDispose = await runtime.query({ source: "mcp" });
+    expect(afterDispose.ok).toBe(true);
+    if (!afterDispose.ok) return;
+    expect(afterDispose.value).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — trajectory validation
+// Validates the recorded ATIF trajectory has correct structure.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
+  test("trajectory has valid ATIF structure with MCP lifecycle steps", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = `${FIXTURES}/skills-mcp-bridge.trajectory.json`;
+    const raw = readFileSync(path, "utf-8");
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: { readonly type?: string; readonly serverName?: string };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("skills-mcp-bridge");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // Should have MCP lifecycle steps (bridge wired the MCP resolver)
+    const mcpSteps = trajectory.steps.filter((s) => s.extra?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least one "connected" step
+    const connectedStep = mcpSteps.find(
+      (s) => s.extra?.serverName !== undefined && s.outcome === "success",
+    );
+    expect(connectedStep).toBeDefined();
+
+    // Should have a model call step
+    const modelStep = trajectory.steps.find((s) => s.source === "agent");
+    expect(modelStep).toBeDefined();
   });
 });

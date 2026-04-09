@@ -1,0 +1,151 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "skills-mcp-bridge",
+  "agent": {
+    "name": "golden-skills-mcp-bridge",
+    "model_name": "google/gemini-2.0-flash-001"
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:16.879Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:16.880Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T04:31:16.887Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "What is 7 + 3? Reply with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": "10\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 103,
+        "completion_tokens": 3
+      },
+      "duration_ms": 514,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "079891676d521c2cb7bc5e0bf75aead45f0cea89b41d1b4af433eefa0e9db597"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:17.403Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "What is 7 + 3? Reply with just the number.",
+      "duration_ms": 514.8131669999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:17.404Z",
+      "model_name": "middleware:hooks",
+      "message": "What is 7 + 3? Reply with just the number.",
+      "duration_ms": 515.1007079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:17.405Z",
+      "model_name": "middleware:permissions",
+      "message": "What is 7 + 3? Reply with just the number.",
+      "duration_ms": 515.7364579999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T04:31:17.406Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "What is 7 + 3? Reply with just the number.",
+      "duration_ms": 516.9473330000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}
