@@ -159,25 +159,53 @@ export interface StaleDelegationResult {
 /**
  * Predicate: should this task's `metadata.delegatedTo` be cleared?
  *
- * Clears if the key is PRESENT on the metadata object AND one of:
- *  - the value is not a non-empty string (malformed — task_delegate would
- *    still reject it because the key exists), OR
- *  - the value IS a non-empty string but the referenced agent is not in
- *    `liveAgentIds` (stale — the delegated worker is gone).
- *
  * Skips terminal tasks (completed/failed/killed) because the board rejects
  * update() on those, and the delegation history is harmless there anyway.
+ *
+ * For `in_progress` tasks, liveness is checked against `assignedTo`, NOT
+ * against `delegatedTo`. Under the public tool flow, `task_delegate` sets
+ * `metadata.delegatedTo = "agent-A"`, but a different agent B can claim the
+ * task via `task_update(in_progress)` (which calls `board.assign(id, B)`
+ * without validating the assignee matches `delegatedTo`). In that "hijack"
+ * case, `delegatedTo` is stale historical metadata and the real worker is
+ * whoever `assignedTo` points at. If the assignee is dead, orphan recovery
+ * will unassign the task — we must clear `delegatedTo` now so the task can
+ * be re-delegated post-unassign. If the assignee is alive, the task is
+ * legitimately running and we leave everything alone (even though the
+ * `delegatedTo` marker no longer matches the worker).
+ *
+ * For `pending` tasks the delegation is still in flight — liveness is
+ * checked directly against `delegatedTo`.
+ *
+ * Malformed markers (non-string, null, empty string) are cleared
+ * unconditionally because `task_delegate` rejects any present `delegatedTo`
+ * key regardless of type.
  */
 function needsClear(task: Task, liveAgentIds: ReadonlySet<string>): boolean {
   if (isTerminalTaskStatus(task.status)) return false;
   const metadata = task.metadata;
   if (metadata === undefined || !("delegatedTo" in metadata)) return false;
   const value = metadata.delegatedTo;
-  if (typeof value !== "string" || value.length === 0) {
-    // Malformed marker — always clear (task_delegate would reject the task
-    // as "already delegated" regardless of the value's type).
-    return true;
+
+  // Malformed marker — always clear (task_delegate would reject the task
+  // as "already delegated" regardless of the value's type).
+  if (typeof value !== "string" || value.length === 0) return true;
+
+  if (task.status === "in_progress") {
+    // Use assignedTo as the authoritative worker identity. delegatedTo is
+    // historical at this point — it recorded who the task was INTENDED for,
+    // not who's actually running it.
+    const assignee = task.assignedTo;
+    // No assignee on an in_progress task is a board invariant violation;
+    // be defensive and clear the marker so recovery can re-delegate.
+    if (assignee === undefined) return true;
+    // Dead assignee → orphan recovery will unassign the task. Clear the
+    // delegation marker now so the task can be re-delegated afterward.
+    return !liveAgentIds.has(assignee);
   }
+
+  // Pending task — the delegation hasn't been claimed yet. Clear only if
+  // the delegated agent is not in the live set.
   return !liveAgentIds.has(value);
 }
 

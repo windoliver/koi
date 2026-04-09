@@ -622,6 +622,71 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
   });
 
+  test("hijack flow — delegate to A, claim by B, B dies, A still alive → task is re-delegatable", async () => {
+    // Codex adversarial review round 2 finding: in_progress tasks can be
+    // "hijacked" — delegated to agent A but claimed by agent B via
+    // task_update(status: in_progress), which calls board.assign(id, B)
+    // without validating that B matches delegatedTo. If we key cleanup off
+    // metadata.delegatedTo instead of assignedTo, the liveness check runs
+    // against A (the wrong identity) and we miss a stale task whose actual
+    // worker (B) is dead. Post-unassign the task is pending with a stale
+    // delegatedTo marker and task_delegate rejects re-delegation.
+    const board = await freshBoard();
+    const id = await board.nextId();
+    await board.add({ id, description: "Hijacked task" });
+
+    // Step 1: coordinator delegates to agent-A
+    await board.update(id, { metadata: { delegatedTo: "agent-A" } });
+
+    // Step 2: agent-B (a DIFFERENT agent) claims the task — this is the hijack.
+    // board.assign() does not validate the assignee matches delegatedTo.
+    await board.assign(id, agentId("agent-B"));
+    expect(board.snapshot().get(id)?.assignedTo).toBe(agentId("agent-B"));
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("agent-A");
+
+    // Step 3: crash. agent-B dies. agent-A is still alive but had nothing
+    // to do with the task. liveAgentIds = {"agent-A"}.
+    // Pre-fix behavior: needsClear compares delegatedTo ("agent-A") against
+    //   liveAgentIds — "agent-A" IS live, so skip. Task left with stale marker.
+    // Post-fix: needsClear compares assignedTo ("agent-B") against
+    //   liveAgentIds — "agent-B" is NOT live, so clear.
+    const staleResult = await recoverStaleDelegations(board, new Set(["agent-A"]));
+    expect(staleResult.failed).toHaveLength(0);
+    expect(staleResult.cleared).toEqual([id]);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
+
+    // Step 4: orphan recovery moves the task back to pending.
+    const orphanResult = await recoverOrphanedTasks(board, agentId("new-coord"));
+    expect(orphanResult.requeued).toEqual([id]);
+    expect(board.snapshot().get(id)?.status).toBe("pending");
+
+    // Step 5: re-delegation succeeds — the stale marker was cleared.
+    const reDelegate = await board.update(id, { metadata: { delegatedTo: "fresh-worker" } });
+    expect(reDelegate.ok).toBe(true);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
+  });
+
+  test("legitimate in_progress task with live assignee and matching delegatedTo is NOT cleared", async () => {
+    // Conservative counterpart to the hijack test: if the assignee is alive
+    // the task is legitimately running, so recoveryStaleDelegations should
+    // leave the delegatedTo marker alone (even though it's now redundant).
+    // This keeps the recovery pass surgical — no unnecessary writes to
+    // healthy in-flight work.
+    const board = await freshBoard();
+    const id = await board.nextId();
+    await board.add({ id, description: "Healthy in-flight task" });
+    await board.update(id, { metadata: { delegatedTo: "agent-X" } });
+    await board.assign(id, agentId("agent-X"));
+    expect(board.snapshot().get(id)?.assignedTo).toBe(agentId("agent-X"));
+
+    const result = await recoverStaleDelegations(board, new Set(["agent-X"]));
+    // Nothing to clear — assignee is alive.
+    expect(result.cleared).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("agent-X");
+    expect(board.snapshot().get(id)?.status).toBe("in_progress");
+  });
+
   test("real flow — reverse order (orphan-recovery first) also works", async () => {
     // Same scenario but orphan-recovery runs FIRST. Both orders must work
     // because the contract is advertised as order-independent.
