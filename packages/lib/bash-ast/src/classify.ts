@@ -103,11 +103,32 @@ export function classifyBashCommand(command: string, opts?: ClassifyOptions): Cl
       return regexClassifyTtp(command);
     }
     case "too-complex": {
-      // TODO(#1622): delete this branch once three-state permissions ship
-      // and `too-complex` can route to an ask-user verdict. Until then, we
-      // fall through to the existing regex classifier so that common shell
-      // patterns ($VAR, $(cmd), for-loops, &&) continue to work without
-      // forcing a user prompt for every compound command.
+      // SECURITY: certain `too-complex` reasons indicate bash source whose
+      // raw text does NOT match bash's effective semantics — backslash
+      // escapes in unquoted words, inside double-quoted strings, or as
+      // line continuations. For these, falling through to the raw-text
+      // regex classifier is unsafe: the pattern `/etc/passwd` never
+      // matches `\/etc\/passwd` even though bash dispatches them to the
+      // same argv, and `curl | bash` never matches `curl | ba\<LF>sh`
+      // even though bash collapses the line continuation. Hard-deny
+      // these directly instead of falling through.
+      if (
+        analysis.nodeType === "word" ||
+        analysis.nodeType === "string_content" ||
+        analysis.nodeType === "prefilter:line-continuation"
+      ) {
+        return {
+          ok: false,
+          reason: `Bash source uses shell escape sequences that cannot be safely analysed: ${analysis.reason}`,
+          pattern: analysis.nodeType,
+          category: "injection",
+        };
+      }
+      // TODO(#1622): delete this fall-through once three-state permissions
+      // ship and `too-complex` can route to an ask-user verdict. Until
+      // then, we fall through to the existing regex classifier so that
+      // common shell patterns ($VAR, $(cmd), for-loops, &&) continue to
+      // work without forcing a user prompt for every compound command.
       return regexClassifyTtp(command);
     }
     case "parse-unavailable": {

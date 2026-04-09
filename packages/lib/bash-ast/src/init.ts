@@ -34,10 +34,20 @@ let cachedParser: TsParser | null = null;
 /**
  * Idempotent one-time init. Safe to call concurrently — subsequent callers
  * await the same in-flight promise.
+ *
+ * SECURITY: on rejection, the cached promise is cleared so the next caller
+ * retries fresh. Without this reset, a single transient failure (disk
+ * error reading the .wasm asset, bad grammar load, corrupted runtime)
+ * would poison every subsequent call with the same rejected promise
+ * forever — a permanent DoS on all bash tool execution.
  */
 export function initializeBashAst(): Promise<void> {
   if (initPromise === null) {
-    initPromise = doInit();
+    initPromise = doInit().catch((err: unknown) => {
+      initPromise = null;
+      cachedParser = null;
+      throw err;
+    });
   }
   return initPromise;
 }

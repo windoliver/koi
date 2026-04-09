@@ -227,11 +227,23 @@ function walkArgNode(
 ): { kind: "ok"; value: string } | { kind: "too-complex"; reason: string; nodeType?: string } {
   switch (node.type) {
     case "word":
+      // SECURITY: reject any word containing a backslash. Tree-sitter
+      // preserves raw source; bash strips `\x` in unquoted context (e.g.
+      // `\/etc\/passwd` runs `/etc/passwd`). Returning `node.text` here
+      // would lie about the effective argv: a permission rule matching on
+      // argv would see backslashes the attacker's command never runs with.
+      // Force too-complex → transitional regex fallback rather than
+      // emulate bash's escape semantics.
+      if (node.text.includes("\\")) {
+        return tooComplex("word with backslash escape is not supported", "word");
+      }
       return { kind: "ok", value: node.text };
     case "number":
       return { kind: "ok", value: node.text };
     case "raw_string": {
-      // 'single quoted' — strip the surrounding quotes
+      // 'single quoted' — strip the surrounding quotes. Single-quoted
+      // strings are truly literal in bash (no escape processing), so
+      // backslashes inside are safe — the argv is exactly the inner text.
       const text = node.text;
       if (text.length >= 2 && text[0] === "'" && text[text.length - 1] === "'") {
         return { kind: "ok", value: text.slice(1, -1) };
@@ -239,11 +251,21 @@ function walkArgNode(
       return tooComplex("malformed raw_string", "raw_string");
     }
     case "string": {
-      // "double quoted" — allow only if no expansion inside (children: ", string_content?, ")
+      // "double quoted" — allow only if children are [", string_content?, "]
+      // AND string_content contains no backslashes. Bash processes `\"`,
+      // `\\`, `\$`, `\``, and `\<newline>` inside double quotes, so any
+      // backslash in string_content means the raw text lies about the argv.
+      // Fail closed: reject rather than emulate escape resolution.
       const parts: string[] = [];
       for (const child of node.children) {
         if (child.type === '"') continue;
         if (child.type === "string_content") {
+          if (child.text.includes("\\")) {
+            return tooComplex(
+              "backslash escape in double-quoted string is not supported",
+              "string_content",
+            );
+          }
           parts.push(child.text);
           continue;
         }

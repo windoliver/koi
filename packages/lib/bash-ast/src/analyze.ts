@@ -34,6 +34,20 @@ export const MAX_COMMAND_LENGTH = 10_000;
 const PARSE_DEADLINE_MS = 50;
 
 /**
+ * SECURITY: backslash-newline (line continuation) splits one bash word
+ * across multiple source lines. Tree-sitter-bash parses the halves as
+ * separate tokens, so a word like `bash` can be smuggled as `ba\<LF>sh`
+ * and reach the walker as two unrelated words. The walker cannot
+ * reconstruct the intended argv, and the raw-text regex fallback sees
+ * the literal `\<LF>` that never matches its patterns.
+ *
+ * Reject the whole input at the prefilter. Over-rejects literal
+ * backslash-newline inside single-quoted strings (rare), accepted cost
+ * for a fail-closed invariant.
+ */
+const LINE_CONTINUATION_RE = /\\\n/;
+
+/**
  * Analyze a raw bash command string. Sync hot path.
  *
  * Callers MUST treat `parse-unavailable` as deny (fail closed). `too-complex`
@@ -42,6 +56,17 @@ const PARSE_DEADLINE_MS = 50;
 export function analyzeBashCommand(command: string): AstAnalysis {
   if (command.length > MAX_COMMAND_LENGTH) {
     return { kind: "parse-unavailable", cause: "over-length" };
+  }
+
+  // SECURITY pre-parse: line continuation splits words across lines and
+  // defeats both the AST walker's argv extraction and any raw-text regex
+  // fallback that inspects the source string.
+  if (LINE_CONTINUATION_RE.test(command)) {
+    return {
+      kind: "too-complex",
+      reason: "backslash line continuation is not supported",
+      nodeType: "prefilter:line-continuation",
+    };
   }
 
   const parser = getParser();
@@ -72,7 +97,17 @@ export function analyzeBashCommand(command: string): AstAnalysis {
     return { kind: "parse-unavailable", cause: "timeout" };
   }
 
-  const walkResult = walkProgram(tree.rootNode);
+  // SECURITY: free the WASM-heap Tree before returning. web-tree-sitter's
+  // `Tree` holds a pointer into the parser's WASM memory and `delete()` is
+  // the only way to release it. Without this, a long-running process leaks
+  // grammar heap per classified command.
+  let walkResult: ReturnType<typeof walkProgram>;
+  try {
+    walkResult = walkProgram(tree.rootNode);
+  } finally {
+    tree.delete();
+  }
+
   if (walkResult.kind === "too-complex") {
     return walkResult.nodeType !== undefined
       ? {

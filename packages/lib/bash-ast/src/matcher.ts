@@ -64,5 +64,15 @@ export function matchSimpleCommand(pattern: BashRulePattern, cmd: SimpleCommand)
 }
 
 function matchOne(matcher: BashArgMatcher, value: string): boolean {
-  return typeof matcher === "string" ? matcher === value : matcher.test(value);
+  if (typeof matcher === "string") return matcher === value;
+  // SECURITY: regex flags `g` and `y` mutate `lastIndex` across calls, so
+  // the same rule would alternate match/no-match on identical input. Strip
+  // these stateful flags before testing by rebuilding the regex from its
+  // source. Keeps `i`, `m`, `s`, `u`, `v` etc. which are safe.
+  const { source, flags } = matcher;
+  if (!flags.includes("g") && !flags.includes("y")) {
+    return matcher.test(value);
+  }
+  const safeFlags = flags.replace(/[gy]/g, "");
+  return new RegExp(source, safeFlags).test(value);
 }
