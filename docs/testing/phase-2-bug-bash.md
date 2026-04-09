@@ -37,44 +37,69 @@ bun run check:layers
 OPENROUTER_API_KEY=<your key from ~/koi/.env>
 ```
 
-### 1.3 Worktree-prefixed tmux sessions (mandatory)
+### 1.3 Per-tester isolation (mandatory for parallel runs)
 
-All tmux session names must be prefixed with the worktree slug. This is mandatory when running in parallel with other agents.
+Every stateful resource (HOME, fixture path, tmux session, Nexus port, capture files, session transcripts) MUST be namespaced per tester. Parallel testers on one workstation share nothing — no shared `~/.koi`, no shared `~/.config/nexus-fs`, no shared ports, no shared fixture, no shared `/tmp/koi-capture.txt`.
 
 ```bash
-export WORKTREE=$(basename "$PWD")   # e.g. "polished-painting-hummingbird"
-export KOI_SESSION="${WORKTREE}-koi"
-export NEXUS_SESSION="${WORKTREE}-nexus"
-export BASH_SESSION="${WORKTREE}-bash"  # for out-of-band verification commands
+# Required envs — set once per shell at the start of the bug bash.
+export WORKTREE=$(basename "$PWD")          # e.g. "polished-painting-hummingbird"
+export TESTER_ID=t1                         # pick a distinct id per tester: t1..t9
+export NAMESPACE="${WORKTREE}-${TESTER_ID}"
+
+# Tmux sessions — prefixed so parallel agents cannot rename/kill each other.
+export KOI_SESSION="${NAMESPACE}-koi"
+export NEXUS_SESSION="${NAMESPACE}-nexus"
+export BASH_SESSION="${NAMESPACE}-bash"     # for out-of-band verification commands
+
+# Fixture project — per-tester (never use a shared /tmp path).
+export FIXTURE="/tmp/koi-bugbash-${NAMESPACE}"
+
+# Capture and log paths — per-tester.
+export CAPTURE_FILE="/tmp/koi-capture-${NAMESPACE}.txt"
+export HOOK_LOG="/tmp/koi-hook-log-${NAMESPACE}.txt"
+
+# Isolated HOME so ~/.koi, ~/.config/nexus-fs, and all state files are private.
+# The TUI uses node:os homedir() which respects $HOME, so setting HOME per tester
+# isolates transcripts (~/.koi/sessions), memory, hooks config, and OAuth tokens.
+export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
+mkdir -p "$KOI_HOME/.koi" "$KOI_HOME/.config/nexus-fs"
+
+# Nexus port offset — last digit of the tester id so each tester gets a unique admin API.
+export NEXUS_PORT=$((3100 + ${TESTER_ID#t}))  # t1 → 3101, t2 → 3102, ...
 ```
+
+> **Never use the unnamespaced `$WORKTREE-koi` tmux name or `/tmp/koi-bugbash-fixture` fixture path**. Those were shown in an earlier draft and are not parallel-safe.
 
 ### 1.4 Start Nexus (for backend-dependent scenarios)
 
 ```bash
-# Start Nexus in a tmux session so logs are capturable.
-# Use whatever image/tag and port convention your Nexus deployment exposes — the admin API is on 3100 by default.
-tmux new-session -d -s "$NEXUS_SESSION" 'docker run --rm -p 3100:3100 <nexus-image>:<tag>'
+# Start Nexus in a per-tester tmux session on a per-tester port.
+# Use whatever image/tag your Nexus deployment exposes — map it to $NEXUS_PORT on the host.
+tmux new-session -d -s "$NEXUS_SESSION" "docker run --rm -p ${NEXUS_PORT}:3100 <nexus-image>:<tag>"
 tmux capture-pane -t "$NEXUS_SESSION" -p | tail -20
-# Verify admin API is reachable:
-curl -s http://localhost:3100/admin/api/health
+# Verify admin API is reachable (each tester uses their own port):
+curl -s "http://localhost:${NEXUS_PORT}/admin/api/health"
 ```
 
 ### 1.5 Launch Koi TUI
 
 Koi's full-screen console lives under the `tui` subcommand. (Confirm with `bun run packages/meta/cli/src/bin.ts --help`: the top-level commands are `init`, `start`, `serve`, `tui`, `sessions`, `logs`, `status`, `doctor`, `stop`, `deploy`, `plugin`.)
 
+The TUI is launched with `HOME=$KOI_HOME` so transcripts, memory, hook config, and OAuth tokens live under the isolated per-tester root.
+
 ```bash
-tmux new-session -d -s "$KOI_SESSION" 'bun run packages/meta/cli/src/bin.ts tui'
+tmux new-session -d -s "$KOI_SESSION" "HOME='$KOI_HOME' bun run packages/meta/cli/src/bin.ts tui"
 sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
 
 ### 1.6 Test fixture project
 
-Every scenario runs against a fixture project. Create it fresh at the start of the bug bash:
+Every scenario runs against a per-tester fixture project created in §1.3 as `$FIXTURE`. Create it fresh at the start of the bug bash:
 
 ```bash
-export FIXTURE=/tmp/koi-bugbash-fixture
+# $FIXTURE was exported in §1.3 and is already namespaced per tester.
 rm -rf "$FIXTURE" && mkdir -p "$FIXTURE"
 cd "$FIXTURE"
 git init -q
@@ -107,7 +132,10 @@ cd - >/dev/null
 # Kill and relaunch the TUI (cleanest reset)
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 cd "$FIXTURE" && git reset --hard -q && git clean -fdq && cd - >/dev/null
-tmux new-session -d -s "$KOI_SESSION" "cd $FIXTURE && bun run $OLDPWD/packages/meta/cli/src/bin.ts tui"
+# Clear per-tester transcript + memory state for a fully fresh session.
+rm -rf "$KOI_HOME/.koi/sessions" "$KOI_HOME/.koi/memory"
+mkdir -p "$KOI_HOME/.koi/sessions"
+tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run $OLDPWD/packages/meta/cli/src/bin.ts tui"
 sleep 2
 ```
 
@@ -139,22 +167,30 @@ Notes: for multi-line input, send each line followed by `Enter`; embedded quotes
 ### 2.3 Capturing full scrollback (for bug reports)
 
 ```bash
-tmux capture-pane -t "$KOI_SESSION" -pS -3000 > /tmp/koi-capture.txt
+# $CAPTURE_FILE is per-tester — defined in §1.3.
+tmux capture-pane -t "$KOI_SESSION" -pS -3000 > "$CAPTURE_FILE"
 ```
 
 ### 2.4 Finding the session transcript
 
-Session transcripts are flat JSONL files stored at `~/.koi/sessions/<sessionId>.jsonl` — one file per session, no per-session directory. Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
+Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<sessionId>.jsonl` — one file per session, no per-session directory. Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
+
+**Do not use `ls -t | head -1`** to find the session file — it races against parallel testers sharing the same machine. Instead, take the session id from the TUI startup banner (or from the capture file) and derive the path explicitly:
 
 ```bash
-# Newest transcript file
-SESSION_FILE=$(ls -t ~/.koi/sessions/*.jsonl 2>/dev/null | head -1)
+# Grab the session id from the TUI banner in the capture.
+tmux capture-pane -t "$KOI_SESSION" -pS -3000 > "$CAPTURE_FILE"
+SESSION_ID=$(grep -oE 'session[[:space:]]*id[^[:alnum:]]*[A-Za-z0-9_-]+' "$CAPTURE_FILE" | head -1 | awk '{print $NF}')
+SESSION_FILE="$KOI_HOME/.koi/sessions/${SESSION_ID}.jsonl"
+
 ls -lh "$SESSION_FILE"
 jq -c . "$SESSION_FILE" | tail -20
 
 # Count by role
 jq -r '.role' "$SESSION_FILE" | sort | uniq -c
 ```
+
+> If your build of the TUI prints the session id in a different format, adjust the `grep -oE` pattern above. Never rely on "newest file in the sessions dir" — that's non-deterministic under parallel runs.
 
 ### 2.5 ATIF trajectory (in-memory only)
 
@@ -179,7 +215,7 @@ Body:
 1. git rev-parse HEAD → <commit>
 2. Reset state (§1.7)
 3. tmux send-keys … '<exact query>'
-**TUI capture**: <paste or attach /tmp/koi-capture.txt>
+**TUI capture**: <paste or attach $CAPTURE_FILE (per-tester path from §1.3)>
 **Session transcript**: <attach $SESSION_FILE — the flat .jsonl file from ~/.koi/sessions/>
 **Trajectory**: in-memory only; omit unless you can dump via a test harness or golden replay
 **Severity**: blocker / major / minor / nit
@@ -346,12 +382,24 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### E4. HTTP hook receives event
 **Tags**: hooks HTTP executor, event serialization
-**Setup**: start a simple HTTP listener: `python3 -m http.server 9999 &` or similar; configure hook to POST to it
+**Setup**: start a POST-capable stub server on a per-tester port. `python3 -m http.server` only handles `GET`/`HEAD` (its `SimpleHTTPRequestHandler` returns 501 on POST), so it will NOT capture the hook body — do not use it.
+
+Use a tiny Bun script instead (works out of the box in this repo):
+
+```bash
+export HOOK_PORT=$((9900 + ${TESTER_ID#t}))  # per-tester port
+export HOOK_LOG="/tmp/koi-hook-log-${NAMESPACE}.txt"
+: > "$HOOK_LOG"
+tmux new-session -d -s "${NAMESPACE}-hook-stub" "bun -e 'const port = Number(process.env.HOOK_PORT); const logPath = process.env.HOOK_LOG; Bun.serve({ port, async fetch(req){ const body = await req.text(); await Bun.write(logPath, (await Bun.file(logPath).text().catch(() => \"\")) + req.method + \" \" + new URL(req.url).pathname + \" \" + body + \"\n\"); return new Response(\"ok\"); } }); console.log(\"hook stub on \" + port);'"
+```
+
+Configure the hook in `$KOI_HOME/.koi/hooks.json` to POST to `http://127.0.0.1:${HOOK_PORT}/hook` on a pre-tool-use event.
+
 **User query**: `Read README.md`
-**Expected**: HTTP listener receives a POST with the tool event payload
-**Verify**: listener log shows inbound POST with correct JSON
-**Pass**: event shape is stable, documented, backward-compatible
-**Watch**: sensitive data leaking in the event body; blocking the agent on a slow hook
+**Expected**: the hook stub's log (`$HOOK_LOG`) receives a POST with the tool event payload (method is POST per `packages/lib/hooks/src/executor.ts`)
+**Verify**: `cat "$HOOK_LOG"` shows `POST /hook {...json...}` with the expected event shape
+**Pass**: request received, body parses as JSON, event shape stable and backward-compatible
+**Watch**: listener replying 501 (wrong stub — revert to the Bun.serve above); sensitive data leaking in the body; blocking the agent on a slow hook; port collision between testers (use the `$HOOK_PORT` pattern above)
 
 ---
 
@@ -417,21 +465,26 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 ### Group H — Agent runtime & subagents
 
-#### H1. Spawn general-purpose subagent
-**Tags**: agent-runtime, subagent spawn, inheritance, task tool (if that's the entry)
-**User query**: `Use a subagent to investigate how the permissions package classifies rules, and report back.`
-**Expected turn**: parent agent spawns a subagent with a focused prompt; subagent explores; returns a summary
-**Verify**: trajectory shows parent + child agent events, distinguishable by agent-id
-**Pass**: child finishes, parent receives result, parent incorporates into its answer
-**Watch**: child inheriting too much scope (permission leak); child not inheriting enough (can't do its job); infinite spawn loop
+> **Subagent spawning is intentionally stubbed in the TUI runtime.** `packages/meta/cli/src/tui-runtime.ts` wires `agent_spawn` to a hard error (`"agent_spawn is not available in koi tui. Cannot delegate to ..."`) because the TUI does not ship the agent-runtime + harness wiring that real delegation needs. Covering real subagent behavior from the TUI is not possible with the shipped code — H1/H2 are run via the test suite, not through the TUI.
 
-#### H2. Parallel subagents
+#### H1. Spawn general-purpose subagent — covered via test suite, not TUI
+**Tags**: agent-runtime, subagent spawn, inheritance, spawn-tools
+**Action** (not in the TUI):
+```bash
+bun test --filter=@koi/agent-runtime
+bun test --filter=@koi/spawn-tools
+```
+**Expected**: all tests pass; parent→child spawn paths, permission inheritance, and error propagation all covered.
+**TUI smoke check**: inside the TUI, ask the agent to delegate. The stub should surface `"agent_spawn is not available in koi tui"` as a recoverable tool error; the agent should fall back to inline work without crashing the turn.
+**Pass**: test suites green; TUI surfaces the stub error cleanly without killing the session
+**Watch**: TUI crashing instead of recovering from the stub error; tests hiding regressions (run with `-v`); stub error code no longer `EXTERNAL`
+
+#### H2. Parallel subagent fan-out — covered via test suite, not TUI
 **Tags**: agent-runtime concurrent spawn, result aggregation
-**User query**: `Spawn 3 subagents in parallel: one to count files in src/, one to count files in test/, one to count files in docs/. Aggregate the results.`
-**Expected**: 3 child agents spawn concurrently; parent waits and aggregates
-**Verify**: timestamps show overlapping execution; 3 distinct child session entries
-**Pass**: parallel execution genuinely overlaps; aggregation arithmetic correct
-**Watch**: serialization-as-parallel (one at a time); race conditions in shared state; child crashes pulling down parent
+**Action** (not in the TUI): locate and run the parallel-spawn / fan-out tests within `bun test --filter=@koi/agent-runtime`. If no tests currently cover parallel aggregation, file a `bug-bash` + `missing-coverage` issue against `@koi/agent-runtime` rather than attempting to reproduce it through the TUI (which will always fail via the stub).
+**TUI coverage**: N/A — see note above.
+**Pass**: parallel spawn code paths have concrete test coverage; any coverage gap is tracked explicitly
+**Watch**: tests that fake concurrency with sequential `await` in a loop; race conditions in shared task-board state not covered
 
 #### H3. Plan mode (read-only enforcement)
 **Tags**: plan-mode tool, permissions scoping
@@ -502,28 +555,39 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 ### Group K — Memory
 
-#### K1. Memory extraction after turn
-**Tags**: middleware-extraction (if shipped), memory storage
-**User query**: `My project uses Bun 1.3 and Biome for linting. Also we prefer explicit return types.`
-**Expected**: after the turn, memory extraction runs and stores these as facts
-**Verify**: `ls ~/.koi/memory` shows entries; `jq . ~/.koi/memory/*.json` shows the facts
-**Pass**: facts are stored, not verbatim conversation
+> **Important: the TUI uses an in-memory memory backend**, not an on-disk store. `packages/meta/cli/src/tui-runtime.ts` wires `createInMemoryMemoryBackend()` and the reset path explicitly calls `memoryBackend.clear()` on each new session (`tui-runtime.ts:977-979`). There is no `~/.koi/memory` directory to grep against. Scenarios below verify within-session storage/recall through the `memory_store`, `memory_recall`, `memory_search` tools, NOT through the filesystem.
 
-#### K2. Memory recall in new session
-**Tags**: memory retrieval, relevance matching
-**Setup**: K1 must be complete; then reset the TUI session (new session, not resumed)
-**User query**: `What do you remember about my project's toolchain?`
-**Expected**: agent recalls Bun 1.3, Biome, explicit return types
-**Pass**: recall is accurate; agent cites that it's drawing from memory (ideally)
-**Watch**: stale memory showing old facts; cross-session bleed of unrelated memories
+#### K1. Within-session memory store + recall (in-memory backend)
+**Tags**: `memory-tools`, `memory_store`, `memory_recall`, in-memory backend
+**User query** (turn 1): `Remember that this project uses Bun 1.3 and Biome for linting, and that we prefer explicit return types on exported functions.`
+**Expected turn 1**: agent calls `memory_store` with the three facts as separate entries (or one structured entry)
+**Follow-up** (turn 2, same session): `What do you remember about the toolchain?`
+**Expected turn 2**: agent calls `memory_recall` or `memory_search` and reports the three facts
+**Verify** (within the same session, against `$SESSION_FILE`):
+- At least one `memory_store` tool_call entry in turn 1
+- At least one `memory_recall` or `memory_search` tool_call entry in turn 2
+- The assistant's final message in turn 2 mentions Bun, Biome, and return types
+**Pass**: recall inside the same session works via the tools, not via the transcript
+**Watch**: `memory_store` not called (agent answered from context); `memory_recall` returning stale entries from a prior session (should be empty after reset — the backend is cleared); memory contents leaking verbatim user text vs structured facts
 
-#### K3. Memory extraction filters sensitive data
-**Tags**: memory-team-sync filter, redaction
-**User query**: `My OpenAI API key is sk-test-fake-key-12345 and my email is test@example.com.`
-**Expected**: memory extraction skips or redacts these
-**Verify**: `grep -r 'sk-test-fake' ~/.koi/memory` is empty
-**Pass**: no secrets in memory store
-**Watch**: partial redaction (key prefix leaking); false negatives (other secret formats)
+#### K2. Memory is cleared on new-session reset
+**Tags**: memory backend clear on reset, cross-session isolation
+**Setup**: K1 must be complete. Trigger a new-session reset from within the TUI (the command that resets bash cwd + memory + backgrounds — check the TUI help or use `/new` if exposed).
+**User query** (after reset): `What do you remember about the toolchain?`
+**Expected**: memory_recall returns nothing; agent says it has no stored memory for this session
+**Pass**: reset cleared the in-memory backend (confirms `memoryBackend.clear()` is wired to the reset path); prior facts are NOT recalled
+**Watch**: prior facts leaking across sessions (backend not actually cleared); reset not wired to memory-clear at all; agent hallucinating recall from its own context instead of calling the tool
+
+#### K3. Memory redaction for sensitive inputs
+**Tags**: `memory-team-sync` filter, redaction, scrubbing path
+**User query**: `Remember my OpenAI API key is sk-test-fake-key-12345 and my contact email is test@example.com.`
+**Expected**: either (a) the agent refuses to store secrets via its own judgement, OR (b) the memory store path redacts/scrubs the values before persisting. Both are acceptable outcomes — a tester should flag if NEITHER happens.
+**Verify** (within the same session):
+- Any `memory_store` tool_call in `$SESSION_FILE` must NOT contain `sk-test-fake-key-12345` verbatim as the stored value (the argument body is fair game if the model echoes it, but the stored entry should be redacted)
+- A `memory_recall` in a follow-up turn should NOT return the raw key
+**Pass**: the key and email are never returned by `memory_recall`
+**Watch**: partial redaction (`sk-test-*` leaking); recall returning the raw secret even though store appeared to redact it; false negatives on less common secret formats (Stripe keys, AWS keys, JWTs)
+**Out of scope**: on-disk persistence tests — the TUI has no on-disk memory backend. The persistence path is covered via `bun test --filter=@koi/memory`.
 
 ---
 
@@ -531,12 +595,23 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### L1. Plugin manifest loads
 **Tags**: plugins loader, manifest parsing
-**Setup**: add a minimal plugin at `~/.koi/plugins/hello-plugin/plugin.yaml`
-**Action**: restart TUI
-**Expected**: plugin discovered in startup logs
+**Setup**: the plugin loader reads `plugin.json` (NOT `plugin.yaml` — see `packages/lib/plugins/src/loader.ts`). Create a minimal JSON manifest in the per-tester HOME:
+```bash
+mkdir -p "$KOI_HOME/.koi/plugins/hello-plugin"
+cat > "$KOI_HOME/.koi/plugins/hello-plugin/plugin.json" <<'EOF'
+{
+  "name": "hello-plugin",
+  "version": "0.0.1",
+  "description": "Bug bash smoke plugin"
+}
+EOF
+```
+(Add whatever other required fields the current plugin manifest schema enforces — check `packages/lib/plugins/src/loader.ts` for the minimum set.)
+**Action**: restart TUI with the isolated HOME (§1.7 reset).
+**Expected**: plugin discovered at startup (no ENOENT on the manifest) and enumerated by the loader
 **Verify**: `tmux capture-pane -t "$KOI_SESSION" -p | grep hello-plugin`
-**Pass**: plugin listed as loaded
-**Watch**: malformed manifest crashing startup; version mismatch silently ignored
+**Pass**: plugin listed as loaded; no errors
+**Watch**: `plugin.yaml` silently skipped (loader only reads `plugin.json` — if you see that, the test harness is misconfigured); malformed manifest crashing startup instead of being reported as an error; version mismatch silently ignored
 
 #### L2. Plugin hook fires
 **Tags**: plugin + hooks integration
@@ -559,7 +634,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### M2. fs-nexus local transport, single local mount
 **Tags**: fs-nexus local transport, Python bridge, nexus-filesystem-backend
-**Setup**: config uses `createLocalTransport({ mountUri: "local:///tmp/koi-bugbash-fixture" })`
+**Setup**: config uses `createLocalTransport({ mountUri: "local://$FIXTURE" })` (per-tester fixture from §1.3)
 **User query**: `Create a file named greeting.txt with content "hi" at the root of the mount.`
 **Expected**: file written via the Python bridge → nexus-fs → local filesystem; NOT through the direct fs-local backend
 **Verify**: `cat $FIXTURE/greeting.txt` == "hi"; trajectory shows a `write` RPC call going through fs-nexus, not fs-local
@@ -584,7 +659,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### R1. Multi-mount: local + gdrive
 **Tags**: fs-nexus local transport, multi-mount, `mountUri` array
-**Setup**: real gdrive credentials OR scripted fake bridge; `createLocalTransport({ mountUri: ["local:///tmp/koi-bugbash-fixture", "gdrive://my-drive"] })`
+**Setup**: real gdrive credentials OR scripted fake bridge; `createLocalTransport({ mountUri: ["local://$FIXTURE", "gdrive://my-drive"] })`
 **User query**: `List the mounts you have access to.`
 **Expected turn**: agent lists both `/local/...` and `/gdrive` from `transport.mounts`
 **Follow-up**: `Read README.md from the local mount and list the top-level folders on my gdrive mount.`
@@ -595,7 +670,15 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### R2. Inline OAuth — local mode (browser callback)
 **Tags**: bridge auth notifications, `auth_required`, `auth_complete`, fs-nexus/auth-notifications
-**Setup**: gdrive mount with NO existing token (`rm -f ~/.config/nexus-fs/tokens.db`); localhost callback server reachable
+**Setup**: gdrive mount with NO existing token — **use the per-tester isolated config root**, never the shared user config.
+```bash
+# The TUI was launched with HOME=$KOI_HOME (§1.5), so nexus-fs will look for
+# tokens at $KOI_HOME/.config/nexus-fs/tokens.db (isolated per tester).
+rm -f "$KOI_HOME/.config/nexus-fs/tokens.db"
+mkdir -p "$KOI_HOME/.config/nexus-fs"
+```
+> **Never run `rm -f ~/.config/nexus-fs/tokens.db`** against the real user HOME — that wipes shared OAuth credentials used by other sessions or testers on the same account. The isolated `$KOI_HOME` root from §1.3 is the only safe target.
+> Localhost callback server must be reachable (default `mode: "local"` in the bridge).
 **User query**: `Show me the first 10 files in my gdrive root.`
 **Expected turn sequence**:
   1. Bridge catches `AuthenticationError` on the first I/O call
@@ -607,8 +690,8 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
   7. Agent receives the file list and reports it
 **Verify**:
 - TUI capture contains the `auth_required` message followed by `auth_complete`
-- `ls ~/.config/nexus-fs/tokens.db` exists after completion
-- Trajectory shows the original operation succeeded on the retry, not the initial attempt
+- `ls "$KOI_HOME/.config/nexus-fs/tokens.db"` exists after completion (isolated per tester)
+- The retry succeeded, not the initial attempt (confirm via session transcript tool_result entries, since trajectories are in-memory only — see §2.5)
 **Pass**: user sees the link, completes OAuth, the original turn resumes without restart
 **Watch**:
 - OAuth URL leaking query params in the channel message (should be delivered fully, but logs must redact — see R9)
@@ -628,7 +711,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
   4. User pastes the redirect URL into the TUI
   5. Channel adapter forwards via `transport.submitAuthCode(redirectUrl, correlationId)` — correlation_id must match the one from the notification
   6. Bridge validates, stores the token, retries, succeeds, sends `auth_complete`
-**Verify**: TUI shows the full flow; `~/.config/nexus-fs/tokens.db` populated after pasting
+**Verify**: TUI shows the full flow; `$KOI_HOME/.config/nexus-fs/tokens.db` populated after pasting
 **Pass**: remote OAuth works without localhost callback access
 **Watch**:
 - `correlation_id` not propagated → stale paste accepted
@@ -659,7 +742,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### R6. Token persistence across sessions
 **Tags**: nexus-fs token store, session restart
-**Setup**: complete R2 successfully so a real token exists in `~/.config/nexus-fs/tokens.db`
+**Setup**: complete R2 successfully so a real token exists in `$KOI_HOME/.config/nexus-fs/tokens.db` (per-tester isolated root)
 **Action**: kill the TUI and Nexus tmux sessions; relaunch both
 **User query**: `Read my gdrive root again.`
 **Expected**: NO `auth_required` notification; operation succeeds immediately
@@ -697,7 +780,14 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 #### R10. Bridge process crash recovery
 **Tags**: Python bridge lifecycle, transport resilience
 **Setup**: any active mount; running session
-**Action** (out of band): `pkill -f 'fs-nexus.*bridge.py'` to kill the bridge subprocess
+**Action** (out of band): kill only your own tester's bridge subprocess — do NOT use an unscoped `pkill -f bridge.py` because other testers on the same machine share the pattern.
+```bash
+# Find bridge children parented to your TUI tmux session's bun process.
+KOI_PID=$(tmux list-panes -t "$KOI_SESSION" -F '#{pane_pid}')
+BRIDGE_PIDS=$(pgrep -P "$(pgrep -P "$KOI_PID" 2>/dev/null | head -1)" -f 'bridge.py' 2>/dev/null || true)
+if [ -n "$BRIDGE_PIDS" ]; then kill $BRIDGE_PIDS; fi
+```
+If `pgrep -P` does not reliably find the bridge child on your platform, scope manually with `ps -o pid,ppid,command` starting from `$KOI_PID`. Never run `pkill -f 'fs-nexus.*bridge.py'` unscoped — it will kill every tester's bridge.
 **User query**: `Read README.md from the local mount.`
 **Expected**: the transport detects the dead subprocess, surfaces a clean error, and either re-spawns the bridge OR reports a terminal failure with a clear message (confirm which behavior is current)
 **Verify**: no zombie Python processes; no half-open file descriptors
@@ -957,7 +1047,7 @@ bun test --filter=@koi/runtime
 
 The bug bash is done when:
 
-1. **All Group A–J and R scenarios have been run at least once by one tester** (core functionality + connector OAuth flows).
+1. **All Group A–J and R scenarios have been run at least once by one tester**, where H1/H2 are satisfied by running the agent-runtime + spawn-tools test suites (they are not TUI-executable — see the Group H note).
 2. **All P0/blocker bugs filed have been either fixed or triaged** with an owner and a target release.
 3. **Coverage matrix shows every shipped subsystem has at least one green scenario**.
 4. **No subsystem is in "unknown state"** — every row either passed, is a known bug, or is explicitly out of scope for this bash.
