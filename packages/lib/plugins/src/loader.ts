@@ -2,7 +2,7 @@
  * Plugin discovery — scans source roots for plugin.json manifests.
  */
 
-import { access, readdir, readFile, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { pluginId } from "./plugin-id.js";
@@ -145,27 +145,38 @@ async function scanRoot(
       const manifestPath = join(resolvedDir, "plugin.json");
 
       let raw: unknown;
+      let content: string;
       try {
-        await access(manifestPath);
-      } catch {
-        return; // No plugin.json — not a plugin directory
-      }
-      try {
-        const content = await readFile(manifestPath, "utf-8");
-        raw = JSON.parse(content);
+        content = await readFile(manifestPath, "utf-8");
       } catch (err: unknown) {
-        // Distinguish I/O errors (retryable) from parse errors (not retryable)
-        const isIoError =
-          err instanceof Error &&
-          "code" in err &&
-          typeof (err as { code: unknown }).code === "string";
+        // ENOENT = no plugin.json — not a plugin directory, skip silently
+        if (isEnoent(err)) return;
+        // Other read errors (EACCES, EIO) — record as retryable to block lower-tier takeover
         errors.push({
           dirPath: resolvedDir,
           source: root.source,
+          pluginName: basename(resolvedDir),
           error: {
-            code: isIoError ? ("INTERNAL" as const) : ("VALIDATION" as const),
-            message: `Failed to read plugin.json: ${err instanceof Error ? err.message : String(err)}`,
-            retryable: isIoError,
+            code: "INTERNAL" as const,
+            message: `Cannot read plugin.json: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: true,
+            context: { dirPath: resolvedDir },
+          },
+        });
+        return;
+      }
+      try {
+        raw = JSON.parse(content);
+      } catch (err: unknown) {
+        // Malformed JSON — non-retryable validation error
+        errors.push({
+          dirPath: resolvedDir,
+          source: root.source,
+          pluginName: basename(resolvedDir),
+          error: {
+            code: "VALIDATION" as const,
+            message: `Invalid plugin.json: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: false,
             context: { dirPath: resolvedDir },
           },
         });
