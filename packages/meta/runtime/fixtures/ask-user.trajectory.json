@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:44.814Z",
+      "timestamp": "2026-04-09T01:10:33.819Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:44.815Z",
+      "timestamp": "2026-04-09T01:10:33.820Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:44.817Z",
+      "timestamp": "2026-04-09T01:10:33.822Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
       "observation": {
@@ -73,13 +73,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 605,
-        "completion_tokens": 41
+        "prompt_tokens": 654,
+        "completion_tokens": 44
       },
-      "duration_ms": 1091,
+      "duration_ms": 1128,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
@@ -101,13 +101,13 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "74f98fbb17267b1c0101880a8f591d49a68ac3ecf67770cc953b2043070328ac"
+        "promptPrefixFingerprint": "b4a348b0c9b181d0335d110002f59c63fbae24ad985a768980c4e7ca86522223"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T23:59:45.909Z",
+      "timestamp": "2026-04-09T01:10:34.951Z",
       "tool_calls": [
         {
           "tool_call_id": "call_AskUserQuestion_3",
@@ -121,12 +121,12 @@
                     "label": "Extract Method"
                   },
                   {
-                    "description": "Removes the function and inlines the code",
-                    "label": "Inline Method"
+                    "label": "Inline Method",
+                    "description": "Removes the function and inlines the code"
                   }
                 ],
-                "header": "Refactoring",
-                "question": "Which refactoring approach should be used?"
+                "question": "Which refactoring approach do you want to use?",
+                "header": "Refactoring Approach"
               }
             ]
           }
@@ -136,7 +136,7 @@
         "results": [
           {
             "source_call_id": "call_AskUserQuestion_3",
-            "content": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}"
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
           }
         ]
       },
@@ -146,10 +146,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.916Z",
+      "timestamp": "2026-04-09T01:10:34.960Z",
       "model_name": "hook:on-ask-user",
       "message": "tool.succeeded → on-ask-user",
-      "duration_ms": 2.7677919999987353,
+      "duration_ms": 2.5820000000094296,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -166,10 +166,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.917Z",
+      "timestamp": "2026-04-09T01:10:34.961Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
-      "duration_ms": 1094.7893329999933,
+      "duration_ms": 1131.1227919999947,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -178,7 +178,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692785915,
+        "_original_timestamp": 1775697034959,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -187,17 +187,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.919Z",
+      "timestamp": "2026-04-09T01:10:34.964Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"header\":\"Refactoring\",\"question\":\"Which refactoring approach should be used?\"}]})",
+      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]})",
       "observation": {
         "results": [
           {
-            "content": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}"
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
           }
         ]
       },
-      "duration_ms": 3.3402920000080485,
+      "duration_ms": 3.4967500000057044,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -214,10 +214,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.920Z",
+      "timestamp": "2026-04-09T01:10:34.965Z",
       "model_name": "middleware:permissions",
       "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
-      "duration_ms": 1094.777833,
+      "duration_ms": 1131.0619580000057,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -226,7 +226,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692785914,
+        "_original_timestamp": 1775697034958,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -235,17 +235,17 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.921Z",
+      "timestamp": "2026-04-09T01:10:34.966Z",
       "model_name": "middleware:permissions",
-      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"header\":\"Refactoring\",\"question\":\"Which refactoring approach should be used?\"}]})",
+      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]})",
       "observation": {
         "results": [
           {
-            "content": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}"
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
           }
         ]
       },
-      "duration_ms": 3.2622080000001006,
+      "duration_ms": 3.3542080000042915,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -258,13 +258,13 @@
           {
             "phase": "execute",
             "toolId": "AskUserQuestion",
-            "toolInput": "{\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"header\":\"Refactoring\",\"question\":\"Which refactoring approach should be used?\"}]}",
+            "toolInput": "{\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692785918,
+        "_original_timestamp": 1775697034963,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -273,10 +273,104 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.922Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:10:34.967Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
-      "duration_ms": 1094.7082079999964,
+      "duration_ms": 1130.9118330000056,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-ask-user\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697034957,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:34.968Z",
+      "model_name": "middleware:goal",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 1130.877999999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inl",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inl"
+          }
+        ],
+        "_original_timestamp": 1775697034956,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:34.969Z",
+      "model_name": "middleware:goal",
+      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
+          }
+        ]
+      },
+      "duration_ms": 3.212375000002794,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775697034962,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:34.970Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"InlUse AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 1130.784124999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -285,26 +379,26 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692785913,
+        "_original_timestamp": 1775697034955,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.923Z",
+      "timestamp": "2026-04-09T01:10:34.971Z",
       "model_name": "middleware:hooks",
-      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"header\":\"Refactoring\",\"question\":\"Which refactoring approach should be used?\"}]})",
+      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]})",
       "observation": {
         "results": [
           {
-            "content": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}"
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
           }
         ]
       },
-      "duration_ms": 3.195584000000963,
+      "duration_ms": 3.2015410000021802,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -317,37 +411,37 @@
           {
             "event": "tool.succeeded",
             "toolId": "AskUserQuestion",
-            "toolOutput": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
+            "toolOutput": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-ask-user",
                 "decision": "continue",
-                "durationMs": 2.7677919999987353
+                "durationMs": 2.5820000000094296
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692785917,
+        "_original_timestamp": 1775697034961,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.924Z",
+      "timestamp": "2026-04-09T01:10:34.972Z",
       "model_name": "middleware:semantic-retry",
-      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"header\":\"Refactoring\",\"question\":\"Which refactoring approach should be used?\"}]})",
+      "message": "AskUserQuestion({\"questions\":[{\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"question\":\"Which refactoring approach do you want to use?\",\"header\":\"Refactoring Approach\"}]})",
       "observation": {
         "results": [
           {
-            "content": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}"
+            "content": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}"
           }
         ]
       },
-      "duration_ms": 0.3406249999970896,
+      "duration_ms": 0.41354200000932906,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -356,19 +450,19 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692785911,
+        "_original_timestamp": 1775697034953,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:45.925Z",
+      "timestamp": "2026-04-09T01:10:34.973Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
-      "duration_ms": 1094.674457999994,
+      "message": "## Active Goals\n\n- [ ] Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"InlUse AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.",
+      "duration_ms": 1130.7267500000016,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -377,18 +471,18 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692785912,
+        "_original_timestamp": 1775697034954,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 13,
+      "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:45.975Z",
+      "timestamp": "2026-04-09T01:10:34.993Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
+      "message": "{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
       "observation": {
         "results": [
           {
@@ -397,10 +491,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 680,
+        "prompt_tokens": 694,
         "completion_tokens": 8
       },
-      "duration_ms": 670,
+      "duration_ms": 718,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -425,16 +519,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "74f98fbb17267b1c0101880a8f591d49a68ac3ecf67770cc953b2043070328ac"
+        "promptPrefixFingerprint": "b4a348b0c9b181d0335d110002f59c63fbae24ad985a768980c4e7ca86522223"
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:46.650Z",
+      "timestamp": "2026-04-09T01:10:35.718Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
-      "duration_ms": 671.3542080000043,
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 719.1832080000022,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -449,12 +543,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:46.651Z",
+      "timestamp": "2026-04-09T01:10:35.719Z",
       "model_name": "middleware:permissions",
-      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
-      "duration_ms": 671.3371670000051,
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 719.1570409999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -463,19 +557,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692786649,
+        "_original_timestamp": 1775697035717,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 16,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:46.652Z",
+      "timestamp": "2026-04-09T01:10:35.720Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 719.0141670000012,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-ask-user\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697035715,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:35.721Z",
+      "model_name": "middleware:goal",
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 718.9879579999979,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inl",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775697035714,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:35.722Z",
       "model_name": "middleware:hooks",
-      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
-      "duration_ms": 671.2484590000095,
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 718.9552500000136,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -484,19 +643,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692786647,
+        "_original_timestamp": 1775697035713,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 17,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:46.653Z",
+      "timestamp": "2026-04-09T01:10:35.723Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach should be used?\",\"selected\":[\"Extract Method\"]}]}",
-      "duration_ms": 671.2141660000052,
+      "message": "Use AskUserQuestion to ask which refactoring approach to use: \"Extract Method\" (pulls logic into a new function) or \"Inline Method\" (removes the function and inlines the code). Report which option was selected.{\"answers\":[{\"question\":\"Which refactoring approach do you want to use?\",\"selected\":[\"Extract Method\"]}]}",
+      "duration_ms": 718.9216670000023,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -505,7 +664,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692786646,
+        "_original_timestamp": 1775697035712,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

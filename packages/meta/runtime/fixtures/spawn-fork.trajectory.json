@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:24.490Z",
+      "timestamp": "2026-04-09T01:10:11.967Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:24.491Z",
+      "timestamp": "2026-04-09T01:10:11.968Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:24.493Z",
+      "timestamp": "2026-04-09T01:10:11.970Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
       "observation": {
@@ -73,13 +73,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 713,
+        "prompt_tokens": 764,
         "completion_tokens": 27
       },
-      "duration_ms": 974,
+      "duration_ms": 1047,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
@@ -101,27 +101,27 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "a2cdece432c29ebd2ff275d72567b7337527797ec4343fde1b4746577af727a3"
+        "promptPrefixFingerprint": "832ecf54ffe8254296885a26af0849731130dc9e927fc4dd4fd02bf44e2a6e17"
       }
     },
     {
       "step_id": 3,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:25.468Z",
+      "timestamp": "2026-04-09T01:10:13.018Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "List your available tools by name. Do you have a Spawn tool? Answer yes or no.",
       "observation": {
         "results": [
           {
-            "content": ""
+            "content": "The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\nNo.\n"
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 538,
-        "completion_tokens": 6
+        "completion_tokens": 26
       },
-      "duration_ms": 875,
+      "duration_ms": 954,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -147,103 +147,39 @@
     {
       "step_id": 4,
       "source": "tool",
-      "timestamp": "2026-04-08T23:59:26.343Z",
+      "timestamp": "2026-04-09T01:10:13.019Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_ToolSearch_4",
-          "function_name": "ToolSearch",
+          "tool_call_id": "call_Spawn_4",
+          "function_name": "Spawn",
           "arguments": {
-            "query": "list all tools"
+            "fork": true,
+            "description": "List your available tools by name. Do you have a Spawn tool? Answer yes or no.",
+            "agentName": "researcher"
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_ToolSearch_4",
-            "content": "[]"
+            "source_call_id": "call_Spawn_4",
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
           }
         ]
       },
-      "duration_ms": 1,
-      "outcome": "success"
+      "duration_ms": 955,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775697013018
+      }
     },
     {
       "step_id": 5,
-      "source": "agent",
-      "timestamp": "2026-04-08T23:59:26.344Z",
-      "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"callId\":\"tool_ToolSearch_YAyfXxnLpJvdXxAUnjUY\",\"output\":[]}",
-      "observation": {
-        "results": [
-          {
-            "content": "My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no."
-          }
-        ]
-      },
-      "metrics": {
-        "prompt_tokens": 583,
-        "completion_tokens": 27
-      },
-      "duration_ms": 817,
-      "outcome": "success",
-      "extra": {
-        "totalMessages": 3,
-        "toolCount": 3,
-        "tools": [
-          {
-            "name": "Glob",
-            "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
-          },
-          {
-            "name": "Grep",
-            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
-          },
-          {
-            "name": "ToolSearch",
-            "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
-          }
-        ],
-        "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "c756a3950cdabc0ac6cb201e4ddd59e80e028da64eacb94e6d7363659fcdf7ed"
-      }
-    },
-    {
-      "step_id": 6,
-      "source": "tool",
-      "timestamp": "2026-04-08T23:59:26.345Z",
-      "tool_calls": [
-        {
-          "tool_call_id": "call_Spawn_6",
-          "function_name": "Spawn",
-          "arguments": {
-            "description": "List your available tools by name. Do you have a Spawn tool? Answer yes or no.",
-            "agentName": "researcher",
-            "fork": true
-          }
-        }
-      ],
-      "observation": {
-        "results": [
-          {
-            "source_call_id": "call_Spawn_6",
-            "content": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}"
-          }
-        ]
-      },
-      "duration_ms": 1694,
-      "outcome": "success",
-      "extra": {
-        "_original_timestamp": 1775692765468
-      }
-    },
-    {
-      "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:26.346Z",
+      "timestamp": "2026-04-09T01:10:13.024Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
-      "duration_ms": 976.6620829999956,
+      "duration_ms": 1050.3447910000032,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -252,26 +188,25 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692765472,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
       }
     },
     {
-      "step_id": 8,
+      "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.166Z",
+      "timestamp": "2026-04-09T01:10:13.978Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Spawn({\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\",\"fork\":true})",
+      "message": "Spawn({\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}"
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
           }
         ]
       },
-      "duration_ms": 1694.9389589999992,
+      "duration_ms": 956.4824579999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -286,12 +221,12 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.167Z",
+      "timestamp": "2026-04-09T01:10:13.979Z",
       "model_name": "middleware:permissions",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
-      "duration_ms": 976.6346249999988,
+      "duration_ms": 1050.3009170000005,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -300,26 +235,26 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692765471,
+        "_original_timestamp": 1775697013023,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.168Z",
+      "timestamp": "2026-04-09T01:10:13.980Z",
       "model_name": "middleware:permissions",
-      "message": "Spawn({\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\",\"fork\":true})",
+      "message": "Spawn({\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}"
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
           }
         ]
       },
-      "duration_ms": 1694.8635420000064,
+      "duration_ms": 956.3665829999954,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -332,25 +267,119 @@
           {
             "phase": "execute",
             "toolId": "Spawn",
-            "toolInput": "{\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\",\"fork\":true}",
+            "toolInput": "{\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692767165,
+        "_original_timestamp": 1775697013977,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:13.981Z",
+      "model_name": "middleware:skill-injector",
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
+      "duration_ms": 1049.867250000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697013022,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:13.982Z",
+      "model_name": "middleware:goal",
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
+      "duration_ms": 1049.8376669999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delega",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delega"
+          }
+        ],
+        "_original_timestamp": 1775697013021,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.169Z",
+      "timestamp": "2026-04-09T01:10:13.983Z",
+      "model_name": "middleware:goal",
+      "message": "Spawn({\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 956.1750830000019,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775697013976,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:13.984Z",
       "model_name": "middleware:hooks",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
-      "duration_ms": 976.5132079999967,
+      "message": "## Active Goals\n\n- [ ] You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegaYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
+      "duration_ms": 1049.7249159999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -359,35 +388,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692765470,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 12,
-      "source": "system",
-      "timestamp": "2026-04-08T23:59:27.170Z",
-      "model_name": "middleware:hooks",
-      "message": "Spawn({\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\",\"fork\":true})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}"
-          }
-        ]
-      },
-      "duration_ms": 1694.7954590000008,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapToolCall",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "_original_timestamp": 1775692767164,
+        "_original_timestamp": 1775697013020,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -396,10 +397,38 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.171Z",
+      "timestamp": "2026-04-09T01:10:13.985Z",
+      "model_name": "middleware:hooks",
+      "message": "Spawn({\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 956.1651669999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775697013975,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:13.986Z",
       "model_name": "middleware:semantic-retry",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
-      "duration_ms": 976.440582999996,
+      "message": "## Active Goals\n\n- [ ] You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegaYou have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.",
+      "duration_ms": 1049.6261670000022,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -408,26 +437,26 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692765469,
+        "_original_timestamp": 1775697013019,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 14,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:27.172Z",
+      "timestamp": "2026-04-09T01:10:13.987Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Spawn({\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\",\"fork\":true})",
+      "message": "Spawn({\"fork\":true,\"description\":\"List your available tools by name. Do you have a Spawn tool? Answer yes or no.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}"
+            "content": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}"
           }
         ]
       },
-      "duration_ms": 1694.7238329999964,
+      "duration_ms": 956.0432089999958,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -436,30 +465,30 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692767163,
+        "_original_timestamp": 1775697013974,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 15,
+      "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:27.185Z",
+      "timestamp": "2026-04-09T01:10:14.028Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}",
+      "message": "{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
       "observation": {
         "results": [
           {
-            "content": "The researcher's answer is: My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no."
+            "content": "The researcher's answer is: \"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\nNo.\""
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 785,
-        "completion_tokens": 34
+        "prompt_tokens": 797,
+        "completion_tokens": 33
       },
-      "duration_ms": 812,
+      "duration_ms": 989,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -484,16 +513,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "a2cdece432c29ebd2ff275d72567b7337527797ec4343fde1b4746577af727a3"
+        "promptPrefixFingerprint": "832ecf54ffe8254296885a26af0849731130dc9e927fc4dd4fd02bf44e2a6e17"
       }
     },
     {
-      "step_id": 16,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:28.002Z",
+      "timestamp": "2026-04-09T01:10:15.024Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}",
-      "duration_ms": 812.9080840000024,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.2960420000018,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -508,12 +537,12 @@
       }
     },
     {
-      "step_id": 17,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:28.003Z",
+      "timestamp": "2026-04-09T01:10:15.025Z",
       "model_name": "middleware:permissions",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}",
-      "duration_ms": 812.8906660000066,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.2721659999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -522,19 +551,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692768001,
+        "_original_timestamp": 1775697015023,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 18,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:28.004Z",
+      "timestamp": "2026-04-09T01:10:15.026Z",
+      "model_name": "middleware:skill-injector",
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.1377500000017,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697015021,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:15.027Z",
+      "model_name": "middleware:goal",
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.111917000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delega",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775697015020,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:15.028Z",
       "model_name": "middleware:hooks",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}",
-      "duration_ms": 812.7715409999946,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.0733340000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -543,19 +637,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692767999,
+        "_original_timestamp": 1775697015019,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 19,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:28.005Z",
+      "timestamp": "2026-04-09T01:10:15.029Z",
       "model_name": "middleware:semantic-retry",
-      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"My available tools are Glob, Grep, and ToolSearch. I do not have a Spawn tool. So the answer is no.\"}",
-      "duration_ms": 812.7395410000026,
+      "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='researcher' and fork=true to delegate: 'List your available tools by name. Do you have a Spawn tool? Answer yes or no.' Then report the researcher's answer verbatim.{\"output\":\"The available tools are: Glob, Grep, and ToolSearch. I do not have a Spawn tool.\\nNo.\\n\"}",
+      "duration_ms": 990.0380420000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -564,7 +658,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692767998,
+        "_original_timestamp": 1775697015018,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

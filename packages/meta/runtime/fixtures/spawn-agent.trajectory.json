@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:13.073Z",
+      "timestamp": "2026-04-09T01:10:00.202Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:13.074Z",
+      "timestamp": "2026-04-09T01:10:00.203Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:13.076Z",
+      "timestamp": "2026-04-09T01:10:00.205Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
       "observation": {
@@ -61,13 +61,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 384,
+        "prompt_tokens": 431,
         "completion_tokens": 19
       },
-      "duration_ms": 782,
+      "duration_ms": 794,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -77,13 +77,13 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "ee3bc9aa64e123ff21cbdda558a0253698fe3265b46b59b90f65d1ef0df487bf"
+        "promptPrefixFingerprint": "05cbb34d15a3b569763e9d3a5dbce882782da5c406042937cb52e62dcc1f7ac0"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T23:59:13.859Z",
+      "timestamp": "2026-04-09T01:10:01.000Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Spawn_3",
@@ -98,20 +98,20 @@
         "results": [
           {
             "source_call_id": "call_Spawn_3",
-            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 812,
+      "duration_ms": 785,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:13.864Z",
+      "timestamp": "2026-04-09T01:10:01.008Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 788.2081659999967,
+      "duration_ms": 800.9852089999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -128,17 +128,17 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.675Z",
+      "timestamp": "2026-04-09T01:10:01.790Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 812.5849579999995,
+      "duration_ms": 785.5933329999971,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -155,10 +155,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.676Z",
+      "timestamp": "2026-04-09T01:10:01.791Z",
       "model_name": "middleware:permissions",
       "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 787.0722079999978,
+      "duration_ms": 800.9685830000017,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -167,7 +167,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692753863,
+        "_original_timestamp": 1775697001007,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -176,17 +176,17 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.677Z",
+      "timestamp": "2026-04-09T01:10:01.792Z",
       "model_name": "middleware:permissions",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 812.5092919999952,
+      "duration_ms": 785.4904160000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,7 +205,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692754674,
+        "_original_timestamp": 1775697001789,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -214,38 +214,132 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.678Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:10:01.793Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 786.7672500000044,
+      "duration_ms": 799.7129999999961,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "hooks",
+        "middlewareName": "skill-injector",
         "hook": "wrapModelStream",
         "phase": "resolve",
-        "priority": 400,
+        "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1775692753862,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697001006,
         "__koi": {
-          "identifier": "middleware:hooks"
+          "identifier": "middleware:skill-injector"
         }
       }
     },
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.679Z",
+      "timestamp": "2026-04-09T01:10:01.794Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 799.6975840000014,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sen",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sen"
+          }
+        ],
+        "_original_timestamp": 1775697001005,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:01.795Z",
+      "model_name": "middleware:goal",
+      "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+          }
+        ]
+      },
+      "duration_ms": 785.2278329999972,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775697001788,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:01.796Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-senUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 799.486791000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775697001004,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:01.797Z",
       "model_name": "middleware:hooks",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 812.3197499999951,
+      "duration_ms": 785.2229169999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -254,19 +348,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692754673,
+        "_original_timestamp": 1775697001787,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.680Z",
+      "timestamp": "2026-04-09T01:10:01.798Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
-      "duration_ms": 786.632540999999,
+      "message": "## Active Goals\n\n- [ ] Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-senUse the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.",
+      "duration_ms": 799.421500000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -275,26 +369,26 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692753861,
+        "_original_timestamp": 1775697001003,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:14.681Z",
+      "timestamp": "2026-04-09T01:10:01.799Z",
       "model_name": "middleware:semantic-retry",
       "message": "Spawn({\"description\":\"What is the Fibonacci sequence? Provide a one-sentence definition.\",\"agentName\":\"researcher\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
+            "content": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}"
           }
         ]
       },
-      "duration_ms": 812.2432499999995,
+      "duration_ms": 785.1127500000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -303,30 +397,30 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692754672,
+        "_original_timestamp": 1775697001786,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:14.686Z",
+      "timestamp": "2026-04-09T01:10:01.826Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "message": "{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
       "observation": {
         "results": [
           {
-            "content": "The researcher's answer is: \"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\"\n"
+            "content": "The researcher's answer is: \"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\"\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 454,
-        "completion_tokens": 39
+        "prompt_tokens": 463,
+        "completion_tokens": 38
       },
-      "duration_ms": 880,
+      "duration_ms": 743,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -339,16 +433,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "ee3bc9aa64e123ff21cbdda558a0253698fe3265b46b59b90f65d1ef0df487bf"
+        "promptPrefixFingerprint": "05cbb34d15a3b569763e9d3a5dbce882782da5c406042937cb52e62dcc1f7ac0"
       }
     },
     {
-      "step_id": 13,
+      "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:15.571Z",
+      "timestamp": "2026-04-09T01:10:02.576Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
-      "duration_ms": 881.9660829999993,
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.3415839999943,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -363,12 +457,12 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:15.572Z",
+      "timestamp": "2026-04-09T01:10:02.577Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
-      "duration_ms": 881.932166999999,
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.318124999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -377,19 +471,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692755570,
+        "_original_timestamp": 1775697002575,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:15.573Z",
+      "timestamp": "2026-04-09T01:10:02.578Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.1909999999989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697002573,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:02.579Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.165875000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sen",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775697002572,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:02.580Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
-      "duration_ms": 881.8106249999983,
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.1347499999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -398,19 +557,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692755568,
+        "_original_timestamp": 1775697002571,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 16,
+      "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:15.574Z",
+      "timestamp": "2026-04-09T01:10:02.581Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
-      "duration_ms": 881.7749169999952,
+      "message": "Use the Spawn tool with agentName='researcher' to delegate this task: 'What is the Fibonacci sequence? Provide a one-sentence definition.' Then report the researcher's answer verbatim.{\"output\":\"The Fibonacci sequence is a sequence of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\\n\"}",
+      "duration_ms": 744.114708000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -419,7 +578,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692755567,
+        "_original_timestamp": 1775697002570,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

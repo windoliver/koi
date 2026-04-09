@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:51.383Z",
+      "timestamp": "2026-04-09T01:09:39.864Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:51.384Z",
+      "timestamp": "2026-04-09T01:09:39.865Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,10 +43,10 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:51.395Z",
+      "timestamp": "2026-04-09T01:09:39.878Z",
       "model_name": "hook:budget-guard",
       "message": "compact.before → budget-guard",
-      "duration_ms": 10.561375000001135,
+      "duration_ms": 13.341082999999344,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -64,51 +64,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:51.398Z",
-      "model_name": "middleware:exfiltration-guard",
-      "message": "What is 2+2?",
-      "duration_ms": 10.985167000002548,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "exfiltration-guard",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 50,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:exfiltration-guard"
-        }
-      }
-    },
-    {
-      "step_id": 4,
-      "source": "system",
-      "timestamp": "2026-04-08T23:58:51.399Z",
-      "model_name": "middleware:permissions",
-      "message": "What is 2+2?",
-      "duration_ms": 10.936541999999463,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "_original_timestamp": 1775692731397,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
-      }
-    },
-    {
-      "step_id": 5,
-      "source": "system",
-      "timestamp": "2026-04-08T23:58:51.400Z",
+      "timestamp": "2026-04-09T01:09:39.879Z",
       "model_name": "middleware:hooks",
-      "message": "What is 2+2?",
-      "duration_ms": 10.886042000001908,
+      "message": "## Active Goals\n\n- [ ] What is 2+2?What is 2+2?",
+      "duration_ms": 13.839124999998603,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -127,15 +86,121 @@
               {
                 "name": "budget-guard",
                 "decision": "block",
-                "durationMs": 10.561375000001135,
+                "durationMs": 13.341082999999344,
                 "reason": "budget exceeded"
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692731396,
         "__koi": {
           "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:39.883Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "What is 2+2?",
+      "duration_ms": 13.940583999999944,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:39.884Z",
+      "model_name": "middleware:permissions",
+      "message": "What is 2+2?",
+      "duration_ms": 13.925540999996883,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775696979882,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:39.885Z",
+      "model_name": "middleware:skill-injector",
+      "message": "What is 2+2?",
+      "duration_ms": 13.881416000000172,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: budget-guard\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696979881,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:39.886Z",
+      "model_name": "middleware:goal",
+      "message": "What is 2+2?",
+      "duration_ms": 13.867750000001251,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "What is 2+2?",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] What is 2+2?"
+          }
+        ],
+        "_original_timestamp": 1775696979880,
+        "__koi": {
+          "identifier": "middleware:goal"
         }
       }
     }

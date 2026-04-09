@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:02.293Z",
+      "timestamp": "2026-04-09T01:10:53.110Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -37,7 +37,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:02.294Z",
+      "timestamp": "2026-04-09T01:10:53.111Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -54,7 +54,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-09T00:00:02.296Z",
+      "timestamp": "2026-04-09T01:10:53.113Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
       "observation": {
@@ -65,13 +65,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 258,
+        "prompt_tokens": 309,
         "completion_tokens": 20
       },
-      "duration_ms": 834,
+      "duration_ms": 876,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 2,
         "tools": [
@@ -85,13 +85,13 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "b1d38cde8793fb8817f3f7004822575cac16d97aa941b90e8be767bdd5b12a33"
+        "promptPrefixFingerprint": "d01bace1ba892c4522017ae252a3c5e0428fa9984e3cd0ffc77670b03e7153cd"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-09T00:00:03.131Z",
+      "timestamp": "2026-04-09T01:10:53.990Z",
       "tool_calls": [
         {
           "tool_call_id": "call_koi-platform__koi_send_message_3",
@@ -109,7 +109,7 @@
         "results": [
           {
             "source_call_id": "call_koi-platform__koi_send_message_3",
-            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}"
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
           }
         ]
       },
@@ -125,10 +125,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.138Z",
+      "timestamp": "2026-04-09T01:10:53.999Z",
       "model_name": "hook:on-mcp-server-tool",
       "message": "tool.succeeded → on-mcp-server-tool",
-      "duration_ms": 2.5098330000037095,
+      "duration_ms": 2.7902499999909196,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -145,10 +145,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.139Z",
+      "timestamp": "2026-04-09T01:10:54.000Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
-      "duration_ms": 838.4407920000085,
+      "duration_ms": 879.4641249999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -157,7 +157,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692803137,
+        "_original_timestamp": 1775697053998,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -166,17 +166,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.141Z",
+      "timestamp": "2026-04-09T01:10:54.003Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "koi-platform__koi_send_message({\"to\":\"target-agent\",\"type\":\"status-update\",\"payload\":{\"status\":\"ready\"}})",
       "observation": {
         "results": [
           {
-            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}"
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
           }
         ]
       },
-      "duration_ms": 4.700750000003609,
+      "duration_ms": 4.400499999988824,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -193,10 +193,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.142Z",
+      "timestamp": "2026-04-09T01:10:54.004Z",
       "model_name": "middleware:permissions",
       "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
-      "duration_ms": 838.4279580000002,
+      "duration_ms": 879.4188330000034,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,7 +205,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692803136,
+        "_original_timestamp": 1775697053997,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -214,17 +214,17 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.143Z",
+      "timestamp": "2026-04-09T01:10:54.005Z",
       "model_name": "middleware:permissions",
       "message": "koi-platform__koi_send_message({\"to\":\"target-agent\",\"type\":\"status-update\",\"payload\":{\"status\":\"ready\"}})",
       "observation": {
         "results": [
           {
-            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}"
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
           }
         ]
       },
-      "duration_ms": 4.636416999986977,
+      "duration_ms": 4.3301249999931315,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -243,7 +243,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692803140,
+        "_original_timestamp": 1775697054002,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -252,10 +252,104 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.144Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:10:54.006Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
-      "duration_ms": 838.3028750000085,
+      "duration_ms": 879.2742500000022,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-mcp-server-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697053996,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.007Z",
+      "model_name": "middleware:goal",
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
+      "duration_ms": 879.2534580000065,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" a",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" a"
+          }
+        ],
+        "_original_timestamp": 1775697053995,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.008Z",
+      "model_name": "middleware:goal",
+      "message": "koi-platform__koi_send_message({\"to\":\"target-agent\",\"type\":\"status-update\",\"payload\":{\"status\":\"ready\"}})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
+          }
+        ]
+      },
+      "duration_ms": 4.232749999995576,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775697054001,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.009Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" aUse the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
+      "duration_ms": 879.2106249999924,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -264,26 +358,26 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692803135,
+        "_original_timestamp": 1775697053994,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.145Z",
+      "timestamp": "2026-04-09T01:10:54.010Z",
       "model_name": "middleware:hooks",
       "message": "koi-platform__koi_send_message({\"to\":\"target-agent\",\"type\":\"status-update\",\"payload\":{\"status\":\"ready\"}})",
       "observation": {
         "results": [
           {
-            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}"
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
           }
         ]
       },
-      "duration_ms": 4.5630419999943115,
+      "duration_ms": 4.2224999999889405,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -296,58 +390,37 @@
           {
             "event": "tool.succeeded",
             "toolId": "koi-platform__koi_send_message",
-            "toolOutput": "\"{\\\"id\\\":\\\"msg-1\\\",\\\"createdAt\\\":\\\"2026-04-09T00:00:03.132Z\\\"}\"",
+            "toolOutput": "\"{\\\"id\\\":\\\"msg-1\\\",\\\"createdAt\\\":\\\"2026-04-09T01:10:53.991Z\\\"}\"",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-mcp-server-tool",
                 "decision": "continue",
-                "durationMs": 2.5098330000037095
+                "durationMs": 2.7902499999909196
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692803139,
+        "_original_timestamp": 1775697054000,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.146Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
-      "duration_ms": 837.6434580000059,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "semantic-retry",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 420,
-        "nextCalled": true,
-        "_original_timestamp": 1775692803133,
-        "__koi": {
-          "identifier": "middleware:semantic-retry"
-        }
-      }
-    },
-    {
-      "step_id": 12,
-      "source": "system",
-      "timestamp": "2026-04-09T00:00:03.147Z",
+      "timestamp": "2026-04-09T01:10:54.011Z",
       "model_name": "middleware:semantic-retry",
       "message": "koi-platform__koi_send_message({\"to\":\"target-agent\",\"type\":\"status-update\",\"payload\":{\"status\":\"ready\"}})",
       "observation": {
         "results": [
           {
-            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}"
+            "content": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}"
           }
         ]
       },
-      "duration_ms": 1.886291999995592,
+      "duration_ms": 1.2828750000044238,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -356,19 +429,40 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692803134,
+        "_original_timestamp": 1775697053992,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 13,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.154Z",
+      "timestamp": "2026-04-09T01:10:54.012Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "## Active Goals\n\n- [ ] Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" aUse the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.",
+      "duration_ms": 879.1494999999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775697053993,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.029Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_provenance:turn_summary_13",
+          "tool_call_id": "call_provenance:turn_summary_16",
           "function_name": "provenance:turn_summary"
         }
       ],
@@ -392,23 +486,23 @@
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "agent",
-      "timestamp": "2026-04-09T00:00:03.156Z",
+      "timestamp": "2026-04-09T01:10:54.031Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}",
+      "message": "{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
       "observation": {
         "results": [
           {
-            "content": "The message was sent successfully. The message ID is msg-1."
+            "content": "I sent an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. The message ID is msg-1."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 322,
-        "completion_tokens": 14
+        "prompt_tokens": 333,
+        "completion_tokens": 36
       },
-      "duration_ms": 712,
+      "duration_ms": 916,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -425,16 +519,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "b1d38cde8793fb8817f3f7004822575cac16d97aa941b90e8be767bdd5b12a33"
+        "promptPrefixFingerprint": "d01bace1ba892c4522017ae252a3c5e0428fa9984e3cd0ffc77670b03e7153cd"
       }
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.873Z",
+      "timestamp": "2026-04-09T01:10:54.954Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}",
-      "duration_ms": 714.3567500000063,
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 918.2400420000049,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -449,12 +543,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.874Z",
+      "timestamp": "2026-04-09T01:10:54.955Z",
       "model_name": "middleware:permissions",
-      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}",
-      "duration_ms": 714.3338749999966,
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 918.2197080000042,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -463,19 +557,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692803872,
+        "_original_timestamp": 1775697054953,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 17,
+      "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.875Z",
+      "timestamp": "2026-04-09T01:10:54.956Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 918.0789999999979,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-mcp-server-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697054951,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.957Z",
+      "model_name": "middleware:goal",
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 918.0520829999878,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" a",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775697054950,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:54.958Z",
       "model_name": "middleware:hooks",
-      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}",
-      "duration_ms": 714.1972079999978,
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 918.012333000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -484,19 +643,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692803870,
+        "_original_timestamp": 1775697054949,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 18,
+      "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-09T00:00:03.876Z",
+      "timestamp": "2026-04-09T01:10:54.959Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T00:00:03.132Z\"}",
-      "duration_ms": 714.1345839999994,
+      "message": "Use the koi-platform__koi_send_message tool to send an event message to agent \"target-agent\" with type \"status-update\" and payload {\"status\": \"ready\"}. Report the result.{\"id\":\"msg-1\",\"createdAt\":\"2026-04-09T01:10:53.991Z\"}",
+      "duration_ms": 917.9670420000039,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -505,7 +664,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692803869,
+        "_original_timestamp": 1775697054948,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

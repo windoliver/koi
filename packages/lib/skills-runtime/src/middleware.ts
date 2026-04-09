@@ -153,7 +153,10 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     ): Promise<ModelResponse> {
       const agent = resolveAgent(agentOrFn);
       const injected = injectSkills(agent, request);
-      ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      // Only report when skills are actually injected (not passthrough)
+      if (sortedSkills(agent).length > 0) {
+        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      }
       return next(injected);
     },
 
@@ -164,7 +167,10 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     ): AsyncIterable<ModelChunk> {
       const agent = resolveAgent(agentOrFn);
       const injected = injectSkills(agent, request);
-      ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      // Only report when skills are actually injected (not passthrough)
+      if (sortedSkills(agent).length > 0) {
+        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      }
       yield* next(injected);
     },
 

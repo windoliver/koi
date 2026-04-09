@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:48.558Z",
+      "timestamp": "2026-04-09T01:10:37.496Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:48.559Z",
+      "timestamp": "2026-04-09T01:10:37.497Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:48.561Z",
+      "timestamp": "2026-04-09T01:10:37.499Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
       "observation": {
@@ -61,13 +61,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 251,
+        "prompt_tokens": 292,
         "completion_tokens": 8
       },
-      "duration_ms": 784,
+      "duration_ms": 912,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
@@ -77,13 +77,13 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "bb1b089c8e789a71200cd69af5c24ff749734fc929f73671ac1126276e049cb4"
+        "promptPrefixFingerprint": "d6015c3aaad8be265a6f98e2fec9003fe509fdbdc4876d828a9f28ebe9cbd301"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T23:59:49.346Z",
+      "timestamp": "2026-04-09T01:10:38.412Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Bash_3",
@@ -97,20 +97,20 @@
         "results": [
           {
             "source_call_id": "call_Bash_3",
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
           }
         ]
       },
-      "duration_ms": 8,
+      "duration_ms": 12,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.356Z",
+      "timestamp": "2026-04-09T01:10:38.426Z",
       "model_name": "hook:on-bash-tool",
       "message": "tool.succeeded → on-bash-tool",
-      "duration_ms": 4.710250000003725,
+      "duration_ms": 4.439916000002995,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -127,10 +127,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.357Z",
+      "timestamp": "2026-04-09T01:10:38.427Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 790.4894160000113,
+      "duration_ms": 920.7311669999908,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -139,7 +139,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692789353,
+        "_original_timestamp": 1775697038423,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -148,17 +148,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.359Z",
+      "timestamp": "2026-04-09T01:10:38.430Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
           }
         ]
       },
-      "duration_ms": 11.488666000004741,
+      "duration_ms": 12.341042000000016,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -175,10 +175,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.360Z",
+      "timestamp": "2026-04-09T01:10:38.431Z",
       "model_name": "middleware:permissions",
       "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 790.4419170000037,
+      "duration_ms": 920.6932919999963,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -187,7 +187,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692789352,
+        "_original_timestamp": 1775697038422,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -196,17 +196,17 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.361Z",
+      "timestamp": "2026-04-09T01:10:38.432Z",
       "model_name": "middleware:permissions",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
           }
         ]
       },
-      "duration_ms": 11.406791999994311,
+      "duration_ms": 12.283167000001413,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -225,7 +225,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692789358,
+        "_original_timestamp": 1775697038429,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -234,10 +234,104 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.362Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:10:38.433Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 790.3306250000023,
+      "duration_ms": 920.6394999999902,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697038421,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:38.434Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
+      "duration_ms": 920.6297919999924,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output."
+          }
+        ],
+        "_original_timestamp": 1775697038420,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:38.435Z",
+      "model_name": "middleware:goal",
+      "message": "Bash({\"command\":\"echo hello-from-bash\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+          }
+        ]
+      },
+      "duration_ms": 12.202208999995491,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775697038428,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:38.436Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
+      "duration_ms": 920.6107499999925,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -246,26 +340,26 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692789351,
+        "_original_timestamp": 1775697038419,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.363Z",
+      "timestamp": "2026-04-09T01:10:38.437Z",
       "model_name": "middleware:hooks",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
           }
         ]
       },
-      "duration_ms": 11.31445900000108,
+      "duration_ms": 12.19658299999719,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -278,30 +372,30 @@
           {
             "event": "tool.succeeded",
             "toolId": "Bash",
-            "toolOutput": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
+            "toolOutput": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-bash-tool",
                 "decision": "continue",
-                "durationMs": 4.710250000003725
+                "durationMs": 4.439916000002995
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692789357,
+        "_original_timestamp": 1775697038427,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.364Z",
+      "timestamp": "2026-04-09T01:10:38.438Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
-      "duration_ms": 790.25,
+      "message": "## Active Goals\n\n- [ ] Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
+      "duration_ms": 920.5667919999978,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -310,26 +404,26 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692789350,
+        "_original_timestamp": 1775697038418,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:49.365Z",
+      "timestamp": "2026-04-09T01:10:38.439Z",
       "model_name": "middleware:semantic-retry",
       "message": "Bash({\"command\":\"echo hello-from-bash\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}"
+            "content": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
           }
         ]
       },
-      "duration_ms": 6.359458999999333,
+      "duration_ms": 7.655334000010043,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -338,30 +432,30 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692789355,
+        "_original_timestamp": 1775697038425,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 13,
+      "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:49.380Z",
+      "timestamp": "2026-04-09T01:10:38.448Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
+      "message": "{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
       "observation": {
         "results": [
           {
-            "content": "The command `echo hello-from-bash` returned the output `hello-from-bash`."
+            "content": "The output of the command `echo hello-from-bash` is:\n\n```\nhello-from-bash\n```"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 293,
-        "completion_tokens": 20
+        "prompt_tokens": 301,
+        "completion_tokens": 25
       },
-      "duration_ms": 859,
+      "duration_ms": 729,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -374,16 +468,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "bb1b089c8e789a71200cd69af5c24ff749734fc929f73671ac1126276e049cb4"
+        "promptPrefixFingerprint": "d6015c3aaad8be265a6f98e2fec9003fe509fdbdc4876d828a9f28ebe9cbd301"
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:50.244Z",
+      "timestamp": "2026-04-09T01:10:39.184Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
-      "duration_ms": 859.8034159999952,
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.7067499999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -398,12 +492,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:50.245Z",
+      "timestamp": "2026-04-09T01:10:39.185Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
-      "duration_ms": 859.7797089999949,
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.6771670000016,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -412,19 +506,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692790243,
+        "_original_timestamp": 1775697039183,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 16,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:50.246Z",
+      "timestamp": "2026-04-09T01:10:39.186Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.5701250000129,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-bash-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775697039181,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:39.187Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.5452919999952,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775697039180,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:10:39.188Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
-      "duration_ms": 859.6296250000014,
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.5143749999988,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -433,19 +592,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692790241,
+        "_original_timestamp": 1775697039179,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 17,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:50.247Z",
+      "timestamp": "2026-04-09T01:10:39.189Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":6}",
-      "duration_ms": 859.5865420000046,
+      "message": "Use the Bash tool to run the command \"echo hello-from-bash\" and tell me the output.{\"stdout\":\"hello-from-bash\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "duration_ms": 730.4880839999969,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -454,7 +613,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692790240,
+        "_original_timestamp": 1775697039178,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

@@ -30,6 +30,7 @@
 
 import { createAgentResolver } from "@koi/agent-runtime";
 import type {
+  Agent,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -65,6 +66,7 @@ import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -82,7 +84,11 @@ import {
   resumeFromTranscript,
 } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
-import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
+import {
+  createSkillInjectorMiddleware,
+  createSkillProvider,
+  createSkillsRuntime,
+} from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -1032,12 +1038,29 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalWriter: retryBroker,
   });
 
+  // @koi/middleware-goal — objective tracking (fires decisions on injection turns)
+  const goalMw = createGoalMiddleware({
+    objectives: [config.prompt.slice(0, 120)],
+  });
+
+  // @koi/skills-runtime — skill-injector (fires decisions when skills are attached)
+  // Lazy agent ref: middleware created before createKoi, agent wired after assembly.
+  const agentRef: { current?: Agent } = {};
+  const skillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): Agent => {
+      if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+      return agentRef.current;
+    },
+  });
+
   const tracedMiddleware = [
     eventTrace,
     coreHookMw,
     hookObserverMw,
     exfiltrationGuard,
     permHandle,
+    goalMw,
+    skillInjectorMw,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
@@ -1060,6 +1083,9 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     providers: [...resolvedProviders],
     loopDetection: false,
   });
+
+  // Wire the lazy agent ref now that assembly is complete.
+  agentRef.current = runtime.agent;
 
   // Hook registration is handled internally by createHookMiddleware — hooks are
   // registered per session in onSessionStart and cleaned up in onSessionEnd.

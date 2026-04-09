@@ -39,7 +39,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.248Z",
+      "timestamp": "2026-04-09T01:09:46.485Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -57,7 +57,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.249Z",
+      "timestamp": "2026-04-09T01:09:46.486Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -74,7 +74,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:58:58.251Z",
+      "timestamp": "2026-04-09T01:09:46.488Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
       "observation": {
@@ -85,13 +85,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 912,
+        "prompt_tokens": 957,
         "completion_tokens": 12
       },
-      "duration_ms": 853,
+      "duration_ms": 829,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 7,
         "tools": [
@@ -125,20 +125,20 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "0d2b54e906d28717e3a9c3c36c1f873149b04ee42c2046411074e673423e5299"
+        "promptPrefixFingerprint": "bc7dcf7c22dfe27278427e4023b937742aaf0a49861d1da15ed4f5234d405268"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T23:58:59.105Z",
+      "timestamp": "2026-04-09T01:09:47.318Z",
       "tool_calls": [
         {
           "tool_call_id": "call_task_create_3",
           "function_name": "task_create",
           "arguments": {
-            "description": "Review the README for typos",
-            "subject": "Review README"
+            "subject": "Review README",
+            "description": "Review the README for typos"
           }
         }
       ],
@@ -156,10 +156,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.112Z",
+      "timestamp": "2026-04-09T01:09:47.327Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 2.249167000001762,
+      "duration_ms": 2.6634589999994205,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -176,10 +176,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.113Z",
+      "timestamp": "2026-04-09T01:09:47.328Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 856.6752919999999,
+      "duration_ms": 832.7282500000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -188,7 +188,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692739111,
+        "_original_timestamp": 1775696987326,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -197,9 +197,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.115Z",
+      "timestamp": "2026-04-09T01:09:47.331Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "task_create({\"description\":\"Review the README for typos\",\"subject\":\"Review README\"})",
+      "message": "task_create({\"subject\":\"Review README\",\"description\":\"Review the README for typos\"})",
       "observation": {
         "results": [
           {
@@ -207,7 +207,7 @@
           }
         ]
       },
-      "duration_ms": 3.791958000001614,
+      "duration_ms": 4.438333000001876,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -224,10 +224,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.116Z",
+      "timestamp": "2026-04-09T01:09:47.332Z",
       "model_name": "middleware:permissions",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 856.661874999998,
+      "duration_ms": 832.6642079999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -236,7 +236,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692739110,
+        "_original_timestamp": 1775696987325,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -245,9 +245,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.117Z",
+      "timestamp": "2026-04-09T01:09:47.333Z",
       "model_name": "middleware:permissions",
-      "message": "task_create({\"description\":\"Review the README for typos\",\"subject\":\"Review README\"})",
+      "message": "task_create({\"subject\":\"Review README\",\"description\":\"Review the README for typos\"})",
       "observation": {
         "results": [
           {
@@ -255,7 +255,7 @@
           }
         ]
       },
-      "duration_ms": 3.7346250000045984,
+      "duration_ms": 4.352915999999823,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -268,13 +268,13 @@
           {
             "phase": "execute",
             "toolId": "task_create",
-            "toolInput": "{\"description\":\"Review the README for typos\",\"subject\":\"Review README\"}",
+            "toolInput": "{\"subject\":\"Review README\",\"description\":\"Review the README for typos\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692739114,
+        "_original_timestamp": 1775696987330,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -283,10 +283,104 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.118Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:09:47.334Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 856.5755839999983,
+      "duration_ms": 832.4727499999972,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696987324,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:47.335Z",
+      "model_name": "middleware:goal",
+      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 832.452500000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Th",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Th"
+          }
+        ],
+        "_original_timestamp": 1775696987323,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:47.336Z",
+      "model_name": "middleware:goal",
+      "message": "task_create({\"subject\":\"Review README\",\"description\":\"Review the README for typos\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}"
+          }
+        ]
+      },
+      "duration_ms": 4.240125000000262,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775696987329,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:47.337Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". ThUse the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 832.4197910000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -295,18 +389,18 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692739109,
+        "_original_timestamp": 1775696987322,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.119Z",
+      "timestamp": "2026-04-09T01:09:47.338Z",
       "model_name": "middleware:hooks",
-      "message": "task_create({\"description\":\"Review the README for typos\",\"subject\":\"Review README\"})",
+      "message": "task_create({\"subject\":\"Review README\",\"description\":\"Review the README for typos\"})",
       "observation": {
         "results": [
           {
@@ -314,7 +408,7 @@
           }
         ]
       },
-      "duration_ms": 3.6647910000028787,
+      "duration_ms": 4.228167000001122,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -333,23 +427,23 @@
               {
                 "name": "on-tool-exec",
                 "decision": "continue",
-                "durationMs": 2.249167000001762
+                "durationMs": 2.6634589999994205
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692739113,
+        "_original_timestamp": 1775696987328,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.120Z",
+      "timestamp": "2026-04-09T01:09:47.339Z",
       "model_name": "middleware:semantic-retry",
-      "message": "task_create({\"description\":\"Review the README for typos\",\"subject\":\"Review README\"})",
+      "message": "task_create({\"subject\":\"Review README\",\"description\":\"Review the README for typos\"})",
       "observation": {
         "results": [
           {
@@ -357,7 +451,7 @@
           }
         ]
       },
-      "duration_ms": 1.266790999994555,
+      "duration_ms": 1.350125000000844,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -366,19 +460,19 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692739107,
+        "_original_timestamp": 1775696987320,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.121Z",
+      "timestamp": "2026-04-09T01:09:47.340Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
-      "duration_ms": 856.4987079999992,
+      "message": "## Active Goals\n\n- [ ] Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". ThUse the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.",
+      "duration_ms": 832.3411250000026,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -387,16 +481,16 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692739108,
+        "_original_timestamp": 1775696987321,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 13,
+      "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-08T23:58:59.126Z",
+      "timestamp": "2026-04-09T01:09:47.346Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
       "observation": {
@@ -407,10 +501,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 958,
+        "prompt_tokens": 969,
         "completion_tokens": 3
       },
-      "duration_ms": 796,
+      "duration_ms": 727,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -447,16 +541,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "0d2b54e906d28717e3a9c3c36c1f873149b04ee42c2046411074e673423e5299"
+        "promptPrefixFingerprint": "bc7dcf7c22dfe27278427e4023b937742aaf0a49861d1da15ed4f5234d405268"
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "tool",
-      "timestamp": "2026-04-08T23:58:59.923Z",
+      "timestamp": "2026-04-09T01:09:48.074Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_task_list_14",
+          "tool_call_id": "call_task_list_17",
           "function_name": "task_list",
           "arguments": {}
         }
@@ -464,7 +558,7 @@
       "observation": {
         "results": [
           {
-            "source_call_id": "call_task_list_14",
+            "source_call_id": "call_task_list_17",
             "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
           }
         ]
@@ -473,12 +567,12 @@
       "outcome": "success"
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.930Z",
+      "timestamp": "2026-04-09T01:09:48.083Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 2.241708000001381,
+      "duration_ms": 2.6099169999979495,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -493,12 +587,12 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.931Z",
+      "timestamp": "2026-04-09T01:09:48.084Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
-      "duration_ms": 799.000583999994,
+      "duration_ms": 729.5319999999992,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -507,16 +601,16 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692739929,
+        "_original_timestamp": 1775696988082,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
       }
     },
     {
-      "step_id": 17,
+      "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.933Z",
+      "timestamp": "2026-04-09T01:09:48.087Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "task_list({})",
       "observation": {
@@ -526,7 +620,7 @@
           }
         ]
       },
-      "duration_ms": 2.998041999999259,
+      "duration_ms": 3.292291000001569,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -541,12 +635,12 @@
       }
     },
     {
-      "step_id": 18,
+      "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.934Z",
+      "timestamp": "2026-04-09T01:09:48.088Z",
       "model_name": "middleware:permissions",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
-      "duration_ms": 798.9823329999999,
+      "duration_ms": 729.5084580000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -555,16 +649,16 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692739928,
+        "_original_timestamp": 1775696988081,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 19,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.935Z",
+      "timestamp": "2026-04-09T01:09:48.089Z",
       "model_name": "middleware:permissions",
       "message": "task_list({})",
       "observation": {
@@ -574,7 +668,7 @@
           }
         ]
       },
-      "duration_ms": 2.939125000004424,
+      "duration_ms": 3.252250000001368,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -593,19 +687,112 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692739932,
+        "_original_timestamp": 1775696988086,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 20,
+      "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.936Z",
+      "timestamp": "2026-04-09T01:09:48.090Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 729.4032499999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696988080,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:48.091Z",
+      "model_name": "middleware:goal",
+      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
+      "duration_ms": 729.3889999999992,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Th",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775696988079,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:48.092Z",
+      "model_name": "middleware:goal",
+      "message": "task_list({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}"
+          }
+        ]
+      },
+      "duration_ms": 3.198374999999942,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775696988085,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:48.093Z",
       "model_name": "middleware:hooks",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
-      "duration_ms": 798.8317499999976,
+      "duration_ms": 729.3700409999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -614,16 +801,16 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692739927,
+        "_original_timestamp": 1775696988078,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 21,
+      "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.937Z",
+      "timestamp": "2026-04-09T01:09:48.094Z",
       "model_name": "middleware:hooks",
       "message": "task_list({})",
       "observation": {
@@ -633,7 +820,7 @@
           }
         ]
       },
-      "duration_ms": 2.8797080000003916,
+      "duration_ms": 3.1885000000002037,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -652,21 +839,21 @@
               {
                 "name": "on-tool-exec",
                 "decision": "continue",
-                "durationMs": 2.241708000001381
+                "durationMs": 2.6099169999979495
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692739931,
+        "_original_timestamp": 1775696988084,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 22,
+      "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.938Z",
+      "timestamp": "2026-04-09T01:09:48.095Z",
       "model_name": "middleware:semantic-retry",
       "message": "task_list({})",
       "observation": {
@@ -676,7 +863,7 @@
           }
         ]
       },
-      "duration_ms": 0.5274999999965075,
+      "duration_ms": 0.46483299999817973,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -685,19 +872,19 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692739925,
+        "_original_timestamp": 1775696988076,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 23,
+      "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:59.939Z",
+      "timestamp": "2026-04-09T01:09:48.096Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}",
-      "duration_ms": 798.7988750000004,
+      "duration_ms": 729.3403330000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -706,30 +893,30 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692739926,
+        "_original_timestamp": 1775696988077,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 24,
+      "step_id": 30,
       "source": "agent",
-      "timestamp": "2026-04-08T23:58:59.976Z",
+      "timestamp": "2026-04-09T01:09:48.114Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
       "observation": {
         "results": [
           {
-            "content": "OK. I created a task with subject \"Review README\" and description \"Review the README for typos\". The task ID is task_1. Then I listed all tasks and confirmed that the task was created."
+            "content": "OK. I have created a task with subject \"Review README\" and description \"Review the README for typos\", and listed all tasks to show the new task.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 992,
-        "completion_tokens": 42
+        "prompt_tokens": 1006,
+        "completion_tokens": 33
       },
-      "duration_ms": 989,
+      "duration_ms": 914,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -766,16 +953,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "0d2b54e906d28717e3a9c3c36c1f873149b04ee42c2046411074e673423e5299"
+        "promptPrefixFingerprint": "bc7dcf7c22dfe27278427e4023b937742aaf0a49861d1da15ed4f5234d405268"
       }
     },
     {
-      "step_id": 25,
+      "step_id": 31,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:00.970Z",
+      "timestamp": "2026-04-09T01:09:49.035Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
-      "duration_ms": 990.4098749999976,
+      "duration_ms": 915.1741669999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -790,12 +977,12 @@
       }
     },
     {
-      "step_id": 26,
+      "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:00.971Z",
+      "timestamp": "2026-04-09T01:09:49.036Z",
       "model_name": "middleware:permissions",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
-      "duration_ms": 990.3893749999988,
+      "duration_ms": 915.1575830000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -804,19 +991,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692740969,
+        "_original_timestamp": 1775696989034,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 27,
+      "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:00.972Z",
+      "timestamp": "2026-04-09T01:09:49.037Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
+      "duration_ms": 915.0367079999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696989032,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:49.038Z",
+      "model_name": "middleware:goal",
+      "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
+      "duration_ms": 915.0147079999988,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 2,
+            "objectives": [
+              {
+                "text": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Th",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 5
+          }
+        ],
+        "_original_timestamp": 1775696989031,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:49.039Z",
       "model_name": "middleware:hooks",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
-      "duration_ms": 990.2558330000029,
+      "duration_ms": 914.9864159999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -825,19 +1077,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692740967,
+        "_original_timestamp": 1775696989030,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 28,
+      "step_id": 36,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:00.973Z",
+      "timestamp": "2026-04-09T01:09:49.040Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the task_create tool to create a task with subject \"Review README\" and description \"Review the README for typos\". Then use the task_list tool to show all tasks.{\"ok\":true,\"task\":{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}}{\"ok\":true,\"tasks\":[{\"id\":\"task_1\",\"subject\":\"Review README\",\"status\":\"pending\",\"dependencies\":[]}],\"total\":1}",
-      "duration_ms": 990.2099170000001,
+      "duration_ms": 914.9546660000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -846,7 +1098,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692740966,
+        "_original_timestamp": 1775696989029,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

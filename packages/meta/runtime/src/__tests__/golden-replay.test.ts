@@ -533,10 +533,10 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     );
     if (goalModelSpan !== undefined) {
       const goalDecisions = goalModelSpan.metadata?.decisions as readonly JsonObject[] | undefined;
-      expect(goalDecisions).toBeDefined();
+      // Goal only reports when injecting — if present, must have objectives + totalCount
       if (goalDecisions !== undefined && goalDecisions.length > 0) {
-        expect(typeof goalDecisions[0]?.injected).toBe("boolean");
         expect(typeof goalDecisions[0]?.totalCount).toBe("number");
+        expect(goalDecisions[0]?.goalBlock).toBeDefined();
       }
     }
   }, 15000);

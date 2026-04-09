@@ -19,7 +19,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:56.498Z",
+      "timestamp": "2026-04-09T01:09:44.813Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -37,7 +37,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:56.499Z",
+      "timestamp": "2026-04-09T01:09:44.814Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -54,7 +54,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:58:56.501Z",
+      "timestamp": "2026-04-09T01:09:44.816Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
       "observation": {
@@ -65,13 +65,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 315,
+        "prompt_tokens": 356,
         "completion_tokens": 11
       },
-      "duration_ms": 744,
+      "duration_ms": 749,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 2,
         "tools": [
@@ -85,19 +85,19 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "98c01eac0f09ea44c6cb90275a4947a36b3c08fa3058fe9bbb3a21798b59adf7"
+        "promptPrefixFingerprint": "e615cb476495358a11da953d5b6ac71add70a552de96a88aa09838926724c008"
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T23:58:57.246Z",
+      "timestamp": "2026-04-09T01:09:45.566Z",
       "tool_calls": [
         {
           "tool_call_id": "call_web_fetch_3",
           "function_name": "web_fetch",
           "arguments": {
-            "format": "text",
+            "format": "html",
             "url": "http://example.com"
           }
         }
@@ -106,20 +106,20 @@
         "results": [
           {
             "source_call_id": "call_web_fetch_3",
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
           }
         ]
       },
-      "duration_ms": 80,
+      "duration_ms": 77,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.328Z",
+      "timestamp": "2026-04-09T01:09:45.645Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.succeeded → on-tool-exec",
-      "duration_ms": 2.1637919999993755,
+      "duration_ms": 2.402541999999812,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -136,10 +136,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.329Z",
+      "timestamp": "2026-04-09T01:09:45.646Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 747.7770000000019,
+      "duration_ms": 753.5290410000016,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -148,7 +148,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692737250,
+        "_original_timestamp": 1775696985572,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -157,17 +157,17 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.331Z",
+      "timestamp": "2026-04-09T01:09:45.649Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "web_fetch({\"format\":\"text\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
           }
         ]
       },
-      "duration_ms": 83.03370799999539,
+      "duration_ms": 80.04033300000083,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -184,10 +184,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.332Z",
+      "timestamp": "2026-04-09T01:09:45.650Z",
       "model_name": "middleware:permissions",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 747.7624999999971,
+      "duration_ms": 753.5177499999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -196,7 +196,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692737249,
+        "_original_timestamp": 1775696985571,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -205,17 +205,17 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.333Z",
+      "timestamp": "2026-04-09T01:09:45.651Z",
       "model_name": "middleware:permissions",
-      "message": "web_fetch({\"format\":\"text\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
           }
         ]
       },
-      "duration_ms": 82.95708300000115,
+      "duration_ms": 79.95999999999913,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -228,13 +228,13 @@
           {
             "phase": "execute",
             "toolId": "web_fetch",
-            "toolInput": "{\"format\":\"text\",\"url\":\"http://example.com\"}",
+            "toolInput": "{\"format\":\"html\",\"url\":\"http://example.com\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775692737330,
+        "_original_timestamp": 1775696985648,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -243,10 +243,104 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.334Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:09:45.652Z",
+      "model_name": "middleware:skill-injector",
       "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 747.6705420000071,
+      "duration_ms": 753.4476249999971,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696985570,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:45.653Z",
+      "model_name": "middleware:goal",
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 753.4275830000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title."
+          }
+        ],
+        "_original_timestamp": 1775696985569,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:45.654Z",
+      "model_name": "middleware:goal",
+      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
+          }
+        ]
+      },
+      "duration_ms": 79.90808300000208,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775696985647,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:45.655Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 753.4148330000025,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -255,26 +349,26 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692737248,
+        "_original_timestamp": 1775696985568,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 10,
+      "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.335Z",
+      "timestamp": "2026-04-09T01:09:45.656Z",
       "model_name": "middleware:hooks",
-      "message": "web_fetch({\"format\":\"text\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
           }
         ]
       },
-      "duration_ms": 82.8625830000019,
+      "duration_ms": 79.8974589999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -287,30 +381,30 @@
           {
             "event": "tool.succeeded",
             "toolId": "web_fetch",
-            "toolOutput": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
+            "toolOutput": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{fo…",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-tool-exec",
                 "decision": "continue",
-                "durationMs": 2.1637919999993755
+                "durationMs": 2.402541999999812
               }
             ]
           }
         ],
-        "_original_timestamp": 1775692737329,
+        "_original_timestamp": 1775696985646,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 11,
+      "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.336Z",
+      "timestamp": "2026-04-09T01:09:45.657Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
-      "duration_ms": 747.6164169999975,
+      "message": "## Active Goals\n\n- [ ] Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+      "duration_ms": 753.3827090000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -319,26 +413,26 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692737247,
+        "_original_timestamp": 1775696985567,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 12,
+      "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:57.337Z",
+      "timestamp": "2026-04-09T01:09:45.658Z",
       "model_name": "middleware:semantic-retry",
-      "message": "web_fetch({\"format\":\"text\",\"url\":\"http://example.com\"})",
+      "message": "web_fetch({\"format\":\"html\",\"url\":\"http://example.com\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}"
+            "content": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in "
           }
         ]
       },
-      "duration_ms": 80.5432079999955,
+      "duration_ms": 77.37704099999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -347,18 +441,18 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692737327,
+        "_original_timestamp": 1775696985644,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 13,
+      "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-08T23:58:57.364Z",
+      "timestamp": "2026-04-09T01:09:45.701Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
+      "message": "{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\\\"https://iana.org/domains/example\\\">Learn more</a></p></div></body></html>\\n\",\"format\":\"html\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
       "observation": {
         "results": [
           {
@@ -367,10 +461,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 396,
+        "prompt_tokens": 540,
         "completion_tokens": 8
       },
-      "duration_ms": 754,
+      "duration_ms": 624,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -387,16 +481,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "98c01eac0f09ea44c6cb90275a4947a36b3c08fa3058fe9bbb3a21798b59adf7"
+        "promptPrefixFingerprint": "e615cb476495358a11da953d5b6ac71add70a552de96a88aa09838926724c008"
       }
     },
     {
-      "step_id": 14,
+      "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.123Z",
+      "timestamp": "2026-04-09T01:09:46.332Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
-      "duration_ms": 754.913625000001,
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 625.1441250000025,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -411,12 +505,12 @@
       }
     },
     {
-      "step_id": 15,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.124Z",
+      "timestamp": "2026-04-09T01:09:46.333Z",
       "model_name": "middleware:permissions",
-      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
-      "duration_ms": 754.8953330000004,
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 625.1242079999975,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -425,19 +519,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692738122,
+        "_original_timestamp": 1775696986331,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 16,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.125Z",
+      "timestamp": "2026-04-09T01:09:46.334Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 624.9887090000011,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-tool-exec\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696986329,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:46.335Z",
+      "model_name": "middleware:goal",
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 624.9518749999988,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 1,
+            "objectives": [
+              {
+                "text": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 3
+          }
+        ],
+        "_original_timestamp": 1775696986328,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:46.336Z",
       "model_name": "middleware:hooks",
-      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
-      "duration_ms": 754.7524170000033,
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 624.9119170000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -446,19 +605,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692738120,
+        "_original_timestamp": 1775696986327,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 17,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:58:58.126Z",
+      "timestamp": "2026-04-09T01:09:46.337Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"Example Domain\\n\\nExample Domain\\n\\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\\n\\nLearn more\",\"format\":\"text\",\"truncated\":false,\"finalUrl\":\"http://example.com\"}",
-      "duration_ms": 754.7166670000006,
+      "message": "Use the web_fetch tool to fetch \"http://example.com\" and tell me the page title.{\"status\":200,\"statusText\":\"OK\",\"contentType\":\"text/html\",\"body\":\"<!doctype html><html lang=\\\"en\\\"><head><title>Example Domain</title><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domai…",
+      "duration_ms": 624.8627500000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -467,7 +626,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692738119,
+        "_original_timestamp": 1775696986326,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

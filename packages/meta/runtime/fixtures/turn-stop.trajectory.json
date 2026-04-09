@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:02.646Z",
+      "timestamp": "2026-04-09T01:09:50.722Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:02.647Z",
+      "timestamp": "2026-04-09T01:09:50.723Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,36 +44,36 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:02.649Z",
+      "timestamp": "2026-04-09T01:09:50.725Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
         "results": [
           {
-            "content": "Paris\n"
+            "content": "Paris.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 110,
-        "completion_tokens": 2
+        "prompt_tokens": 139,
+        "completion_tokens": 3
       },
-      "duration_ms": 704,
+      "duration_ms": 642,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "d472f8900a3f3b59a372a7747ff7f62ec6344f95f0e4729fff9d17a840a953b7"
+        "promptPrefixFingerprint": "3ff154c1f35bcc828d4dfd64ae8e48dba859b90f9e59f29ace6ba5a62f775465"
       }
     },
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.362Z",
+      "timestamp": "2026-04-09T01:09:51.379Z",
       "model_name": "hook:completion-gate",
       "message": "turn.stop → completion-gate",
-      "duration_ms": 8.515292000003683,
+      "duration_ms": 10.776875000003201,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -91,10 +91,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.363Z",
+      "timestamp": "2026-04-09T01:09:51.380Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is the capital of France? Answer concisely.",
-      "duration_ms": 707.3411250000063,
+      "duration_ms": 645.742333999995,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -103,7 +103,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692743358,
+        "_original_timestamp": 1775696991374,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -112,10 +112,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.364Z",
+      "timestamp": "2026-04-09T01:09:51.381Z",
       "model_name": "middleware:permissions",
       "message": "What is the capital of France? Answer concisely.",
-      "duration_ms": 707.3268749999988,
+      "duration_ms": 645.7279160000035,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -124,7 +124,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692743357,
+        "_original_timestamp": 1775696991373,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -133,49 +133,115 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.365Z",
-      "model_name": "middleware:hooks",
+      "timestamp": "2026-04-09T01:09:51.382Z",
+      "model_name": "middleware:skill-injector",
       "message": "What is the capital of France? Answer concisely.",
-      "duration_ms": 706.7043330000015,
+      "duration_ms": 645.0554170000032,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "hooks",
+        "middlewareName": "skill-injector",
         "hook": "wrapModelStream",
         "phase": "resolve",
-        "priority": 400,
+        "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1775692743355,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696991371,
         "__koi": {
-          "identifier": "middleware:hooks"
+          "identifier": "middleware:skill-injector"
         }
       }
     },
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.366Z",
-      "model_name": "middleware:semantic-retry",
+      "timestamp": "2026-04-09T01:09:51.383Z",
+      "model_name": "middleware:goal",
       "message": "What is the capital of France? Answer concisely.",
-      "duration_ms": 706.6734580000048,
+      "duration_ms": 645.0149999999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "semantic-retry",
+        "middlewareName": "goal",
         "hook": "wrapModelStream",
         "phase": "resolve",
-        "priority": 420,
+        "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775692743354,
+        "decisions": [
+          {
+            "injected": true,
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "What is the capital of France? Answer concisely.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] What is the capital of France? Answer concisely."
+          }
+        ],
+        "_original_timestamp": 1775696991370,
         "__koi": {
-          "identifier": "middleware:semantic-retry"
+          "identifier": "middleware:goal"
         }
       }
     },
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.376Z",
+      "timestamp": "2026-04-09T01:09:51.384Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] What is the capital of France? Answer concisely.What is the capital of France? Answer concisely.",
+      "duration_ms": 644.9806249999965,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775696991369,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.385Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "## Active Goals\n\n- [ ] What is the capital of France? Answer concisely.What is the capital of France? Answer concisely.",
+      "duration_ms": 644.9510829999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775696991368,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.430Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -191,9 +257,9 @@
       }
     },
     {
-      "step_id": 9,
+      "step_id": 11,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:03.378Z",
+      "timestamp": "2026-04-09T01:09:51.432Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
@@ -204,26 +270,26 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 163,
+        "prompt_tokens": 174,
         "completion_tokens": 2
       },
-      "duration_ms": 547,
+      "duration_ms": 442,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "d472f8900a3f3b59a372a7747ff7f62ec6344f95f0e4729fff9d17a840a953b7"
+        "promptPrefixFingerprint": "3ff154c1f35bcc828d4dfd64ae8e48dba859b90f9e59f29ace6ba5a62f775465"
       }
     },
     {
-      "step_id": 10,
+      "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.935Z",
+      "timestamp": "2026-04-09T01:09:51.884Z",
       "model_name": "hook:completion-gate",
       "message": "turn.stop → completion-gate",
-      "duration_ms": 9.648666000000958,
+      "duration_ms": 9.957500000004075,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -235,58 +301,123 @@
         },
         "__koi": {
           "identifier": "hook:completion-gate"
-        }
-      }
-    },
-    {
-      "step_id": 11,
-      "source": "system",
-      "timestamp": "2026-04-08T23:59:03.936Z",
-      "model_name": "middleware:exfiltration-guard",
-      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 549.1765840000007,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "exfiltration-guard",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 50,
-        "nextCalled": true,
-        "_original_timestamp": 1775692743930,
-        "__koi": {
-          "identifier": "middleware:exfiltration-guard"
-        }
-      }
-    },
-    {
-      "step_id": 12,
-      "source": "system",
-      "timestamp": "2026-04-08T23:59:03.937Z",
-      "model_name": "middleware:permissions",
-      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 549.1604169999991,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "_original_timestamp": 1775692743929,
-        "__koi": {
-          "identifier": "middleware:permissions"
         }
       }
     },
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.938Z",
+      "timestamp": "2026-04-09T01:09:51.885Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 444.3502920000028,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1775696991881,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.886Z",
+      "model_name": "middleware:permissions",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 444.3340840000019,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775696991880,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.887Z",
+      "model_name": "middleware:skill-injector",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 443.6879160000026,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696991879,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.888Z",
+      "model_name": "middleware:goal",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 443.6726669999989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 2,
+            "objectives": [
+              {
+                "text": "What is the capital of France? Answer concisely.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 2
+          }
+        ],
+        "_original_timestamp": 1775696991877,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:51.889Z",
       "model_name": "middleware:hooks",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 548.4738329999964,
+      "duration_ms": 443.65941599999496,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -295,19 +426,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692743927,
+        "_original_timestamp": 1775696991876,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 14,
+      "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.939Z",
+      "timestamp": "2026-04-09T01:09:51.890Z",
       "model_name": "middleware:semantic-retry",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 548.437874999996,
+      "duration_ms": 443.6125419999953,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -316,16 +447,16 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692743926,
+        "_original_timestamp": 1775696991875,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 15,
+      "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:03.956Z",
+      "timestamp": "2026-04-09T01:09:51.913Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -341,9 +472,9 @@
       }
     },
     {
-      "step_id": 16,
+      "step_id": 20,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:03.958Z",
+      "timestamp": "2026-04-09T01:09:51.915Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
@@ -354,26 +485,26 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 163,
+        "prompt_tokens": 174,
         "completion_tokens": 2
       },
-      "duration_ms": 557,
+      "duration_ms": 703,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "d472f8900a3f3b59a372a7747ff7f62ec6344f95f0e4729fff9d17a840a953b7"
+        "promptPrefixFingerprint": "3ff154c1f35bcc828d4dfd64ae8e48dba859b90f9e59f29ace6ba5a62f775465"
       }
     },
     {
-      "step_id": 17,
+      "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.524Z",
+      "timestamp": "2026-04-09T01:09:52.630Z",
       "model_name": "hook:completion-gate",
       "message": "turn.stop → completion-gate",
-      "duration_ms": 8.877999999996973,
+      "duration_ms": 10.976542000003974,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -389,12 +520,12 @@
       }
     },
     {
-      "step_id": 18,
+      "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.525Z",
+      "timestamp": "2026-04-09T01:09:52.631Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 559.265250000004,
+      "duration_ms": 705.3690839999981,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -403,19 +534,19 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775692744520,
+        "_original_timestamp": 1775696992625,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
       }
     },
     {
-      "step_id": 19,
+      "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.526Z",
+      "timestamp": "2026-04-09T01:09:52.632Z",
       "model_name": "middleware:permissions",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 559.2482910000035,
+      "duration_ms": 705.354207999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -424,19 +555,84 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775692744519,
+        "_original_timestamp": 1775696992624,
         "__koi": {
           "identifier": "middleware:permissions"
         }
       }
     },
     {
-      "step_id": 20,
+      "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.527Z",
+      "timestamp": "2026-04-09T01:09:52.633Z",
+      "model_name": "middleware:skill-injector",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 704.7208749999991,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696992623,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:52.634Z",
+      "model_name": "middleware:goal",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 704.7039589999986,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 2,
+            "objectives": [
+              {
+                "text": "What is the capital of France? Answer concisely.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 2
+          }
+        ],
+        "_original_timestamp": 1775696992621,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:52.635Z",
       "model_name": "middleware:hooks",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 558.5917079999999,
+      "duration_ms": 704.6899170000033,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -445,19 +641,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692744517,
+        "_original_timestamp": 1775696992620,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 21,
+      "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.528Z",
+      "timestamp": "2026-04-09T01:09:52.636Z",
       "model_name": "middleware:semantic-retry",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 558.557166999999,
+      "duration_ms": 704.6441249999989,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -466,16 +662,16 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692744516,
+        "_original_timestamp": 1775696992619,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
-      "step_id": 22,
+      "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:04.540Z",
+      "timestamp": "2026-04-09T01:09:52.658Z",
       "model_name": "stop-gate:block",
       "message": "Stop blocked by completion-gate",
       "duration_ms": 0,
@@ -491,9 +687,9 @@
       }
     },
     {
-      "step_id": 23,
+      "step_id": 29,
       "source": "agent",
-      "timestamp": "2026-04-08T23:59:04.542Z",
+      "timestamp": "2026-04-09T01:09:52.660Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is the capital of France? Answer concisely.",
       "observation": {
@@ -504,26 +700,26 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 163,
+        "prompt_tokens": 174,
         "completion_tokens": 2
       },
-      "duration_ms": 592,
+      "duration_ms": 613,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "systemPrompt": "[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "d472f8900a3f3b59a372a7747ff7f62ec6344f95f0e4729fff9d17a840a953b7"
+        "promptPrefixFingerprint": "3ff154c1f35bcc828d4dfd64ae8e48dba859b90f9e59f29ace6ba5a62f775465"
       }
     },
     {
-      "step_id": 24,
+      "step_id": 30,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:05.138Z",
+      "timestamp": "2026-04-09T01:09:53.279Z",
       "model_name": "middleware:permissions",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 593.6572079999969,
+      "duration_ms": 615.450042000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -538,12 +734,77 @@
       }
     },
     {
-      "step_id": 25,
+      "step_id": 31,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:05.139Z",
+      "timestamp": "2026-04-09T01:09:53.280Z",
+      "model_name": "middleware:skill-injector",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 615.3479579999985,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "skillCount": 0,
+            "skills": [],
+            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: completion-gate\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+          }
+        ],
+        "_original_timestamp": 1775696993278,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:53.281Z",
+      "model_name": "middleware:goal",
+      "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
+      "duration_ms": 615.3188749999972,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "injected": false,
+            "turnIndex": 2,
+            "objectives": [
+              {
+                "text": "What is the capital of France? Answer concisely.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 2
+          }
+        ],
+        "_original_timestamp": 1775696993276,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "system",
+      "timestamp": "2026-04-09T01:09:53.282Z",
       "model_name": "middleware:hooks",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 593.5866660000029,
+      "duration_ms": 615.2795419999966,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -552,19 +813,19 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775692745136,
+        "_original_timestamp": 1775696993275,
         "__koi": {
           "identifier": "middleware:hooks"
         }
       }
     },
     {
-      "step_id": 26,
+      "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-08T23:59:05.140Z",
+      "timestamp": "2026-04-09T01:09:53.283Z",
       "model_name": "middleware:semantic-retry",
       "message": "What is the capital of France? Answer concisely.[Stop hook feedback]: verification failed\n\nContinue responding to the user's most recent request. Address the feedback by correcting your previous response — do not describe your tools, your active capabilities, or this feedback itself. Produce only the answer the user asked for.",
-      "duration_ms": 593.5321669999976,
+      "duration_ms": 615.2329590000008,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -573,7 +834,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775692745135,
+        "_original_timestamp": 1775696993274,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

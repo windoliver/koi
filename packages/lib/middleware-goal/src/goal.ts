@@ -709,18 +709,20 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
 
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
-      ctx.reportDecision?.({
-        injected: inject,
-        turnIndex: ctx.turnIndex,
-        objectives: state.items.map((i) => ({
-          text: i.text,
-          completed: i.completed,
-        })),
-        completedCount: state.items.filter((i) => i.completed).length,
-        totalCount: state.items.length,
-        messageCount: request.messages.length,
-        ...(goalBlock !== undefined ? { goalBlock } : {}),
-      });
+      // Only report when goal block is actually injected (not passthrough turns)
+      if (goalBlock !== undefined) {
+        ctx.reportDecision?.({
+          turnIndex: ctx.turnIndex,
+          objectives: state.items.map((i) => ({
+            text: i.text,
+            completed: i.completed,
+          })),
+          completedCount: state.items.filter((i) => i.completed).length,
+          totalCount: state.items.length,
+          messageCount: request.messages.length,
+          goalBlock,
+        });
+      }
       const enrichedRequest =
         goalBlock !== undefined
           ? {
@@ -756,18 +758,20 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       const turnKey = String(ctx.turnId);
       const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
       const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
-      ctx.reportDecision?.({
-        injected: inject,
-        turnIndex: ctx.turnIndex,
-        objectives: state.items.map((i) => ({
-          text: i.text,
-          completed: i.completed,
-        })),
-        completedCount: state.items.filter((i) => i.completed).length,
-        totalCount: state.items.length,
-        messageCount: request.messages.length,
-        ...(goalBlock !== undefined ? { goalBlock } : {}),
-      });
+      // Only report when goal block is actually injected (not passthrough turns)
+      if (goalBlock !== undefined) {
+        ctx.reportDecision?.({
+          turnIndex: ctx.turnIndex,
+          objectives: state.items.map((i) => ({
+            text: i.text,
+            completed: i.completed,
+          })),
+          completedCount: state.items.filter((i) => i.completed).length,
+          totalCount: state.items.length,
+          messageCount: request.messages.length,
+          goalBlock,
+        });
+      }
       const enrichedRequest =
         goalBlock !== undefined
           ? {
