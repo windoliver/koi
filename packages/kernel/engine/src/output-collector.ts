@@ -27,7 +27,12 @@ export interface OutputCollector {
  * and ignores subsequent tool calls/text once the verdict is recorded.
  *
  * If no required tool is specified, falls back to collecting the last
- * tool_call_end result (backward compat).
+ * tool_result output (backward compat).
+ *
+ * NOTE: Reads from `tool_result.output` (the actual execution output) rather
+ * than `tool_call_end.result` (which carries AccumulatedToolCall metadata —
+ * args, not the real output). `tool_call_start` → `tool_call_end` tracks the
+ * current tool name; `tool_result` provides the authoritative output.
  */
 export function createVerdictCollector(requiredToolName: string | undefined): OutputCollector {
   let verdictCaptured = false;
@@ -35,6 +40,8 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
   let textBuffer = "";
   /** Track the tool name for the current in-flight tool call. */
   let currentToolCallName: string | undefined;
+  /** Track whether the current (or most-recent) call is the verdict tool. */
+  let currentIsVerdictTool = false;
 
   return {
     observe(event: EngineEvent): void {
@@ -43,35 +50,37 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
 
       if (event.kind === "tool_call_start") {
         currentToolCallName = event.toolName;
+        currentIsVerdictTool =
+          requiredToolName !== undefined && currentToolCallName === requiredToolName;
         return;
       }
 
       if (event.kind === "tool_call_end") {
-        const isVerdictTool =
-          requiredToolName !== undefined && currentToolCallName === requiredToolName;
-        currentToolCallName = undefined;
+        // tool_call_end only marks end of arg streaming — actual output arrives
+        // via tool_result. Keep currentToolCallName so tool_result can still
+        // associate the output with the right tool.
+        return;
+      }
 
-        if (isVerdictTool) {
-          // Capture the verdict and stop — ignore subsequent events
+      if (event.kind === "tool_result") {
+        // tool_result carries the actual execution output.
+        const output = event.output;
+        const serialized =
+          typeof output === "string"
+            ? output
+            : typeof output === "object" && output !== null
+              ? JSON.stringify(output)
+              : "";
+
+        if (currentIsVerdictTool) {
           verdictCaptured = true;
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
-          return;
+          verdictOutput = serialized;
+        } else if (requiredToolName === undefined) {
+          // No required tool — track last output as fallback.
+          verdictOutput = serialized;
         }
-
-        // No required tool specified — fall back to last tool result
-        if (requiredToolName === undefined) {
-          const result = event.result;
-          if (typeof result === "string") {
-            verdictOutput = result;
-          } else if (typeof result === "object" && result !== null) {
-            verdictOutput = JSON.stringify(result);
-          }
-        }
+        currentToolCallName = undefined;
+        currentIsVerdictTool = false;
         return;
       }
 
@@ -93,9 +102,13 @@ export function createVerdictCollector(requiredToolName: string | undefined): Ou
 
 /**
  * Simple text collector — accumulates text_delta events and falls back to
- * the last tool_call_end result. No verdict logic, no required tool name.
+ * the last tool_result output. No verdict logic, no required tool name.
  *
  * Used by `createAgentSpawnFn` for general agent-to-agent delegation.
+ *
+ * NOTE: Reads from `tool_result.output` (actual execution output), not
+ * `tool_call_end.result` (AccumulatedToolCall metadata). Tool-only child
+ * agents that finish with a tool call but no text need the real output.
  */
 export function createTextCollector(): OutputCollector {
   let textBuffer = "";
@@ -108,12 +121,12 @@ export function createTextCollector(): OutputCollector {
         return;
       }
 
-      if (event.kind === "tool_call_end") {
-        const result = event.result;
-        if (typeof result === "string") {
-          lastToolResult = result;
-        } else if (typeof result === "object" && result !== null) {
-          lastToolResult = JSON.stringify(result);
+      if (event.kind === "tool_result") {
+        const output = event.output;
+        if (typeof output === "string") {
+          lastToolResult = output;
+        } else if (typeof output === "object" && output !== null) {
+          lastToolResult = JSON.stringify(output);
         }
         return;
       }

@@ -342,16 +342,15 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
           },
         });
       } else {
-        // agent_status_changed — map "complete"/"failed" to ProcessState "terminated"
-        // (the only terminal ProcessState the reducer accepts).
+        // agent_status_changed: use the dedicated set_spawn_terminal action so the
+        // outcome (complete vs failed) is preserved. The engine's ProcessState only
+        // has a single "terminated" value — routing through that path would collapse
+        // failures into successes.
+        const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
         store.dispatch({
-          kind: "engine_event",
-          event: {
-            kind: "agent_status_changed",
-            agentId: event.agentId as unknown as import("@koi/core").AgentId,
-            agentName: event.agentName,
-            status: "terminated" as import("@koi/core").ProcessState,
-          },
+          kind: "set_spawn_terminal",
+          agentId: event.agentId,
+          outcome,
         });
       }
     },
@@ -460,18 +459,63 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     }
   };
 
-  // #13: session fork — save the current session, then start a fresh conversation
-  // from the same transcript. The cli's sessions:new semantics clear messages but
-  // preserve the transcript file; fork duplicates that flow with a "forked from" tag.
+  // #13: session fork — snapshot the current conversation to a NEW session file.
+  // The user's current session continues uninterrupted; the fork creates a
+  // resumable checkpoint at the current turn that can be resumed via the session
+  // picker. No context is lost — the active session stays on its own track.
   const handleFork = (): void => {
-    // Simplest implementation: clone the current transcript into a fresh session
-    // and reset the conversation. The new session inherits context via transcript.
-    resetConversation();
-    store.dispatch({
-      kind: "add_user_message",
-      id: `fork-${Date.now()}`,
-      blocks: [{ kind: "text", text: "[Forked from previous session]" }],
-    });
+    void (async (): Promise<void> => {
+      if (runtimeHandle === null) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_NOT_READY",
+          message: "Cannot fork: runtime not yet initialized.",
+        });
+        return;
+      }
+
+      // Snapshot the current transcript as TranscriptEntry list. The runtime's
+      // `transcript` array holds InboundMessage[] (the live context window);
+      // we load the durable entries from the JSONL file for a complete copy.
+      const loadResult = await jsonlTranscript.load(tuiSessionId);
+      if (!loadResult.ok) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_LOAD_ERROR",
+          message: `Cannot fork: failed to read current session — ${loadResult.error.message}`,
+        });
+        return;
+      }
+
+      const forkedSessionId = sessionId(crypto.randomUUID());
+      const appendResult = await jsonlTranscript.append(forkedSessionId, loadResult.value.entries);
+      if (!appendResult.ok) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_WRITE_ERROR",
+          message: `Cannot fork: failed to write forked session — ${appendResult.error.message}`,
+        });
+        return;
+      }
+
+      // Refresh session list so the new forked session shows up in the picker.
+      void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+        store.dispatch({ kind: "set_session_list", sessions });
+      });
+
+      // Notify the user that the fork was created. They can resume it via
+      // the session picker (Ctrl+P → Sessions → pick the new one).
+      store.dispatch({
+        kind: "add_user_message",
+        id: `fork-notice-${Date.now()}`,
+        blocks: [
+          {
+            kind: "text",
+            text: `[Forked session ${forkedSessionId.slice(0, 8)}… — resume via Sessions view]`,
+          },
+        ],
+      });
+    })();
   };
 
   const result = createTuiApp({

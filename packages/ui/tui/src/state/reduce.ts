@@ -721,6 +721,43 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, sessions };
     }
 
+    case "set_spawn_terminal": {
+      // Host-dispatched spawn termination with explicit outcome (complete or failed).
+      // The engine's agent_status_changed event only carries "terminated", so the
+      // bridge uses this action to preserve failure state for rendering.
+      const progress = state.activeSpawns.get(action.agentId);
+      if (!progress) return state;
+
+      const found = findLastAssistant(state.messages);
+      if (!found) return state;
+
+      const blockIdx = found.msg.blocks.findIndex(
+        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+      );
+      if (blockIdx < 0) return state;
+
+      const durationMs = Date.now() - progress.startedAt;
+      const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
+
+      const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
+        kind: "spawn_call" as const,
+        agentId: action.agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        status: action.outcome,
+        stats,
+      });
+
+      const activeSpawns = new Map(state.activeSpawns);
+      activeSpawns.delete(action.agentId);
+
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+        activeSpawns,
+      };
+    }
+
     case "set_slash_query":
       return action.query === state.slashQuery ? state : { ...state, slashQuery: action.query };
 

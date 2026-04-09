@@ -586,6 +586,36 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
+    case "set_spawn_terminal": {
+      const progress = state.activeSpawns.get(action.agentId);
+      if (!progress) break;
+
+      const msg = lastAssistant(state);
+      if (!msg) break;
+
+      const blockIdx = msg.blocks.findIndex(
+        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+      );
+      if (blockIdx < 0) break;
+
+      const durationMs = Date.now() - progress.startedAt;
+      const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
+
+      (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
+        kind: "spawn_call",
+        agentId: action.agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        status: action.outcome,
+        stats,
+      };
+
+      const spawns = new Map(state.activeSpawns);
+      spawns.delete(action.agentId);
+      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      break;
+    }
+
     case "set_slash_query":
       if (action.query !== state.slashQuery) {
         (state as { slashQuery: string | null }).slashQuery = action.query;

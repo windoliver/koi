@@ -391,6 +391,17 @@ export type TuiAction =
       readonly kind: "set_session_list";
       readonly sessions: readonly SessionSummary[];
     }
+  | {
+      /**
+       * Mark a spawned agent as terminated with an explicit outcome.
+       * Dispatched by the host spawn-event bridge — the engine's ProcessState
+       * only has a single "terminated" value, so the TUI needs a dedicated
+       * action to preserve complete vs failed for rendering (#1583 round 6).
+       */
+      readonly kind: "set_spawn_terminal";
+      readonly agentId: string;
+      readonly outcome: "complete" | "failed";
+    }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | {
       /** Expand a single tool call block by callId. No-op if already expanded. */
