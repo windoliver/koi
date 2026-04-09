@@ -62,6 +62,11 @@ export interface SpawnToolProviderConfig {
    * hard-fail on_demand manifests via the VALIDATION error in createAgentSpawnFn.
    */
   readonly reportStore?: import("@koi/core").ReportStore | undefined;
+  /**
+   * When true, unknown agent names create ad-hoc agents from the description.
+   * When false (default), unknown names fail closed. See CreateAgentSpawnFnOptions.
+   */
+  readonly allowDynamicAgents?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +233,7 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
         ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        ...(config.allowDynamicAgents === true ? { allowDynamicAgents: true } : {}),
         spawnProviderFactory: () => createSpawnToolProvider(config),
       });
 

@@ -78,6 +78,15 @@ export interface CreateAgentSpawnFnOptions {
    *   spawnProviderFactory: () => createSpawnToolProvider(config)
    */
   readonly spawnProviderFactory?: (() => ComponentProvider) | undefined;
+  /**
+   * When true, unknown agent names (NOT_FOUND from resolver) create ad-hoc
+   * agents using manifestTemplate + description as system prompt. When false
+   * (default), NOT_FOUND is a hard error — fail-closed semantics.
+   *
+   * Enable for Claude Code-style dynamic agent creation where the model
+   * invents agent names on the fly.
+   */
+  readonly allowDynamicAgents?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +105,8 @@ export interface CreateAgentSpawnFnOptions {
  * 6. Wrap in AgentExecutionContext for identity isolation
  */
 export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn {
-  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware } = options;
+  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware, allowDynamicAgents } =
+    options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
     // Issue 16: fast-path for already-expired deadlines. If the caller set an absolute
@@ -132,13 +142,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest = request.manifest;
     } else {
       const resolveResult = await resolver.resolve(request.agentName);
-      if (!resolveResult.ok && resolveResult.error.code === "NOT_FOUND") {
-        // Dynamic agent creation: when the name doesn't match any registered
-        // definition (NOT_FOUND only), create an ad-hoc agent using the
-        // manifestTemplate + the request's description as its task. This matches
-        // Claude Code's behavior where the model creates agents on the fly.
-        // Other resolver errors (PERMISSION, VALIDATION, etc.) are preserved
-        // as hard failures to maintain fail-closed semantics.
+      if (
+        !resolveResult.ok &&
+        resolveResult.error.code === "NOT_FOUND" &&
+        allowDynamicAgents === true
+      ) {
+        // Dynamic agent creation (opt-in): when the name doesn't match any
+        // registered definition and allowDynamicAgents is explicitly enabled,
+        // create an ad-hoc agent from the manifestTemplate + description.
+        // Other resolver errors (PERMISSION, VALIDATION, etc.) and non-opt-in
+        // NOT_FOUND are preserved as hard failures (fail-closed).
         manifest = {
           ...manifestTemplate,
           name: request.agentName,

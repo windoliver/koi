@@ -605,11 +605,18 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
   // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
-  // Uses createAgentResolver (built-in agent definitions) + createSpawnToolProvider.
+  // Uses createAgentResolver (built-in + project/user definitions) + createSpawnToolProvider.
   // The child adapter creates a fresh context per stream() call (no shared transcript)
-  // so siblings cannot see each other's history. Security middleware is inherited
-  // so children have the same approval + secret-scanning policy as the parent.
-  const { resolver: spawnResolver } = createAgentResolver();
+  // so siblings cannot see each other's history. Security middleware (permissions,
+  // exfiltration guard, hooks) is inherited so children have the same policy as the parent.
+  const { resolver: spawnResolver, warnings: spawnWarnings } = createAgentResolver({
+    projectDir: config.cwd ?? process.cwd(),
+    userDir: homedir(),
+  });
+  // Surface agent load warnings so users know about broken .koi/agents/ definitions.
+  for (const w of spawnWarnings) {
+    console.warn(`[koi/tui] agent load warning: ${w.filePath}: ${w.error.message}`);
+  }
   const childAdapter: import("@koi/core").EngineAdapter = {
     engineId: "koi-tui-child",
     capabilities: { text: true, images: false, files: false, audio: false },
@@ -651,7 +658,13 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       description: "Spawned sub-agent",
       model: { name: config.modelName },
     },
-    inheritedMiddleware: [permMw, exfiltrationGuardMw],
+    // Inherit the full security middleware stack so children are subject to the
+    // same approval, secret-scanning, and hook guardrails as the parent.
+    inheritedMiddleware: [permMw, exfiltrationGuardMw, hookMw],
+    // Enable dynamic agent creation: unknown names create ad-hoc agents from
+    // the description (Claude Code behavior). Built-in and project/user-defined
+    // agents still resolve normally with their authored prompts and ceilings.
+    allowDynamicAgents: true,
   });
 
   // --- Optional middleware: system prompt + session transcript (C3-A) ---

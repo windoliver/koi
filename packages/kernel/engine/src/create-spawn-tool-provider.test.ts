@@ -203,9 +203,7 @@ describe("createSpawnToolProvider", () => {
     ).rejects.toThrow("Agent blocked by policy");
   });
 
-  test("Spawn tool creates dynamic agent on NOT_FOUND (no pre-defined definition required)", async () => {
-    // When agentName doesn't match any registered definition (NOT_FOUND),
-    // a dynamic agent is created from the description — matching Claude Code behavior.
+  test("NOT_FOUND fails closed when allowDynamicAgents is not set", async () => {
     const ledger = createInMemorySpawnLedger(10);
     const notFoundResolver = {
       resolve: (_agentType: string) => ({
@@ -220,6 +218,36 @@ describe("createSpawnToolProvider", () => {
       spawnLedger: ledger,
       adapter: MOCK_ADAPTER,
       manifestTemplate: MANIFEST_TEMPLATE,
+      // allowDynamicAgents NOT set — default fail-closed
+    });
+
+    const agent = createMockAgent();
+    const components = (await provider.attach(agent)) as ReadonlyMap<string, unknown>;
+    const tool = components.get("tool:Spawn") as Tool;
+
+    await expect(
+      tool.execute({ agentName: "unknown-agent", description: "Do something" }),
+    ).rejects.toThrow("No such agent");
+  });
+
+  test("Spawn tool creates dynamic agent on NOT_FOUND when allowDynamicAgents is true", async () => {
+    // When allowDynamicAgents is explicitly opted in, NOT_FOUND creates an
+    // ad-hoc agent from the description — matching Claude Code behavior.
+    const ledger = createInMemorySpawnLedger(10);
+    const notFoundResolver = {
+      resolve: (_agentType: string) => ({
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "No such agent", retryable: false },
+      }),
+      list: () => [],
+    };
+
+    const provider = createSpawnToolProvider({
+      resolver: notFoundResolver,
+      spawnLedger: ledger,
+      adapter: MOCK_ADAPTER,
+      manifestTemplate: MANIFEST_TEMPLATE,
+      allowDynamicAgents: true,
     });
 
     const agent = createMockAgent();
