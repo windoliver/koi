@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:28.002Z",
+      "timestamp": "2026-04-09T01:35:14.950Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:28.003Z",
+      "timestamp": "2026-04-09T01:35:14.951Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T03:16:28.005Z",
+      "timestamp": "2026-04-09T01:35:14.953Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
       "observation": {
@@ -73,13 +73,13 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 439,
+        "prompt_tokens": 477,
         "completion_tokens": 7
       },
-      "duration_ms": 1749,
+      "duration_ms": 683,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 4,
         "tools": [
@@ -101,26 +101,26 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "d1be2a25a72b531052855c43e3070c637d7e02cdcddb548f3771f7f81822c471"
+        "promptPrefixFingerprint": "a29598b35dd6e409a9776db9d2e02293787b67a322b2b37ed7d29bae269e80fb"
       }
     },
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:29.755Z",
-      "model_name": "middleware:permissions",
+      "timestamp": "2026-04-09T01:35:15.638Z",
+      "model_name": "middleware:exfiltration-guard",
       "message": "add_numbers({\"b\":4,\"a\":3})",
-      "duration_ms": 0.22487499999988358,
+      "duration_ms": 0.4046249999992142,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "permissions",
+        "middlewareName": "exfiltration-guard",
         "hook": "wrapToolCall",
         "phase": "intercept",
-        "priority": 100,
-        "nextCalled": false,
+        "priority": 50,
+        "nextCalled": true,
         "__koi": {
-          "identifier": "middleware:permissions"
+          "identifier": "middleware:exfiltration-guard"
         },
         "__rich_error": {
           "text": "add_numbers invocation denied by per-call policy"
@@ -130,20 +130,32 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:29.756Z",
-      "model_name": "middleware:exfiltration-guard",
+      "timestamp": "2026-04-09T01:35:15.639Z",
+      "model_name": "middleware:permissions",
       "message": "add_numbers({\"b\":4,\"a\":3})",
-      "duration_ms": 0.25437500000043656,
+      "duration_ms": 0.36604199999783305,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "exfiltration-guard",
+        "middlewareName": "permissions",
         "hook": "wrapToolCall",
         "phase": "intercept",
-        "priority": 50,
-        "nextCalled": true,
+        "priority": 100,
+        "nextCalled": false,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "add_numbers",
+            "toolInput": "{\"b\":4,\"a\":3}",
+            "action": "deny",
+            "durationMs": 0,
+            "reason": "add_numbers invocation denied by per-call policy",
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1775698515637,
         "__koi": {
-          "identifier": "middleware:exfiltration-guard"
+          "identifier": "middleware:permissions"
         },
         "__rich_error": {
           "text": "add_numbers invocation denied by per-call policy"
@@ -153,50 +165,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:29.757Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 1751.0725409999977,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "semantic-retry",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 420,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:semantic-retry"
-        }
-      }
-    },
-    {
-      "step_id": 6,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:29.759Z",
-      "model_name": "middleware:hooks",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 1751.1104169999999,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 7,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:29.760Z",
+      "timestamp": "2026-04-09T01:35:15.643Z",
       "model_name": "middleware:permissions",
       "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 1751.5080000000016,
+      "duration_ms": 686.7045419999995,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -211,43 +183,122 @@
       }
     },
     {
-      "step_id": 8,
+      "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:29.762Z",
-      "model_name": "middleware:exfiltration-guard",
+      "timestamp": "2026-04-09T01:35:15.644Z",
+      "model_name": "middleware:skill-injector",
       "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
-      "duration_ms": 1751.6444159999992,
+      "duration_ms": 686.5497910000013,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "exfiltration-guard",
+        "middlewareName": "skill-injector",
         "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 50,
+        "phase": "resolve",
+        "priority": 300,
         "nextCalled": true,
+        "_original_timestamp": 1775698515642,
         "__koi": {
-          "identifier": "middleware:exfiltration-guard"
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:15.645Z",
+      "model_name": "middleware:goal",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
+      "duration_ms": 686.5327500000021,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Call the add_numbers tool with a=3 and b=4. Report the result.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Call the add_numbers tool with a=3 and b=4. Report the result."
+          }
+        ],
+        "_original_timestamp": 1775698515641,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:15.646Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Call the add_numbers tool with a=3 and b=4. Report the result.Call the add_numbers tool with a=3 and b=4. Report the result.",
+      "duration_ms": 686.5064999999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775698515640,
+        "__koi": {
+          "identifier": "middleware:hooks"
         }
       }
     },
     {
       "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:15.647Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "## Active Goals\n\n- [ ] Call the add_numbers tool with a=3 and b=4. Report the result.Call the add_numbers tool with a=3 and b=4. Report the result.",
+      "duration_ms": 686.4549169999991,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775698515639,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 10,
       "source": "agent",
-      "timestamp": "2026-04-07T03:16:29.763Z",
+      "timestamp": "2026-04-09T01:35:15.735Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "error: add_numbers invocation denied by per-call policy",
       "observation": {
         "results": [
           {
-            "content": "I am unable to call the tool because the tool invocation was denied by a per-call policy. I do not have the required permissions to use this tool.\n"
+            "content": "I am unable to call the `add_numbers` tool because it is unavailable. I do not have access to a tool for adding numbers."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 464,
-        "completion_tokens": 33
+        "prompt_tokens": 475,
+        "completion_tokens": 29
       },
-      "duration_ms": 874,
+      "duration_ms": 807,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -268,77 +319,16 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "898f9fd9a74260f4fa106fff7ed65a38c4be2fbf12ceeb2d493cc421fb75b182",
-        "_original_timestamp": 1775531789761
-      }
-    },
-    {
-      "step_id": 10,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:30.637Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: add_numbers invocation denied by per-call policy",
-      "duration_ms": 881.8272499999985,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "semantic-retry",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 420,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:semantic-retry"
-        }
+        "promptPrefixFingerprint": "5597621da9000df8c65c6757260667b588f66afa36e9c1dee8b0ce2da90d5162"
       }
     },
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-07T03:16:30.638Z",
-      "model_name": "middleware:hooks",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: add_numbers invocation denied by per-call policy",
-      "duration_ms": 881.9174579999999,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 12,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:30.639Z",
-      "model_name": "middleware:permissions",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: add_numbers invocation denied by per-call policy",
-      "duration_ms": 882.1334999999999,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
-      }
-    },
-    {
-      "step_id": 13,
-      "source": "system",
-      "timestamp": "2026-04-07T03:16:30.640Z",
+      "timestamp": "2026-04-09T01:35:15.736Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.\n\nerror: add_numbers invocation denied by per-call policy",
-      "duration_ms": 882.2226249999985,
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.",
+      "duration_ms": 686.7177080000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -347,6 +337,147 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
+        "_original_timestamp": 1775698515644,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.547Z",
+      "model_name": "middleware:permissions",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.8524160000015,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 3,
+            "filteredCount": 1,
+            "filteredTools": [
+              {
+                "tool": "add_numbers",
+                "reason": "Auto-denied: 1+ prior denials this session",
+                "source": "escalation"
+              }
+            ]
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.548Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.5784590000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775698516546,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.549Z",
+      "model_name": "middleware:goal",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.5654579999973,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775698516545,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.550Z",
+      "model_name": "middleware:hooks",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.5553330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775698516544,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.551Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.4969999999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775698516543,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-09T01:35:16.552Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Call the add_numbers tool with a=3 and b=4. Report the result.error: add_numbers invocation denied by per-call policy",
+      "duration_ms": 807.8782499999979,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1775698516548,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }

@@ -182,6 +182,67 @@ const runtime = createRuntime({ exfiltrationGuard: false });
 
 ---
 
+## ATIF Trace Integration
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the exfiltration-guard
+emits structured decision metadata via `ctx.reportDecision` on every scan path
+that detects secrets or fails closed. Clean scans (no secrets) emit no decision.
+
+Captured fields by location:
+
+**`tool-input`** (wrapToolCall input scan):
+```typescript
+{
+  location: "tool-input";
+  toolId: string;
+  matchCount: number;
+  action: "block" | "redact" | "warn";
+  kinds?: readonly string[];      // Secret categories (when available)
+  scanLength: number;             // Bytes scanned
+  error?: "redaction_failure";    // When redactor itself failed
+}
+```
+
+**`tool-output`** (wrapToolCall post-execution scan):
+```typescript
+{
+  location: "tool-output";
+  toolId: string;
+  matchCount: number;
+  action: "block" | "redact" | "warn";
+  scanLength: number;
+  error?: "redaction_failure";
+}
+```
+
+**`model-output`** (wrapModelCall non-streaming scan):
+```typescript
+{
+  location: "model-output";
+  matchCount: number;
+  action: "block" | "redact" | "warn";
+  scanLength: number;
+  error?: "redaction_failure";
+}
+```
+
+**`model-output-stream`** (wrapModelStream buffered scan):
+```typescript
+{
+  location: "model-output-stream";
+  matchCount: number;
+  action: "block" | "redact" | "warn";
+  bufferLength?: number;           // Stream buffer size when scan fired
+  reason?: "buffer_overflow" | "done_payload_secrets" | "stream_end_secrets" | "redaction_failure";
+}
+```
+
+All `fireDetection` telemetry paths have paired `reportDecision` calls for ATIF
+audit completeness. The decision appears in the trajectory as
+`metadata.decisions[]` on the `middleware:exfiltration-guard` span.
+
+---
+
 ## Tests
 
 - Tool call with base64-encoded AWS key in URL argument is blocked

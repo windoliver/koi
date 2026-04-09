@@ -208,6 +208,16 @@ function tagCached(decision: PermissionDecision): PermissionDecision {
 }
 
 /** Determine denial source for tracker recording. Only "policy" counts toward escalation. */
+/** Safely serialize a value to a JSON preview string, truncated to maxLen. */
+function safePreviewJson(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 function denialSource(
   decision: PermissionDecision,
 ): "policy" | "backend-error" | "escalation" | "approval" {
@@ -946,6 +956,31 @@ export function createPermissionsMiddleware(
       return true;
     });
 
+    const filteredCount = tools.length - filtered.length;
+    if (filteredCount > 0) {
+      const filteredDetails = tools
+        .map((t, i) => ({ name: t.name, decision: decisions[i] }))
+        .filter(
+          (
+            d,
+          ): d is {
+            readonly name: string;
+            readonly decision: { readonly effect: "deny"; readonly reason: string };
+          } => d.decision?.effect === "deny",
+        )
+        .map((d) => ({
+          tool: d.name,
+          reason: d.decision.reason,
+          source: denialSource(d.decision),
+        }));
+      ctx.reportDecision?.({
+        phase: "filter",
+        totalTools: tools.length,
+        allowedCount: filtered.length,
+        filteredCount,
+        filteredTools: filteredDetails,
+      });
+    }
     if (filtered.length === tools.length) return request;
     return { ...request, tools: filtered };
   }
@@ -1038,6 +1073,17 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
       }
+
+      // Report the permission decision for trace recording
+      ctx.reportDecision?.({
+        phase: "execute",
+        toolId: request.toolId,
+        toolInput: safePreviewJson(request.input, 300),
+        action: decision.effect,
+        durationMs,
+        ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
+        source: denialSource(decision),
+      });
 
       if (decision.effect === "deny") {
         getTracker(ctx.session.sessionId as string).record({
@@ -1264,32 +1310,37 @@ export function createPermissionsMiddleware(
       // (Ctrl+C / agent:clear) cannot win approval and execute the tool
       // in what the user now believes is a fresh session.
       ...(ctx.signal !== undefined
-        ? [
-            new Promise<never>((_, reject) => {
-              if (ctx.signal!.aborted) {
-                reject(
-                  new KoiRuntimeError({
-                    code: "PERMISSION",
-                    message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
-                    retryable: false,
-                  }),
-                );
-                return;
-              }
-              ctx.signal!.addEventListener(
-                "abort",
-                () =>
+        ? (() => {
+            // Capture signal before the Promise closure so TypeScript narrows it
+            // to AbortSignal (not AbortSignal | undefined) inside the callback.
+            const turnSignal = ctx.signal;
+            return [
+              new Promise<never>((_, reject) => {
+                if (turnSignal.aborted) {
                   reject(
                     new KoiRuntimeError({
                       code: "PERMISSION",
                       message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
                       retryable: false,
                     }),
-                  ),
-                { once: true },
-              );
-            }),
-          ]
+                  );
+                  return;
+                }
+                turnSignal.addEventListener(
+                  "abort",
+                  () =>
+                    reject(
+                      new KoiRuntimeError({
+                        code: "PERMISSION",
+                        message: `Approval for "${request.toolId}" cancelled: turn was aborted`,
+                        retryable: false,
+                      }),
+                    ),
+                  { once: true },
+                );
+              }),
+            ];
+          })()
         : []),
     ]).finally(() => {
       ac.abort();

@@ -145,6 +145,28 @@ provide `detectCompletions` and keep the heuristic path.
 
 **Known heuristic limitations** (tracked in #1512): drift detection can be suppressed by single short-token matches, and version-like identifiers (`v123` inside `v1234`) can produce false completions. The redesign issue proposes externalizing `isDrifting`/`detectCompletions` as user callbacks or LLM-driven tools.
 
+## ATIF Trace Integration
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the goal middleware emits
+structured decision metadata via `ctx.reportDecision` on every turn where a goal
+block is actually injected (passthrough turns are silent). Captured fields:
+
+```typescript
+{
+  turnIndex: number;
+  objectives: Array<{ text: string; completed: boolean }>;
+  completedCount: number;
+  totalCount: number;
+  messageCount: number;
+  goalBlock: string;  // The rendered markdown checklist injected into messages
+}
+```
+
+The decision appears in the ATIF trajectory as `metadata.decisions[]` on the
+`middleware:goal` span. Consumers (e.g., `/trajectory` in the TUI) can see
+exactly which objectives were active, their completion state, and the exact
+goal block text that was injected into the model context.
+
 ## Layer Compliance
 
 - Depends on: `@koi/core` (L0), `@koi/errors` (L0u)

@@ -529,6 +529,21 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
     expect(goalSpan).toBeDefined();
     expect(goalSpan?.outcome).toBe("success");
+
+    // Goal spans must carry decision metadata (injection + completion state)
+    const goalModelSpan = mwSpans.find(
+      (s) =>
+        s.metadata?.middlewareName === "goal" &&
+        (s.metadata?.hook === "wrapModelCall" || s.metadata?.hook === "wrapModelStream"),
+    );
+    if (goalModelSpan !== undefined) {
+      const goalDecisions = goalModelSpan.metadata?.decisions as readonly JsonObject[] | undefined;
+      // Goal only reports when injecting — if present, must have objectives + totalCount
+      if (goalDecisions !== undefined && goalDecisions.length > 0) {
+        expect(typeof goalDecisions[0]?.totalCount).toBe("number");
+        expect(goalDecisions[0]?.goalBlock).toBeDefined();
+      }
+    }
   }, 15000);
 });
 
@@ -6870,11 +6885,10 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
     expect(modelSteps[0]?.outcome).toBe("success");
 
-    // Middleware spans: permissions + skill-injector wired correctly
-    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
-    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
-    expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("skill-injector")).toBe(true);
+    // Note: the custom skillAdapter wires its own stream() outside the standard
+    // callHandlers path, so wrapModelStream/wrapModelCall spans are not produced
+    // for skill-injector here. The CI enforcement block (at the bottom of this file)
+    // validates skill-injector decision metadata using the standard cassette adapter.
 
     // Skill component was attached to the agent entity
     const skillComponents = koiRuntime.agent.query<SkillComponent>("skill:");
@@ -7443,6 +7457,163 @@ describe("Golden: @koi/skill-tool", () => {
     expect(execResult.ok).toBe(true);
     expect(execResult.value).toBe("Hello from greet skill in /tmp/skills/greet");
   });
+});
+
+// ---------------------------------------------------------------------------
+// CI enforcement: all decision-making L2 middleware must emit decisions
+// ---------------------------------------------------------------------------
+// This describe block is the formal gate: every decision-making middleware
+// must have at least one MW span with a non-empty `decisions` array.
+// Add new middleware here when introducing new L2 packages.
+
+describe("CI enforcement: all decision-making L2 middleware emit decisions metadata", () => {
+  test("permissions, hooks, goal, skill-injector all produce decisions in MW spans", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-decisions-enforcement-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-decisions-enforcement";
+
+    const store = createAtifDocumentStore(
+      { agentName: "decisions-enforcement-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    // @koi/event-trace
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "decisions-enforcement-test",
+      clock,
+    });
+
+    // @koi/hooks
+    const hookResult = loadHooks([
+      {
+        kind: "command",
+        name: "ci-enforcement-hook",
+        cmd: ["echo", "enforcement"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ]);
+    const loadedHooks = hookResult.ok ? hookResult.value : [];
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId, clock });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
+
+    // @koi/middleware-permissions
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "enforcement-test (bypass)",
+    });
+
+    // @koi/middleware-goal
+    const { createGoalMiddleware } = await import("@koi/middleware-goal");
+    const goalMw = createGoalMiddleware({
+      objectives: ["Compute the sum using the add_numbers tool."],
+    });
+
+    // @koi/skills-runtime — skill-injector
+    const {
+      mkdtempSync: mkdtemp,
+      mkdirSync: mkdir2,
+      writeFileSync: write2,
+    } = await import("node:fs");
+    const { tmpdir: tmpdir2 } = await import("node:os");
+    const { join: join2 } = await import("node:path");
+    const skillsDir = mkdtemp(join2(tmpdir2(), "koi-enforcement-skills-"));
+    mkdir2(join2(skillsDir, "test-skill"), { recursive: true });
+    write2(
+      join2(skillsDir, "test-skill", "SKILL.md"),
+      [
+        "---",
+        "name: test-skill",
+        "description: A skill for CI enforcement testing.",
+        "---",
+        "",
+        "Always be helpful.",
+      ].join("\n"),
+    );
+    trajDirs.push(skillsDir);
+
+    const skillRuntime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const skillProvider = createSkillProvider(skillRuntime);
+    const agentRef: { current?: Agent } = {};
+    const injector = createSkillInjectorMiddleware({
+      agent: (): Agent => {
+        if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+        return agentRef.current;
+      },
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: {
+        name: "decisions-enforcement-test",
+        version: "0.1.0",
+        model: { name: MODEL },
+      },
+      adapter,
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle, goalMw, injector].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        skillProvider,
+      ],
+      loopDetection: false,
+    });
+
+    agentRef.current = runtime.agent;
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+
+    // Helper: assert a named middleware has at least one model/tool-wrapping span
+    // with non-empty decisions array
+    function assertDecisions(name: string): void {
+      const spans = mwSpans.filter(
+        (s) =>
+          s.metadata?.middlewareName === name &&
+          (s.metadata?.hook === "wrapModelCall" ||
+            s.metadata?.hook === "wrapModelStream" ||
+            s.metadata?.hook === "wrapToolCall"),
+      );
+      expect(spans.length, `${name} must have at least one model/tool span`).toBeGreaterThan(0);
+      const withDecisions = spans.filter((s) => {
+        const d = s.metadata?.decisions;
+        return Array.isArray(d) && d.length > 0;
+      });
+      expect(
+        withDecisions.length,
+        `${name} must emit decisions in at least one span`,
+      ).toBeGreaterThan(0);
+    }
+
+    assertDecisions("permissions");
+    assertDecisions("hooks");
+    assertDecisions("goal");
+    assertDecisions("skill-injector");
+  }, 20000);
 });
 
 // ---------------------------------------------------------------------------

@@ -352,6 +352,29 @@ const provider = createSkillProvider(runtime);
 
 Each loaded skill becomes a `SkillComponent` under `skillToken(name)`. Skipped skills (NOT_FOUND, VALIDATION, PERMISSION) are reported as `SkippedComponent` entries.
 
+## ATIF Trace Integration
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the skill-injector
+emits structured decision metadata via `ctx.reportDecision` only when skills
+are actually injected into the model request (passthrough is silent).
+
+Captured fields:
+```typescript
+{
+  injected: boolean;        // Always true when reported
+  skillCount: number;
+  skills: Array<{ name: string; contentLength: number }>;
+  systemPrompt: string;     // Preview of the final injected systemPrompt (≤800 chars)
+}
+```
+
+The decision appears in the ATIF trajectory as `metadata.decisions[]` on the
+`middleware:skill-injector` span. Consumers (e.g., `/trajectory` in the TUI)
+can see exactly which skills were injected and a preview of the resulting
+system prompt. The passthrough guard uses reference equality
+(`injected !== request`) on the `ModelRequest` object, which avoids a second
+`sortedSkills()` call per hook invocation.
+
 ## Dependencies
 
 - `@koi/core` (L0) — `KoiError`, `Result`, `Agent`, `SkillComponent`, `KoiMiddleware`

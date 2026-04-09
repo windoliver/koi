@@ -41,6 +41,12 @@ export interface TurnContext {
   readonly requestApproval?: ApprovalHandler;
   /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
+  /**
+   * Optional callback for middleware to report its decision for trace recording.
+   * Injected by wrapMiddlewareWithTrace — not present in normal engine context.
+   * Middleware calls this inline during a hook to emit structured decision metadata.
+   */
+  readonly reportDecision?: ((decision: JsonObject) => void) | undefined;
   /** True when this turn was ended by a stop-gate veto, not normal completion. */
   readonly stopBlocked?: true;
   /** The reason given by the middleware that blocked completion via stop gate. */

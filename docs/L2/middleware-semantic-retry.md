@@ -389,6 +389,42 @@ handle.reset();
 
 ---
 
+## ATIF Trace Integration
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the semantic-retry
+middleware emits structured decision metadata via `ctx.reportDecision` only
+when a retry or abort fires. Captured fields:
+
+**On rewrite** (retry with modified prompt):
+```typescript
+{
+  action: "rewrite";
+  rewriteKind: string;         // The rewriter strategy that fired
+  failureClass: string;        // e.g. "hook-blocked", "tool-failed"
+  retryCount: number;
+  budgetRemaining: number;     // Min budget across all rewriters
+  requestModified: boolean;    // Whether the rewrite changed the request
+  messageCount: number;
+  failureHistory: Array<{ failureClass: string; succeeded: boolean }>;
+}
+```
+
+**On abort** (retry budget exhausted or unrecoverable failure):
+```typescript
+{
+  action: "abort";
+  reason: string;
+  retryCount: number;
+  failureHistory: Array<{ failureClass: string; succeeded: boolean }>;
+}
+```
+
+Passthrough turns (no retry needed) emit no decision — only actionable events
+appear in the ATIF trajectory. Consumers can replay exact retry behavior from
+the decision history in `/trajectory`.
+
+---
+
 ## End-to-End Flow Example
 
 ```

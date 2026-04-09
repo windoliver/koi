@@ -85,6 +85,53 @@ export interface CreateHookMiddlewareOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Decision reporting helpers
+// ---------------------------------------------------------------------------
+
+/** Safely serialize a value to a JSON preview string, truncated to maxLen. */
+function safePreview(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Build a per-hook record for decision reporting.
+ * Captures the full decision shape — not just the `kind` but also the
+ * reason (block), patch (modify), outputPatch (transform), and failure details.
+ */
+function buildHookRecord(r: HookExecutionResult): JsonObject {
+  if (!r.ok) {
+    return {
+      name: r.hookName,
+      decision: "error",
+      durationMs: r.durationMs,
+      error: r.error,
+      failClosed: r.failClosed !== false,
+      ...(r.aborted === true ? { aborted: true } : {}),
+    } as JsonObject;
+  }
+  const d = r.decision;
+  return {
+    name: r.hookName,
+    decision: d.kind,
+    durationMs: r.durationMs,
+    ...(r.executionFailed === true ? { executionFailed: true } : {}),
+    ...(d.kind === "block" ? { reason: d.reason } : {}),
+    ...(d.kind === "modify" ? { patch: safePreview(d.patch, 300) } : {}),
+    ...(d.kind === "transform"
+      ? {
+          outputPatch: safePreview(d.outputPatch, 300),
+          ...(d.metadata !== undefined ? { metadata: d.metadata } : {}),
+        }
+      : {}),
+  } as JsonObject;
+}
+
+// ---------------------------------------------------------------------------
 // Decision aggregation
 // ---------------------------------------------------------------------------
 
@@ -398,6 +445,17 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     });
     const preResults = await registry.execute(sessionId, preEvent);
     const aggregated = aggregateDecisions(preResults);
+    // Report hook fire records + aggregated decision for trace recording
+    if (preResults.length > 0) {
+      ctx.reportDecision?.({
+        event: "compact.before",
+        aggregated: aggregated.decision.kind,
+        ...(aggregated.decision.kind === "block"
+          ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+          : {}),
+        hooks: preResults.map((r) => buildHookRecord(r)),
+      });
+    }
 
     if (aggregated.decision.kind === "block") {
       return {
@@ -507,6 +565,23 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResults = await registry.execute(sessionId, preEvent, ctx.signal);
       const aggregated = aggregateDecisions(preResults);
 
+      // Report pre-call hook fire records + aggregated decision for trace recording
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.before",
+          toolId: request.toolId,
+          toolInput: safePreview(request.input, 300),
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
+          ...(aggregated.decision.kind === "modify"
+            ? { patch: safePreview(aggregated.decision.patch, 300) }
+            : {}),
+          hooks: preResults.map((r) => buildHookRecord(r)),
+        });
+      }
+
       if (aggregated.decision.kind === "block") {
         return {
           output: { error: formatBlockMessage("tool_call", aggregated.decision.reason) },
@@ -596,6 +671,20 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
       const postDecision = aggregatePostDecisions(postResultsOrTimeout);
 
+      // Report post-call hook fire records + aggregated post-decision for trace recording
+      if (Array.isArray(postResultsOrTimeout) && postResultsOrTimeout.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.succeeded",
+          toolId: request.toolId,
+          toolOutput: safePreview(response.output, 300),
+          aggregated: postDecision.kind,
+          ...(postDecision.kind === "block" ? { reason: postDecision.reason } : {}),
+          hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) =>
+            buildHookRecord(r),
+          ),
+        });
+      }
+
       if (postDecision.kind === "transform") {
         const isPlainObject =
           typeof response.output === "object" &&
@@ -632,7 +721,37 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const sessionId = ctx.session.sessionId as string;
-      const preResult = await dispatchModelPre(sessionId, ctx, request);
+      const preEvent = buildEvent(ctx.session, "compact.before", {
+        data: buildModelPreData(request),
+      });
+      const preResults = await registry.execute(sessionId, preEvent);
+      const aggregated = aggregateDecisions(preResults);
+      // Report model pre-call hook fire records + aggregated decision
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "compact.before",
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
+          hooks: preResults.map((r) => buildHookRecord(r)),
+        });
+      }
+      const preResult =
+        aggregated.decision.kind === "block"
+          ? {
+              blocked: true as const,
+              reason: aggregated.decision.reason,
+              hookName: aggregated.hookName,
+            }
+          : aggregated.decision.kind === "modify"
+            ? (() => {
+                const safePatch = filterModelPatch(aggregated.decision.patch);
+                return safePatch !== undefined
+                  ? { blocked: false as const, request: { ...request, ...safePatch } }
+                  : { blocked: false as const, request };
+              })()
+            : { blocked: false as const, request };
 
       if (preResult.blocked) {
         // Observability: emit custom event for telemetry/audit (fire-and-forget)
