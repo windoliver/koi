@@ -2029,6 +2029,210 @@ describe("createIterationGuard streaming", () => {
 });
 
 // ---------------------------------------------------------------------------
+// IterationGuard — inactivity timeout
+// ---------------------------------------------------------------------------
+
+describe("createIterationGuard inactivity", () => {
+  test("idle agent times out at inactivity threshold", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+
+    // First call succeeds (resets activity timer)
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait past the inactivity threshold
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second call: idle > 30ms, should throw inactivity timeout
+    try {
+      await wrap(ctx, mockModelRequest(), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Inactivity timeout");
+      }
+    }
+  });
+
+  test("active streaming resets inactivity timer on each chunk", async () => {
+    // maxInactivityMs=40ms, but streaming yields chunks every ~10ms — should survive
+    const guard = createIterationGuard({ maxInactivityMs: 40, maxDurationMs: 5_000 });
+    const streamWrap = getStreamWrap(guard);
+    const ctx = mockTurnContext();
+
+    const slowStreamNext: StreamNext = () => ({
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < 5; i++) {
+          await new Promise((r) => setTimeout(r, 10));
+          yield { kind: "text_delta" as const, delta: `chunk-${i}` };
+        }
+        yield { kind: "done" as const, response: mockModelResponse() };
+      },
+    });
+
+    // Total time ~50ms > inactivityMs of 40ms, but each chunk resets the timer
+    const chunks = await collectChunks(streamWrap(ctx, mockModelRequest(), slowStreamNext));
+    expect(chunks).toHaveLength(6); // 5 text_delta + 1 done
+  });
+
+  test("tool call resets inactivity timer", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 40, maxDurationMs: 5_000 });
+    const modelWrap = getModelWrap(guard);
+    const toolWrap = getToolWrap(guard);
+    const ctx = mockTurnContext();
+    const modelNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+
+    // Model call succeeds
+    await modelWrap(ctx, mockModelRequest(), modelNext);
+
+    // Wait almost to the limit
+    await new Promise((r) => setTimeout(r, 25));
+
+    // Tool call resets the timer
+    await toolWrap(ctx, mockToolRequest(), toolNext);
+
+    // Wait again — timer was reset by tool call
+    await new Promise((r) => setTimeout(r, 25));
+
+    // Model call should succeed (inactivity timer reset by tool call above)
+    await modelWrap(ctx, mockModelRequest(), modelNext);
+    expect(modelNext).toHaveBeenCalledTimes(2);
+  });
+
+  test("wall-clock maxDurationMs still fires as hard cap even with activity", async () => {
+    // maxDurationMs is very short, maxInactivityMs is long
+    const guard = createIterationGuard({ maxDurationMs: 1, maxInactivityMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return mockModelResponse();
+    });
+    const ctx = mockTurnContext();
+
+    // First call succeeds (checkLimits at ~0ms, next takes ~10ms)
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Second call: elapsed > 1ms, wall-clock fires at checkLimits
+    try {
+      await wrap(ctx, mockModelRequest(), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Duration limit exceeded");
+      }
+    }
+  });
+
+  test("onSessionStart resets inactivity timer", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait past inactivity
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Reset via session start
+    await guard.onSessionStart?.(mockSessionContext());
+
+    // Should succeed (timer reset)
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("inactivity disabled when maxInactivityMs is undefined", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: undefined, maxDurationMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait well past what would be an inactivity timeout
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should still succeed — no inactivity check
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("idle before tool call is rejected by checkLimits", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const modelWrap = getModelWrap(guard);
+    const toolWrap = getToolWrap(guard);
+    const ctx = mockTurnContext();
+    const modelNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+
+    // Model call succeeds and resets activity
+    await modelWrap(ctx, mockModelRequest(), modelNext);
+
+    // Wait past the inactivity threshold
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Tool call should fail — checkLimits runs before touchActivity
+    try {
+      await toolWrap(ctx, mockToolRequest(), toolNext);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Inactivity timeout");
+      }
+    }
+    // Tool should NOT have executed
+    expect(toolNext).toHaveBeenCalledTimes(0);
+  });
+
+  test("slow non-streaming model call completes and resets activity", async () => {
+    // A model call that blocks > inactivityMs should still succeed (side effects
+    // committed). The inactivity limit applies at the *next* boundary.
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const slowModelNext: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return mockModelResponse();
+    });
+
+    // Slow call completes — activity reset after successful return
+    const response = await wrap(ctx, mockModelRequest(), slowModelNext);
+    expect(response.content).toBe("ok");
+
+    // Immediate next call should succeed (activity was reset)
+    const fastNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    await wrap(ctx, mockModelRequest(), fastNext);
+    expect(fastNext).toHaveBeenCalledTimes(1);
+  });
+
+  test("slow tool call completes without being reclassified as timeout", async () => {
+    // A tool that blocks > inactivityMs should still return its result.
+    // Throwing post-await would discard committed side effects.
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const toolWrap = getToolWrap(guard);
+    const ctx = mockTurnContext();
+    const slowToolNext: ToolNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return mockToolResponse(99);
+    });
+
+    // Slow tool completes — result preserved
+    const response = await toolWrap(ctx, mockToolRequest(), slowToolNext);
+    expect(response.output).toBe(99);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Composed guards interaction
 // ---------------------------------------------------------------------------
 

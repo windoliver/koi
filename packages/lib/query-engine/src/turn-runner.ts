@@ -15,6 +15,7 @@ import type {
   StopGateResult,
 } from "@koi/core";
 import { DEFAULT_MAX_STOP_RETRIES } from "@koi/core";
+import { coerceToolArgs } from "./coerce-tool-args.js";
 import { consumeModelStream } from "./consume-stream.js";
 import {
   DEFAULT_DOOM_LOOP_THRESHOLD,
@@ -294,14 +295,37 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
-    // Validate tool arguments against advertised inputSchema
+    // Coerce string values to declared schema types before validation.
+    // Models (especially weaker ones) sometimes send "5" for a number field.
+    // Keyed by tool call ID since parsedArgs is readonly on the tool call object.
+    const coercedArgsMap = new Map<string, JsonObject>();
+
+    /** Compute a canonical dedup/loop key using coerced args when available. */
+    function toolCallKey(tc: AccumulatedToolCall): string {
+      const effectiveArgs = coercedArgsMap.get(tc.callId) ?? tc.parsedArgs;
+      const canonical = effectiveArgs !== undefined ? stableStringify(effectiveArgs) : tc.rawArgs;
+      return `${tc.toolName}\0${canonical}`;
+    }
     if (validToolCalls.length > 0) {
       const descriptorMap = new Map(advertisedTools.map((t) => [t.name, t]));
+
+      for (const tc of validToolCalls) {
+        const descriptor = descriptorMap.get(tc.toolName);
+        if (descriptor !== undefined && tc.parsedArgs !== undefined) {
+          coercedArgsMap.set(
+            tc.callId,
+            coerceToolArgs(tc.parsedArgs as JsonObject, descriptor.inputSchema),
+          );
+        }
+      }
+
+      // Validate tool arguments against advertised inputSchema
       const schemaErrors: string[] = [];
       for (const tc of validToolCalls) {
         const descriptor = descriptorMap.get(tc.toolName);
         if (descriptor !== undefined) {
-          const error = validateToolArgs(tc.parsedArgs as JsonObject, descriptor);
+          const args = coercedArgsMap.get(tc.callId) ?? (tc.parsedArgs as JsonObject);
+          const error = validateToolArgs(args, descriptor);
           if (error !== undefined) {
             schemaErrors.push(`${tc.toolName}: ${error}`);
           }
@@ -321,16 +345,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // Dedup: within this turn, skip tool calls with identical (toolName + args).
     // Models occasionally emit the same call twice in one response (e.g. Sonnet
     // via OpenRouter). Keep the first occurrence; record skipped duplicates for
-    // observability. Uses canonicalized JSON of parsed args (recursively sorted
-    // keys) to catch semantically identical calls even with different key ordering.
+    // observability. Uses coerced args (when available) so that semantically
+    // identical calls like {"count":"5"} and {"count":5} are treated as dupes.
     const seen = new Set<string>();
     // let justified: mutable — doom loop detection may filter out repeated calls
     let dedupedToolCalls: typeof validToolCalls = [];
     const skippedToolCalls: typeof validToolCalls = [];
     for (const tc of validToolCalls) {
-      const canonicalArgs =
-        tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-      const key = `${tc.toolName}\0${canonicalArgs}`;
+      const key = toolCallKey(tc);
       if (seen.has(key)) {
         skippedToolCalls.push(tc);
       } else {
@@ -353,10 +375,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // calls while allowing new/different calls in the same turn to execute.
     // If ALL calls are repeated, inject a system message and re-prompt.
     if (dedupedToolCalls.length > 0 && doomLoopThreshold >= 2) {
-      const currentKeys = dedupedToolCalls.map((tc) => {
-        const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-        return `${tc.toolName}\0${cArgs}`;
-      });
+      const currentKeys = dedupedToolCalls.map(toolCallKey);
 
       doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
 
@@ -457,8 +476,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         const doomLoopBlocked: typeof dedupedToolCalls = [];
         const allowed: typeof dedupedToolCalls = [];
         for (const tc of dedupedToolCalls) {
-          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-          const key = `${tc.toolName}\0${cArgs}`;
+          const key = toolCallKey(tc);
           if (blockableKeys.has(key)) {
             doomLoopBlocked.push(tc);
           } else {
@@ -470,8 +488,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         // of blocked keys — so every emitted tool_call intent gets a synthetic result.
         doomLoopBlockedCalls = [...doomLoopBlocked];
         for (const tc of skippedToolCalls) {
-          const cArgs = tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-          const key = `${tc.toolName}\0${cArgs}`;
+          const key = toolCallKey(tc);
           if (blockableKeys.has(key)) {
             doomLoopBlockedCalls.push(tc);
           }
@@ -537,9 +554,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       // Build a map from dedup key → skipped callIds for result replication.
       const skippedByKey = new Map<string, typeof skippedToolCalls>();
       for (const tc of skippedToolCalls) {
-        const canonicalArgs =
-          tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-        const key = `${tc.toolName}\0${canonicalArgs}`;
+        const key = toolCallKey(tc);
         const existing = skippedByKey.get(key);
         if (existing !== undefined) {
           existing.push(tc);
@@ -551,9 +566,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       // Remove skippedByKey entries for doom-loop-blocked calls so live
       // execution doesn't try to replicate results for them.
       for (const blocked of doomLoopBlockedCalls) {
-        const blockedArgs =
-          blocked.parsedArgs !== undefined ? stableStringify(blocked.parsedArgs) : blocked.rawArgs;
-        skippedByKey.delete(`${blocked.toolName}\0${blockedArgs}`);
+        skippedByKey.delete(toolCallKey(blocked));
       }
 
       // Emit synthetic results for doom-loop-blocked calls in their original
@@ -582,8 +595,9 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           }
           const response = await callHandlers.toolCall({
             toolId: tc.toolName,
-            // parsedArgs is guaranteed defined by the filter above
-            input: tc.parsedArgs as import("@koi/core").JsonObject,
+            // Use coerced args when available, fall back to raw parsedArgs
+            input:
+              coercedArgsMap.get(tc.callId) ?? (tc.parsedArgs as import("@koi/core").JsonObject),
             ...(signal !== undefined ? { signal } : {}),
           });
           // Record result BEFORE checking abort — the tool already ran and
@@ -598,10 +612,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
           // Replicate the real result to skipped duplicates so the model
           // sees the actual output for every callId, not a placeholder.
-          const canonicalArgs =
-            tc.parsedArgs !== undefined ? stableStringify(tc.parsedArgs) : tc.rawArgs;
-          const key = `${tc.toolName}\0${canonicalArgs}`;
-          const duplicates = skippedByKey.get(key);
+          const duplicates = skippedByKey.get(toolCallKey(tc));
           if (duplicates !== undefined) {
             for (const dup of duplicates) {
               const dupResult: ToolResult = {
