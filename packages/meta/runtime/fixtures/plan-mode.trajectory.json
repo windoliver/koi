@@ -35,7 +35,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:25.733Z",
+      "timestamp": "2026-04-09T01:36:04.952Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -53,7 +53,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:25.734Z",
+      "timestamp": "2026-04-09T01:36:04.953Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -70,7 +70,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:25.736Z",
+      "timestamp": "2026-04-09T01:36:04.955Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed (auto-clear will fire).\n6. Call ExitPlanMode.\nReport what you found during exploration and confirm the plan was approved.",
       "observation": {
@@ -84,7 +84,7 @@
         "prompt_tokens": 931,
         "completion_tokens": 3
       },
-      "duration_ms": 715,
+      "duration_ms": 761,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -123,7 +123,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:26.452Z",
+      "timestamp": "2026-04-09T01:36:05.717Z",
       "tool_calls": [
         {
           "tool_call_id": "call_EnterPlanMode_3",
@@ -145,10 +145,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.461Z",
+      "timestamp": "2026-04-09T01:36:05.726Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.352666999999201,
+      "duration_ms": 2.2840829999913694,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -165,10 +165,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.462Z",
+      "timestamp": "2026-04-09T01:36:05.727Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 718.1592090000049,
+      "duration_ms": 764.0683750000026,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -177,7 +177,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697026460,
+        "_original_timestamp": 1775698565725,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -186,7 +186,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.465Z",
+      "timestamp": "2026-04-09T01:36:05.730Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "EnterPlanMode({})",
       "observation": {
@@ -196,7 +196,7 @@
           }
         ]
       },
-      "duration_ms": 2.743124999993597,
+      "duration_ms": 2.7141669999982696,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -213,10 +213,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.466Z",
+      "timestamp": "2026-04-09T01:36:05.731Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 718.1469999999972,
+      "duration_ms": 764.0568749999948,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -225,7 +225,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697026459,
+        "_original_timestamp": 1775698565724,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -234,7 +234,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.467Z",
+      "timestamp": "2026-04-09T01:36:05.732Z",
       "model_name": "middleware:permissions",
       "message": "EnterPlanMode({})",
       "observation": {
@@ -244,7 +244,7 @@
           }
         ]
       },
-      "duration_ms": 2.6927080000023125,
+      "duration_ms": 2.6492920000018785,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -263,7 +263,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697026464,
+        "_original_timestamp": 1775698565729,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -272,10 +272,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.468Z",
+      "timestamp": "2026-04-09T01:36:05.733Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 718.0916250000009,
+      "duration_ms": 763.9925829999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -284,15 +284,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697026458,
+        "_original_timestamp": 1775698565723,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -301,10 +293,10 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.469Z",
+      "timestamp": "2026-04-09T01:36:05.734Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 718.0825000000041,
+      "duration_ms": 763.9843330000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -315,7 +307,6 @@
         "nextCalled": true,
         "decisions": [
           {
-            "injected": true,
             "turnIndex": 0,
             "objectives": [
               {
@@ -329,7 +320,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit"
           }
         ],
-        "_original_timestamp": 1775697026457,
+        "_original_timestamp": 1775698565722,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -338,7 +329,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.470Z",
+      "timestamp": "2026-04-09T01:36:05.735Z",
       "model_name": "middleware:goal",
       "message": "EnterPlanMode({})",
       "observation": {
@@ -348,7 +339,7 @@
           }
         ]
       },
-      "duration_ms": 2.6391250000015134,
+      "duration_ms": 2.5869590000074822,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -357,7 +348,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697026463,
+        "_original_timestamp": 1775698565728,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -366,10 +357,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.471Z",
+      "timestamp": "2026-04-09T01:36:05.736Z",
       "model_name": "middleware:hooks",
       "message": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite witYou are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the …",
-      "duration_ms": 718.0659999999916,
+      "duration_ms": 763.9685410000093,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -378,7 +369,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697026456,
+        "_original_timestamp": 1775698565721,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -387,7 +378,7 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.472Z",
+      "timestamp": "2026-04-09T01:36:05.737Z",
       "model_name": "middleware:hooks",
       "message": "EnterPlanMode({})",
       "observation": {
@@ -397,7 +388,7 @@
           }
         ]
       },
-      "duration_ms": 2.63445800000045,
+      "duration_ms": 2.5783749999973224,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -416,12 +407,12 @@
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.352666999999201
+                "durationMs": 2.2840829999913694
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697026462,
+        "_original_timestamp": 1775698565727,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -430,7 +421,7 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.473Z",
+      "timestamp": "2026-04-09T01:36:05.738Z",
       "model_name": "middleware:semantic-retry",
       "message": "EnterPlanMode({})",
       "observation": {
@@ -440,7 +431,7 @@
           }
         ]
       },
-      "duration_ms": 0.19500000000698492,
+      "duration_ms": 0.19154100000741892,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -449,7 +440,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697026454,
+        "_original_timestamp": 1775698565719,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -458,10 +449,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:26.474Z",
+      "timestamp": "2026-04-09T01:36:05.739Z",
       "model_name": "middleware:semantic-retry",
       "message": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite witYou are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the …",
-      "duration_ms": 718.0338749999937,
+      "duration_ms": 763.9367920000077,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -470,7 +461,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697026455,
+        "_original_timestamp": 1775698565720,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -479,7 +470,7 @@
     {
       "step_id": 16,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:26.495Z",
+      "timestamp": "2026-04-09T01:36:05.746Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"message\":\"Entered plan mode. Explore the codebase and design your approach.\\n\\nIn plan mode you should:\\n1. Read and search files to understand existing patterns\\n2. Identify similar features and architectural approaches\\n3. Consider trade-offs between multiple approaches\\n4. Use AskUserQuestion if you need to clarify the approach\\n5. When ready, call ExitPlanMode to present your plan\\n\\nDO NOT write or edit any files yet.\"}",
       "observation": {
@@ -490,10 +481,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 1004,
+        "prompt_tokens": 1001,
         "completion_tokens": 25
       },
-      "duration_ms": 1264,
+      "duration_ms": 1015,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -532,7 +523,7 @@
     {
       "step_id": 17,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:27.760Z",
+      "timestamp": "2026-04-09T01:36:06.762Z",
       "tool_calls": [
         {
           "tool_call_id": "call_TodoWrite_17",
@@ -545,9 +536,9 @@
                 "id": "explore"
               },
               {
+                "content": "Write the implementation plan",
                 "status": "pending",
-                "id": "write-plan",
-                "content": "Write the implementation plan"
+                "id": "write-plan"
               }
             ]
           }
@@ -567,10 +558,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.769Z",
+      "timestamp": "2026-04-09T01:36:06.771Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.61737500000163,
+      "duration_ms": 3.958708000005572,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -587,10 +578,10 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.770Z",
+      "timestamp": "2026-04-09T01:36:06.772Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.8818750000064,
+      "duration_ms": 1017.1902909999917,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -599,7 +590,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697027768,
+        "_original_timestamp": 1775698566770,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -608,9 +599,9 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.773Z",
+      "timestamp": "2026-04-09T01:36:06.775Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -618,7 +609,7 @@
           }
         ]
       },
-      "duration_ms": 2.886291999995592,
+      "duration_ms": 4.4416249999922,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -635,10 +626,10 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.774Z",
+      "timestamp": "2026-04-09T01:36:06.776Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.8658749999886,
+      "duration_ms": 1017.1712919999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -647,7 +638,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697027767,
+        "_original_timestamp": 1775698566769,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -656,9 +647,9 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.775Z",
+      "timestamp": "2026-04-09T01:36:06.777Z",
       "model_name": "middleware:permissions",
-      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -666,7 +657,7 @@
           }
         ]
       },
-      "duration_ms": 2.8150000000023283,
+      "duration_ms": 4.3113329999905545,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -679,13 +670,13 @@
           {
             "phase": "execute",
             "toolId": "TodoWrite",
-            "toolInput": "{\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]}",
+            "toolInput": "{\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697027772,
+        "_original_timestamp": 1775698566774,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -694,10 +685,10 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.776Z",
+      "timestamp": "2026-04-09T01:36:06.778Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.777833,
+      "duration_ms": 1017.0662079999893,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -706,15 +697,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697027766,
+        "_original_timestamp": 1775698566768,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -723,10 +706,10 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.777Z",
+      "timestamp": "2026-04-09T01:36:06.779Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.7655830000003,
+      "duration_ms": 1017.0555840000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -735,22 +718,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 1,
-            "objectives": [
-              {
-                "text": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 3
-          }
-        ],
-        "_original_timestamp": 1775697027765,
+        "_original_timestamp": 1775698566767,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -759,9 +727,9 @@
     {
       "step_id": 25,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.778Z",
+      "timestamp": "2026-04-09T01:36:06.780Z",
       "model_name": "middleware:goal",
-      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -769,7 +737,7 @@
           }
         ]
       },
-      "duration_ms": 2.769083999999566,
+      "duration_ms": 4.226250000006985,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -778,7 +746,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697027771,
+        "_original_timestamp": 1775698566773,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -787,10 +755,10 @@
     {
       "step_id": 26,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.779Z",
+      "timestamp": "2026-04-09T01:36:06.781Z",
       "model_name": "middleware:hooks",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.753457999992,
+      "duration_ms": 1017.0449999999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -799,7 +767,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697027764,
+        "_original_timestamp": 1775698566766,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -808,9 +776,9 @@
     {
       "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.780Z",
+      "timestamp": "2026-04-09T01:36:06.782Z",
       "model_name": "middleware:hooks",
-      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -818,7 +786,7 @@
           }
         ]
       },
-      "duration_ms": 2.764499999990221,
+      "duration_ms": 4.215165999994497,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -837,12 +805,12 @@
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.61737500000163
+                "durationMs": 3.958708000005572
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697027770,
+        "_original_timestamp": 1775698566772,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -851,9 +819,9 @@
     {
       "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.781Z",
+      "timestamp": "2026-04-09T01:36:06.783Z",
       "model_name": "middleware:semantic-retry",
-      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"status\":\"pending\",\"id\":\"write-plan\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"in_progress\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"pending\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -861,7 +829,7 @@
           }
         ]
       },
-      "duration_ms": 0.06912499999452848,
+      "duration_ms": 0.11070800000743475,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -870,7 +838,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697027762,
+        "_original_timestamp": 1775698566764,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -879,10 +847,10 @@
     {
       "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:27.782Z",
+      "timestamp": "2026-04-09T01:36:06.784Z",
       "model_name": "middleware:semantic-retry",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1265.7281660000008,
+      "duration_ms": 1016.995207999993,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -891,7 +859,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697027763,
+        "_original_timestamp": 1775698566765,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -900,7 +868,7 @@
     {
       "step_id": 30,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:27.815Z",
+      "timestamp": "2026-04-09T01:36:06.808Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"todos\":[{\"id\":\"explore\",\"content\":\"Explore the repo structure\",\"status\":\"in_progress\"},{\"id\":\"write-plan\",\"content\":\"Write the implementation plan\",\"status\":\"pending\"}],\"cleared\":false}",
       "observation": {
@@ -914,7 +882,7 @@
         "prompt_tokens": 1074,
         "completion_tokens": 5
       },
-      "duration_ms": 883,
+      "duration_ms": 765,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -953,7 +921,7 @@
     {
       "step_id": 31,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:28.699Z",
+      "timestamp": "2026-04-09T01:36:07.574Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Glob_31",
@@ -977,10 +945,10 @@
     {
       "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.708Z",
+      "timestamp": "2026-04-09T01:36:07.583Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.434416999996756,
+      "duration_ms": 2.6399170000076992,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -997,10 +965,10 @@
     {
       "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.709Z",
+      "timestamp": "2026-04-09T01:36:07.584Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.297916999989,
+      "duration_ms": 767.166750000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1009,7 +977,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697028705,
+        "_original_timestamp": 1775698567580,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -1018,7 +986,7 @@
     {
       "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.712Z",
+      "timestamp": "2026-04-09T01:36:07.587Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -1028,7 +996,7 @@
           }
         ]
       },
-      "duration_ms": 2.999499999990803,
+      "duration_ms": 8.88270800000464,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1045,10 +1013,10 @@
     {
       "step_id": 35,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.713Z",
+      "timestamp": "2026-04-09T01:36:07.588Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.2844590000022,
+      "duration_ms": 767.1508750000066,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1057,7 +1025,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697028704,
+        "_original_timestamp": 1775698567579,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1066,7 +1034,7 @@
     {
       "step_id": 36,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.714Z",
+      "timestamp": "2026-04-09T01:36:07.589Z",
       "model_name": "middleware:permissions",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -1076,7 +1044,7 @@
           }
         ]
       },
-      "duration_ms": 2.897709000011673,
+      "duration_ms": 8.795375000001513,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1095,7 +1063,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697028711,
+        "_original_timestamp": 1775698567586,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1104,10 +1072,10 @@
     {
       "step_id": 37,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.715Z",
+      "timestamp": "2026-04-09T01:36:07.590Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.1858749999956,
+      "duration_ms": 767.0705409999937,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1116,15 +1084,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697028703,
+        "_original_timestamp": 1775698567578,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -1133,10 +1093,10 @@
     {
       "step_id": 38,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.716Z",
+      "timestamp": "2026-04-09T01:36:07.591Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.1710420000018,
+      "duration_ms": 767.0615830000024,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1145,22 +1105,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 2,
-            "objectives": [
-              {
-                "text": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 5
-          }
-        ],
-        "_original_timestamp": 1775697028702,
+        "_original_timestamp": 1775698567577,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -1169,7 +1114,7 @@
     {
       "step_id": 39,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.717Z",
+      "timestamp": "2026-04-09T01:36:07.592Z",
       "model_name": "middleware:goal",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -1179,7 +1124,7 @@
           }
         ]
       },
-      "duration_ms": 2.8363340000069,
+      "duration_ms": 8.674582999999984,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1188,7 +1133,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697028710,
+        "_original_timestamp": 1775698567585,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -1197,10 +1142,10 @@
     {
       "step_id": 40,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.718Z",
+      "timestamp": "2026-04-09T01:36:07.593Z",
       "model_name": "middleware:hooks",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.1597089999996,
+      "duration_ms": 767.052457999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1209,7 +1154,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697028701,
+        "_original_timestamp": 1775698567576,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -1218,7 +1163,7 @@
     {
       "step_id": 41,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.719Z",
+      "timestamp": "2026-04-09T01:36:07.594Z",
       "model_name": "middleware:hooks",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -1228,7 +1173,7 @@
           }
         ]
       },
-      "duration_ms": 2.831917000003159,
+      "duration_ms": 8.66608300000371,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1247,12 +1192,12 @@
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.434416999996756
+                "durationMs": 2.6399170000076992
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697028709,
+        "_original_timestamp": 1775698567584,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -1261,10 +1206,10 @@
     {
       "step_id": 42,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.720Z",
+      "timestamp": "2026-04-09T01:36:07.595Z",
       "model_name": "middleware:semantic-retry",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 884.1294590000034,
+      "duration_ms": 767.0137499999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1273,7 +1218,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697028700,
+        "_original_timestamp": 1775698567575,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -1282,7 +1227,7 @@
     {
       "step_id": 43,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:28.721Z",
+      "timestamp": "2026-04-09T01:36:07.596Z",
       "model_name": "middleware:semantic-retry",
       "message": "Glob({\"pattern\":\"package.json\"})",
       "observation": {
@@ -1292,7 +1237,7 @@
           }
         ]
       },
-      "duration_ms": 0.3085419999988517,
+      "duration_ms": 5.819208000000799,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1301,7 +1246,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697028707,
+        "_original_timestamp": 1775698567582,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -1310,7 +1255,7 @@
     {
       "step_id": 44,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:28.776Z",
+      "timestamp": "2026-04-09T01:36:07.621Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"paths\":[\"package.json\"],\"truncated\":false,\"total\":1}",
       "observation": {
@@ -1324,7 +1269,7 @@
         "prompt_tokens": 1106,
         "completion_tokens": 25
       },
-      "duration_ms": 1228,
+      "duration_ms": 974,
       "outcome": "success",
       "extra": {
         "totalMessages": 7,
@@ -1363,7 +1308,7 @@
     {
       "step_id": 45,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:30.005Z",
+      "timestamp": "2026-04-09T01:36:08.596Z",
       "tool_calls": [
         {
           "tool_call_id": "call_TodoWrite_45",
@@ -1371,13 +1316,13 @@
           "arguments": {
             "todos": [
               {
+                "content": "Explore the repo structure",
                 "status": "completed",
-                "id": "explore",
-                "content": "Explore the repo structure"
+                "id": "explore"
               },
               {
-                "status": "in_progress",
                 "content": "Write the implementation plan",
+                "status": "in_progress",
                 "id": "write-plan"
               }
             ]
@@ -1398,10 +1343,10 @@
     {
       "step_id": 46,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.014Z",
+      "timestamp": "2026-04-09T01:36:08.605Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.536500000001979,
+      "duration_ms": 2.2213750000082655,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -1418,10 +1363,10 @@
     {
       "step_id": 47,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.015Z",
+      "timestamp": "2026-04-09T01:36:08.606Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.8513339999918,
+      "duration_ms": 976.7397500000079,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1430,7 +1375,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697030013,
+        "_original_timestamp": 1775698568604,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -1439,9 +1384,9 @@
     {
       "step_id": 48,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.018Z",
+      "timestamp": "2026-04-09T01:36:08.609Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "TodoWrite({\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1449,7 +1394,7 @@
           }
         ]
       },
-      "duration_ms": 2.930125000013504,
+      "duration_ms": 2.7011249999923166,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1466,10 +1411,10 @@
     {
       "step_id": 49,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.019Z",
+      "timestamp": "2026-04-09T01:36:08.610Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.8372500000114,
+      "duration_ms": 976.7235000000073,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1478,7 +1423,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697030012,
+        "_original_timestamp": 1775698568603,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1487,9 +1432,9 @@
     {
       "step_id": 50,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.020Z",
+      "timestamp": "2026-04-09T01:36:08.611Z",
       "model_name": "middleware:permissions",
-      "message": "TodoWrite({\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1497,7 +1442,7 @@
           }
         ]
       },
-      "duration_ms": 2.843291000011959,
+      "duration_ms": 2.6126249999942956,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1510,13 +1455,13 @@
           {
             "phase": "execute",
             "toolId": "TodoWrite",
-            "toolInput": "{\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]}",
+            "toolInput": "{\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697030017,
+        "_original_timestamp": 1775698568608,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1525,10 +1470,10 @@
     {
       "step_id": 51,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.021Z",
+      "timestamp": "2026-04-09T01:36:08.612Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.760249999992,
+      "duration_ms": 976.6285000000062,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1537,15 +1482,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697030011,
+        "_original_timestamp": 1775698568602,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -1554,10 +1491,10 @@
     {
       "step_id": 52,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.022Z",
+      "timestamp": "2026-04-09T01:36:08.613Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.7474999999977,
+      "duration_ms": 976.6196659999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1566,22 +1503,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 3,
-            "objectives": [
-              {
-                "text": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 7
-          }
-        ],
-        "_original_timestamp": 1775697030010,
+        "_original_timestamp": 1775698568601,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -1590,9 +1512,9 @@
     {
       "step_id": 53,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.023Z",
+      "timestamp": "2026-04-09T01:36:08.614Z",
       "model_name": "middleware:goal",
-      "message": "TodoWrite({\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1600,7 +1522,7 @@
           }
         ]
       },
-      "duration_ms": 2.7463750000024447,
+      "duration_ms": 2.5178329999907874,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1609,7 +1531,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697030016,
+        "_original_timestamp": 1775698568607,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -1618,10 +1540,10 @@
     {
       "step_id": 54,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.024Z",
+      "timestamp": "2026-04-09T01:36:08.615Z",
       "model_name": "middleware:hooks",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.7382499999949,
+      "duration_ms": 976.6114999999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1630,7 +1552,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697030009,
+        "_original_timestamp": 1775698568600,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -1639,9 +1561,9 @@
     {
       "step_id": 55,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.025Z",
+      "timestamp": "2026-04-09T01:36:08.616Z",
       "model_name": "middleware:hooks",
-      "message": "TodoWrite({\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1649,7 +1571,7 @@
           }
         ]
       },
-      "duration_ms": 2.739499999996042,
+      "duration_ms": 2.5097919999971054,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1668,12 +1590,12 @@
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.536500000001979
+                "durationMs": 2.2213750000082655
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697030015,
+        "_original_timestamp": 1775698568606,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -1682,9 +1604,9 @@
     {
       "step_id": 56,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.026Z",
+      "timestamp": "2026-04-09T01:36:08.617Z",
       "model_name": "middleware:semantic-retry",
-      "message": "TodoWrite({\"todos\":[{\"status\":\"completed\",\"id\":\"explore\",\"content\":\"Explore the repo structure\"},{\"status\":\"in_progress\",\"content\":\"Write the implementation plan\",\"id\":\"write-plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Explore the repo structure\",\"status\":\"completed\",\"id\":\"explore\"},{\"content\":\"Write the implementation plan\",\"status\":\"in_progress\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1692,7 +1614,7 @@
           }
         ]
       },
-      "duration_ms": 0.08924999998998828,
+      "duration_ms": 0.12925000001268927,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1701,7 +1623,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697030007,
+        "_original_timestamp": 1775698568598,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -1710,10 +1632,10 @@
     {
       "step_id": 57,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:30.027Z",
+      "timestamp": "2026-04-09T01:36:08.618Z",
       "model_name": "middleware:semantic-retry",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1229.7141660000052,
+      "duration_ms": 976.5706669999927,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1722,7 +1644,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697030008,
+        "_original_timestamp": 1775698568599,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -1731,7 +1653,7 @@
     {
       "step_id": 58,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:30.101Z",
+      "timestamp": "2026-04-09T01:36:08.638Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"todos\":[{\"id\":\"explore\",\"content\":\"Explore the repo structure\",\"status\":\"completed\"},{\"id\":\"write-plan\",\"content\":\"Write the implementation plan\",\"status\":\"in_progress\"}],\"cleared\":false}",
       "observation": {
@@ -1742,10 +1664,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 1175,
+        "prompt_tokens": 1177,
         "completion_tokens": 14
       },
-      "duration_ms": 1039,
+      "duration_ms": 1296,
       "outcome": "success",
       "extra": {
         "totalMessages": 9,
@@ -1784,7 +1706,7 @@
     {
       "step_id": 59,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:31.141Z",
+      "timestamp": "2026-04-09T01:36:09.935Z",
       "tool_calls": [
         {
           "tool_call_id": "call_TodoWrite_59",
@@ -1792,9 +1714,9 @@
           "arguments": {
             "todos": [
               {
-                "id": "write-plan",
+                "content": "Write the implementation plan",
                 "status": "completed",
-                "content": "Write the implementation plan"
+                "id": "write-plan"
               }
             ]
           }
@@ -1814,10 +1736,10 @@
     {
       "step_id": 60,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.150Z",
+      "timestamp": "2026-04-09T01:36:09.944Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.921916000006604,
+      "duration_ms": 3.5611669999925653,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -1834,10 +1756,10 @@
     {
       "step_id": 61,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.151Z",
+      "timestamp": "2026-04-09T01:36:09.945Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.6832500000019,
+      "duration_ms": 1299.291000000012,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1846,7 +1768,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697031149,
+        "_original_timestamp": 1775698569943,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -1855,9 +1777,9 @@
     {
       "step_id": 62,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.154Z",
+      "timestamp": "2026-04-09T01:36:09.948Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1865,7 +1787,7 @@
           }
         ]
       },
-      "duration_ms": 3.1348330000037095,
+      "duration_ms": 4.223874999996042,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1882,10 +1804,10 @@
     {
       "step_id": 63,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.155Z",
+      "timestamp": "2026-04-09T01:36:09.949Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.6689999999944,
+      "duration_ms": 1299.271624999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1894,7 +1816,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697031148,
+        "_original_timestamp": 1775698569942,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1903,9 +1825,9 @@
     {
       "step_id": 64,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.156Z",
+      "timestamp": "2026-04-09T01:36:09.950Z",
       "model_name": "middleware:permissions",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -1913,7 +1835,7 @@
           }
         ]
       },
-      "duration_ms": 3.0939159999979893,
+      "duration_ms": 4.105750000002445,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1926,13 +1848,13 @@
           {
             "phase": "execute",
             "toolId": "TodoWrite",
-            "toolInput": "{\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]}",
+            "toolInput": "{\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697031153,
+        "_original_timestamp": 1775698569947,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -1941,10 +1863,10 @@
     {
       "step_id": 65,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.157Z",
+      "timestamp": "2026-04-09T01:36:09.951Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.5752089999878,
+      "duration_ms": 1299.1934579999943,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1953,15 +1875,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697031147,
+        "_original_timestamp": 1775698569941,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -1970,10 +1884,10 @@
     {
       "step_id": 66,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.158Z",
+      "timestamp": "2026-04-09T01:36:09.952Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.5647499999905,
+      "duration_ms": 1299.1836250000051,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -1982,22 +1896,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 4,
-            "objectives": [
-              {
-                "text": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 9
-          }
-        ],
-        "_original_timestamp": 1775697031146,
+        "_original_timestamp": 1775698569940,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -2006,9 +1905,9 @@
     {
       "step_id": 67,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.159Z",
+      "timestamp": "2026-04-09T01:36:09.953Z",
       "model_name": "middleware:goal",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -2016,7 +1915,7 @@
           }
         ]
       },
-      "duration_ms": 3.0517910000053234,
+      "duration_ms": 3.962083000005805,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2025,7 +1924,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697031152,
+        "_original_timestamp": 1775698569946,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -2034,10 +1933,10 @@
     {
       "step_id": 68,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.160Z",
+      "timestamp": "2026-04-09T01:36:09.954Z",
       "model_name": "middleware:hooks",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.554500000013,
+      "duration_ms": 1299.174250000011,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2046,7 +1945,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697031145,
+        "_original_timestamp": 1775698569939,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -2055,9 +1954,9 @@
     {
       "step_id": 69,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.161Z",
+      "timestamp": "2026-04-09T01:36:09.955Z",
       "model_name": "middleware:hooks",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -2065,7 +1964,7 @@
           }
         ]
       },
-      "duration_ms": 3.0482500000071013,
+      "duration_ms": 3.952208000002429,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2084,12 +1983,12 @@
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.921916000006604
+                "durationMs": 3.5611669999925653
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697031151,
+        "_original_timestamp": 1775698569945,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -2098,9 +1997,9 @@
     {
       "step_id": 70,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.162Z",
+      "timestamp": "2026-04-09T01:36:09.956Z",
       "model_name": "middleware:semantic-retry",
-      "message": "TodoWrite({\"todos\":[{\"id\":\"write-plan\",\"status\":\"completed\",\"content\":\"Write the implementation plan\"}]})",
+      "message": "TodoWrite({\"todos\":[{\"content\":\"Write the implementation plan\",\"status\":\"completed\",\"id\":\"write-plan\"}]})",
       "observation": {
         "results": [
           {
@@ -2108,7 +2007,7 @@
           }
         ]
       },
-      "duration_ms": 0.05712499999208376,
+      "duration_ms": 0.15966699999989942,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2117,7 +2016,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697031143,
+        "_original_timestamp": 1775698569937,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -2126,10 +2025,10 @@
     {
       "step_id": 71,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:31.163Z",
+      "timestamp": "2026-04-09T01:36:09.957Z",
       "model_name": "middleware:semantic-retry",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 1041.53233300001,
+      "duration_ms": 1299.1273340000043,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2138,7 +2037,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697031144,
+        "_original_timestamp": 1775698569938,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -2147,7 +2046,7 @@
     {
       "step_id": 72,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:31.201Z",
+      "timestamp": "2026-04-09T01:36:10.004Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"todos\":[],\"cleared\":true}",
       "observation": {
@@ -2159,9 +2058,9 @@
       },
       "metrics": {
         "prompt_tokens": 1253,
-        "completion_tokens": 28
+        "completion_tokens": 25
       },
-      "duration_ms": 983,
+      "duration_ms": 956,
       "outcome": "success",
       "extra": {
         "totalMessages": 12,
@@ -2200,14 +2099,14 @@
     {
       "step_id": 73,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:32.185Z",
+      "timestamp": "2026-04-09T01:36:10.961Z",
       "tool_calls": [
         {
           "tool_call_id": "call_ExitPlanMode_73",
           "function_name": "ExitPlanMode",
           "arguments": {
             "allowedPrompts": [],
-            "plan_content": "I explored the repo and found a package.json file. I completed writing the implementation plan."
+            "plan_content": "The repo contains a package.json file. The implementation plan is now complete."
           }
         }
       ],
@@ -2215,7 +2114,7 @@
         "results": [
           {
             "source_call_id": "call_ExitPlanMode_73",
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
@@ -2225,10 +2124,10 @@
     {
       "step_id": 74,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.194Z",
+      "timestamp": "2026-04-09T01:36:10.970Z",
       "model_name": "hook:on-plan-tool",
       "message": "tool.succeeded → on-plan-tool",
-      "duration_ms": 2.578125,
+      "duration_ms": 2.2824580000014976,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -2245,10 +2144,10 @@
     {
       "step_id": 75,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.195Z",
+      "timestamp": "2026-04-09T01:36:10.971Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 985.5936249999941,
+      "duration_ms": 958.5599999999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2257,7 +2156,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775697032193,
+        "_original_timestamp": 1775698570969,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -2266,17 +2165,17 @@
     {
       "step_id": 76,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.198Z",
+      "timestamp": "2026-04-09T01:36:10.974Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"})",
+      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
-      "duration_ms": 3.184625000008964,
+      "duration_ms": 2.960708999991766,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2293,10 +2192,10 @@
     {
       "step_id": 77,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.199Z",
+      "timestamp": "2026-04-09T01:36:10.975Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 985.5787080000009,
+      "duration_ms": 958.5399579999939,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2305,7 +2204,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697032192,
+        "_original_timestamp": 1775698570968,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -2314,17 +2213,17 @@
     {
       "step_id": 78,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.200Z",
+      "timestamp": "2026-04-09T01:36:10.976Z",
       "model_name": "middleware:permissions",
-      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"})",
+      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
-      "duration_ms": 3.120959000007133,
+      "duration_ms": 2.8832499999989523,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2337,13 +2236,13 @@
           {
             "phase": "execute",
             "toolId": "ExitPlanMode",
-            "toolInput": "{\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"}",
+            "toolInput": "{\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697032197,
+        "_original_timestamp": 1775698570973,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -2352,10 +2251,10 @@
     {
       "step_id": 79,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.201Z",
+      "timestamp": "2026-04-09T01:36:10.977Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 985.4997500000027,
+      "duration_ms": 958.4208749999962,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2364,15 +2263,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697032191,
+        "_original_timestamp": 1775698570967,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -2381,10 +2272,10 @@
     {
       "step_id": 80,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.202Z",
+      "timestamp": "2026-04-09T01:36:10.978Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 985.4876250000088,
+      "duration_ms": 958.4097089999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2395,7 +2286,6 @@
         "nextCalled": true,
         "decisions": [
           {
-            "injected": true,
             "turnIndex": 5,
             "objectives": [
               {
@@ -2409,7 +2299,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit"
           }
         ],
-        "_original_timestamp": 1775697032190,
+        "_original_timestamp": 1775698570966,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -2418,17 +2308,17 @@
     {
       "step_id": 81,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.203Z",
+      "timestamp": "2026-04-09T01:36:10.979Z",
       "model_name": "middleware:goal",
-      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"})",
+      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
-      "duration_ms": 3.0621660000033444,
+      "duration_ms": 2.817291999992449,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2437,7 +2327,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697032196,
+        "_original_timestamp": 1775698570972,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -2446,10 +2336,10 @@
     {
       "step_id": 82,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.204Z",
+      "timestamp": "2026-04-09T01:36:10.980Z",
       "model_name": "middleware:hooks",
       "message": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite witYou are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the …",
-      "duration_ms": 985.4669589999976,
+      "duration_ms": 958.3634580000071,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2458,7 +2348,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697032189,
+        "_original_timestamp": 1775698570965,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -2467,17 +2357,17 @@
     {
       "step_id": 83,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.205Z",
+      "timestamp": "2026-04-09T01:36:10.981Z",
       "model_name": "middleware:hooks",
-      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"})",
+      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
-      "duration_ms": 3.0554169999959413,
+      "duration_ms": 2.8114170000044396,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2490,18 +2380,18 @@
           {
             "event": "tool.succeeded",
             "toolId": "ExitPlanMode",
-            "toolOutput": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}",
+            "toolOutput": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-plan-tool",
                 "decision": "continue",
-                "durationMs": 2.578125
+                "durationMs": 2.2824580000014976
               }
             ]
           }
         ],
-        "_original_timestamp": 1775697032195,
+        "_original_timestamp": 1775698570971,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -2510,17 +2400,17 @@
     {
       "step_id": 84,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.206Z",
+      "timestamp": "2026-04-09T01:36:10.982Z",
       "model_name": "middleware:semantic-retry",
-      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"I explored the repo and found a package.json file. I completed writing the implementation plan.\"})",
+      "message": "ExitPlanMode({\"allowedPrompts\":[],\"plan_content\":\"The repo contains a package.json file. The implementation plan is now complete.\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}"
+            "content": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}"
           }
         ]
       },
-      "duration_ms": 0.3633750000008149,
+      "duration_ms": 0.4052500000107102,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2529,7 +2419,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697032187,
+        "_original_timestamp": 1775698570963,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -2538,10 +2428,10 @@
     {
       "step_id": 85,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:32.207Z",
+      "timestamp": "2026-04-09T01:36:10.983Z",
       "model_name": "middleware:semantic-retry",
       "message": "## Active Goals\n\n- [ ] You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite witYou are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the …",
-      "duration_ms": 985.4410420000058,
+      "duration_ms": 958.3238749999873,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2550,7 +2440,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697032188,
+        "_original_timestamp": 1775698570964,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -2559,21 +2449,21 @@
     {
       "step_id": 86,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:32.252Z",
+      "timestamp": "2026-04-09T01:36:11.195Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nI explored the repo and found a package.json file. I completed writing the implementation plan.\"}",
+      "message": "{\"approved\":true,\"allowedPrompts\":[],\"message\":\"Plan approved. You can now start coding. Update your todo list if applicable.\\n\\n## Approved Plan:\\nThe repo contains a package.json file. The implementation plan is now complete.\"}",
       "observation": {
         "results": [
           {
-            "content": "I found a package.json file during exploration. The plan was approved.\n"
+            "content": "The repo contains a package.json file. The implementation plan was approved.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 1308,
+        "prompt_tokens": 1303,
         "completion_tokens": 16
       },
-      "duration_ms": 824,
+      "duration_ms": 789,
       "outcome": "success",
       "extra": {
         "totalMessages": 13,
@@ -2612,10 +2502,10 @@
     {
       "step_id": 87,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.083Z",
+      "timestamp": "2026-04-09T01:36:11.991Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 826.068374999988,
+      "duration_ms": 790.1172910000023,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2632,10 +2522,10 @@
     {
       "step_id": 88,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.084Z",
+      "timestamp": "2026-04-09T01:36:11.992Z",
       "model_name": "middleware:permissions",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 826.0534170000028,
+      "duration_ms": 790.0747080000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2644,7 +2534,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697033082,
+        "_original_timestamp": 1775698571990,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -2653,10 +2543,10 @@
     {
       "step_id": 89,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.085Z",
+      "timestamp": "2026-04-09T01:36:11.993Z",
       "model_name": "middleware:skill-injector",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 825.9372909999947,
+      "duration_ms": 789.8245420000021,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2665,15 +2555,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **hooks**: Active hooks: on-plan-tool\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697033080,
+        "_original_timestamp": 1775698571988,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -2682,10 +2564,10 @@
     {
       "step_id": 90,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.086Z",
+      "timestamp": "2026-04-09T01:36:11.994Z",
       "model_name": "middleware:goal",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 825.913916999998,
+      "duration_ms": 789.7982920000068,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2694,22 +2576,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 6,
-            "objectives": [
-              {
-                "text": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite wit",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 13
-          }
-        ],
-        "_original_timestamp": 1775697033079,
+        "_original_timestamp": 1775698571987,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -2718,10 +2585,10 @@
     {
       "step_id": 91,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.087Z",
+      "timestamp": "2026-04-09T01:36:11.995Z",
       "model_name": "middleware:hooks",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 825.8802080000023,
+      "duration_ms": 789.7622910000064,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2730,7 +2597,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697033078,
+        "_original_timestamp": 1775698571986,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -2739,10 +2606,10 @@
     {
       "step_id": 92,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:33.088Z",
+      "timestamp": "2026-04-09T01:36:11.996Z",
       "model_name": "middleware:semantic-retry",
       "message": "You are planning how to add a new feature to this repo. Follow these steps:\n1. Call EnterPlanMode.\n2. Call TodoWrite with two tasks: id='explore' content='Explore the repo structure' status='in_progress', and id='write-plan' content='Write the implementation plan' status='pending'.\n3. Call Glob with pattern='package.json' to explore the repo (this is the exploration work).\n4. Call TodoWrite to mark 'explore' completed and 'write-plan' in_progress.\n5. Call TodoWrite to mark 'write-plan' completed…",
-      "duration_ms": 825.854542000001,
+      "duration_ms": 789.7263329999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -2751,7 +2618,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697033077,
+        "_original_timestamp": 1775698571985,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

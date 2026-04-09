@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.041Z",
+      "timestamp": "2026-04-09T01:36:25.163Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.042Z",
+      "timestamp": "2026-04-09T01:36:25.164Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,7 +44,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:47.044Z",
+      "timestamp": "2026-04-09T01:36:25.166Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What is 2+2? Reply with just the number.",
       "observation": {
@@ -58,7 +58,7 @@
         "prompt_tokens": 134,
         "completion_tokens": 2
       },
-      "duration_ms": 688,
+      "duration_ms": 711,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -70,10 +70,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.740Z",
+      "timestamp": "2026-04-09T01:36:25.885Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 691.1033329999918,
+      "duration_ms": 714.4043329999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +90,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.741Z",
+      "timestamp": "2026-04-09T01:36:25.886Z",
       "model_name": "middleware:permissions",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 691.0759580000013,
+      "duration_ms": 714.3800829999964,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,7 +102,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697047739,
+        "_original_timestamp": 1775698585884,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -111,10 +111,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.742Z",
+      "timestamp": "2026-04-09T01:36:25.887Z",
       "model_name": "middleware:skill-injector",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 690.9889160000021,
+      "duration_ms": 714.2971249999973,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -123,15 +123,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697047738,
+        "_original_timestamp": 1775698585883,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -140,10 +132,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.743Z",
+      "timestamp": "2026-04-09T01:36:25.888Z",
       "model_name": "middleware:goal",
       "message": "What is 2+2? Reply with just the number.",
-      "duration_ms": 690.9710409999971,
+      "duration_ms": 714.2848330000124,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -154,7 +146,6 @@
         "nextCalled": true,
         "decisions": [
           {
-            "injected": true,
             "turnIndex": 0,
             "objectives": [
               {
@@ -168,7 +159,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] What is 2+2? Reply with just the number."
           }
         ],
-        "_original_timestamp": 1775697047736,
+        "_original_timestamp": 1775698585881,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -177,10 +168,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.744Z",
+      "timestamp": "2026-04-09T01:36:25.889Z",
       "model_name": "middleware:hooks",
       "message": "## Active Goals\n\n- [ ] What is 2+2? Reply with just the number.What is 2+2? Reply with just the number.",
-      "duration_ms": 690.9442089999939,
+      "duration_ms": 714.2575420000067,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -189,7 +180,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697047735,
+        "_original_timestamp": 1775698585880,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -198,10 +189,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.745Z",
+      "timestamp": "2026-04-09T01:36:25.890Z",
       "model_name": "middleware:semantic-retry",
       "message": "## Active Goals\n\n- [ ] What is 2+2? Reply with just the number.What is 2+2? Reply with just the number.",
-      "duration_ms": 690.903250000003,
+      "duration_ms": 714.2097079999949,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -210,7 +201,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697047734,
+        "_original_timestamp": 1775698585879,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -219,10 +210,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:47.746Z",
+      "timestamp": "2026-04-09T01:36:25.891Z",
       "model_name": "middleware:@koi/session:transcript",
       "message": "## Active Goals\n\n- [ ] What is 2+2? Reply with just the number.What is 2+2? Reply with just the number.",
-      "duration_ms": 690.8524579999939,
+      "duration_ms": 714.169167,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -231,7 +222,7 @@
         "phase": "observe",
         "priority": 200,
         "nextCalled": true,
-        "_original_timestamp": 1775697047733,
+        "_original_timestamp": 1775698585878,
         "__koi": {
           "identifier": "middleware:@koi/session:transcript"
         }

@@ -9,7 +9,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:49.826Z",
+      "timestamp": "2026-04-09T01:36:27.896Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -27,7 +27,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:49.827Z",
+      "timestamp": "2026-04-09T01:36:27.897Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -44,21 +44,21 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:49.832Z",
+      "timestamp": "2026-04-09T01:36:27.903Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "What are the primary colors? Answer briefly.",
       "observation": {
         "results": [
           {
-            "content": "*   Red\n*   Yellow\n*   Blue"
+            "content": "*   Red\n*   Yellow\n*   Blue\n"
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 153,
-        "completion_tokens": 11
+        "completion_tokens": 12
       },
-      "duration_ms": 629,
+      "duration_ms": 661,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -70,10 +70,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.468Z",
+      "timestamp": "2026-04-09T01:36:28.571Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 630.4470000000001,
+      "duration_ms": 661.7677499999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -90,10 +90,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.469Z",
+      "timestamp": "2026-04-09T01:36:28.572Z",
       "model_name": "middleware:permissions",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 630.434334000005,
+      "duration_ms": 661.7532910000009,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -102,7 +102,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697050467,
+        "_original_timestamp": 1775698588570,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -111,10 +111,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.470Z",
+      "timestamp": "2026-04-09T01:36:28.573Z",
       "model_name": "middleware:skill-injector",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 630.3771669999987,
+      "duration_ms": 661.6773329999996,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -136,7 +136,7 @@
             "systemPrompt": "\nAlways respond using bullet point lists. Never use prose paragraphs.\n\n[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **skills**: 1 skill active: bullet-points\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
           }
         ],
-        "_original_timestamp": 1775697050465,
+        "_original_timestamp": 1775698588568,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -145,10 +145,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.471Z",
+      "timestamp": "2026-04-09T01:36:28.574Z",
       "model_name": "middleware:goal",
       "message": "What are the primary colors? Answer briefly.",
-      "duration_ms": 630.3384579999984,
+      "duration_ms": 661.6064999999944,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -159,7 +159,6 @@
         "nextCalled": true,
         "decisions": [
           {
-            "injected": true,
             "turnIndex": 0,
             "objectives": [
               {
@@ -173,7 +172,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] What are the primary colors? Answer briefly."
           }
         ],
-        "_original_timestamp": 1775697050464,
+        "_original_timestamp": 1775698588567,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -182,10 +181,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.472Z",
+      "timestamp": "2026-04-09T01:36:28.575Z",
       "model_name": "middleware:hooks",
       "message": "## Active Goals\n\n- [ ] What are the primary colors? Answer briefly.What are the primary colors? Answer briefly.",
-      "duration_ms": 630.2957080000051,
+      "duration_ms": 661.5590000000084,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -194,7 +193,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697050463,
+        "_original_timestamp": 1775698588566,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -203,10 +202,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:50.473Z",
+      "timestamp": "2026-04-09T01:36:28.576Z",
       "model_name": "middleware:semantic-retry",
       "message": "## Active Goals\n\n- [ ] What are the primary colors? Answer briefly.What are the primary colors? Answer briefly.",
-      "duration_ms": 630.2674160000024,
+      "duration_ms": 661.5252920000057,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -215,7 +214,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697050462,
+        "_original_timestamp": 1775698588565,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

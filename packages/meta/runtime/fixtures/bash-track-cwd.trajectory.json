@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:39.354Z",
+      "timestamp": "2026-04-09T01:36:18.128Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:39.355Z",
+      "timestamp": "2026-04-09T01:36:18.129Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:39.357Z",
+      "timestamp": "2026-04-09T01:36:18.131Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 328,
         "completion_tokens": 36
       },
-      "duration_ms": 934,
+      "duration_ms": 742,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -83,7 +83,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:40.292Z",
+      "timestamp": "2026-04-09T01:36:18.874Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Bash_3",
@@ -97,20 +97,20 @@
         "results": [
           {
             "source_call_id": "call_Bash_3",
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 13,
+      "duration_ms": 26,
       "outcome": "success"
     },
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.298Z",
+      "timestamp": "2026-04-09T01:36:18.880Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.395417000007,
+      "duration_ms": 744.9852910000045,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -127,17 +127,17 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.310Z",
+      "timestamp": "2026-04-09T01:36:18.905Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Bash({\"command\":\"mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \\\"changed-dir\\\"\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 14.745167000000947,
+      "duration_ms": 26.55891600000905,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -154,10 +154,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.311Z",
+      "timestamp": "2026-04-09T01:36:18.906Z",
       "model_name": "middleware:permissions",
       "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.383249999999,
+      "duration_ms": 744.9182500000024,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -166,7 +166,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697040297,
+        "_original_timestamp": 1775698578879,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -175,17 +175,17 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.312Z",
+      "timestamp": "2026-04-09T01:36:18.907Z",
       "model_name": "middleware:permissions",
       "message": "Bash({\"command\":\"mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \\\"changed-dir\\\"\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 14.696374999999534,
+      "duration_ms": 26.466958999997587,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -204,7 +204,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697040309,
+        "_original_timestamp": 1775698578904,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -213,10 +213,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.313Z",
+      "timestamp": "2026-04-09T01:36:18.908Z",
       "model_name": "middleware:skill-injector",
       "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.3293330000015,
+      "duration_ms": 744.7977919999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -225,15 +225,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697040296,
+        "_original_timestamp": 1775698578878,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -242,10 +234,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.314Z",
+      "timestamp": "2026-04-09T01:36:18.909Z",
       "model_name": "middleware:goal",
       "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.3186669999996,
+      "duration_ms": 744.7739169999986,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -256,7 +248,6 @@
         "nextCalled": true,
         "decisions": [
           {
-            "injected": true,
             "turnIndex": 0,
             "objectives": [
               {
@@ -270,7 +261,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/met"
           }
         ],
-        "_original_timestamp": 1775697040295,
+        "_original_timestamp": 1775698578877,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -279,17 +270,17 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.315Z",
+      "timestamp": "2026-04-09T01:36:18.910Z",
       "model_name": "middleware:goal",
       "message": "Bash({\"command\":\"mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \\\"changed-dir\\\"\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 14.623500000001513,
+      "duration_ms": 26.3777090000076,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -298,7 +289,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697040308,
+        "_original_timestamp": 1775698578903,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -307,10 +298,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.316Z",
+      "timestamp": "2026-04-09T01:36:18.911Z",
       "model_name": "middleware:hooks",
       "message": "## Active Goals\n\n- [ ] Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/metUse the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.3007910000015,
+      "duration_ms": 744.7252909999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -319,7 +310,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697040294,
+        "_original_timestamp": 1775698578876,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -328,17 +319,17 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.317Z",
+      "timestamp": "2026-04-09T01:36:18.912Z",
       "model_name": "middleware:hooks",
       "message": "Bash({\"command\":\"mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \\\"changed-dir\\\"\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 14.620124999986729,
+      "duration_ms": 26.36729200000991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -347,7 +338,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697040307,
+        "_original_timestamp": 1775698578902,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -356,10 +347,10 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.318Z",
+      "timestamp": "2026-04-09T01:36:18.913Z",
       "model_name": "middleware:semantic-retry",
       "message": "## Active Goals\n\n- [ ] Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/metUse the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.",
-      "duration_ms": 937.268207999994,
+      "duration_ms": 744.6379589999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -368,7 +359,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697040293,
+        "_original_timestamp": 1775698578875,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -377,17 +368,17 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:40.319Z",
+      "timestamp": "2026-04-09T01:36:18.914Z",
       "model_name": "middleware:semantic-retry",
       "message": "Bash({\"command\":\"mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \\\"changed-dir\\\"\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}"
+            "content": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}"
           }
         ]
       },
-      "duration_ms": 14.550875000000815,
+      "duration_ms": 26.219167000002926,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -396,7 +387,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697040306,
+        "_original_timestamp": 1775698578901,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -405,9 +396,9 @@
     {
       "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:40.327Z",
+      "timestamp": "2026-04-09T01:36:18.952Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
+      "message": "{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
       "observation": {
         "results": [
           {
@@ -416,10 +407,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 356,
+        "prompt_tokens": 354,
         "completion_tokens": 3
       },
-      "duration_ms": 763,
+      "duration_ms": 686,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -438,7 +429,7 @@
     {
       "step_id": 16,
       "source": "tool",
-      "timestamp": "2026-04-09T01:10:41.091Z",
+      "timestamp": "2026-04-09T01:36:19.639Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Bash_16",
@@ -452,20 +443,20 @@
         "results": [
           {
             "source_call_id": "call_Bash_16",
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 7,
+      "duration_ms": 9,
       "outcome": "success"
     },
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.097Z",
+      "timestamp": "2026-04-09T01:36:19.646Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.7098330000008,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.5724580000096,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -482,17 +473,17 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.103Z",
+      "timestamp": "2026-04-09T01:36:19.653Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Bash({\"command\":\"pwd\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 7.126250000001164,
+      "duration_ms": 9.527208999992581,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -509,10 +500,10 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.104Z",
+      "timestamp": "2026-04-09T01:36:19.654Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.6968749999942,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.5387079999928,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -521,7 +512,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697041096,
+        "_original_timestamp": 1775698579645,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -530,17 +521,17 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.105Z",
+      "timestamp": "2026-04-09T01:36:19.655Z",
       "model_name": "middleware:permissions",
       "message": "Bash({\"command\":\"pwd\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 7.069166999994195,
+      "duration_ms": 9.44137500000943,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -559,7 +550,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775697041102,
+        "_original_timestamp": 1775698579652,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -568,10 +559,10 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.106Z",
+      "timestamp": "2026-04-09T01:36:19.656Z",
       "model_name": "middleware:skill-injector",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.6206660000025,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.4279580000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -580,15 +571,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697041095,
+        "_original_timestamp": 1775698579644,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -597,10 +580,10 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.107Z",
+      "timestamp": "2026-04-09T01:36:19.657Z",
       "model_name": "middleware:goal",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.6090839999961,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.4153749999969,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -609,22 +592,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 1,
-            "objectives": [
-              {
-                "text": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/met",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 3
-          }
-        ],
-        "_original_timestamp": 1775697041094,
+        "_original_timestamp": 1775698579643,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -633,17 +601,17 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.108Z",
+      "timestamp": "2026-04-09T01:36:19.658Z",
       "model_name": "middleware:goal",
       "message": "Bash({\"command\":\"pwd\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 7.000459000002593,
+      "duration_ms": 9.355292000007466,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -652,7 +620,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1775697041101,
+        "_original_timestamp": 1775698579651,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -661,10 +629,10 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.109Z",
+      "timestamp": "2026-04-09T01:36:19.659Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.5988329999964,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.4019160000025,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -673,7 +641,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697041093,
+        "_original_timestamp": 1775698579642,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -682,17 +650,17 @@
     {
       "step_id": 25,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.110Z",
+      "timestamp": "2026-04-09T01:36:19.660Z",
       "model_name": "middleware:hooks",
       "message": "Bash({\"command\":\"pwd\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 6.997042000002693,
+      "duration_ms": 9.35008299999754,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -701,7 +669,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697041100,
+        "_original_timestamp": 1775698579650,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -710,10 +678,10 @@
     {
       "step_id": 26,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.111Z",
+      "timestamp": "2026-04-09T01:36:19.661Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}",
-      "duration_ms": 765.5727500000066,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}",
+      "duration_ms": 689.3395000000019,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -722,7 +690,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697041092,
+        "_original_timestamp": 1775698579641,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -731,17 +699,17 @@
     {
       "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:41.112Z",
+      "timestamp": "2026-04-09T01:36:19.662Z",
       "model_name": "middleware:semantic-retry",
       "message": "Bash({\"command\":\"pwd\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+            "content": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}"
           }
         ]
       },
-      "duration_ms": 6.9455829999933485,
+      "duration_ms": 9.25566599999729,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -750,7 +718,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697041099,
+        "_original_timestamp": 1775698579649,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -759,21 +727,21 @@
     {
       "step_id": 28,
       "source": "agent",
-      "timestamp": "2026-04-09T01:10:41.131Z",
+      "timestamp": "2026-04-09T01:36:19.728Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "message": "{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
       "observation": {
         "results": [
           {
-            "content": "The directory is /Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test."
+            "content": "The directory printed is `/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test`."
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 418,
-        "completion_tokens": 36
+        "completion_tokens": 37
       },
-      "duration_ms": 1268,
+      "duration_ms": 822,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -792,10 +760,10 @@
     {
       "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.406Z",
+      "timestamp": "2026-04-09T01:36:20.557Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1269.146041,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.7700420000037,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -812,10 +780,10 @@
     {
       "step_id": 30,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.407Z",
+      "timestamp": "2026-04-09T01:36:20.558Z",
       "model_name": "middleware:permissions",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1269.130291999987,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.7530000000115,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -824,7 +792,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775697042405,
+        "_original_timestamp": 1775698580556,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -833,10 +801,10 @@
     {
       "step_id": 31,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.408Z",
+      "timestamp": "2026-04-09T01:36:20.559Z",
       "model_name": "middleware:skill-injector",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1269.0212909999973,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.6159999999945,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -845,15 +813,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "skillCount": 0,
-            "skills": [],
-            "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
-          }
-        ],
-        "_original_timestamp": 1775697042403,
+        "_original_timestamp": 1775698580554,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -862,10 +822,10 @@
     {
       "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.409Z",
+      "timestamp": "2026-04-09T01:36:20.560Z",
       "model_name": "middleware:goal",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1269.0004160000099,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.5971250000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -874,22 +834,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "decisions": [
-          {
-            "injected": false,
-            "turnIndex": 2,
-            "objectives": [
-              {
-                "text": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/met",
-                "completed": false
-              }
-            ],
-            "completedCount": 0,
-            "totalCount": 1,
-            "messageCount": 5
-          }
-        ],
-        "_original_timestamp": 1775697042402,
+        "_original_timestamp": 1775698580553,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -898,10 +843,10 @@
     {
       "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.410Z",
+      "timestamp": "2026-04-09T01:36:20.561Z",
       "model_name": "middleware:hooks",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1268.9757910000044,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.5653750000056,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -910,7 +855,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775697042401,
+        "_original_timestamp": 1775698580552,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -919,10 +864,10 @@
     {
       "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-09T01:10:42.411Z",
+      "timestamp": "2026-04-09T01:36:20.562Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":14}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
-      "duration_ms": 1268.9536250000092,
+      "message": "Use the Bash tool twice in sequence. First call: run `mkdir -p packages/meta/runtime/.cwd-golden-test && cd packages/meta/runtime/.cwd-golden-test && echo \"changed-dir\"`. Second call: run `pwd` and report the directory printed.{\"stdout\":\"changed-dir\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":26}{\"stdout\":\"/Users/tafeng/koi/.claude/worktrees/atomic-cooking-whistle/packages/meta/runtime/.cwd-golden-test\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":9}",
+      "duration_ms": 823.5247089999903,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -931,7 +876,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775697042400,
+        "_original_timestamp": 1775698580551,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
