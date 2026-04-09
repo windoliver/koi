@@ -14,7 +14,7 @@ import type { JsonObject } from "./common.js";
 // ---------------------------------------------------------------------------
 
 /** Supported hook transport types. */
-export type HookType = "command" | "http" | "agent";
+export type HookType = "command" | "http" | "agent" | "prompt";
 
 // ---------------------------------------------------------------------------
 // Hook event kind — typed lifecycle event discriminator
@@ -462,6 +462,19 @@ export const DEFAULT_MAX_STOP_RETRIES = 3 as const;
 
 /** Default hook timeout in milliseconds (command + http). */
 export const DEFAULT_HOOK_TIMEOUT_MS = 30_000 as const;
+
+/** Default prompt hook timeout in milliseconds. */
+export const DEFAULT_PROMPT_HOOK_TIMEOUT_MS = 10_000 as const;
+
+/** Default max tokens per prompt hook verification response. */
+export const DEFAULT_PROMPT_MAX_TOKENS = 256 as const;
+
+/**
+ * Default cumulative token budget per session for prompt hooks.
+ * Prevents cost amplification from rapid-fire prompt hook invocations.
+ * Sized for ~200 invocations at default max_tokens (256).
+ */
+export const DEFAULT_PROMPT_SESSION_TOKEN_BUDGET = 50_000 as const;
 
 /** Default agent hook timeout in milliseconds. */
 export const DEFAULT_AGENT_HOOK_TIMEOUT_MS = 60_000 as const;

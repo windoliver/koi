@@ -2,6 +2,7 @@
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
 "import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig, PromptHookConfig } from '@koi/core';
+import { PromptModelCaller } from '@koi/hook-prompt';
 import { z } from 'zod';
 
 /**
@@ -257,7 +258,7 @@ declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>,
  * @param agentExecutor - Optional executor for agent-type hooks (injected via middleware)
  * @returns Results for all matching hooks, in declaration order
  */
-declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined): Promise<readonly HookExecutionResult[]>;
+declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined, promptExecutor?: HookExecutor | undefined): Promise<readonly HookExecutionResult[]>;
 
 /**
  * Hook filter matching — determines whether a hook should fire for a given event.
@@ -361,6 +362,11 @@ interface CreateHookMiddlewareOptions {
      * Provided by the L1 engine at middleware wiring time.
      */
     readonly spawnFn?: SpawnFn | undefined;
+    /**
+     * Model caller for prompt-type hooks. Required when any hook has \`kind: "prompt"\`.
+     * Provided by the L1 engine at middleware wiring time.
+     */
+    readonly promptCallFn?: PromptModelCaller | undefined;
     /** System-wide env-var policy for allowlisting. */
     readonly envPolicy?: HookEnvPolicy | undefined;
     /**
@@ -454,6 +460,42 @@ interface RedactedPayload {
 declare function redactEventData(data: JsonObject | undefined, config: HookRedactionConfig | undefined): RedactedPayload;
 
 /**
+ * Prompt executor adapter — bridges @koi/hook-prompt into the HookExecutor interface.
+ *
+ * Wraps the lightweight PromptHookExecutor (which returns bare HookDecision) with
+ * the full HookExecutionResult contract required by the hooks pipeline: duration
+ * measurement, abort/timeout discrimination, executionFailed flags for once-hook
+ * retry, and payload size capping.
+ */
+
+/** Options for creating a prompt executor adapter. */
+interface CreatePromptAdapterOptions {
+    /** Model caller injected by L1 at middleware wiring time. */
+    readonly caller: PromptModelCaller;
+}
+/**
+ * Adapts @koi/hook-prompt's PromptHookExecutor to the HookExecutor interface.
+ *
+ * Adds pipeline-level concerns that the inner executor intentionally omits:
+ * - AbortSignal handling with timeout/cancellation discrimination
+ * - HookExecutionResult with executionFailed/aborted flags for once-hook correctness
+ * - Per-session token budget tracking
+ * - Event data size capping
+ */
+declare class PromptExecutorAdapter implements HookExecutor {
+    readonly name = "prompt";
+    private readonly inner;
+    private readonly sessions;
+    constructor(options: CreatePromptAdapterOptions);
+    canHandle(hook: HookConfig): boolean;
+    execute(hook: HookConfig, event: HookEvent, signal: AbortSignal): Promise<HookExecutionResult>;
+    cleanupSession(sessionId: string): void;
+    private checkBudget;
+    private consumeBudget;
+    private getOrCreateBudget;
+}
+
+/**
  * Hook registry — session-scoped hook registration and cleanup.
  *
  * Manages the lifecycle of hooks within a session: registration on session
@@ -507,6 +549,8 @@ interface HookRegistry {
 interface CreateHookRegistryOptions {
     /** Optional executor for agent-type hooks, threaded through to executeHooks. */
     readonly agentExecutor?: HookExecutor | undefined;
+    /** Optional executor for prompt-type hooks, threaded through to executeHooks. */
+    readonly promptExecutor?: HookExecutor | undefined;
     /**
      * Synchronous observer tap — called after every non-empty execute() with
      * the results and the trigger event. Used by ATIF trajectory recording.
@@ -533,6 +577,6 @@ declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, promptHookSchema, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, PromptExecutorAdapter, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, promptHookSchema, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
 "
 `;

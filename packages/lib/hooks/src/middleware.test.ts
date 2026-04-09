@@ -1208,6 +1208,36 @@ describe("agent hook spawnFn validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Prompt hook promptCallFn validation
+// ---------------------------------------------------------------------------
+
+describe("prompt hook promptCallFn validation", () => {
+  it("throws when prompt hooks present but promptCallFn not provided", () => {
+    const promptHooks: readonly HookConfig[] = [
+      { kind: "prompt", name: "safety", prompt: "Is this safe?" },
+    ];
+    expect(() => createHookMiddleware({ hooks: promptHooks })).toThrow("promptCallFn");
+  });
+
+  it("does not throw when prompt hooks present and promptCallFn provided", () => {
+    const promptHooks: readonly HookConfig[] = [
+      { kind: "prompt", name: "safety", prompt: "Is this safe?" },
+    ];
+    const promptCallFn = { complete: mock().mockResolvedValue({ text: '{"ok":true}' }) };
+    expect(() => createHookMiddleware({ hooks: promptHooks, promptCallFn })).not.toThrow();
+  });
+
+  it("does not throw when no prompt hooks and no promptCallFn", () => {
+    expect(() => createHookMiddleware({ hooks: TEST_HOOKS })).not.toThrow();
+  });
+
+  it("does not throw when promptCallFn provided without prompt hooks", () => {
+    const promptCallFn = { complete: mock().mockResolvedValue({ text: '{"ok":true}' }) };
+    expect(() => createHookMiddleware({ hooks: TEST_HOOKS, promptCallFn })).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // onBeforeStop (turn.stop gate)
 // ---------------------------------------------------------------------------
 

@@ -196,6 +196,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hook-prompt": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
@@ -390,6 +391,7 @@
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/harness": "workspace:*",
+        "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/memory-tools": "workspace:*",

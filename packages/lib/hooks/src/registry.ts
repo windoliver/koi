@@ -124,6 +124,8 @@ export interface HookRegistry {
 export interface CreateHookRegistryOptions {
   /** Optional executor for agent-type hooks, threaded through to executeHooks. */
   readonly agentExecutor?: HookExecutor | undefined;
+  /** Optional executor for prompt-type hooks, threaded through to executeHooks. */
+  readonly promptExecutor?: HookExecutor | undefined;
   /**
    * Synchronous observer tap — called after every non-empty execute() with
    * the results and the trigger event. Used by ATIF trajectory recording.
@@ -227,6 +229,7 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
         effectiveSignal,
         state.envPolicy,
         options?.agentExecutor,
+        options?.promptExecutor,
       );
     } catch (e: unknown) {
       // executeHooks rejected unexpectedly — roll back all claimed hooks

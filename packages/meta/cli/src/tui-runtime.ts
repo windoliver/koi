@@ -52,6 +52,7 @@ import type { KoiRuntime } from "@koi/engine";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
+import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import type { McpResolver } from "@koi/mcp";
 import {
@@ -441,6 +442,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Absent/unreadable file = no hooks (empty array, middleware is a no-op).
   // Agent hooks (kind: "agent") are filtered out because the TUI does not provide
   // a spawnFn — createHookMiddleware throws if any agent hook is present without one.
+  // Prompt hooks (kind: "prompt") are supported via a lightweight PromptModelCaller
+  // that delegates to the TUI's model adapter for single-shot verification.
   const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
   // let: justified — set after async load
   let loadedHooks: readonly import("@koi/core").HookConfig[] = [];
@@ -460,8 +463,34 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   } catch {
     // Absent or unreadable — silently skip (no hooks configured)
   }
+
+  // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
+  // single-shot LLM verification. Builds a minimal ModelRequest with the
+  // verification prompt as a user message and the system prompt in the
+  // trusted systemPrompt field.
+  const promptCallFn: PromptModelCaller = {
+    complete: async (req) => {
+      const userMessage: InboundMessage = {
+        content: [{ kind: "text", text: req.userPrompt }],
+        senderId: "hook-prompt",
+        timestamp: Date.now(),
+      };
+      const response = await modelAdapter.complete({
+        messages: [userMessage],
+        model: req.model,
+        maxTokens: req.maxTokens,
+        systemPrompt: req.systemPrompt,
+        signal: AbortSignal.timeout(req.timeoutMs),
+        tools: [], // No tools for single-shot verification
+      });
+      return { text: response.content };
+    },
+  };
+
+  const hasPromptHooks = loadedHooks.some((h) => h.kind === "prompt");
   const hookMw = createHookMiddleware({
     hooks: loadedHooks,
+    promptCallFn: hasPromptHooks ? promptCallFn : undefined,
     onExecuted: hookObserverTap,
   });
 

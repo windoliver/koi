@@ -42,9 +42,11 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAgentExecutor } from "./agent-executor.js";
 import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
+import { PromptExecutorAdapter } from "./prompt-adapter.js";
 import { createHookRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,11 @@ export interface CreateHookMiddlewareOptions {
    * Provided by the L1 engine at middleware wiring time.
    */
   readonly spawnFn?: SpawnFn | undefined;
+  /**
+   * Model caller for prompt-type hooks. Required when any hook has `kind: "prompt"`.
+   * Provided by the L1 engine at middleware wiring time.
+   */
+  readonly promptCallFn?: PromptModelCaller | undefined;
   /** System-wide env-var policy for allowlisting. */
   readonly envPolicy?: HookEnvPolicy | undefined;
   /**
@@ -314,6 +321,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
   const {
     hooks,
     spawnFn,
+    promptCallFn,
     envPolicy,
     postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS,
   } = options;
@@ -326,9 +334,23 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     );
   }
 
+  // Fail-fast: prompt hooks require promptCallFn
+  const hasPromptHooks = hooks.some((h) => h.kind === "prompt");
+  if (hasPromptHooks && promptCallFn === undefined) {
+    throw new Error(
+      "Prompt hooks require promptCallFn — provide it via CreateHookMiddlewareOptions.promptCallFn",
+    );
+  }
+
   const agentExecutor: HookExecutor | undefined =
     spawnFn !== undefined ? createAgentExecutor({ spawnFn }) : undefined;
-  const registry = createHookRegistry({ agentExecutor, onExecuted: options.onExecuted });
+  const promptExecutor: HookExecutor | undefined =
+    promptCallFn !== undefined ? new PromptExecutorAdapter({ caller: promptCallFn }) : undefined;
+  const registry = createHookRegistry({
+    agentExecutor,
+    promptExecutor,
+    onExecuted: options.onExecuted,
+  });
 
   /**
    * Per-session set of pending post-hook promises. Drained in onSessionEnd
@@ -479,8 +501,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       // from being aborted by the session controller
       await drainPendingPostHooks(sessionId);
       registry.cleanup(sessionId);
-      // Reset agent executor per-session state (token budgets)
+      // Reset executor per-session state (token budgets)
       agentExecutor?.cleanupSession?.(sessionId);
+      promptExecutor?.cleanupSession?.(sessionId);
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
