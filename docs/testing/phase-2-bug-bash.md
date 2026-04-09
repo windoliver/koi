@@ -181,15 +181,25 @@ tmux capture-pane -t "$KOI_SESSION" -pS -3000 > "$CAPTURE_FILE"
 
 ### 2.4 Finding the session transcript
 
-Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<sessionId>.jsonl` — one file per session, no per-session directory. Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
+Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<encoded-sessionId>.jsonl`. Two runtime details matter:
 
-**Do not use `ls -t | head -1`** to find the session file — it races against parallel testers sharing the same machine. Instead, take the session id from the TUI startup banner (or from the capture file) and derive the path explicitly:
+1. **Engine session id format**: `createKoi()` generates ids as `agent:<pid>:<uuid>` (`packages/kernel/engine/src/koi.ts:199`). The `tuiSessionId` the CLI prints (if any) is NOT the same as the id `createSessionTranscriptMiddleware` routes writes by — the middleware routes by the *live engine session id* (`packages/lib/session/src/middleware/session-transcript.ts`).
+2. **Filename encoding**: `createJsonlTranscript()` writes to `{baseDir}/${encodeURIComponent(sid)}.jsonl` (`packages/lib/session/src/transcript/jsonl-store.ts:164-168`). So the id `agent:1234:abc-def` lands on disk as `agent%3A1234%3Aabc-def.jsonl`. Do not try to build the filename by hand.
+
+Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
+
+Because `$KOI_HOME` is fully isolated per tester (§1.3 + §1.5 launch with `HOME=$KOI_HOME`), the newest file in *your own* sessions directory is unambiguous — there is no cross-tester race inside an isolated HOME. Always reset between scenarios (§1.7) so "newest" means "this scenario".
 
 ```bash
-# Grab the session id from the TUI banner in the capture.
-tmux capture-pane -t "$KOI_SESSION" -pS -3000 > "$CAPTURE_FILE"
-SESSION_ID=$(grep -oE 'session[[:space:]]*id[^[:alnum:]]*[A-Za-z0-9_-]+' "$CAPTURE_FILE" | head -1 | awk '{print $NF}')
-SESSION_FILE="$KOI_HOME/.koi/sessions/${SESSION_ID}.jsonl"
+# Reset (§1.7) before each scenario, then after the scenario finishes:
+SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl 2>/dev/null | head -1)
+if [ -z "$SESSION_FILE" ]; then
+  echo "no transcript in $KOI_HOME/.koi/sessions — did the TUI actually write a turn?" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+# If you need the raw session id (for e.g. koi start --resume <id>), decode the filename:
+SESSION_ID=$(basename "$SESSION_FILE" .jsonl | python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')
 
 ls -lh "$SESSION_FILE"
 jq -c . "$SESSION_FILE" | tail -20
@@ -198,7 +208,7 @@ jq -c . "$SESSION_FILE" | tail -20
 jq -r '.role' "$SESSION_FILE" | sort | uniq -c
 ```
 
-> If your build of the TUI prints the session id in a different format, adjust the `grep -oE` pattern above. Never rely on "newest file in the sessions dir" — that's non-deterministic under parallel runs.
+> Safety note: only rely on "newest file in `$KOI_HOME/.koi/sessions`" AFTER the §1.7 reset has cleared the directory for this scenario. Do not use this pattern against the shared real `~/.koi/sessions` — that races across testers. The isolation comes from `HOME=$KOI_HOME`, not from the `ls -t` trick.
 
 ### 2.5 ATIF trajectory (in-memory only)
 
@@ -252,15 +262,33 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Pass**: both turns complete without tool calls; TUI renders incremental tokens
 **Watch**: duplicated tokens in TUI; missing final newline; ANSI color bleeding; cursor artifacts on reflow
 
-#### A2. Session resume via TUI session selector
-**Tags**: session, tui, harness, `resumeForSession`
-**Prereqs**: complete A1 first; note the session id printed by the TUI banner (or derive from the flat `$KOI_HOME/.koi/sessions/<id>.jsonl` filename)
-**Action**: kill the TUI tmux session, relaunch with `bun run packages/meta/cli/src/bin.ts tui`, and use the in-TUI session selector UI to pick the earlier session. (`koi start --resume <id>` is currently stubbed and returns `NOT_READY` — do NOT use the `start` command for resume; use the TUI selector.)
+#### A2. Session resume via `koi start --resume <id>` (shipped CLI path)
+**Tags**: session, cli start command, `resumeForSession`, transcript append-on-resume
+**Note**: `koi start --resume <id>` is implemented — `packages/meta/cli/commands/start.ts` calls `resumeForSession()` and repopulates the transcript before continuing. This is the primary shipped resume path and must be covered by the bash.
+**Prereqs**: complete A1 first. Derive the raw session id from the JSONL filename per §2.4 (URL-decoded).
+**Action**: kill the TUI tmux session, then re-run without relaunching the TUI:
+```bash
+SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl | head -1)
+SESSION_ID=$(basename "$SESSION_FILE" .jsonl | python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')
+HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start --resume "$SESSION_ID" --prompt "What did we just talk about?"
+```
+**Expected**: the prompt runs against the resumed session; answer references the previous turn's content (Bun / TypeScript); the SAME JSONL file gains new entries appended after the original turns
+**Verify**:
+- `$SESSION_FILE` still points at the same file; `wc -l "$SESSION_FILE"` has grown
+- `jq -c 'select(.role=="user")' "$SESSION_FILE" | wc -l` has increased by exactly 1 (the resume prompt)
+- The assistant's response mentions the prior Bun / TypeScript context
+**Pass**: resumed context is coherent; no duplicated system prompt; the original JSONL file is appended, not rewritten, and not replaced
+**Watch**: start failing with `NOT_READY` (if it does, the stub was re-introduced — file a regression); lost history on resume; duplicated system prompt; transcript rewritten from scratch; new session file created with a different id instead of appending
+
+#### A2b. Session resume via TUI session selector (UI path)
+**Tags**: tui session selector, `resumeForSession`
+**Prereqs**: complete A1 first
+**Action**: kill the TUI, relaunch with `HOME=$KOI_HOME bun run ... tui`, and use the in-TUI session selector UI to pick the earlier session
 **User query** (after resume): `What did we just talk about?`
-**Expected**: agent references the previous turn's content (Bun / TypeScript)
-**Verify**: the flat `<session-id>.jsonl` file now has both the pre-exit and post-resume entries in order (same file, appended)
-**Pass**: resumed context is coherent; no duplicated system prompt; transcript appended, not rewritten
-**Watch**: lost conversation history; duplicated system prompt on resume; session selector not showing the session; file lock errors on append; stale context leaking across sessions
+**Expected**: agent references Bun / TypeScript from A1
+**Verify**: same JSONL file as A1 grew (matching A2's verify steps above)
+**Pass**: TUI selector loads the right session; append semantics match A2
+**Watch**: selector not showing the session; picking the wrong one; creating a new session instead of resuming
 
 ---
 
@@ -439,34 +467,42 @@ Configure the hook in `$KOI_HOME/.koi/hooks.json` to POST to `http://127.0.0.1:$
 
 ---
 
-### Group F — Context & compaction
+### Group F — Context window tail-slicing
 
-#### F1. Long conversation triggers compaction
-**Tags**: context-manager, middleware-compactor (if shipped as separate middleware), token budget, middleware-extraction
-**Setup**: lower the compaction threshold via config to force early compaction (e.g. 10k tokens)
-**User queries**: paste a long file (e.g. `cat packages/lib/query-engine/src/turn-runner.ts`) into the conversation, then ask 10+ short questions about it
-**Expected**: at some point the TUI or logs indicate compaction fired
-**Follow-up**: `What was the function name you saw earlier?`
-**Expected**: agent still recalls the key fact (summary preserved it)
-**Verify**: session JSONL contains at least one `compaction` event; message count drops after compaction
-**Pass**: compaction does not lose the most recent turns or the system prompt
-**Watch**: pruning user's current question; dropping tool calls mid-sequence; prompt cache invalidated unnecessarily
+> **The TUI runtime does NOT wire `@koi/context-manager` or any compactor middleware.** `createTuiRuntime()` builds its adapter via `packages/meta/cli/src/engine-adapter.ts:85`, which simply passes `transcript.slice(-maxTranscriptMessages)` into each turn. There is no summarization, no pressure-driven compaction, no tool-output pruning, and no `compaction` transcript entries emitted by the TUI code path. Group F therefore tests the **tail-window behavior the TUI actually implements** — not real compaction. True compaction coverage is run via `bun test --filter=@koi/context-manager` (and related middleware) as a separate step.
 
-#### F2. Tool output truncation
-**Tags**: context-manager tool-output pruning
+#### F1. Tail-window: older turns fall out of the model context
+**Tags**: engine-adapter `maxTranscriptMessages`, tail slice behavior
+**Setup**: the TUI defaults to `MAX_TRANSCRIPT_MESSAGES` (check `packages/meta/cli/src/tui-runtime.ts:846` for the current value). No config override needed.
+**User queries**: in the SAME session, alternate user/assistant turns more than `maxTranscriptMessages + 5` times. Include a distinctive fact in the very first user turn (e.g. `My magic word is mongoose-alpha-seven`).
+**Follow-up** (after enough turns have elapsed): `What was my magic word?`
+**Expected**: the agent has NO reliable way to recall `mongoose-alpha-seven` because the earliest turns have fallen out of the tail window. It may hallucinate or admit it doesn't know. Both are valid — what matters is that the transcript file still contains the early turn (append-only on disk) while the model does NOT see it in the latest request.
+**Verify**:
+- `$SESSION_FILE` (per §2.4) still contains the early `mongoose-alpha-seven` message
+- Count user messages: `jq -c 'select(.role=="user")' "$SESSION_FILE" | wc -l` is greater than `maxTranscriptMessages/2` (so some turns have been pushed out of the tail window)
+**Pass**: the transcript append-only store keeps full history on disk; the model receives only the tail slice; agent behavior is consistent with that (no silent corruption of the transcript file)
+**Watch**: transcript file losing early turns (it shouldn't — the store is append-only); tail slice breaking tool_call / tool_result pairing at the boundary; system prompt dropping out of the window (it shouldn't be part of the tail slice at all)
+
+#### F2. Large tool output rendering in the tail window
+**Tags**: engine-adapter tail slice, tool_result sizing
 **User query**: `Run 'find / -type f 2>/dev/null | head -5000' and tell me how many files.`
-**Expected**: tool output truncated in context; agent still reports correct count (from last line of tool output)
-**Verify**: session JSONL shows truncation marker in the historical message
-**Pass**: recent turn sees the real output; old turns have truncated placeholder
-**Watch**: truncation cutting off the last line (the answer); off-by-one in windowing
+**Expected**: bash returns a large tool_result; the agent answers correctly for the recent turn
+**Verify**:
+- `jq -c 'select(.role=="tool_result")' "$SESSION_FILE" | tail -1 | wc -c` — the file-stored tool_result is not truncated (append-only)
+- The agent's answer in the current turn is accurate
+**Pass**: recent tool output is usable; file stays intact
+**Watch**: agent truncating stdout mid-line and reporting the wrong count; huge tool_result blowing past the model's context limit (the TUI does NOT prune it — if that's a problem today, file a `missing-coverage` issue for compaction wiring in the TUI)
 
-#### F3. System prompt preserved across compaction
-**Tags**: context-manager protected regions
-**Setup**: force compaction (as in F1)
-**User query** (after compaction): `What is your name?` (something that would be in the system prompt)
-**Expected**: answer consistent with system prompt
-**Pass**: system prompt is intact after compaction
-**Watch**: system prompt getting summarized away; role confusion
+#### F3. Real compaction semantics — covered via test suite, not TUI
+**Tags**: `@koi/context-manager`, middleware-compactor, token budget, protected-region tests
+**Action**:
+```bash
+bun test --filter=@koi/context-manager
+bun test --filter=@koi/lib/context-manager   # in case the filter pattern differs
+```
+**TUI coverage**: N/A — no compactor is wired. Any TUI session that exceeds `maxTranscriptMessages` loses old turns from the model's view but never produces a `compaction` transcript entry.
+**Pass**: context-manager tests cover: soft/hard triggers, tool-output pruning, protected regions (system prompt and recent turns), and overflow recovery.
+**Watch**: tests that only exercise in-memory shapes without verifying the token budget accounting; tests that don't assert system prompt preservation under pressure; test coverage gaps for the protected-region boundary.
 
 ---
 
@@ -1021,12 +1057,12 @@ bun test --filter=@koi/runtime
 **Watch**: stale config persisting; validation errors crashing the running session
 
 #### Q5. Very large file operations
-**Tags**: read/edit tool size limits, context-manager tool-output pruning
-**Setup**: create a 10MB file in the fixture
-**User query**: `Read /tmp/bigfile.txt and tell me how many lines it has.`
-**Expected**: read tool enforces a max size or paginates; agent gets enough info to answer
-**Pass**: no OOM; no TUI hang; answer is roughly correct
-**Watch**: silent truncation without warning; memory blow-up; streaming blocked
+**Tags**: read/edit tool size limits, tail-window behavior under large tool_result
+**Setup**: create a 10MB file in `$FIXTURE/bigfile.txt`
+**User query**: `Read $FIXTURE/bigfile.txt and tell me how many lines it has.`
+**Expected**: the `fs_read` tool enforces a max size (or paginates) and returns a bounded payload; the agent answers based on what it can see. The TUI does NOT prune the tool_result via a compactor — the only guard is whatever the `fs_read` tool itself applies.
+**Pass**: no OOM; no TUI hang; transcript append succeeds; answer is at least roughly directional
+**Watch**: silent truncation without warning; memory blow-up; streaming blocked; transcript JSONL write failing on oversized entry; tool_result that exceeds the model's own context limit (there is no compactor to save you — file a `missing-coverage` issue for TUI-side tool-output pruning if this bites you)
 
 ---
 
@@ -1057,8 +1093,8 @@ bun test --filter=@koi/runtime
 | hooks command executor | E3 |
 | hooks HTTP executor | E4 |
 | hooks prompt executor | (via plugin L2) |
-| context-manager compaction | F1, F3 |
-| context-manager tool-output pruning | F2, Q5 |
+| engine-adapter tail-window slicing (`maxTranscriptMessages`) | F1, F2 |
+| `@koi/context-manager` real compaction, token budget, tool-output pruning, protected regions | **not wired in TUI** — covered via `bun test --filter=@koi/context-manager` (see F3) |
 | middleware-extraction | K1 |
 | mcp stdio transport | G1, G2 |
 | mcp HTTP transport | G3 |
@@ -1155,14 +1191,14 @@ Each tester uses their own worktree copy (via `git worktree add`) to avoid files
 ## 7. Appendix — Quick verification cheatsheet
 
 ```bash
-# All commands below assume §1.3 envs are exported: KOI_HOME, SESSION_ID, etc.
-# DO NOT use `ls -t ~/.koi/sessions/*.jsonl | head -1` — that resolves to the real
-# user HOME (not $KOI_HOME) and races against parallel testers. Always derive
-# SESSION_ID from the TUI banner and build the path explicitly.
+# All commands below assume §1.3 envs are exported: KOI_HOME, WORKTREE, TESTER_ID, etc.
+# DO NOT use `ls -t ~/.koi/sessions/*.jsonl | head -1` — that resolves to the REAL
+# user HOME (not the isolated $KOI_HOME) and races against other testers.
+# Using `ls -t` inside $KOI_HOME is safe because each tester has a private HOME
+# per §1.5 (HOME=$KOI_HOME).
 
-# Derive session id from the capture (same pattern as §2.4)
-SESSION_ID=$(grep -oE 'session[[:space:]]*id[^[:alnum:]]*[A-Za-z0-9_-]+' "$CAPTURE_FILE" | head -1 | awk '{print $NF}')
-SESSION_FILE="$KOI_HOME/.koi/sessions/${SESSION_ID}.jsonl"
+# Newest transcript in this tester's isolated sessions dir (post §1.7 reset)
+SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl 2>/dev/null | head -1)
 
 # Tail the current tester's transcript (flat file, per-tester HOME)
 tail -f "$SESSION_FILE"
