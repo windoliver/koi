@@ -29,7 +29,6 @@
  */
 
 import type { AgentId, KoiError, ManagedTaskBoard, Task, TaskItemId } from "@koi/core";
-import { isTerminalTaskStatus } from "@koi/core";
 
 /**
  * Error codes that indicate a per-task state change rather than store degradation.
@@ -122,19 +121,18 @@ export async function recoverOrphanedTasks(
 // future attempt to re-delegate it (`task_delegate` rejects ANY task that
 // already has a `delegatedTo` key set, regardless of type or value).
 //
-// **Ordering is intentionally order-independent.** This helper scans every
-// non-terminal task (both `pending` AND `in_progress`) with a `delegatedTo`
-// key, not only pending tasks, because:
+// **Scope: pending tasks only.** The board layer (`@koi/task-board`)
+// enforces the invariant that `delegatedTo` is a pending-only marker by
+// stripping it at every entry to / exit from `in_progress` (assign,
+// unassign, retryable fail, snapshot-load normalization). Any in_progress
+// task the board hands us has already shed its delegation, and any
+// in_progress → pending transition — including `unassign` triggered by
+// `recoverOrphanedTasks` — strips the marker at the board level. This
+// helper's scope is therefore limited to pending tasks that were delegated
+// and never claimed.
 //
-//   1. `assign()` moves a delegated task to `in_progress` WITHOUT clearing
-//      metadata.delegatedTo — the marker persists.
-//   2. `unassign()` (used by `recoverOrphanedTasks`) also preserves metadata.
-//   3. So if a child claimed a delegation and then crashed, the task's
-//      `delegatedTo` is still set even after orphan recovery runs.
-//
-// A "pending-only" scan would miss those tasks if this helper runs before
-// orphan recovery, leaving them permanently undelegatable. Scanning all
-// non-terminal tasks fixes the ordering sensitivity.
+// Composition is order-independent: run this helper and `recoverOrphanedTasks`
+// in any order, any number of times, and the end state is the same.
 //
 // Malformed values (non-string, empty string, null) are ALSO cleared because
 // `task_delegate` rejects any present `delegatedTo` key. A legacy/corrupted
@@ -144,9 +142,8 @@ export async function recoverOrphanedTasks(
 export interface StaleDelegationResult {
   /**
    * Task IDs whose `metadata.delegatedTo` was cleared. Each task keeps its
-   * original status (`pending` or `in_progress`) — only the delegation marker
-   * is removed. Callers may now re-delegate pending tasks via a fresh
-   * `task_delegate` call.
+   * `pending` status — only the delegation marker is removed. Callers may
+   * now re-delegate via a fresh `task_delegate` call.
    */
   readonly cleared: readonly TaskItemId[];
   /**
@@ -157,63 +154,32 @@ export interface StaleDelegationResult {
 }
 
 /**
- * Predicate: should this task's `metadata.delegatedTo` be cleared?
+ * Predicate: should this pending task's `metadata.delegatedTo` be cleared?
  *
- * Skips terminal tasks (completed/failed/killed) because the board rejects
- * update() on those, and the delegation history is harmless there anyway.
+ * Scope is pending-only: the board layer strips `delegatedTo` on every
+ * in_progress entry/exit, so in_progress tasks never have a marker for
+ * this helper to worry about.
  *
- * **In_progress tasks** are cleared only when `recoverOrphanedTasks()` will
- * actually requeue them (i.e., the assignee is NOT the current coordinator).
- * This matters for fail-stop correctness: if we included coordinator-owned
- * in_progress tasks and the store failed mid-pass on one of them, later
- * pending stale delegations would be stranded. Filtering to the same orphan
- * set keeps the two helpers composable.
- *
- * **Pending tasks** use the normal per-task liveness check against
- * `delegatedTo`. A legitimate in-flight delegation to a live worker is
- * preserved; a stale delegation to a dead worker is cleared.
- *
- * **Malformed markers** (non-string, null, empty string) are cleared
- * whenever the task would otherwise be in scope (pending OR non-coordinator
- * in_progress), because `task_delegate` rejects any present `delegatedTo`
- * key regardless of type.
- *
- * The hijack case from round 2 (delegate to A, claim by B) is still
- * covered: B-owned tasks are by definition non-coordinator, so the
- * in_progress branch fires and the marker is cleared.
+ * Clears when:
+ *   - the marker is malformed (non-string, null, empty) — `task_delegate`
+ *     rejects any present key regardless of type, so a legacy corrupted
+ *     value would still block delegation
+ *   - the marker is a well-formed string but the referenced agent is not
+ *     in `liveAgentIds` (i.e., the delegated child is gone)
  */
-function needsClear(
-  task: Task,
-  liveAgentIds: ReadonlySet<string>,
-  coordinatorAgentId: AgentId,
-): boolean {
-  if (isTerminalTaskStatus(task.status)) return false;
+function needsClear(task: Task, liveAgentIds: ReadonlySet<string>): boolean {
+  if (task.status !== "pending") return false;
   const metadata = task.metadata;
   if (metadata === undefined || !("delegatedTo" in metadata)) return false;
   const value = metadata.delegatedTo;
-
-  if (task.status === "in_progress") {
-    // Scope cleanup to the same orphan set recoverOrphanedTasks will touch.
-    // Coordinator-owned in_progress tasks won't be requeued, so leaving
-    // their delegation markers alone avoids fail-stopping the pass on
-    // unrelated live work.
-    if (task.assignedTo === coordinatorAgentId) return false;
-    // Any remaining in_progress task with a delegatedTo key is about to be
-    // unassigned by orphan recovery — clear the marker (malformed or not)
-    // so the post-requeue task is re-delegatable.
-    return true;
-  }
-
-  // Pending task — malformed markers always need cleanup because
-  // task_delegate rejects any present delegatedTo key regardless of type.
+  // Malformed markers always need cleanup.
   if (typeof value !== "string" || value.length === 0) return true;
-  // Well-formed pending delegation: clear only if the delegated agent
-  // is not in the live set.
+  // Well-formed delegation: clear only if the delegated agent is dead.
   return !liveAgentIds.has(value);
 }
 
 /**
- * Find every non-terminal task whose `metadata.delegatedTo` is stale or
+ * Find every pending task whose `metadata.delegatedTo` is stale or
  * malformed and clear that field so the task can be re-delegated.
  *
  * `liveAgentIds` should contain the IDs of every child agent that the new
@@ -221,51 +187,31 @@ function needsClear(
  * (clear every delegation unconditionally) for a cold restart, or the output
  * of an agent-registry scan for a warm restart.
  *
- * `coordinatorAgentId` is the ID of the current coordinator — the same
- * value passed to `recoverOrphanedTasks()`. It's used to filter in_progress
- * tasks to exactly the orphan set that recovery will requeue, so
- * coordinator-owned live work can't fail-stop the pass on unrelated writes.
- *
  * Per-task races (NOT_FOUND, VALIDATION) are skipped — the task may have
  * completed/failed between the snapshot read and the update. Store-layer
  * errors (EXTERNAL, INTERNAL, CONFLICT) stop processing and are reported
  * in `failed`.
  *
- * **Pending tasks are processed first**, then in_progress orphans. An
- * in_progress update failure therefore cannot strand pending stale
- * delegations — the pending pass has already committed.
- *
- * **Ordering is safe in either direction** with respect to
- * `recoverOrphanedTasks`. The helper scans both `pending` and (orphan-set)
- * in_progress tasks, so a delegation that was claimed by a crashed child
- * is cleared whether this helper runs before or after orphan recovery.
+ * **Order-independent with `recoverOrphanedTasks`.** The board layer
+ * enforces that in_progress tasks never carry `delegatedTo`, and that any
+ * in_progress → pending transition (including unassign from orphan
+ * recovery) strips the marker. So this helper only needs to worry about
+ * pending tasks that were delegated and never claimed.
  */
 export async function recoverStaleDelegations(
   board: ManagedTaskBoard,
   liveAgentIds: ReadonlySet<string>,
-  coordinatorAgentId: AgentId,
 ): Promise<StaleDelegationResult> {
   const snapshot = board.snapshot();
-  // Split candidates by status so we can process pending first. A store
-  // failure on an in_progress task then can't strand pending cleanup.
-  const pendingCandidates: Task[] = [];
-  const inProgressCandidates: Task[] = [];
-  for (const task of snapshot.all()) {
-    if (!needsClear(task, liveAgentIds, coordinatorAgentId)) continue;
-    if (task.status === "pending") {
-      pendingCandidates.push(task);
-    } else {
-      inProgressCandidates.push(task);
-    }
-  }
-  if (pendingCandidates.length === 0 && inProgressCandidates.length === 0) {
+  const stale = snapshot.pending().filter((task) => needsClear(task, liveAgentIds));
+  if (stale.length === 0) {
     return { cleared: [], failed: [] };
   }
 
   const cleared: TaskItemId[] = [];
   const failed: TaskItemId[] = [];
 
-  const clearOne = async (task: Task): Promise<"ok" | "race" | "stop"> => {
+  for (const task of stale) {
     // Build a new metadata object without delegatedTo — preserve every other key.
     const { delegatedTo: _discard, ...nextMetadata } = (task.metadata ?? {}) as Record<
       string,
@@ -273,40 +219,15 @@ export async function recoverStaleDelegations(
     >;
     void _discard;
     const result = await board.update(task.id, { metadata: nextMetadata });
-    if (result.ok) return "ok";
-    if (TASK_RACE_CODES.has(result.error.code)) {
+    if (result.ok) {
+      cleared.push(task.id);
+    } else if (TASK_RACE_CODES.has(result.error.code)) {
       // Benign per-task race — task completed/disappeared between snapshot and patch.
-      return "race";
-    }
-    // Store-layer error — caller decides whether to continue.
-    return "stop";
-  };
-
-  // Pending pass — if this stops, don't touch in_progress (store is sick).
-  for (const task of pendingCandidates) {
-    const outcome = await clearOne(task);
-    if (outcome === "ok") {
-      cleared.push(task.id);
-    } else if (outcome === "race") {
       continue;
     } else {
+      // Store-layer error — stop to avoid further ops on a degraded store.
       failed.push(task.id);
-      return { cleared, failed };
-    }
-  }
-
-  // In_progress pass — already processed every pending task. A failure
-  // here records the failing task and stops, but the pending results
-  // are preserved in `cleared`.
-  for (const task of inProgressCandidates) {
-    const outcome = await clearOne(task);
-    if (outcome === "ok") {
-      cleared.push(task.id);
-    } else if (outcome === "race") {
-      continue;
-    } else {
-      failed.push(task.id);
-      return { cleared, failed };
+      break;
     }
   }
 
