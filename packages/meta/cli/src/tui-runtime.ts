@@ -448,14 +448,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     const raw: unknown = await Bun.file(hooksConfigPath).json();
     const hookResult = loadHooks(raw);
     if (hookResult.ok) {
-      const agentHooks = hookResult.value.filter((h) => h.kind === "agent");
-      if (agentHooks.length > 0) {
+      // Agent hooks require spawnFn, prompt hooks require promptCallFn —
+      // neither is available in the TUI. Filter them out to prevent
+      // createHookMiddleware from throwing.
+      const unsupported = hookResult.value.filter((h) => h.kind === "agent" || h.kind === "prompt");
+      if (unsupported.length > 0) {
         console.warn(
-          `[koi tui] ${agentHooks.length} agent hook(s) skipped (not supported in TUI): ` +
-            agentHooks.map((h) => h.name).join(", "),
+          `[koi tui] ${unsupported.length} hook(s) skipped (agent/prompt not supported in TUI): ` +
+            unsupported.map((h) => h.name).join(", "),
         );
       }
-      loadedHooks = hookResult.value.filter((h) => h.kind !== "agent");
+      loadedHooks = hookResult.value.filter((h) => h.kind !== "agent" && h.kind !== "prompt");
     }
   } catch {
     // Absent or unreadable — silently skip (no hooks configured)
