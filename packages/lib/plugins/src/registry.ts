@@ -5,7 +5,7 @@
  * and path containment on load().
  */
 
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { KoiError, Resolver, Result } from "@koi/core";
 import { assertContained } from "./containment.js";
@@ -177,8 +177,8 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
     // Re-read and re-validate manifest from disk — use fresh manifest for path resolution
     let freshManifest: typeof meta.manifest;
     try {
-      const manifestFile = Bun.file(join(meta.dirPath, "plugin.json"));
-      const rawManifest: unknown = await manifestFile.json();
+      const manifestContent = await readFile(join(meta.dirPath, "plugin.json"), "utf-8");
+      const rawManifest: unknown = JSON.parse(manifestContent);
       const revalidated = validatePluginManifest(rawManifest);
       if (!revalidated.ok) {
         return revalidated;

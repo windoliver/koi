@@ -2,7 +2,7 @@
  * Plugin discovery — scans source roots for plugin.json manifests.
  */
 
-import { readdir, realpath } from "node:fs/promises";
+import { access, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { pluginId } from "./plugin-id.js";
@@ -146,10 +146,13 @@ async function scanRoot(
 
       let raw: unknown;
       try {
-        const file = Bun.file(manifestPath);
-        const exists = await file.exists();
-        if (!exists) return;
-        raw = await file.json();
+        await access(manifestPath);
+      } catch {
+        return; // No plugin.json — not a plugin directory
+      }
+      try {
+        const content = await readFile(manifestPath, "utf-8");
+        raw = JSON.parse(content);
       } catch (err: unknown) {
         // Distinguish I/O errors (retryable) from parse errors (not retryable)
         const isIoError =
@@ -183,6 +186,7 @@ async function scanRoot(
         errors.push({
           dirPath: resolvedDir,
           source: root.source,
+          pluginName: manifest.name,
           error: {
             code: "VALIDATION" as const,
             message: `Plugin directory "${dirName}" does not match manifest name "${manifest.name}"`,
@@ -239,6 +243,7 @@ async function scanRoot(
       errors.push({
         dirPath: dirs.join(", "),
         source: root.source,
+        pluginName: name,
         error: {
           code: "CONFLICT" as const,
           message: `Duplicate plugin name "${name}" in ${root.source} root: ${dirs.join(", ")}`,
@@ -292,11 +297,12 @@ export async function discoverPlugins(
       continue;
     }
 
-    // Record per-plugin failed directory names at this tier's priority
+    // Record per-plugin failed names at this tier's priority
+    // Use pluginName (from validated manifest) when available, fallback to directory basename
     for (const err of result.errors) {
-      const dirName = basename(err.dirPath);
-      if (dirName && !failedNameAtTier.has(dirName)) {
-        failedNameAtTier.set(dirName, err.source);
+      const name = err.pluginName ?? basename(err.dirPath);
+      if (name && !failedNameAtTier.has(name)) {
+        failedNameAtTier.set(name, err.source);
       }
     }
 

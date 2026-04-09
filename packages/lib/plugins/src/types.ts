@@ -82,6 +82,8 @@ export interface PluginError {
   readonly dirPath: string;
   readonly source: PluginSource;
   readonly error: KoiError;
+  /** Plugin name if known (from validated manifest). Used for fail-closed shadowing. */
+  readonly pluginName?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
