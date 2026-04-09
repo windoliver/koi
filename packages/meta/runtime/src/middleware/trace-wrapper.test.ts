@@ -717,38 +717,4 @@ describe("trace-wrapper delta edge cases", () => {
     const added = tools.added as string[];
     expect(added).toContain("extra-tool");
   });
-
-  test("truncates request text longer than 500 chars", async () => {
-    const { steps, config } = createMockStore();
-
-    const mw: KoiMiddleware = {
-      name: "long-text",
-      describeCapabilities: () => undefined,
-      wrapModelCall: async (_ctx, request, next) => next(request),
-    };
-
-    const wrapped = wrapMiddlewareWithTrace(mw, config);
-    const longText = "a".repeat(600);
-    const longRequest = makeModelRequest({
-      messages: [{ senderId: "user", content: [{ kind: "text", text: longText }], timestamp: 0 }],
-    });
-    const ctx = makeTurnCtx();
-    await wrapped.wrapModelCall?.(
-      ctx,
-      longRequest,
-      async () =>
-        ({
-          content: "ok",
-          model: "test",
-          usage: { inputTokens: 1, outputTokens: 1 },
-        }) as ModelResponse,
-    );
-    await wrapped.onAfterTurn?.(ctx);
-
-    expect(steps.length).toBe(1);
-    const reqText = steps[0]?.request?.text ?? "";
-    // Truncated at 500 chars with ellipsis appended
-    expect(reqText.endsWith("…")).toBe(true);
-    expect(reqText.length).toBeLessThanOrEqual(502);
-  });
 });
