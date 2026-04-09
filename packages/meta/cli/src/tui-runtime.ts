@@ -618,16 +618,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
-  // --- Optional middleware: system prompt + session transcript (C3-A) ---
-  // These are provided by the caller (tui-command.ts) so the runtime factory
-  // doesn't need to know about session storage paths or prompt content.
-  // Built here (before spawnToolProvider) so spawned children can inherit the
-  // same system prompt + session middleware as the parent — otherwise children
-  // run with no tool-usage guidance and fall back to raw text completion.
+  // --- System prompt middleware (C3-A) ---
+  // Built before spawnToolProvider so children can inherit it. The system
+  // prompt tells the model about tools and behavioral guidelines; without it
+  // children fall back to raw completion without tool-usage guidance.
+  // NOTE: Session transcript middleware is NOT inherited — it holds a mutable
+  // transcript array that must be isolated per-runtime. Children should never
+  // write into the parent's transcript.
+  const systemPromptMw =
+    config.systemPrompt !== undefined ? createSystemPromptMiddleware(config.systemPrompt) : null;
   const optionalMiddleware = [
-    ...(config.systemPrompt !== undefined
-      ? [createSystemPromptMiddleware(config.systemPrompt)]
-      : []),
+    ...(systemPromptMw !== null ? [systemPromptMw] : []),
     ...(config.session !== undefined
       ? [
           createSessionTranscriptMiddleware({
@@ -701,10 +702,16 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
       },
     },
-    // Inherit the full security + behavioral middleware stack: permissions,
-    // secret-scanning, hooks, system prompt (tool-usage guidance), session
-    // transcript. Ensures spawned children follow the same envelope as the parent.
-    inheritedMiddleware: [permMw, exfiltrationGuardMw, hookMw, ...optionalMiddleware],
+    // Inherit security middleware (permissions, secret-scanning, hooks) + the
+    // system prompt so children have the same envelope as the parent. Session
+    // transcript middleware is intentionally excluded — it holds a mutable
+    // transcript array that must stay isolated per-runtime.
+    inheritedMiddleware: [
+      permMw,
+      exfiltrationGuardMw,
+      hookMw,
+      ...(systemPromptMw !== null ? [systemPromptMw] : []),
+    ],
     // Enable dynamic agent creation: unknown names create ad-hoc agents from
     // the description (Claude Code behavior). Built-in and project/user-defined
     // agents still resolve normally with their authored prompts and ceilings.
