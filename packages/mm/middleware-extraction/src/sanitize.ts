@@ -41,8 +41,14 @@ export function sanitizeForExtraction(
   const redactor = getRedactor();
   const redacted = redactor.redactString(truncated);
 
+  // Escape boundary tokens in content to prevent breakout from untrusted wrapper.
+  // A tool output containing "</untrusted-data>" could otherwise inject instructions.
+  const escaped = redacted.text
+    .replaceAll("</untrusted-data>", "&lt;/untrusted-data&gt;")
+    .replaceAll("<untrusted-data>", "&lt;untrusted-data&gt;");
+
   // Wrap in untrusted-data boundary
-  return `<untrusted-data>\n${redacted.text}\n</untrusted-data>`;
+  return `<untrusted-data>\n${escaped}\n</untrusted-data>`;
 }
 
 /**

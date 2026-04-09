@@ -216,33 +216,25 @@ export async function runDreamConsolidation(config: DreamConfig): Promise<DreamR
         continue;
       }
 
-      // Delete originals first — if any delete fails, skip the merge entirely
-      // to avoid creating duplicates (merged + surviving originals).
-      // let justified: mutable flag tracking whether all deletes succeeded
-      let allDeleted = true;
-      for (const member of cluster.members) {
-        try {
-          await config.deleteMemory(member.id);
-        } catch (_e: unknown) {
-          allDeleted = false;
-          break;
-        }
-      }
-
-      if (!allDeleted) {
-        // Partial delete — leave cluster unchanged to avoid duplication.
-        // Already-deleted members will be absent on next consolidation run.
-        unchangedCount += cluster.members.length;
-        continue;
-      }
-
-      // All originals deleted — safe to write merged memory
+      // Write-ahead: create merged record FIRST, then delete originals.
+      // If write fails, nothing is lost — originals survive intact.
+      // If some deletes fail after write, we have temporary duplicates
+      // (safe: next consolidation run will re-cluster and merge them).
       await config.writeMemory({
         name: mergeResult.name,
         description: mergeResult.description,
         type: clusterType,
         content: mergeResult.content,
       });
+
+      // Best-effort delete of originals — duplicates are safe, data loss is not.
+      for (const member of cluster.members) {
+        try {
+          await config.deleteMemory(member.id);
+        } catch (_e: unknown) {
+          // Swallow — surviving originals will be re-merged on next run
+        }
+      }
 
       mergedCount += 1;
     } catch (_e: unknown) {
