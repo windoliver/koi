@@ -176,8 +176,18 @@ async function scanRoot(
       if (isAvailable) {
         try {
           available = isAvailable(manifest);
-        } catch {
+        } catch (err: unknown) {
           available = false;
+          errors.push({
+            dirPath: resolvedDir,
+            source: root.source,
+            error: {
+              code: "INTERNAL" as const,
+              message: `isAvailable() threw for plugin "${manifest.name}": ${err instanceof Error ? err.message : String(err)}`,
+              retryable: true,
+              context: { pluginName: manifest.name, dirPath: resolvedDir },
+            },
+          });
         }
       }
 

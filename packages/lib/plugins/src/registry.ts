@@ -6,9 +6,11 @@
  */
 
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import type { KoiError, Resolver, Result } from "@koi/core";
 import { assertContained } from "./containment.js";
 import { discoverPlugins } from "./loader.js";
+import { validatePluginManifest } from "./schema.js";
 import type { LoadedPlugin, PluginError, PluginMeta, PluginRegistryConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -136,6 +138,38 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
             message: `Plugin directory changed since discovery (possible symlink swap): ${id}`,
             retryable: false,
             context: { pluginId: id, expected: meta.dirPath, actual: currentDirPath },
+          },
+        };
+      }
+
+      // TOCTOU guard: re-read manifest to detect content changes since discovery
+      try {
+        const manifestFile = Bun.file(join(meta.dirPath, "plugin.json"));
+        const rawManifest: unknown = await manifestFile.json();
+        const revalidated = validatePluginManifest(rawManifest);
+        if (!revalidated.ok) {
+          return revalidated;
+        }
+        // Verify the manifest name hasn't changed (identity check)
+        if (revalidated.value.name !== meta.name) {
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `Plugin manifest identity changed since discovery: expected "${meta.name}", got "${revalidated.value.name}"`,
+              retryable: false,
+              context: { pluginId: id, expected: meta.name, actual: revalidated.value.name },
+            },
+          };
+        }
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin manifest unreadable at load time: ${id}`,
+            retryable: false,
+            context: { pluginId: id, dirPath: meta.dirPath },
           },
         };
       }
