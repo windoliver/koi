@@ -63,6 +63,7 @@ import {
 } from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { runTurn } from "@koi/query-engine";
 import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
@@ -586,37 +587,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
   const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
 
-  // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
-  // Uses createAgentResolver (built-in agent definitions) + createSpawnToolProvider
-  // which wires createAgentSpawnFn under the hood. Each spawned child gets a fresh
-  // transcript-backed adapter so siblings cannot see each other's history.
-  // Permission middleware is inherited so children are subject to the same approval
-  // policy as the parent (no bypass).
-  const { resolver: spawnResolver } = createAgentResolver();
-  // Factory: each child gets its own transcript + adapter (sibling isolation).
-  const createChildAdapter = (): import("@koi/core").EngineAdapter =>
-    createTranscriptAdapter({
-      engineId: `koi-tui-child-${Date.now()}`,
-      modelAdapter,
-      transcript: [],
-      maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
-      maxTurns: DEFAULT_MAX_TURNS,
-    });
-  const spawnToolProvider = createSpawnToolProvider({
-    resolver: spawnResolver,
-    spawnLedger: createInMemorySpawnLedger(5),
-    adapter: createChildAdapter(),
-    manifestTemplate: {
-      name: "spawned-agent",
-      version: "0.0.0",
-      description: "Spawned sub-agent",
-      model: { name: config.modelName },
-    },
-    // Inherit permission middleware so children are gated by the same approval
-    // handler as the parent — prevents spawn from bypassing tool permissions.
-    inheritedMiddleware: [permMw],
-  });
-
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
   const engineAdapter = createTranscriptAdapter({
@@ -633,6 +603,56 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
+
+  // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
+  // Uses createAgentResolver (built-in agent definitions) + createSpawnToolProvider.
+  // The child adapter creates a fresh context per stream() call (no shared transcript)
+  // so siblings cannot see each other's history. Security middleware is inherited
+  // so children have the same approval + secret-scanning policy as the parent.
+  const { resolver: spawnResolver } = createAgentResolver();
+  const childAdapter: import("@koi/core").EngineAdapter = {
+    engineId: "koi-tui-child",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    stream(input) {
+      const handlers = input.callHandlers;
+      if (handlers === undefined) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers on child agent input" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const messages = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
+      ];
+      return runTurn({
+        callHandlers: handlers,
+        messages,
+        signal: input.signal,
+        maxTurns: DEFAULT_MAX_TURNS,
+      });
+    },
+  };
+  const spawnToolProvider = createSpawnToolProvider({
+    resolver: spawnResolver,
+    spawnLedger: createInMemorySpawnLedger(5),
+    adapter: childAdapter,
+    manifestTemplate: {
+      name: "spawned-agent",
+      version: "0.0.0",
+      description: "Spawned sub-agent",
+      model: { name: config.modelName },
+    },
+    inheritedMiddleware: [permMw, exfiltrationGuardMw],
+  });
 
   // --- Optional middleware: system prompt + session transcript (C3-A) ---
   // These are provided by the caller (tui-command.ts) so the runtime factory
