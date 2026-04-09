@@ -2,10 +2,16 @@
  * Time-travel types — filesystem side-effect journal, backtrack constraints,
  * and per-event trace types for rewind, guided retry, and event-level granularity.
  *
- * Used by L2 middleware packages:
- *   - @koi/middleware-fs-rollback (FileOpRecord, CompensatingOp)
+ * Used by L2 packages:
+ *   - @koi/checkpoint (FileOpRecord, CompensatingOp, SnapshotStatus, SNAPSHOT_STATUS_KEY)
+ *   - @koi/snapshot-store-sqlite (storage adapter for SnapshotChainStore<AgentSnapshot>)
  *   - @koi/middleware-guided-retry (BacktrackReason, BacktrackConstraint)
  *   - @koi/middleware-event-trace (TraceEventKind, TraceEvent, TurnTrace, EventCursor)
+ *
+ * File content is referenced by SHA-256 content hash, never literal bytes — the
+ * actual contents live in a content-addressed blob store managed by the L2
+ * checkpoint package. This keeps L0 free of binary file concerns and lets the
+ * snapshot chain store dedup file content automatically.
  */
 
 import type { SessionId, ToolCallId } from "./ecs.js";
@@ -15,32 +21,93 @@ import type { SessionId, ToolCallId } from "./ecs.js";
 // ---------------------------------------------------------------------------
 
 /** Kind of filesystem operation that can be rewound. */
-export type FileOpKind = "write" | "edit";
+export type FileOpKind = "create" | "edit" | "delete";
 
-/** Record of a single file operation captured during a tool call. */
-export interface FileOpRecord {
+/**
+ * Fields shared by every FileOpRecord variant. Per-kind fields (content
+ * hashes) are added by the discriminated union below.
+ */
+interface FileOpRecordBase {
   /** Identifier of the tool call that produced this operation. */
   readonly callId: ToolCallId;
-  /** Kind of file operation. */
-  readonly kind: FileOpKind;
   /** Absolute path to the affected file. */
   readonly path: string;
-  /** File content before the operation. undefined = file did not exist. */
-  readonly previousContent: string | undefined;
-  /** File content after the operation. */
-  readonly newContent: string;
   /** Which turn this operation occurred in. */
   readonly turnIndex: number;
   /** Index within the event trace for cross-feature correlation. -1 = uncorrelated. */
   readonly eventIndex: number;
   /** Unix timestamp ms when this operation was captured. */
   readonly timestamp: number;
+  /**
+   * Optional shared identifier when a delete + create pair originated as a
+   * rename. Lets the rewind UI present them as one operation.
+   */
+  readonly renameId?: string;
 }
 
-/** Action needed to undo a file operation. */
+/**
+ * Record of a single file operation captured during a tool call.
+ *
+ * Discriminated by `kind`. Content is stored as a SHA-256 hex hash that
+ * dereferences to a blob in the CAS store managed by `@koi/checkpoint`; the
+ * L0 type itself never carries file bytes (so binary files are supported and
+ * large files don't bloat snapshot payloads).
+ *
+ * Renames are modeled as a `delete + create` pair sharing a `renameId` rather
+ * than a fourth `kind: "rename"` — Rule of Three: don't add a primitive until
+ * a third operation needs it.
+ */
+export type FileOpRecord =
+  | (FileOpRecordBase & {
+      readonly kind: "create";
+      /** SHA-256 hex of the file content after creation. */
+      readonly postContentHash: string;
+    })
+  | (FileOpRecordBase & {
+      readonly kind: "edit";
+      /** SHA-256 hex of the file content before the edit. */
+      readonly preContentHash: string;
+      /** SHA-256 hex of the file content after the edit. */
+      readonly postContentHash: string;
+    })
+  | (FileOpRecordBase & {
+      readonly kind: "delete";
+      /** SHA-256 hex of the file content before deletion. */
+      readonly preContentHash: string;
+    });
+
+/**
+ * Action needed to undo a file operation.
+ *
+ * `restore` carries a content hash that the L2 checkpoint package looks up in
+ * its CAS blob store. This avoids inlining file bytes in the L0 type and lets
+ * the same hash be reused across many compensating ops without duplication.
+ */
 export type CompensatingOp =
-  | { readonly kind: "restore"; readonly path: string; readonly content: string }
+  | { readonly kind: "restore"; readonly path: string; readonly contentHash: string }
   | { readonly kind: "delete"; readonly path: string };
+
+// ---------------------------------------------------------------------------
+// Feature 1b: Snapshot status (soft-fail contract)
+// ---------------------------------------------------------------------------
+
+/**
+ * Status of a snapshot record. Snapshots are written to the chain store
+ * regardless of whether their capture step fully succeeded; failed captures
+ * are recorded as `incomplete` and skipped on rewind with a user-visible
+ * warning. This is the soft-fail contract documented in `docs/L2/checkpoint.md`
+ * — checkpoint creation MUST NOT abort the agent loop.
+ *
+ * The status is stored in `SnapshotNode.metadata` under `SNAPSHOT_STATUS_KEY`.
+ * Absent or `"complete"` means the snapshot is restorable.
+ */
+export type SnapshotStatus = "complete" | "incomplete";
+
+/**
+ * Metadata key used to store SnapshotStatus on `SnapshotNode.metadata`.
+ * Convention: `koi:` prefix for framework-owned keys.
+ */
+export const SNAPSHOT_STATUS_KEY = "koi:snapshot_status" as const;
 
 // ---------------------------------------------------------------------------
 // Feature 2: Backtrack reason + constraint
