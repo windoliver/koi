@@ -20,6 +20,7 @@ import type {
 } from "@koi/core";
 import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.js";
 import { createDefaultExtractor } from "./extract-regex.js";
+import { countSecrets } from "./sanitize.js";
 import type { ExtractionCandidate, ExtractionMiddlewareConfig } from "./types.js";
 import { EXTRACTION_DEFAULTS } from "./types.js";
 
@@ -76,6 +77,12 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
       // cannot set the record type, so these would be stored without the correct
       // privacy boundary and could leak through team sync.
       if (candidate.memoryType === "user") {
+        continue;
+      }
+
+      // Drop candidates whose content contains secrets — both regex and LLM paths
+      // can produce candidates from raw tool output that may contain credentials.
+      if (countSecrets(candidate.content) > 0) {
         continue;
       }
 

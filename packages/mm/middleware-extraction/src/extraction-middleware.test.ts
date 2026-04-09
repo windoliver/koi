@@ -157,6 +157,20 @@ describe("createExtractionMiddleware", () => {
       expect(memory.stored).toHaveLength(0);
     });
 
+    test("drops extracted learnings that contain secrets", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () => toolResponse("[LEARNING:gotcha] password=SuperSecret12345678"));
+
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Secret-containing candidate should be dropped
+      expect(memory.stored).toHaveLength(0);
+    });
+
     test("passes through response unchanged", async () => {
       const memory = createMockMemory();
       const mw = createExtractionMiddleware({ memory });
