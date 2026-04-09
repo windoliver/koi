@@ -17,8 +17,8 @@ import type {
   TaskKindName,
 } from "@koi/core";
 import { isTerminalTaskStatus } from "@koi/core";
-import { type OutputStreamConfig, createOutputStream } from "./output-stream.js";
 import type { OutputChunk } from "./output-stream.js";
+import { createOutputStream, type OutputStreamConfig } from "./output-stream.js";
 import type { RuntimeTaskBase } from "./task-kinds.js";
 import type { TaskRegistry } from "./task-registry.js";
 
@@ -53,10 +53,7 @@ export interface TaskRunner extends AsyncDisposable {
   /** Get runtime state for a task. */
   readonly get: (taskId: TaskItemId) => RuntimeTaskBase | undefined;
   /** Read output with delta offset. */
-  readonly readOutput: (
-    taskId: TaskItemId,
-    fromOffset?: number,
-  ) => Result<OutputDelta, KoiError>;
+  readonly readOutput: (taskId: TaskItemId, fromOffset?: number) => Result<OutputDelta, KoiError>;
   /** All active (non-terminal) runtime tasks. */
   readonly active: () => readonly RuntimeTaskBase[];
 }
@@ -92,7 +89,10 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     activeTasks.delete(item.id);
 
     // Fire-and-forget cleanup — errors are swallowed since the task is already terminal
-    void registry.get(task.kind)?.stop(task).catch(() => {});
+    void registry
+      .get(task.kind)
+      ?.stop(task)
+      .catch(() => {});
   }
 
   /**
@@ -102,10 +102,15 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
    */
   function enrichConfigWithExitHandler(taskId: TaskItemId, taskConfig: unknown): unknown {
     if (typeof taskConfig !== "object" || taskConfig === null) {
-      return { onExit: (code: number) => { void handleNaturalExit(taskId, code); } };
+      return {
+        onExit: (code: number) => {
+          void handleNaturalExit(taskId, code);
+        },
+      };
     }
     const cfg = taskConfig as Readonly<Record<string, unknown>>;
-    const callerOnExit = typeof cfg.onExit === "function" ? cfg.onExit as (code: number) => void : undefined;
+    const callerOnExit =
+      typeof cfg.onExit === "function" ? (cfg.onExit as (code: number) => void) : undefined;
     return {
       ...cfg,
       onExit: (code: number) => {
@@ -229,9 +234,7 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     }
   };
 
-  const stop = async (
-    taskId: TaskItemId,
-  ): Promise<Result<void, KoiError>> => {
+  const stop = async (taskId: TaskItemId): Promise<Result<void, KoiError>> => {
     const task = activeTasks.get(taskId);
     if (task === undefined) {
       return {
@@ -274,10 +277,7 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     return activeTasks.get(taskId);
   };
 
-  const readOutput = (
-    taskId: TaskItemId,
-    fromOffset?: number,
-  ): Result<OutputDelta, KoiError> => {
+  const readOutput = (taskId: TaskItemId, fromOffset?: number): Result<OutputDelta, KoiError> => {
     const task = activeTasks.get(taskId);
     if (task === undefined) {
       return {

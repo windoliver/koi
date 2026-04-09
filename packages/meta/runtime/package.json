@@ -34,6 +34,7 @@
     "@koi/middleware-report": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
+    "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",

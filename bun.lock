@@ -224,6 +224,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/plugins": {
+      "name": "@koi/plugins",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/query-engine": {
       "name": "@koi/query-engine",
       "version": "0.0.0",
@@ -359,6 +369,7 @@
         "@koi/hooks": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
+        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
@@ -428,6 +439,7 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/permissions": "workspace:*",
+        "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/session": "workspace:*",
@@ -899,6 +911,8 @@
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
+
+    "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
