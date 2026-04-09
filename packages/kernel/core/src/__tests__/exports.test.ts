@@ -156,6 +156,7 @@ import {
   GOVERNANCE_VARIABLES,
   governanceContributorToken,
   isToolCallPayload,
+  isValidTaskKindName,
   MEMORY,
   middlewareToken,
   REPUTATION_LEVEL_ORDER,
@@ -163,8 +164,10 @@ import {
   SANDBOX_REQUIRED_BY_KIND,
   SCHEDULER,
   skillToken,
+  TASK_KIND_NAMES,
   token,
   toolToken,
+  VALID_TASK_KIND_NAMES,
   VALID_TRANSITIONS,
   WEBHOOK,
   ZONE_REGISTRY,
@@ -334,6 +337,9 @@ describe("export inventory", () => {
     expect(ZONE_REGISTRY).toBeDefined();
     expect(zoneId).toBeDefined();
     expect(AGENT_DEFINITION_PRIORITY).toBeDefined();
+    expect(TASK_KIND_NAMES).toBeDefined();
+    expect(VALID_TASK_KIND_NAMES).toBeDefined();
+    expect(isValidTaskKindName).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -359,5 +365,8 @@ describe("export inventory", () => {
     expect(typeof REPUTATION_LEVEL_ORDER).toBe("object");
     expect(typeof ZONE_REGISTRY).toBe("string");
     expect(typeof zoneId).toBe("function");
+    expect(typeof TASK_KIND_NAMES).toBe("object");
+    expect(typeof VALID_TASK_KIND_NAMES).toBe("object");
+    expect(typeof isValidTaskKindName).toBe("function");
   });
 });
