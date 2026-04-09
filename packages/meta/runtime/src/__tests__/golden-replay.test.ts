@@ -6899,7 +6899,9 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
 
 describe("Golden: @koi/mcp-server", () => {
   test("createMcpServer exposes platform tools when capabilities provided", async () => {
-    const { createMcpServer, createPlatformTools } = await import("@koi/mcp-server");
+    const { createMcpServer, createPlatformTools: _createPlatformTools } = await import(
+      "@koi/mcp-server"
+    );
     const { agentId } = await import("@koi/core");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -7943,5 +7945,187 @@ describe("Golden: @koi/plugins", () => {
     // No error steps
     const errorSteps = traj.steps.filter((s) => s.outcome === "error");
     expect(errorSteps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-extraction
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-extraction", () => {
+  test("factory creates middleware with correct name, priority, and capabilities", async () => {
+    const { createExtractionMiddleware, EXTRACTION_DEFAULTS } = await import(
+      "@koi/middleware-extraction"
+    );
+
+    const mockMemory = {
+      async recall() {
+        return [];
+      },
+      async store() {},
+    };
+
+    const mw = createExtractionMiddleware({ memory: mockMemory });
+    expect(mw.name).toBe("koi:extraction");
+    expect(mw.priority).toBe(305);
+
+    // describeCapabilities returns a valid fragment
+    const mockCtx = {
+      session: { agentId: "test", sessionId: "s1", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<typeof mw.describeCapabilities>[0];
+    const caps = mw.describeCapabilities(mockCtx);
+    expect(caps).toBeDefined();
+    expect(caps?.label).toBe("extraction");
+
+    // Defaults are correct
+    expect(EXTRACTION_DEFAULTS.maxSessionOutputs).toBe(20);
+    expect(EXTRACTION_DEFAULTS.maxOutputSizeBytes).toBe(10_000);
+    expect(EXTRACTION_DEFAULTS.extractionMaxTokens).toBe(1024);
+  });
+
+  test("regex extractor finds markers and heuristics with correct category mapping", async () => {
+    const { createDefaultExtractor, mapCategoryToMemoryType } = await import(
+      "@koi/middleware-extraction"
+    );
+
+    // Category mapping preserves fine-grained → coarse type
+    expect(mapCategoryToMemoryType("gotcha")).toBe("feedback");
+    expect(mapCategoryToMemoryType("correction")).toBe("feedback");
+    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
+    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
+    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("context")).toBe("project");
+
+    // Extractor combines markers + heuristics
+    const extractor = createDefaultExtractor();
+    const output = "[LEARNING:gotcha] Never trust user input\navoid: SQL injection";
+    const results = extractor.extract(output);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // All results have required fields
+    for (const r of results) {
+      expect(r.content).toBeTruthy();
+      expect(r.memoryType).toBeTruthy();
+      expect(r.category).toBeTruthy();
+      expect(r.confidence).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/dream
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/dream", () => {
+  test("shouldDream gate logic validates time and session thresholds", async () => {
+    const { shouldDream, DREAM_DEFAULTS } = await import("@koi/dream");
+
+    const now = 1_700_000_000_000;
+    const dayMs = 86_400_000;
+
+    // Both gates pass → true
+    expect(shouldDream({ lastDreamAt: now - dayMs * 2, sessionsSinceDream: 10 }, { now })).toBe(
+      true,
+    );
+
+    // Time gate fails → false
+    expect(shouldDream({ lastDreamAt: now - dayMs * 0.5, sessionsSinceDream: 10 }, { now })).toBe(
+      false,
+    );
+
+    // Session gate fails → false
+    expect(shouldDream({ lastDreamAt: now - dayMs * 2, sessionsSinceDream: 2 }, { now })).toBe(
+      false,
+    );
+
+    // Defaults are correct
+    expect(DREAM_DEFAULTS.minSessionsSinceLastDream).toBe(5);
+    expect(DREAM_DEFAULTS.minTimeSinceLastDreamMs).toBe(86_400_000);
+    expect(DREAM_DEFAULTS.mergeThreshold).toBe(0.5);
+    expect(DREAM_DEFAULTS.pruneThreshold).toBe(0.05);
+  });
+
+  test("jaccard similarity is symmetric and handles edge cases", async () => {
+    const { jaccard } = await import("@koi/dream");
+
+    expect(jaccard("hello world", "hello world")).toBe(1.0);
+    expect(jaccard("", "")).toBe(1.0);
+    expect(jaccard("apple", "")).toBe(0.0);
+    expect(jaccard("apple banana", "cherry dragonfruit")).toBe(0.0);
+
+    // Symmetric
+    const sim1 = jaccard("hello world", "hello there");
+    const sim2 = jaccard("hello there", "hello world");
+    expect(sim1).toBe(sim2);
+    expect(sim1).toBeGreaterThan(0);
+    expect(sim1).toBeLessThan(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/memory-team-sync
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory-team-sync", () => {
+  test("syncTeamMemories returns skipped when no endpoint configured", async () => {
+    const { syncTeamMemories } = await import("@koi/memory-team-sync");
+
+    const result = await syncTeamMemories({
+      listMemories: async () => [],
+      agentId: "test-agent",
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.eligible).toBe(0);
+    expect(result.blocked).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  test("filterMemoryForSync always denies user type and scans for secrets", async () => {
+    const { filterMemoryForSync, DEFAULT_ALLOWED_TYPES } = await import("@koi/memory-team-sync");
+    const { memoryRecordId } = await import("@koi/core");
+
+    // Defaults exclude "user"
+    expect(DEFAULT_ALLOWED_TYPES).not.toContain("user");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("feedback");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("project");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("reference");
+
+    // User type always denied
+    const userMemory = {
+      id: memoryRecordId("u1"),
+      name: "User pref",
+      description: "Private",
+      type: "user" as const,
+      content: "safe content",
+      filePath: "u1.md",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const userResult = filterMemoryForSync(userMemory);
+    expect(userResult.passed).toBe(false);
+    expect(userResult.blocked?.reason).toBe("type_denied");
+
+    // Feedback with clean content passes
+    const feedbackMemory = {
+      ...userMemory,
+      id: memoryRecordId("f1"),
+      type: "feedback" as const,
+    };
+    const feedbackResult = filterMemoryForSync(feedbackMemory);
+    expect(feedbackResult.passed).toBe(true);
+
+    // Feedback with secret is blocked
+    const secretMemory = {
+      ...feedbackMemory,
+      id: memoryRecordId("s1"),
+      content: "password=SuperSecret12345678",
+    };
+    const secretResult = filterMemoryForSync(secretMemory);
+    expect(secretResult.passed).toBe(false);
+    expect(secretResult.blocked?.reason).toBe("secret_detected");
   });
 });
