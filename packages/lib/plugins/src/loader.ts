@@ -225,27 +225,31 @@ async function scanRoot(
     }),
   );
 
-  // Detect same-tier duplicate manifest names — fail closed instead of nondeterministic
-  const seenNames = new Map<string, string>(); // name → dirPath of first occurrence
-  const deduped: PluginMeta[] = [];
+  // Detect same-tier duplicate manifest names — evict ALL copies (fail closed)
+  const nameCounts = new Map<string, string[]>(); // name → list of dirPaths
   for (const plugin of plugins) {
-    const existing = seenNames.get(plugin.name);
-    if (existing !== undefined) {
+    const dirs = nameCounts.get(plugin.name) ?? [];
+    dirs.push(plugin.dirPath);
+    nameCounts.set(plugin.name, dirs);
+  }
+  const duplicateNames = new Set<string>();
+  for (const [name, dirs] of nameCounts) {
+    if (dirs.length > 1) {
+      duplicateNames.add(name);
       errors.push({
-        dirPath: plugin.dirPath,
+        dirPath: dirs.join(", "),
         source: root.source,
         error: {
           code: "CONFLICT" as const,
-          message: `Duplicate plugin name "${plugin.name}" in ${root.source} root (also in ${existing})`,
+          message: `Duplicate plugin name "${name}" in ${root.source} root: ${dirs.join(", ")}`,
           retryable: false,
-          context: { pluginName: plugin.name, firstDir: existing, duplicateDir: plugin.dirPath },
+          context: { pluginName: name, directories: dirs },
         },
       });
-      continue;
     }
-    seenNames.set(plugin.name, plugin.dirPath);
-    deduped.push(plugin);
   }
+  // Filter out all copies of duplicate names
+  const deduped = plugins.filter((p) => !duplicateNames.has(p.name));
 
   return { plugins: deduped, errors, rootFailed: false };
 }

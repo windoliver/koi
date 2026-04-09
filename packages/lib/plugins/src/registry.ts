@@ -6,7 +6,7 @@
  */
 
 import { realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { KoiError, Resolver, Result } from "@koi/core";
 import { assertContained } from "./containment.js";
 import { discoverPlugins } from "./loader.js";
@@ -134,6 +134,31 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
           context: { pluginId: id, expected: meta.dirPath, actual: currentDirPath },
         },
       };
+    }
+
+    // Re-validate source root containment — detect root retargeting
+    const sourceRoot =
+      meta.source === "managed"
+        ? config.managedRoot
+        : meta.source === "user"
+          ? config.userRoot
+          : config.bundledRoot;
+    if (sourceRoot !== undefined && sourceRoot !== null) {
+      const containedInRoot = await assertContained(
+        relative(sourceRoot, meta.dirPath) || ".",
+        sourceRoot,
+      );
+      if (!containedInRoot.ok) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Plugin directory is no longer contained in its source root: ${id}`,
+            retryable: false,
+            context: { pluginId: id, dirPath: meta.dirPath, sourceRoot },
+          },
+        };
+      }
     }
 
     // Re-read and re-validate manifest from disk — use fresh manifest for path resolution
