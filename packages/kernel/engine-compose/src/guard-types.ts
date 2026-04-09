@@ -9,10 +9,19 @@
 export interface IterationLimits {
   /** Maximum number of turns before forced termination. */
   readonly maxTurns: number;
-  /** Maximum total duration in milliseconds. */
+  /** Maximum total duration in milliseconds (hard wall-clock safety cap). */
   readonly maxDurationMs: number;
   /** Maximum total tokens (input + output) across all turns. */
   readonly maxTokens: number;
+  /**
+   * Maximum inactivity duration in milliseconds. The timer resets on every
+   * model stream chunk and tool call start/end. When no activity occurs for
+   * this duration, the agent is terminated.
+   *
+   * Defaults to `maxDurationMs` (300s). Set to `undefined` to disable
+   * inactivity tracking and rely only on wall-clock `maxDurationMs`.
+   */
+  readonly maxInactivityMs?: number | undefined;
 }
 
 export type LoopDetectionKind = "repeat" | "ping_pong" | "no_progress";
@@ -144,6 +153,7 @@ export const DEFAULT_ITERATION_LIMITS: IterationLimits = Object.freeze({
   maxTurns: 25,
   maxDurationMs: 300_000,
   maxTokens: 100_000,
+  maxInactivityMs: 300_000,
 });
 
 export const DEFAULT_LOOP_DETECTION: LoopDetectionConfig = Object.freeze({
