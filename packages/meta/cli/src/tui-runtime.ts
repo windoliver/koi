@@ -695,6 +695,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
   // Three-tier discovery: bundled → user (~/.claude/skills) → project (.claude/skills).
   // Project skills shadow user skills which shadow bundled skills.
+  //
+  // Known limitation: the Skill tool descriptor bakes the skill listing at creation
+  // time. After session reset, resolver.load() sees fresh files but the model still
+  // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
+  // in createKoi — tracked as a known limitation. The system prompt skill snapshot
+  // (built in tui-command.ts) is also static for the process lifetime.
   const skillsRuntime = createSkillsRuntime({
     projectRoot: join(cwd, ".claude", "skills"),
     userRoot: join(homedir(), ".claude", "skills"),
