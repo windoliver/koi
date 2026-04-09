@@ -48,6 +48,7 @@ import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
 import { PromptExecutorAdapter } from "./prompt-adapter.js";
 import { createHookRegistry } from "./registry.js";
+import type { DnsResolverFn } from "./ssrf.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -69,6 +70,11 @@ export interface CreateHookMiddlewareOptions {
   readonly promptCallFn?: PromptModelCaller | undefined;
   /** System-wide env-var policy for allowlisting. */
   readonly envPolicy?: HookEnvPolicy | undefined;
+  /**
+   * Custom DNS resolver for SSRF validation. Defaults to Bun.dns.lookup.
+   * Injectable for testing or environments with custom DNS infrastructure.
+   */
+  readonly dnsResolver?: DnsResolverFn | undefined;
   /**
    * Maximum time (ms) to wait for post-tool hooks before suppressing output.
    * Defaults to `POST_TOOL_HOOK_DEADLINE_MS` (5000ms).
@@ -350,6 +356,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     agentExecutor,
     promptExecutor,
     onExecuted: options.onExecuted,
+    dnsResolver: options.dnsResolver,
   });
 
   /**

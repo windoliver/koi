@@ -19,6 +19,12 @@ export type { EnvExpandResult, EnvRecordExpandResult } from "./env.js";
 export { buildEnvAllowSet, expandEnvVars, expandEnvVarsInRecord, matchEnvGlob } from "./env.js";
 export { executeHooks } from "./executor.js";
 export { matchesHookFilter } from "./filter.js";
+export {
+  checkReservedHeaders,
+  RESERVED_HEADER_NAMES,
+  validateHeaders,
+  validateHeaderValue,
+} from "./header-sanitize.js";
 export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
 export type { LoadHooksResult } from "./loader.js";
@@ -39,3 +45,10 @@ export {
   httpHookSchema,
   promptHookSchema,
 } from "./schema.js";
+export type { DnsResolverFn, DnsValidationResult, PinnedUrl } from "./ssrf.js";
+export {
+  defaultHookDnsResolver,
+  isBlockedHookIp,
+  pinResolvedIp,
+  resolveAndValidateHookUrl,
+} from "./ssrf.js";
