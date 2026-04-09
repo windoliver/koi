@@ -109,6 +109,19 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
       };
     }
 
+    // Unavailable plugins occupy their name slot but cannot be loaded — no FS access
+    if (!meta.available) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Plugin not found: ${id}`,
+          retryable: false,
+          context: { pluginId: id },
+        },
+      };
+    }
+
     // TOCTOU guard: re-resolve the plugin directory to detect post-discovery swaps
     let currentDirPath: string;
     try {

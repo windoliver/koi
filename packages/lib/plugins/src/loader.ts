@@ -317,9 +317,7 @@ export async function discoverPlugins(
         continue;
       }
 
-      // Only available plugins can win the slot — unavailable ones don't shadow lower tiers
-      if (!plugin.available) continue;
-
+      // Unavailable plugins still occupy their name slot to prevent lower-tier takeover
       const existing = byName.get(plugin.name);
       if (existing === undefined || PRIORITY[plugin.source] < PRIORITY[existing.source]) {
         byName.set(plugin.name, plugin);

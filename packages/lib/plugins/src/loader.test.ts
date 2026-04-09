@@ -128,7 +128,7 @@ describe("discoverPlugins", () => {
     }
   });
 
-  test("isAvailable() false excludes plugin from results", async () => {
+  test("isAvailable() false marks plugin as unavailable but keeps it in results", async () => {
     await writePlugin(bundledRoot, "plugin-a", MANIFEST_A);
     await writePlugin(bundledRoot, "plugin-b", MANIFEST_B);
 
@@ -138,10 +138,12 @@ describe("discoverPlugins", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // Unavailable plugins are excluded from the result
-      expect(result.value.plugins).toHaveLength(1);
-      expect(result.value.plugins[0]?.name).toBe("plugin-b");
-      expect(result.value.plugins[0]?.available).toBe(true);
+      // Both plugins present — unavailable one occupies its slot to prevent lower-tier takeover
+      expect(result.value.plugins).toHaveLength(2);
+      const pluginA = result.value.plugins.find((p) => p.name === "plugin-a");
+      const pluginB = result.value.plugins.find((p) => p.name === "plugin-b");
+      expect(pluginA?.available).toBe(false);
+      expect(pluginB?.available).toBe(true);
     }
   });
 
