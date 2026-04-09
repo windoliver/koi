@@ -5,7 +5,6 @@
  * stack works end-to-end with real process management.
  */
 
-import type { Subprocess } from "bun";
 import type { TaskItemId } from "@koi/core";
 import type { TaskOutputStream } from "../output-stream.js";
 import type { LocalShellTask } from "../task-kinds.js";

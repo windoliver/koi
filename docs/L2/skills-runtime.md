@@ -336,6 +336,7 @@ agentRef.current = runtime.agent;
 - Accepts `Agent | (() => Agent)` — direct reference or lazy thunk
 - `describeCapabilities` returns a fragment listing active skill count and names
 - Passthrough (no copy) when no skills are attached
+- Empty-body skills (e.g., MCP-derived metadata-only entries) are filtered out of `collectSkillContent()` — they contribute to capability discovery but do not inject blank content into the system prompt
 
 ## ComponentProvider Bridge
 

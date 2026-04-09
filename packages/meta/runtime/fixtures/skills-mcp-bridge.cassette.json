@@ -1,0 +1,42 @@
+{
+  "name": "skills-mcp-bridge",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775698832154,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "1"
+    },
+    {
+      "kind": "text_delta",
+      "delta": "0\n"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 14,
+      "outputTokens": 3
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "10\n",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "stop",
+        "responseId": "gen-1775698831-UDnAGtahiUqF731zyGhm",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "10\n"
+          }
+        ],
+        "usage": {
+          "inputTokens": 14,
+          "outputTokens": 3
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+        }
+      }
+    }
+  ]
+}

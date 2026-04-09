@@ -324,6 +324,7 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     cwd: process.cwd(),
     systemPrompt,
     session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
+    skillsRuntime: skillRuntime,
   }).then((handle) => {
     runtimeHandle = handle;
     return handle;

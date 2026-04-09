@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -190,8 +190,8 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
   // FS-6: HWM survives store recreation
   test("HWM preserved across store recreation", async () => {
     const store1 = await createFileTaskBoardStore({ baseDir: testDir });
-    const id1 = await store1.nextId();
-    const id2 = await store1.nextId();
+    const _id1 = await store1.nextId();
+    const _id2 = await store1.nextId();
     const id3 = await store1.nextId();
     await store1.put(createTestTask(id3));
     await store1[Symbol.asyncDispose]();
