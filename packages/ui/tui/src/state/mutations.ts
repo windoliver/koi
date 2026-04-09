@@ -319,8 +319,16 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
     }
 
     case "tool_call_end": {
-      // Mark the block "complete", compute duration from startedAt, and decrement count.
-      // The actual execution output arrives via tool_result (emitted after execution).
+      // tool_call_end fires BEFORE execution (end of argument streaming).
+      // Keep the block in "running" — status transitions to "complete" only
+      // when tool_result arrives. This prevents long-running tools from
+      // showing a misleading green check while still in flight.
+      break;
+    }
+
+    case "tool_result": {
+      // tool_result fires after execution — authoritative completion point.
+      // Mark complete, compute duration, store result, decrement running count.
       const msg = lastAssistant(state);
       const blockIdx = msg ? findToolBlockIdx(msg.blocks, event.callId as string) : -1;
       const existingBlock =
@@ -329,20 +337,15 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
           : undefined;
       const durationMs =
         existingBlock?.startedAt !== undefined ? Date.now() - existingBlock.startedAt : undefined;
-      const patch =
-        durationMs !== undefined
-          ? { status: "complete" as const, durationMs }
-          : { status: "complete" as const };
-      updateToolBlock(state, event.callId as string, patch);
-      (state as { runningToolCount: number }).runningToolCount--;
-      break;
-    }
-
-    case "tool_result": {
-      // tool_result fires after execution — update the block with actual output.
       updateToolBlock(state, event.callId as string, {
+        status: "complete" as const,
         result: capToolResult(event.output),
+        ...(durationMs !== undefined ? { durationMs } : {}),
       });
+      (state as { runningToolCount: number }).runningToolCount = Math.max(
+        0,
+        state.runningToolCount - 1,
+      );
       break;
     }
 

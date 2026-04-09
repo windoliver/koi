@@ -435,30 +435,30 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
     }
 
     case "tool_call_end": {
-      // tool_call_end fires when the model finishes generating the call (before
-      // execution). Mark the block "complete", compute duration from startedAt,
-      // and decrement the running count.
-      // The actual execution output arrives via tool_result (emitted after execution).
+      // tool_call_end fires when the model finishes generating the call,
+      // BEFORE execution. Keep the block in "running" state so users see
+      // accurate lifecycle feedback for long-running tools (Bash, web_fetch).
+      // Status transitions to "complete" only when tool_result arrives.
+      return state;
+    }
+
+    case "tool_result": {
+      // tool_result fires after the tool finishes executing — this is the
+      // authoritative completion point. Mark the block complete, capture
+      // duration from startedAt, store the result, and decrement running count.
       const found = findLastAssistant(state.messages);
       const tool = found ? findToolBlock(found.msg.blocks, event.callId as string) : undefined;
       const durationMs =
         tool?.block.startedAt !== undefined ? Date.now() - tool.block.startedAt : undefined;
-      const patch =
-        durationMs !== undefined
-          ? { status: "complete" as const, durationMs }
-          : { status: "complete" as const };
+      const patch: Partial<ToolCallBlock> = {
+        status: "complete" as const,
+        result: capToolResult(event.output),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      };
       return {
         ...updateToolBlock(state, event.callId as string, patch),
-        runningToolCount: state.runningToolCount - 1,
+        runningToolCount: Math.max(0, state.runningToolCount - 1),
       };
-    }
-
-    case "tool_result": {
-      // tool_result fires after the tool finishes executing — this carries the
-      // actual output the user wants to see. Update the (already-complete) block.
-      return updateToolBlock(state, event.callId as string, {
-        result: capToolResult(event.output),
-      });
     }
 
     // ----- Spawn visualization -----

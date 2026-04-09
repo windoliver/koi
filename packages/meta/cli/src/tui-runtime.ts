@@ -657,6 +657,15 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       version: "0.0.0",
       description: "Spawned sub-agent",
       model: { name: config.modelName },
+      // Restrictive ceiling for dynamic (ad-hoc) agents: read-only tools only.
+      // Built-in agents (researcher, coder, etc.) override this via their own
+      // definition.manifest.selfCeiling which takes precedence in the merge.
+      // Dynamic agents (unknown names via allowDynamicAgents) inherit this ceiling
+      // so they can't escalate to Bash/fs_write/fs_edit/web_fetch without an
+      // authored definition explicitly granting those tools.
+      selfCeiling: {
+        tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
+      },
     },
     // Inherit the full security middleware stack so children are subject to the
     // same approval, secret-scanning, and hook guardrails as the parent.

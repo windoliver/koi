@@ -274,7 +274,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_start args without any deltas are preserved through tool_call_end", () => {
+  test("tool_call_start args without any deltas are preserved through tool_result", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
@@ -296,14 +296,22 @@ describe("reduce — engine_event — tool_call", () => {
         result: { files: ["a.ts"] },
       }),
     );
+    // tool_result marks complete — this is the authoritative completion event.
+    next = reduce(
+      next,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { files: ["a.ts"] },
+      }),
+    );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
         expect(block.args).toBe('{"dir":"."}');
-        // tool_call_end marks complete; result arrives via tool_result event
-        expect(block.result).toBeUndefined();
+        expect(block.result).toBeDefined();
       }
     }
   });
@@ -332,7 +340,10 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_end marks tool as complete (result arrives later via tool_result)", () => {
+  test("tool_call_end keeps tool running (completion happens on tool_result)", () => {
+    // tool_call_end fires BEFORE execution (end of arg streaming). The block
+    // must stay in "running" state so long-running tools don't appear complete
+    // while still executing. tool_result is the authoritative completion event.
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "tool_call",
@@ -359,11 +370,46 @@ describe("reduce — engine_event — tool_call", () => {
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.status).toBe("complete");
-        expect(block.result).toBeUndefined(); // result not yet arrived
+        expect(block.status).toBe("running"); // still running until tool_result
+        expect(block.result).toBeUndefined();
         expect(block.args).toBe('{"dir":"."}'); // args preserved
       }
     }
+  });
+
+  test("tool_result marks tool as complete with result and duration", () => {
+    const startedAt = Date.now() - 100;
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "running",
+        startedAt,
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      runningToolCount: 1,
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: "file1\nfile2",
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("complete");
+        expect(block.result).toBeDefined();
+        expect(block.durationMs).toBeGreaterThanOrEqual(100);
+      }
+    }
+    expect(next.runningToolCount).toBe(0);
   });
 
   test("interleaved text_delta and tool_call_delta accumulate to separate blocks", () => {
@@ -474,6 +520,15 @@ describe("reduce — engine_event — full lifecycle", () => {
         result: { content: "file contents" },
       }),
     );
+    // tool_result fires after execution — this is the authoritative completion event
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { content: "file contents" },
+      }),
+    );
 
     // 5. Post-tool text
     state = reduce(state, engineEvent({ kind: "text_delta", delta: "Here's what I found." }));
@@ -500,8 +555,8 @@ describe("reduce — engine_event — full lifecycle", () => {
         expect(b2.toolName).toBe("read_file");
         expect(b2.status).toBe("complete");
         expect(b2.args).toBe('{"path":"src/index.ts"}');
-        // result arrives via tool_result (not tool_call_end), so absent in this lifecycle
-        expect(b2.result).toBeUndefined();
+        // tool_result populated the result field
+        expect(b2.result).toBeDefined();
       }
 
       expect(b3?.kind).toBe("text");
