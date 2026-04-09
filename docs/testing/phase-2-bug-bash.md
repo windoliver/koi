@@ -216,7 +216,7 @@ Body:
 2. Reset state (§1.7)
 3. tmux send-keys … '<exact query>'
 **TUI capture**: <paste or attach $CAPTURE_FILE (per-tester path from §1.3)>
-**Session transcript**: <attach $SESSION_FILE — the flat .jsonl file from ~/.koi/sessions/>
+**Session transcript**: <attach $SESSION_FILE — the flat .jsonl file from $KOI_HOME/.koi/sessions/, per §2.4>
 **Trajectory**: in-memory only; omit unless you can dump via a test harness or golden replay
 **Severity**: blocker / major / minor / nit
 Labels: bug, phase-2, bug-bash
@@ -246,7 +246,7 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 
 #### A2. Session resume via TUI session selector
 **Tags**: session, tui, harness, `resumeForSession`
-**Prereqs**: complete A1 first; note the session id printed by the TUI banner (or derive from the flat `~/.koi/sessions/<id>.jsonl` filename)
+**Prereqs**: complete A1 first; note the session id printed by the TUI banner (or derive from the flat `$KOI_HOME/.koi/sessions/<id>.jsonl` filename)
 **Action**: kill the TUI tmux session, relaunch with `bun run packages/meta/cli/src/bin.ts tui`, and use the in-TUI session selector UI to pick the earlier session. (`koi start --resume <id>` is currently stubbed and returns `NOT_READY` — do NOT use the `start` command for resume; use the TUI selector.)
 **User query** (after resume): `What did we just talk about?`
 **Expected**: agent references the previous turn's content (Bun / TypeScript)
@@ -362,21 +362,22 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Expected**: bash runs `bun test` without prompt (allow-list match)
 **Pass**: no approval prompt; tool executes
 
-#### E2. Permission ask-list triggers prompt
-**Tags**: permissions, ask-user tool, channel-cli
-**Setup**: permission rule with `verdict: 'ask'` on `edit` tool
+#### E2. Permission approval UI (TUI channel-level, not via `AskUserQuestion` tool)
+**Tags**: permissions, channel-level approval UI, tui-runtime permission handler
+**Note**: the `AskUserQuestion` tool is NOT registered in `createTuiRuntime()`. Permission prompts in the TUI come from the channel/runtime approval handler, not from the tool surface. This scenario exercises that runtime path.
+**Setup**: permission rule with a verdict that triggers an interactive prompt on the `fs_edit` tool
 **User query**: `Fix the typo in README.md (change 'Fixture' to 'Fixtures').`
-**Expected**: TUI prompts for approval before the edit; user approves; edit applies
-**Verify**: session JSONL shows `permission.asked` then `permission.granted`
-**Pass**: approval prompt appears in TUI; user input accepted
-**Watch**: prompt hanging the agent loop; double-prompting; approval not persisted within session
+**Expected**: TUI displays an approval prompt; after the user approves, the edit applies
+**Verify**: transcript shows a tool_call for `fs_edit` followed by a tool_result indicating the approved edit; no `AskUserQuestion` tool_call appears
+**Pass**: approval prompt renders in TUI; user input accepted; edit completes
+**Watch**: prompt hanging the agent loop; double-prompting; approval not persisted within session; accidental dependency on the tool-surface `AskUserQuestion` (which is not wired)
 
 #### E3. Pre-tool-use command hook
 **Tags**: hooks (command executor), hooks lifecycle, hook-prompt
-**Setup**: hook config that runs `echo "pre-tool-use: $TOOL_NAME" >> /tmp/hook-log.txt` before every tool call
-**User query**: `Read src/math.ts and then write a summary to /tmp/summary.txt.`
+**Setup**: hook config written to `$KOI_HOME/.koi/hooks.json` that runs `echo "pre-tool-use: $TOOL_NAME" >> "$HOOK_LOG"` before every tool call (`$HOOK_LOG` is the per-tester path from §1.3).
+**User query**: `Read src/math.ts and then write a summary to $FIXTURE/summary.txt.`
 **Expected**: both tool calls fire; hook log captures both
-**Verify**: `cat /tmp/hook-log.txt` shows at least 2 entries with tool names
+**Verify**: `cat "$HOOK_LOG"` shows at least 2 entries with tool names
 **Pass**: hook fires in correct order; agent loop not blocked by hook
 **Watch**: hook output leaking into agent context; hook failures crashing the turn; env var not set
 
@@ -486,15 +487,16 @@ bun test --filter=@koi/spawn-tools
 **Pass**: parallel spawn code paths have concrete test coverage; any coverage gap is tracked explicitly
 **Watch**: tests that fake concurrency with sequential `await` in a loop; race conditions in shared task-board state not covered
 
-#### H3. Plan mode (read-only enforcement)
+#### H3. Plan mode (read-only enforcement) — **not currently in TUI; covered via test suite**
 **Tags**: plan-mode tool, permissions scoping
-**User query**: enter plan mode (via the plan-mode tool); then `Plan how to add a divide function to src/math.ts.`
-**Expected**: agent produces a plan; cannot edit files while in plan mode
-**Attempt**: while still in plan mode, ask `Go ahead and edit the file to add it.`
-**Expected**: edit tool is denied (plan mode is read-only); agent surfaces the denial to the user and asks to exit plan mode first
-**Verify**: no writes to src/math.ts in the fixture
-**Pass**: plan mode is honored; agent provides clear error
-**Watch**: plan mode leaking writes via bash (`echo >>`); plan mode persisting after exit; plan-mode exit tool missing
+**Status**: `createTuiRuntime()` does NOT register `EnterPlanMode` or `ExitPlanMode`. The TUI cannot enter plan mode at all. `packages/lib/tools-builtin/src/tools/plan-mode.ts` exists but is not wired into the TUI surface.
+**Action**:
+```bash
+bun test --filter=@koi/tools-builtin    # covers plan-mode tool factory + read-only gate
+```
+**TUI coverage**: N/A until `EnterPlanMode`/`ExitPlanMode` are wired into `createTuiRuntime()` alongside a permission backend that can enforce the gate. Track as a `missing-coverage` issue.
+**Pass**: tool factory tests pass; scope semantics are unit-tested.
+**Watch**: tests that only cover the tool shape without exercising the permission denial path.
 
 ---
 
@@ -632,30 +634,38 @@ EOF
 **Verify**: `cat /tmp/koi-test.txt` == "hello"
 **Pass**: file exists with correct content
 
-#### M2. fs-nexus local transport, single local mount
-**Tags**: fs-nexus local transport, Python bridge, nexus-filesystem-backend
-**Setup**: config uses `createLocalTransport({ mountUri: "local://$FIXTURE" })` (per-tester fixture from §1.3)
-**User query**: `Create a file named greeting.txt with content "hi" at the root of the mount.`
-**Expected**: file written via the Python bridge → nexus-fs → local filesystem; NOT through the direct fs-local backend
-**Verify**: `cat $FIXTURE/greeting.txt` == "hi"; trajectory shows a `write` RPC call going through fs-nexus, not fs-local
-**Pass**: round-trip through the bridge works; startup reports the mount in `transport.mounts`
-**Watch**: silent fallback to fs-local on bridge spawn failure; stdin pipe buffered; Python subprocess orphaned on exit
+> **Important: the TUI runtime hardcodes `createLocalFileSystem(cwd)`** for `fs_read/fs_write/fs_edit` (`packages/meta/cli/src/tui-runtime.ts:576`). It never instantiates `@koi/fs-nexus`, never spawns the Python bridge, and cannot serve multi-mount configurations. The async filesystem resolver also rejects multi-mount local-bridge configs. As a result, M2/M3 and all of Group R below are NOT executable through the TUI — they are covered by the test suite, not by interactive turns.
 
-#### M3. Backend switching mid-session (dual-backend manifest)
+#### M2. fs-nexus local transport — **covered via test suite, not TUI**
+**Tags**: fs-nexus local transport, Python bridge, nexus-filesystem-backend
+**Action**:
+```bash
+bun test --filter=@koi/fs-nexus
+```
+Focus on `local-transport.test.ts` (bridge spawn, stdin JSON-RPC, mount discovery) and `nexus-filesystem-backend.test.ts` (the FileSystemBackend contract).
+**TUI coverage**: N/A — the TUI wires `@koi/fs-local` directly and cannot spawn the bridge.
+**Pass**: tests green.
+**Watch**: tests skipping the bridge path because `python3` isn't installed; flaky subprocess teardown; stdin pipe buffering.
+
+#### M3. Dual-backend manifest — **covered via test suite / runtime package**
 **Tags**: dual-backend filesystem, manifest-driven backend selection, file-resolution
-**Setup**: manifest declares both fs-local and fs-nexus backends with distinct path scopes (e.g., fs-local for `/tmp/scratch`, fs-nexus for `/workspace`)
-**User query**: `Write "a" to /tmp/scratch/a.txt and "b" to /workspace/b.txt.`
-**Expected**: first write routes to fs-local; second routes to fs-nexus
-**Verify**: `/tmp/scratch/a.txt` exists locally; `/workspace/b.txt` exists via Nexus API but NOT in local `/workspace`
-**Pass**: path resolver picks the right backend per operation; no cross-backend bleed
-**Watch**: write appearing on both backends; path resolver falling through to default; permissions evaluated against wrong backend scope
+**Action**:
+```bash
+bun test --filter=@koi/runtime    # covers resolveFileSystemAsync and manifest-driven selection
+bun test --filter=@koi/file-resolution
+```
+**TUI coverage**: N/A — the TUI does not read a dual-backend manifest; `createTuiRuntime()` uses the hardcoded local backend.
+**Pass**: resolver picks the right backend for every test case; no cross-backend bleed.
+**Watch**: resolver falling through to default on misconfigured manifests; tests missing real Nexus side of the dual-backend (they use a fake).
 
 ---
 
-### Group R — Nexus-fs connectors & inline OAuth
+### Group R — Nexus-fs connectors & inline OAuth — **covered via test suite, not TUI**
 
 > This group exercises the bridge auth notification protocol (closed #1438) and multi-mount nexus-fs connectors.
-> **Setup caveat**: connectors that require real OAuth (gdrive, gmail, etc.) need real provider credentials. For CI, use the scripted Python bridge fakes from `packages/lib/fs-nexus/src/local-transport.test.ts` as a reference — each scenario below notes whether it needs a real provider or can run against a fake bridge.
+> **None of Group R is executable through the shipped TUI** — see the Group M note. The TUI does not instantiate the Python bridge or the fs-nexus transport. Every scenario below targets `bun test --filter=@koi/fs-nexus` (or the scripted Python bridge fakes in `packages/lib/fs-nexus/src/local-transport.test.ts`) instead of a TUI turn.
+> The scenario text is retained as a **contract specification**: it documents the behavior the tests should cover. File `bug-bash` + `missing-coverage` issues against `@koi/fs-nexus` for any scenario that lacks a corresponding test.
+> **Setup caveat for real-provider paths**: Gmail / Google Drive OAuth flows need real credentials; use the scripted Python bridge fakes from `local-transport.test.ts` to exercise the bridge auth protocol without hitting real providers.
 
 #### R1. Multi-mount: local + gdrive
 **Tags**: fs-nexus local transport, multi-mount, `mountUri` array
@@ -971,9 +981,10 @@ bun test --filter=@koi/runtime
 | tools-builtin edit | B2, E2 |
 | tools-builtin glob | B2 |
 | tools-builtin grep | B2 |
-| tools-builtin plan-mode | H3 |
-| tools-builtin ask-user | E2 |
-| tools-builtin todo | J1, J2 |
+| tools-builtin plan-mode (`EnterPlanMode`/`ExitPlanMode`) | **not wired in TUI** — covered only via `bun test --filter=@koi/tools-builtin` (see H3 note) |
+| tools-builtin `AskUserQuestion` tool | **not wired in TUI** — covered only via `bun test --filter=@koi/tools-builtin`. Permission prompts in TUI use the runtime approval UI (E2), not this tool. |
+| tools-builtin `TodoWrite` tool | **not wired in TUI** — the TUI registers `task_*` tools from `@koi/task-tools` instead. Cover via `bun test --filter=@koi/tools-builtin`. |
+| `@koi/task-tools` (`task_create`, `task_get`, `task_update`, `task_list`, `task_stop`, `task_output`) | J1, J2 |
 | tools-bash | C1, C2, C3, E3, Q1 |
 | bash-security | C2 |
 | tools-web web-fetch | D1, D2 |
@@ -1064,17 +1075,17 @@ The bug bash is done when:
 
 When multiple testers run in parallel, divide by group to avoid stepping on each other's state:
 
-| Tester | Groups | Tmux session slug |
-|---|---|---|
-| T1 | A, B, C | `<worktree>-bb-t1` |
-| T2 | D, E, F | `<worktree>-bb-t2` |
-| T3 | G, H, I | `<worktree>-bb-t3` |
-| T4 | J, K, L | `<worktree>-bb-t4` |
-| T5 | M, N, O | `<worktree>-bb-t5` |
-| T6 | P, Q | `<worktree>-bb-t6` |
-| T7 | R (nexus-fs connectors + OAuth) | `<worktree>-bb-t7` |
+| Tester | Groups | `TESTER_ID` | Tmux session prefix |
+|---|---|---|---|
+| T1 | A, B, C | `t1` | `<worktree>-t1-…` |
+| T2 | D, E, F | `t2` | `<worktree>-t2-…` |
+| T3 | G, H (test suite), I | `t3` | `<worktree>-t3-…` |
+| T4 | J, K, L | `t4` | `<worktree>-t4-…` |
+| T5 | M (test suite), N, O | `t5` | `<worktree>-t5-…` |
+| T6 | P, Q | `t6` | `<worktree>-t6-…` |
+| T7 | R (test suite for fs-nexus connectors + OAuth) | `t7` | `<worktree>-t7-…` |
 
-> Group R requires either real provider credentials (gdrive, gmail) OR the scripted Python bridge fake patterns from `packages/lib/fs-nexus/src/local-transport.test.ts`. Assign to a tester with access to sandbox credentials or allocate time to set up the fakes.
+> Each tester sets `TESTER_ID` per §1.3 so `$NAMESPACE` is unique. Groups H, M, R are primarily `bun test` suites in this plan — the TUI does not expose subagent spawning, fs-nexus, or the bridge auth flow. The tester assigned to those groups runs tests and files coverage gaps instead of interactive turns.
 
 Each tester uses their own worktree copy (via `git worktree add`) to avoid filesystem and tmux contention.
 
@@ -1083,8 +1094,16 @@ Each tester uses their own worktree copy (via `git worktree add`) to avoid files
 ## 7. Appendix — Quick verification cheatsheet
 
 ```bash
-# Tail the newest session transcript (flat file layout — one .jsonl per session)
-SESSION_FILE=$(ls -t ~/.koi/sessions/*.jsonl 2>/dev/null | head -1)
+# All commands below assume §1.3 envs are exported: KOI_HOME, SESSION_ID, etc.
+# DO NOT use `ls -t ~/.koi/sessions/*.jsonl | head -1` — that resolves to the real
+# user HOME (not $KOI_HOME) and races against parallel testers. Always derive
+# SESSION_ID from the TUI banner and build the path explicitly.
+
+# Derive session id from the capture (same pattern as §2.4)
+SESSION_ID=$(grep -oE 'session[[:space:]]*id[^[:alnum:]]*[A-Za-z0-9_-]+' "$CAPTURE_FILE" | head -1 | awk '{print $NF}')
+SESSION_FILE="$KOI_HOME/.koi/sessions/${SESSION_ID}.jsonl"
+
+# Tail the current tester's transcript (flat file, per-tester HOME)
 tail -f "$SESSION_FILE"
 
 # Role histogram (user / assistant / tool_call / tool_result / system / compaction)
