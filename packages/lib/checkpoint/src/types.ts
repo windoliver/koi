@@ -13,7 +13,7 @@
  * the rewind." That's all this type carries.
  */
 
-import type { FileOpRecord } from "@koi/core";
+import type { FileOpRecord, KoiError, KoiMiddleware, NodeId, SessionId } from "@koi/core";
 
 /**
  * The payload stored in the snapshot chain for each captured turn.
@@ -80,4 +80,65 @@ export interface CheckpointMiddlewareConfig {
  */
 export interface DriftDetector {
   readonly detect: () => Promise<readonly string[]>;
+}
+
+/**
+ * Result of a programmatic rewind operation. Discriminated by `ok` to match
+ * the L0 `Result<T, E>` shape, but local to checkpoint so the success branch
+ * can carry rewind-specific metadata (target node, ops applied, etc.).
+ */
+export type RewindResult =
+  | {
+      readonly ok: true;
+      /** Node the chain head now points at (the new "rewind marker" snapshot). */
+      readonly newHeadNodeId: NodeId;
+      /** The target snapshot the rewind landed on. */
+      readonly targetNodeId: NodeId;
+      /** Number of file operations the restore applied to the filesystem. */
+      readonly opsApplied: number;
+      /** Number of snapshot turns rewound past (length of the path from old head to target). */
+      readonly turnsRewound: number;
+    }
+  | { readonly ok: false; readonly error: KoiError };
+
+/**
+ * The `Checkpoint` interface returned by `createCheckpoint`. Combines the
+ * `KoiMiddleware` (registered with `createKoi` like any other middleware)
+ * with the programmatic `rewind` API.
+ *
+ * Capture and rewind share state via closure inside the factory — do not
+ * try to instantiate the middleware separately from the rewind methods.
+ */
+export interface Checkpoint {
+  /**
+   * The middleware to register with `createKoi`. Hooks `wrapToolCall` to
+   * capture pre/post images of tracked tool calls and `onAfterTurn` to
+   * commit the per-turn snapshot to the chain.
+   */
+  readonly middleware: KoiMiddleware;
+  /**
+   * Rewind a session by `n` turns. Walks `n` snapshots back through the
+   * chain, computes compensating file ops, applies them, and writes a new
+   * "rewind marker" snapshot whose parent is the target.
+   *
+   * If a tool call is currently running for the session, the rewind is
+   * queued and fires when the engine returns to idle. Multiple concurrent
+   * rewind requests serialize per session.
+   *
+   * Returns `{ok: false}` if `n` exceeds the chain length, the chain is
+   * empty, or any restore step fails. The restore is idempotent — re-running
+   * a failed restore converges on the target state.
+   */
+  readonly rewind: (sessionId: SessionId, n: number) => Promise<RewindResult>;
+  /**
+   * Rewind a session to a specific snapshot node. Same semantics as
+   * `rewind(n)` but with an explicit target.
+   */
+  readonly rewindTo: (sessionId: SessionId, targetNodeId: NodeId) => Promise<RewindResult>;
+  /**
+   * Get the current head node ID for a session, or `undefined` if no
+   * snapshots have been captured yet. Useful for the rewind UI to display
+   * "you are at snapshot X of N."
+   */
+  readonly currentHead: (sessionId: SessionId) => Promise<NodeId | undefined>;
 }
