@@ -68,6 +68,32 @@ export function createBrowserTabNewTool(
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }
+
+      // Post-redirect policy check on the committed URL (same as browser_navigate)
+      if (
+        urlResult.value !== undefined &&
+        isUrlAllowed !== undefined &&
+        result.value.url !== urlResult.value
+      ) {
+        const finalScheme = validateUrlScheme(result.value.url);
+        if (!finalScheme.ok) {
+          // Close the tab that landed on a disallowed scheme
+          if (driver.tabClose) await driver.tabClose(result.value.tabId);
+          return {
+            error: `Tab redirected to a disallowed scheme: ${result.value.url}`,
+            code: "PERMISSION",
+          };
+        }
+        const finalAllowed = await isUrlAllowed(result.value.url);
+        if (!finalAllowed) {
+          if (driver.tabClose) await driver.tabClose(result.value.tabId);
+          return {
+            error: `Tab redirected to a disallowed URL: ${result.value.url}`,
+            code: "PERMISSION",
+          };
+        }
+      }
+
       return result.value;
     },
   };

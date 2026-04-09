@@ -33,7 +33,9 @@ export function createStdioTransport(config: ResolvedLspServerConfig): LspTransp
     env: { ...process.env, ...config.env } as Record<string, string>,
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "pipe",
+    // Ignore stderr to prevent backpressure deadlock — chatty servers (e.g., rust-analyzer)
+    // can fill the pipe buffer and block if stderr is never consumed.
+    stderr: "ignore",
   });
 
   const dispose = (): void => {

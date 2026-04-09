@@ -5,7 +5,8 @@
  * performing runtime type narrowing on raw JsonObject args from the LLM.
  */
 
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { JsonObject } from "@koi/core";
 import type { CellType } from "./notebook-parser.js";
 
@@ -26,10 +27,13 @@ export function parsePath(args: JsonObject, key: string, cwd?: string): ParseRes
   if (value.trim().length === 0) {
     return { ok: false, err: { error: `${key} must be a non-empty string`, code: "VALIDATION" } };
   }
-  // Workspace containment: resolve and verify path stays under cwd
+  // Workspace containment: resolve, canonicalize, and verify path stays under cwd.
+  // Uses realpath on the parent directory to defeat symlink escape — the file itself
+  // may not exist yet (for add-cell creating a new notebook), but the parent must.
   if (cwd !== undefined) {
     const resolved = resolve(cwd, value);
     const normalizedCwd = resolve(cwd);
+    // Lexical check first (fast path for non-symlink cases)
     if (!resolved.startsWith(`${normalizedCwd}/`) && resolved !== normalizedCwd) {
       return {
         ok: false,
@@ -38,6 +42,23 @@ export function parsePath(args: JsonObject, key: string, cwd?: string): ParseRes
           code: "VALIDATION",
         },
       };
+    }
+    // Canonical check: resolve symlinks in the parent directory
+    try {
+      const parentDir = dirname(resolved);
+      const canonicalParent = realpathSync(parentDir);
+      const canonicalCwd = realpathSync(normalizedCwd);
+      if (!canonicalParent.startsWith(`${canonicalCwd}/`) && canonicalParent !== canonicalCwd) {
+        return {
+          ok: false,
+          err: {
+            error: `${key} escapes the workspace root via symlink (${canonicalParent} is outside ${canonicalCwd})`,
+            code: "VALIDATION",
+          },
+        };
+      }
+    } catch {
+      // Parent doesn't exist — lexical check above is sufficient
     }
     return { ok: true, value: resolved };
   }
