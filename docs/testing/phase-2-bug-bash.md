@@ -43,7 +43,9 @@ Every stateful resource (HOME, fixture path, tmux session, Nexus port, capture f
 
 ```bash
 # Required envs — set once per shell at the start of the bug bash.
-export WORKTREE=$(basename "$PWD")          # e.g. "polished-painting-hummingbird"
+# Run these from the repo root BEFORE any scenario.
+export REPO_ROOT="$PWD"                     # stable absolute path to the repo/worktree root — used by §1.7 reset
+export WORKTREE=$(basename "$REPO_ROOT")    # e.g. "polished-painting-hummingbird"
 export TESTER_ID=t1                         # pick a distinct id per tester: t1..t9
 export NAMESPACE="${WORKTREE}-${TESTER_ID}"
 
@@ -129,13 +131,19 @@ cd - >/dev/null
 ### 1.7 Reset between scenarios
 
 ```bash
-# Kill and relaunch the TUI (cleanest reset)
+# Kill and relaunch the TUI (cleanest reset). Uses $REPO_ROOT (stable, set in §1.3)
+# instead of $OLDPWD — zsh updates $OLDPWD on every cd, so relying on it after a
+# subshell cd breaks the relaunch on every scenario after the first.
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
-cd "$FIXTURE" && git reset --hard -q && git clean -fdq && cd - >/dev/null
+
+# Reset the fixture in a subshell so the tester's cwd is unchanged.
+( cd "$FIXTURE" && git reset --hard -q && git clean -fdq )
+
 # Clear per-tester transcript + memory state for a fully fresh session.
 rm -rf "$KOI_HOME/.koi/sessions" "$KOI_HOME/.koi/memory"
 mkdir -p "$KOI_HOME/.koi/sessions"
-tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run $OLDPWD/packages/meta/cli/src/bin.ts tui"
+
+tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 ```
 
@@ -291,6 +299,33 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Verify**: `cat $FIXTURE/src/string-utils.ts` exists with valid code; import in math.ts
 **Pass**: new file syntactically correct; no conflicts with existing files
 **Watch**: overwriting existing files without confirmation; wrong module paths; missing `.js` extensions in imports per project convention
+
+#### B4. Notebook cell operations
+**Tags**: `@koi/tool-notebook`, notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
+**Setup**: seed a minimal `.ipynb` in the fixture:
+```bash
+cat > "$FIXTURE/notebook.ipynb" <<'EOF'
+{
+  "cells": [
+    { "cell_type": "markdown", "metadata": {}, "source": ["# Bug bash notebook"] },
+    { "cell_type": "code", "metadata": {}, "source": ["print('hello')"], "outputs": [], "execution_count": null }
+  ],
+  "metadata": { "kernelspec": { "display_name": "Python 3", "language": "python", "name": "python3" } },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
+EOF
+```
+**User query**: `Read notebook.ipynb, then add a code cell that prints "world", then replace the first markdown heading with "# Bug bash v2".`
+**Expected turn sequence**: `notebook_read` → `notebook_add_cell` → `notebook_replace_cell`
+**Follow-up**: `Delete the original hello print cell.`
+**Expected follow-up**: `notebook_delete_cell` tool_call
+**Verify**:
+- `jq -c 'select(.role=="tool_call" and (.content | test("notebook_")))' "$SESSION_FILE"` returns at least 4 entries
+- `jq '.cells | length' "$FIXTURE/notebook.ipynb"` matches the expected count after ops
+- Reading the notebook back shows the new markdown heading and the world cell
+**Pass**: all four notebook tools exercised; notebook remains valid JSON and a valid .ipynb document
+**Watch**: notebook rewritten with lost metadata; cell ids not preserved; `nbformat`/`nbformat_minor` stripped; JSON corruption; binary output fields mangled
 
 ---
 
@@ -502,28 +537,45 @@ bun test --filter=@koi/tools-builtin    # covers plan-mode tool factory + read-o
 
 ### Group I — Skills
 
-#### I1. Skill discovery from disk
-**Tags**: skills-runtime loader, skill-tool
-**Setup**: add a skill file under `~/.koi/skills/hello/SKILL.md` with a simple one-line procedure
-**User query**: `What skills do you have?`
-**Expected**: agent lists available skills including the new one
-**Verify**: trajectory shows skill registry populated
-**Pass**: new skill discoverable without restart (if hot-reload shipped) or after restart
-**Watch**: duplicate skills; skill name collisions; malformed skill files crashing discovery
+> **User skill root is `~/.claude/skills`**, not `~/.koi/skills` (per `tui-runtime.ts:802` and `packages/lib/skills-runtime/src/discover.ts`). Because the TUI is launched with `HOME=$KOI_HOME` (§1.5), the in-process `~` resolves to `$KOI_HOME` — so fixture writes MUST go under `$KOI_HOME/.claude/skills/` from the tester shell, never under the real `~/.claude/skills` of the user. Using a literal `~` in a tester shell command writes to the real user home and will either leak into other sessions or fail silently.
 
-#### I2. Skill invocation
+#### I1. Skill discovery from disk
+**Tags**: skills-runtime loader, skill-tool, user skill root
+**Setup**: create a skill under the per-tester isolated skills root, then reset the TUI so discovery picks it up.
+```bash
+mkdir -p "$KOI_HOME/.claude/skills/hello"
+cat > "$KOI_HOME/.claude/skills/hello/SKILL.md" <<'EOF'
+---
+name: hello
+description: A minimal bug-bash smoke skill.
+---
+
+# Hello
+Respond with "hello from the bug-bash skill".
+EOF
+# Trigger §1.7 reset so the TUI rediscovers skills.
+```
+**User query**: `What skills do you have?`
+**Expected**: agent's answer mentions `hello` in the available skills list
+**Verify**: `tmux capture-pane -t "$KOI_SESSION" -pS -1000 | grep -i hello`
+**Pass**: the new skill is discoverable after restart
+**Watch**: writing to the real user home (literal `~` in the tester shell resolves to the real HOME, not `$KOI_HOME`); duplicate skills shadowing each other; malformed frontmatter crashing discovery; skill-tool descriptor baked at startup and stale after reset (known limitation — flag if it surprises testers)
+
+#### I2. Skill invocation via the Skill tool
 **Tags**: skill-tool, skills-runtime execution
+**Prereq**: I1 complete — `hello` is loaded
 **User query**: `Use the hello skill.`
-**Expected**: agent invokes the skill procedure; output matches skill definition
-**Pass**: skill output returned verbatim
-**Watch**: skill parameter binding; skill tool schema not matching declared inputs
+**Expected**: agent calls the `Skill` tool with `name=hello`; tool output is the skill body
+**Verify**: `jq -c 'select(.role=="tool_call" and (.content | contains("hello")))' "$SESSION_FILE"`
+**Pass**: skill output returned
+**Watch**: skill parameter binding; skill tool schema not matching declared inputs; agent answering from context instead of calling the tool
 
 #### I3. Skill scanner rejects suspicious skill
 **Tags**: skill-scanner (security)
-**Setup**: add a skill that references a suspicious pattern (e.g., `rm -rf`, exfiltrating env vars)
+**Setup**: add a skill under `$KOI_HOME/.claude/skills/bad-skill/SKILL.md` that references a suspicious pattern (e.g., `rm -rf`, exfiltrating env vars). Never place this under the real user home.
 **User query**: `List skills.`
-**Expected**: the suspicious skill is flagged or excluded from the registry with a clear warning
-**Verify**: startup log (TUI capture) mentions the skill was rejected
+**Expected**: the suspicious skill is either flagged or excluded from the registry with a clear warning
+**Verify**: `tmux capture-pane -t "$KOI_SESSION" -pS -2000 | grep -Ei 'scanner|rejected|bad-skill'`
 **Pass**: malicious skill does not appear in the runtime registry
 **Watch**: scanner false-positives on legitimate skills; scanner bypass via encoding/obfuscation
 
@@ -531,20 +583,29 @@ bun test --filter=@koi/tools-builtin    # covers plan-mode tool factory + read-o
 
 ### Group J — Tasks
 
-#### J1. Create task
-**Tags**: tasks CRUD, task-tools, tasks lifecycle
-**User query**: `Create a task to refactor the multiply function in src/math.ts.`
-**Expected**: task created with a unique id; TUI task board shows it in pending state
-**Verify**: `jq '.[] | select(.subject | contains("multiply"))' ~/.koi/tasks.json` or equivalent
-**Pass**: task visible in TUI task panel
+> **The TUI uses `createMemoryTaskBoardStore()` (`tui-runtime.ts:653,997`)** — there is NO `~/.koi/tasks.json` or any on-disk task store. Verification for J1/J2/J3 MUST happen via the session transcript (tool_call / tool_result for `task_*` tools) and the TUI task panel UI, not via filesystem inspection.
 
-#### J2. Task state transitions
-**Tags**: tasks state machine
-**User queries**: create a task → mark it in_progress → mark it completed
-**Expected**: each transition is valid; invalid transitions (e.g., pending → completed without in_progress) are rejected
-**Verify**: trajectory shows the exact sequence of transitions
-**Pass**: state machine honors declared valid transitions
-**Watch**: allowing invalid transitions; completed tasks reverting to pending silently
+#### J1. Create task via `task_create`
+**Tags**: `@koi/task-tools`, task_create, in-memory task board
+**User query**: `Create a task to refactor the multiply function in src/math.ts.`
+**Expected**: agent calls `task_create` with a descriptive subject; TUI task panel updates to show the new task in its initial state
+**Verify**: `jq -c 'select(.role=="tool_call" and (.content | contains("task_create") and contains("multiply")))' "$SESSION_FILE"` returns one match; `tmux capture-pane -t "$KOI_SESSION" -pS -1000 | grep -i multiply` shows the task in the panel
+**Pass**: task visible in TUI task panel
+**Watch**: task_create tool_call missing from transcript; panel not refreshing; task id reused across sessions
+
+#### J2. Task state transitions via `task_update`
+**Tags**: `@koi/task-tools`, task_update, managed task board state machine
+**User queries** (sequential):
+1. `Create a task called "Run the tests" and leave it pending.`
+2. `Mark the "Run the tests" task as in_progress.`
+3. `Mark the "Run the tests" task as completed.`
+**Expected**: each turn produces a `task_update` (or `task_create` for the first) tool_call; transitions respect the state machine (pending → in_progress → completed)
+**Verify**: sequence check via transcript:
+```bash
+jq -r 'select(.role=="tool_call") | .content' "$SESSION_FILE" | grep -oE 'task_(create|update)[^"]*(pending|in_progress|completed)' | head
+```
+**Pass**: transitions happen in declared order; invalid transitions (e.g., pending → completed without in_progress) are rejected by the task board
+**Watch**: allowing invalid transitions; completed tasks reverting to pending silently; duplicate task updates racing
 
 #### J3. Task list in TUI
 **Tags**: task-board, TUI rendering
@@ -990,8 +1051,8 @@ bun test --filter=@koi/runtime
 | tools-web web-fetch | D1, D2 |
 | tools-web url-policy | D2 |
 | tools-web web-search | **not wired in TUI runtime** — covered only via `bun test --filter=@koi/tools-web` (see D3 note) |
-| lsp tool | (add scenario if shipped) |
-| notebook tool | (add scenario if shipped) |
+| lsp tool | **not wired in TUI today** — cover via `bun test --filter=@koi/lsp` if that package is in scope for the bash |
+| `@koi/tool-notebook` (notebook_read/add_cell/replace_cell/delete_cell) | B4 |
 | permissions rule-evaluator | E1, E2, C2 |
 | hooks command executor | E3 |
 | hooks HTTP executor | E4 |
@@ -1058,7 +1119,7 @@ bun test --filter=@koi/runtime
 
 The bug bash is done when:
 
-1. **All Group A–J and R scenarios have been run at least once by one tester**, where H1/H2 are satisfied by running the agent-runtime + spawn-tools test suites (they are not TUI-executable — see the Group H note).
+1. **All Group A–Q and R scenarios have been run at least once by one tester.** Groups H, M, and R are primarily `bun test` suites because the TUI does not expose subagent spawning, fs-nexus, or the bridge auth flow. Groups K–Q (context, MCP, skills, tasks, memory, plugins, filesystem, sandbox, CLI modes, observability, resilience) are REQUIRED — they cannot be skipped. Any group the tester chooses to mark out-of-scope must be justified in the post-bash summary with a `missing-coverage` issue link.
 2. **All P0/blocker bugs filed have been either fixed or triaged** with an owner and a target release.
 3. **Coverage matrix shows every shipped subsystem has at least one green scenario**.
 4. **No subsystem is in "unknown state"** — every row either passed, is a known bug, or is explicitly out of scope for this bash.
