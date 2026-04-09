@@ -134,7 +134,7 @@ describe("createTaskRunner", () => {
     expect(board.startTask).toHaveBeenCalledWith(taskId, AGENT_ID);
   });
 
-  test("start with unknown kind returns NOT_FOUND error", async () => {
+  test("start with unregistered valid kind returns NOT_FOUND error", async () => {
     const registry = createTaskRegistry();
     const runner = createTaskRunner({ board, store, registry, agentId: AGENT_ID });
     const result = await runner.start(taskItemId("task_1"), "dream");
@@ -142,6 +142,22 @@ describe("createTaskRunner", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("start with invalid kind string returns VALIDATION error", async () => {
+    const registry = createTaskRegistry();
+    const runner = createTaskRunner({ board, store, registry, agentId: AGENT_ID });
+    // Simulate boundary input where metadata.kind is an arbitrary string
+    const result = await runner.start(
+      taskItemId("task_1"),
+      "bogus_kind" as import("@koi/core").TaskKindName,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("bogus_kind");
     }
   });
 

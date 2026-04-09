@@ -258,7 +258,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop, doom loop detection (#1593), tool arg type coercion (#1611) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
-| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
+| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |

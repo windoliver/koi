@@ -1071,8 +1071,11 @@ export type {
 export {
   DEFAULT_TASK_BOARD_CONFIG,
   isTerminalTaskStatus,
+  isValidTaskKindName,
   isValidTransition,
+  TASK_KIND_NAMES,
   taskItemId,
+  VALID_TASK_KIND_NAMES,
   VALID_TASK_TRANSITIONS,
 } from "./task-board.js";
 // thread — unified execution model with persistent threads and checkpoints

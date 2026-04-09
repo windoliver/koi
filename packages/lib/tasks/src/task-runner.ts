@@ -16,7 +16,8 @@ import type {
   TaskItemId,
   TaskKindName,
 } from "@koi/core";
-import { isTerminalTaskStatus } from "@koi/core";
+import { isTerminalTaskStatus, isValidTaskKindName } from "@koi/core";
+import { isUnsupportedLifecycle } from "./lifecycles/unsupported.js";
 import type { OutputChunk } from "./output-stream.js";
 import { createOutputStream, type OutputStreamConfig } from "./output-stream.js";
 import type { RuntimeTaskBase } from "./task-kinds.js";
@@ -178,6 +179,20 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     kind: TaskKindName,
     taskConfig?: unknown,
   ): Promise<Result<RuntimeTaskBase, KoiError>> => {
+    // Boundary validation: kind may come from untyped metadata.kind string.
+    // VALIDATION = not a valid TaskKindName at all (boundary issue).
+    // NOT_FOUND = valid kind but no lifecycle registered.
+    if (!isValidTaskKindName(kind)) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Unknown task kind: "${kind}"`,
+          retryable: false,
+        },
+      };
+    }
+
     const lifecycle = registry.get(kind);
     if (lifecycle === undefined) {
       return {
@@ -187,6 +202,23 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
           message: `No lifecycle registered for task kind "${kind}"`,
           retryable: false,
         },
+      };
+    }
+
+    // Reject unsupported kinds with a single atomic board operation.
+    // killIfPending verifies pending status under the mutex, checks kind
+    // match when metadata.kind exists, stores rejection reason, and kills.
+    if (isUnsupportedLifecycle(lifecycle)) {
+      const reason = `Task kind "${kind}" is not yet implemented`;
+      const killResult = await board.killIfPending(taskId, {
+        expectedKind: kind,
+        metadata: { rejectedKind: kind, rejectedReason: reason },
+      });
+      if (!killResult.ok) return killResult;
+
+      return {
+        ok: false,
+        error: { code: "VALIDATION", message: reason, retryable: false },
       };
     }
 
