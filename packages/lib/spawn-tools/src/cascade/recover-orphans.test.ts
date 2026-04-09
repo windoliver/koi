@@ -372,18 +372,45 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(idDead)?.metadata?.delegatedTo).toBeUndefined();
   });
 
-  test("leaves non-pending tasks alone even if they have a delegatedTo", async () => {
+  test("clears delegatedTo on in_progress tasks too (order-independence)", async () => {
+    // Regression for Codex review finding (round 1): `assign()` preserves
+    // `metadata.delegatedTo` when moving pending → in_progress. A pending-only
+    // scan would miss in_progress tasks whose delegation marker is still set,
+    // making this helper order-dependent with recoverOrphanedTasks. Scanning
+    // every non-terminal task fixes the ordering hazard.
     const board = await freshBoard();
     const pendingId = await addDelegatedTask(board, "Pending", "dead-worker");
     const inProgressId = await addDelegatedTask(board, "In progress", "dead-worker");
-    // Start the second one so it becomes in_progress
+    // Start the second one so it becomes in_progress (preserves metadata.delegatedTo)
     await board.assign(inProgressId, agentId("some-agent"));
+    expect(board.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBe("dead-worker");
 
     const result = await recoverStaleDelegations(board, new Set<string>());
-    // Only the pending task is cleared
-    expect(result.cleared).toEqual([pendingId]);
-    // In-progress task still has its metadata — this function doesn't touch it
-    expect(board.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBe("dead-worker");
+    expect(result.failed).toHaveLength(0);
+    expect(result.cleared).toHaveLength(2);
+    const clearedSet = new Set<TaskItemId>(result.cleared);
+    expect(clearedSet.has(pendingId)).toBe(true);
+    expect(clearedSet.has(inProgressId)).toBe(true);
+    // Both tasks' delegatedTo is cleared; in_progress task keeps its status
+    expect(board.snapshot().get(pendingId)?.metadata?.delegatedTo).toBeUndefined();
+    expect(board.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBeUndefined();
+    expect(board.snapshot().get(inProgressId)?.status).toBe("in_progress");
+  });
+
+  test("leaves terminal tasks alone even with a delegatedTo marker", async () => {
+    // update() rejects terminal tasks. We must not attempt to mutate them.
+    const board = await freshBoard();
+    const id = await addDelegatedTask(board, "Will be killed", "dead-worker");
+    // Kill while still pending
+    await board.kill(id);
+    expect(board.snapshot().get(id)?.status).toBe("killed");
+
+    const result = await recoverStaleDelegations(board, new Set<string>());
+    // Killed tasks are skipped — no cleared, no failed
+    expect(result.cleared).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+    // Metadata is untouched (delegatedTo still set, but terminal so harmless)
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("dead-worker");
   });
 
   test("preserves other metadata keys when clearing delegatedTo", async () => {
@@ -411,18 +438,46 @@ describe("recoverStaleDelegations", () => {
     expect(result.failed).toEqual([]);
   });
 
-  test("skips malformed delegatedTo (not a string)", async () => {
+  test("clears malformed delegatedTo values that would still block task_delegate", async () => {
+    // Regression for Codex review finding (round 1): task_delegate rejects any
+    // task where `metadata.delegatedTo !== undefined`, regardless of type. If
+    // a legacy / corrupted store has `delegatedTo: 42` or `delegatedTo: null`,
+    // a recovery pass that treats those as "no delegation" would report
+    // success while leaving the task permanently undelegatable.
     const board = await freshBoard();
-    const id = await board.nextId();
-    // Plant a non-string delegatedTo via the board (test-only edge case)
+    const numberId = await board.nextId();
+    const nullId = await board.nextId();
+    const emptyStringId = await board.nextId();
     await board.add({
-      id,
-      description: "Malformed",
+      id: numberId,
+      description: "Number marker",
       metadata: { delegatedTo: 42 as unknown as string },
     });
+    await board.add({
+      id: nullId,
+      description: "Null marker",
+      metadata: { delegatedTo: null as unknown as string },
+    });
+    await board.add({
+      id: emptyStringId,
+      description: "Empty string marker",
+      metadata: { delegatedTo: "" },
+    });
+
     const result = await recoverStaleDelegations(board, new Set<string>());
-    // Malformed values are treated as "no delegation" → skipped
-    expect(result.cleared).toEqual([]);
+    // All three malformed markers are cleared — task_delegate would otherwise
+    // reject these tasks as "already delegated" regardless of the value's type.
+    expect(result.failed).toHaveLength(0);
+    expect(result.cleared).toHaveLength(3);
+    const clearedSet = new Set<TaskItemId>(result.cleared);
+    expect(clearedSet.has(numberId)).toBe(true);
+    expect(clearedSet.has(nullId)).toBe(true);
+    expect(clearedSet.has(emptyStringId)).toBe(true);
+    // And all three now have no delegatedTo key at all
+    for (const id of [numberId, nullId, emptyStringId]) {
+      const metadata = board.snapshot().get(id)?.metadata;
+      expect(metadata !== undefined && "delegatedTo" in metadata).toBe(false);
+    }
   });
 
   test("stops on store-layer error and reports failed ID", async () => {
@@ -512,5 +567,86 @@ describe("recoverStaleDelegations", () => {
     expect(staleResult.cleared).toHaveLength(2);
     expect(board.snapshot().get(idC)?.metadata?.delegatedTo).toBeUndefined();
     expect(board.snapshot().get(idD)?.metadata?.delegatedTo).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Real-flow regression for Codex review finding (round 1)
+  // ---------------------------------------------------------------------------
+  //
+  // The bug: task_delegate → task_update(in_progress) preserves
+  // metadata.delegatedTo on the in_progress task. If recoverStaleDelegations
+  // scanned only pending() tasks and ran BEFORE recoverOrphanedTasks, the
+  // in_progress delegation marker would survive unassign() and leave the
+  // task permanently undelegatable. The fix scans all non-terminal tasks so
+  // order doesn't matter.
+
+  test("real flow (delegate → in_progress → recovery) — task is re-delegatable regardless of order", async () => {
+    // "Real flow" means we exercise the same calls that task_delegate + task_update
+    // would make: board.update with metadata.delegatedTo, then board.assign.
+    const board = await freshBoard();
+    const id = await board.nextId();
+    await board.add({ id, description: "Work to be dispatched" });
+
+    // Step 1: task_delegate records intent
+    await board.update(id, { metadata: { delegatedTo: "child-worker" } });
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("child-worker");
+
+    // Step 2: child claims the task via task_update(in_progress) — under the
+    // hood this is board.assign. metadata.delegatedTo is NOT cleared by assign.
+    await board.assign(id, agentId("child-worker"));
+    expect(board.snapshot().get(id)?.status).toBe("in_progress");
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("child-worker");
+
+    // Step 3: coordinator crashes. New coordinator restarts and runs recovery
+    // in the WRONG order (stale-delegations BEFORE orphan-recovery). The fix
+    // means this order must still work end-to-end.
+    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+    expect(staleResult.failed).toHaveLength(0);
+    // in_progress task was picked up and its delegatedTo cleared
+    expect(staleResult.cleared).toEqual([id]);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
+
+    // Now orphan recovery moves the task back to pending with preserved metadata.
+    const orphanResult = await recoverOrphanedTasks(board, agentId("new-coord"));
+    expect(orphanResult.requeued).toEqual([id]);
+    expect(board.snapshot().get(id)?.status).toBe("pending");
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
+
+    // Step 4: new coordinator re-delegates. This must succeed — task_delegate
+    // rejects tasks that still have a delegatedTo key. If recovery had missed
+    // the in_progress case, this would throw.
+    const reDelegateResult = await board.update(id, {
+      metadata: { delegatedTo: "fresh-worker" },
+    });
+    expect(reDelegateResult.ok).toBe(true);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
+  });
+
+  test("real flow — reverse order (orphan-recovery first) also works", async () => {
+    // Same scenario but orphan-recovery runs FIRST. Both orders must work
+    // because the contract is advertised as order-independent.
+    const board = await freshBoard();
+    const id = await board.nextId();
+    await board.add({ id, description: "Work to be dispatched" });
+    await board.update(id, { metadata: { delegatedTo: "child-worker" } });
+    await board.assign(id, agentId("child-worker"));
+
+    // Orphan recovery runs first — task goes in_progress → pending but still
+    // has delegatedTo marker.
+    const orphanResult = await recoverOrphanedTasks(board, agentId("new-coord"));
+    expect(orphanResult.requeued).toEqual([id]);
+    expect(board.snapshot().get(id)?.status).toBe("pending");
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("child-worker");
+
+    // Stale-delegation cleanup runs second — clears the marker.
+    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+    expect(staleResult.cleared).toEqual([id]);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
+
+    // Re-delegation succeeds.
+    const reDelegateResult = await board.update(id, {
+      metadata: { delegatedTo: "fresh-worker" },
+    });
+    expect(reDelegateResult.ok).toBe(true);
   });
 });
