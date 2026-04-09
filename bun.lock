@@ -391,6 +391,7 @@
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/harness": "workspace:*",
+        "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
