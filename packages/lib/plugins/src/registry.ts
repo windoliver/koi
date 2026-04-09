@@ -66,11 +66,22 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
 
         // Return only available plugins
         return result.value.plugins.filter((p) => p.available);
-      } catch {
-        // Clear cached promise so next call retries
+      } catch (err: unknown) {
+        // Clear cached promise so next call retries — but surface the error
         discoverPromise = undefined;
         cachedPlugins = new Map();
-        cachedErrors = [];
+        cachedErrors = [
+          {
+            dirPath: "",
+            source: "bundled",
+            error: {
+              code: "INTERNAL",
+              message: `Discovery failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+              retryable: true,
+              context: {},
+            },
+          },
+        ];
         return [];
       }
     })();
@@ -94,19 +105,6 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
           message: `Plugin not found: ${id}`,
           retryable: false,
           context: { pluginId: id },
-        },
-      };
-    }
-
-    // Enforce availability gate — unavailable plugins cannot be loaded
-    if (!meta.available) {
-      return {
-        ok: false,
-        error: {
-          code: "PERMISSION",
-          message: `Plugin is not available: ${id}`,
-          retryable: false,
-          context: { pluginId: id, source: meta.source },
         },
       };
     }
@@ -171,6 +169,27 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
       };
     }
 
+    // Re-evaluate availability against the fresh manifest
+    let freshAvailable = true;
+    if (config.isAvailable) {
+      try {
+        freshAvailable = config.isAvailable(freshManifest);
+      } catch {
+        freshAvailable = false;
+      }
+    }
+    if (!freshAvailable) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Plugin is not available (load-time check): ${id}`,
+          retryable: false,
+          context: { pluginId: id, source: meta.source },
+        },
+      };
+    }
+
     // Resolve paths using the fresh manifest (not stale discovery-time manifest)
     const skillPaths: string[] = [];
     for (const relPath of freshManifest.skills ?? []) {
@@ -200,8 +219,14 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
     }
 
     const loaded: LoadedPlugin = {
-      ...meta,
+      id: meta.id,
+      name: freshManifest.name,
+      source: meta.source,
+      version: freshManifest.version,
+      description: freshManifest.description,
+      dirPath: meta.dirPath,
       manifest: freshManifest,
+      available: freshAvailable,
       skillPaths,
       hookConfigPath,
       mcpConfigPath,
