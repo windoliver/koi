@@ -86,7 +86,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 - Model: `anthropic/claude-sonnet-4-6` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
-- **Tools wired:** Glob, Grep, web_fetch, Bash, and **TodoWrite** (in-conversation task tracking). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
+- **Tools wired:** Glob, Grep, web_fetch, Bash, **TodoWrite** (in-conversation task tracking), and **notebook tools** (notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell — workspace-contained via `cwd`). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT wired — plan-mode requires a real permission backend to enforce the read-only gate; without it the mode flag flips but no permissions are restricted. The TUI wires the full interaction provider because it has a real permission backend. `koi start` uses `TodoWrite` only.
 - **No Spawn**: `agent_spawn` is not registered — built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that require manifest-level wiring (#1264).
 - Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message

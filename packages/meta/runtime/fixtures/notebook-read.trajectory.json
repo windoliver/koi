@@ -1,0 +1,432 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "notebook-read",
+  "agent": {
+    "name": "golden-notebook-read",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "notebook_read",
+        "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:24.557Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:24.558Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:24.570Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 203,
+        "completion_tokens": 43
+      },
+      "duration_ms": 861,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "notebook_read",
+            "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "ad1f75d0cb6cf4f2386b868664f65b7f265d177acbc8d5d3afdce6a844d71c54"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.435Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.",
+      "duration_ms": 864.6414169999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.436Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.",
+      "duration_ms": 864.9214999999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.437Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.",
+      "duration_ms": 867.1418749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.438Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.",
+      "duration_ms": 868.3961249999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:15:25.439Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_notebook_read_7",
+          "function_name": "notebook_read",
+          "arguments": {
+            "path": "/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_notebook_read_7",
+            "content": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Test\\n---\",\"outputCount\":0,\"executionCount\":null}]}"
+          }
+        ]
+      },
+      "duration_ms": 5,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775628925434
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.440Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "notebook_read({\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Te"
+          }
+        ]
+      },
+      "duration_ms": 1.3633749999999054,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.441Z",
+      "model_name": "hook:on-notebook-read",
+      "message": "tool.succeeded → on-notebook-read",
+      "duration_ms": 4.014208000000508,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-notebook-read",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-notebook-read"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.442Z",
+      "model_name": "middleware:hooks",
+      "message": "notebook_read({\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Te"
+          }
+        ]
+      },
+      "duration_ms": 6.187584000000243,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.443Z",
+      "model_name": "middleware:permissions",
+      "message": "notebook_read({\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Te"
+          }
+        ]
+      },
+      "duration_ms": 6.855207999999948,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:25.444Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "notebook_read({\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Te"
+          }
+        ]
+      },
+      "duration_ms": 7.247250000000349,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:25.446Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for golden query tests.\",\"outputCount\":0,\"executionCount\":null},{\"index\":1,\"cell_type\":\"code\",\"source\":\"x = 42\\nprint(f'The answer is {x}')\",\"outputCount\":1,\"executionCount\":1},{\"index\":2,\"cell_type\":\"raw\",\"source\":\"---\\ntitle: Golden Test\\n---\",\"outputCount\":0,\"executionCount\":null}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "The notebook has 3 cells. They are: markdown, code, and raw."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 390,
+        "completion_tokens": 17
+      },
+      "duration_ms": 711,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "notebook_read",
+            "description": "Read a Jupyter notebook (.ipynb) and return a summary of its cells: type, source, output count, and execution count."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "ad1f75d0cb6cf4f2386b868664f65b7f265d177acbc8d5d3afdce6a844d71c54"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.159Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.\n\n{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for gol…",
+      "duration_ms": 717.3255829999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.160Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.\n\n{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for gol…",
+      "duration_ms": 717.5894159999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.161Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.\n\n{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for gol…",
+      "duration_ms": 717.8647090000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:26.162Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the notebook_read tool to read the notebook at \"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\" and report how many cells it has and their types.\n\n{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\",\"nbformat\":4,\"cellCount\":3,\"cells\":[{\"index\":0,\"cell_type\":\"markdown\",\"source\":\"# Golden Query Notebook\\nThis notebook is used for gol…",
+      "duration_ms": 717.9782919999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

@@ -221,6 +221,64 @@ customTools: () => [[skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL]],
 
 ---
 
+## URL Policy: isUrlAllowed Callback
+
+In v2, URL security is injected via a callback rather than a scoped driver wrapper (which required an `@koi/scope` L2→L2 dependency). Pass `isUrlAllowed` to `createBrowserProvider` to gate `browser_navigate` and `browser_tab_new`:
+
+```typescript
+createBrowserProvider({
+  backend,
+  isUrlAllowed: (url) => {
+    const { hostname, protocol } = new URL(url);
+    if (protocol !== "https:") return false;
+    if (hostname === "localhost" || hostname.startsWith("192.168.")) return false;
+    return true;
+  },
+});
+```
+
+When `isUrlAllowed` returns `false` (or `Promise<false>`), the tool returns:
+```json
+{ "error": "Navigation to <url> is not allowed by URL policy", "code": "PERMISSION" }
+```
+
+The callback receives the raw URL string before it reaches the driver. It may be sync or async (the tool always `await`s the result). If the callback throws, the error propagates to the caller.
+
+**No-URL tab opens are unaffected.** `browser_tab_new` without a `url` argument skips the check.
+
+**Comparison with v1 `scope`/`security`:**
+
+| v1 | v2 |
+|----|----|
+| `scope: createScopedBrowser(...)` (from `@koi/scope`) | `isUrlAllowed: (url) => boolean \| Promise<boolean>` |
+| `security: compileNavigationSecurity(...)` | same `isUrlAllowed` callback |
+| Layer violation: L2 importing L2 | Clean: L2 importing nothing extra |
+
+---
+
+## Snapshot Size Control: maxBytes
+
+`browser_snapshot` in v2 accepts `maxBytes` instead of `maxTokens`. This gives callers a more intuitive budget (bytes are observable; tokens are model-dependent).
+
+```typescript
+// Default: 50KB = 12,500 tokens (50_000 / 4)
+browser_snapshot()
+
+// Custom: cap at 20KB = 5,000 tokens
+browser_snapshot({ maxBytes: 20_000 })
+
+// Large snapshot for debugging
+browser_snapshot({ maxBytes: 200_000 })
+```
+
+The conversion uses a `÷ 4` heuristic (1 token ≈ 4 bytes). The computed `maxTokens` is always passed to the driver — even when using the default — so the driver never falls back to its own default.
+
+**Why bytes over tokens?** Token counts vary across models and tokenizers. Bytes are deterministic and easy to reason about for content budgeting.
+
+Default constant: `DEFAULT_SNAPSHOT_MAX_BYTES = 50_000`.
+
+---
+
 ## BrowserDriver Interface
 
 Implement this interface to connect any browser backend:
@@ -237,6 +295,28 @@ interface BrowserDriver {
 ```
 
 See `@koi/browser-playwright` for the Playwright implementation, or implement your own (e.g., Puppeteer, CDP-based, headless Chrome via shell).
+
+---
+
+## Known Limitations
+
+### Canvas-based UIs (Figma, Google Sheets, Canva)
+
+Applications that render their UI on an HTML5 `<canvas>` element — including Figma, Google Sheets, Canva, and many game/visualization tools — do not expose their interactive elements to the browser accessibility tree.
+
+When `browser_snapshot` is called on these surfaces, it returns either an empty snapshot or only the shell HTML (header, menus, sidebar chrome) — not the canvas-rendered content inside. Refs like `[ref=e3]` will not appear for canvas elements.
+
+**Workaround:** Use `browser_screenshot` as a fallback when working with canvas-heavy UIs. The screenshot captures the rendered pixels and can be passed to a vision-capable model for element identification and coordinate-based interaction.
+
+```typescript
+// Preferred for standard HTML/ARIA pages (100x cheaper):
+browser_snapshot()
+
+// Fallback for canvas-based UIs:
+browser_screenshot()
+```
+
+Note: `browser_evaluate` can sometimes extract data from canvas-based apps via their JavaScript APIs, but this requires `promoted` trust tier and detailed knowledge of the app's internal API.
 
 ---
 

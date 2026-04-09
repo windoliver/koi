@@ -1,0 +1,57 @@
+{
+  "name": "notebook-read",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1775628922810,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "notebook_read",
+      "callId": "tool_notebook_read_jsZdNDYinlauRXMrgmzX"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_read_jsZdNDYinlauRXMrgmzX",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_notebook_read_jsZdNDYinlauRXMrgmzX",
+      "delta": "{\"path\":\"/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb\"}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 101,
+      "outputTokens": 43
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_notebook_read_jsZdNDYinlauRXMrgmzX"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1775628922-UHM0U7HvAVVHWrOG73V7",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_notebook_read_jsZdNDYinlauRXMrgmzX",
+            "name": "notebook_read",
+            "arguments": {
+              "path": "/Users/tafeng/koi/.claude/worktrees/gleaming-wishing-crescent/packages/meta/runtime/scripts/../fixtures/golden-notebook.ipynb"
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 101,
+          "outputTokens": 43
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "ad15d30b40396a34d68810248b615edad00fa7153292457d72f5d76b9d17884f"
+        }
+      }
+    }
+  ]
+}

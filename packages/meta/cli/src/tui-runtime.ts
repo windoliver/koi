@@ -13,6 +13,7 @@
  *   @koi/tasks                — in-memory task board for background job tracking
  *   @koi/task-tools           — task_create, task_get, task_update, task_list, task_stop, task_output
  *   @koi/tools-web            — web_fetch
+ *   @koi/tool-notebook        — notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
  *   @koi/middleware-goal       — adaptive goal reminders (optional, via config.goals)
@@ -80,6 +81,12 @@ import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import {
+  createNotebookAddCellTool,
+  createNotebookDeleteCellTool,
+  createNotebookReadTool,
+  createNotebookReplaceCellTool,
+} from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
 import {
   createBuiltinSearchProvider,
@@ -653,6 +660,35 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     operations: ["fetch"],
   });
 
+  // --- @koi/tool-notebook: .ipynb read/add/replace/delete ---
+  const notebookConfig = { cwd };
+  const notebookReadTool = createNotebookReadTool(notebookConfig);
+  const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
+  const notebookReplaceCellTool = createNotebookReplaceCellTool(notebookConfig);
+  const notebookDeleteCellTool = createNotebookDeleteCellTool(notebookConfig);
+  const notebookProviders = [
+    createSingleToolProvider({
+      name: "notebook-read",
+      toolName: "notebook_read",
+      createTool: () => notebookReadTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-add-cell",
+      toolName: "notebook_add_cell",
+      createTool: () => notebookAddCellTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-replace-cell",
+      toolName: "notebook_replace_cell",
+      createTool: () => notebookReplaceCellTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-delete-cell",
+      toolName: "notebook_delete_cell",
+      createTool: () => notebookDeleteCellTool,
+    }),
+  ];
+
   // --- @koi/memory-tools: in-memory memory backend ---
   // Same pattern as golden-query recording: in-memory Map-based backend.
   // Provides memory_store, memory_recall, memory_search, memory_delete tools.
@@ -805,6 +841,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       bashBackgroundProvider,
       ...taskToolProviders,
       webProvider,
+      ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       ...spawnToolProviders,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),

@@ -154,8 +154,8 @@ const backend = createPatternPermissionBackend({
 | `db` | `db:*` | All database operations |
 | `db_read` | `db:query`, `db:read`, `db:select` | Read-only database |
 | `db_write` | `db:write`, `db:insert`, `db:update`, `db:delete` | Database mutations |
-| `lsp` | `lsp/*` | Language server tools |
-| `mcp` | `mcp/*` | MCP server tools |
+| `lsp` | `lsp/*`, `lsp__*` | Language server tools (supports both `/` and `__` naming) |
+| `mcp` | `mcp/*`, `mcp__*` | MCP server tools (supports both `/` and `__` naming) |
 
 Extend with custom groups:
 
