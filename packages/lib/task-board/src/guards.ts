@@ -42,5 +42,12 @@ export function isTask(value: unknown): value is Task {
     return false;
   }
   if ("metadata" in v && v.metadata !== undefined && typeof v.metadata !== "object") return false;
+  // startedAt: optional, but if present must be a finite non-negative number.
+  // Reject NaN/negative/string so a malformed value can't poison durationMs computations.
+  if ("startedAt" in v && v.startedAt !== undefined) {
+    if (typeof v.startedAt !== "number" || !Number.isFinite(v.startedAt) || v.startedAt < 0) {
+      return false;
+    }
+  }
   return true;
 }

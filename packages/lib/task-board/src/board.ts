@@ -255,13 +255,20 @@ function createBoardFromState(
         ),
       };
     }
+    const ts = now();
     const updated: Task = {
       ...task,
       status: to,
       version: task.version + 1,
-      updatedAt: now(),
+      updatedAt: ts,
       // Clear activeForm on terminal transitions — stale spinner text must not persist.
       ...(isTerminalTaskStatus(to) ? { activeForm: undefined } : {}),
+      // Set startedAt on every pending → in_progress transition (initial assign AND
+      // retry-after-failure). The pre-image status is `pending` here because
+      // isValidTransition guards entry: only pending → in_progress is valid for `to`.
+      // Patches like activeForm go through update(), not transitionTask(), so they
+      // never bump startedAt. This is what makes durationMs accurate on completion.
+      ...(to === "in_progress" ? { startedAt: ts } : {}),
       ...(patch ?? {}),
     };
     const newItems = new Map(items);
@@ -678,6 +685,12 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
         typeof rawVersion === "number" && Number.isFinite(rawVersion) && rawVersion >= 0
           ? Math.floor(rawVersion)
           : 0;
+      // Backfill startedAt for snapshots that pre-date the field. Only `in_progress`
+      // tasks need a value — pending/terminal tasks legitimately have undefined.
+      // The legacy approximation uses updatedAt because it's the closest existing
+      // timestamp; the bound is correct (startedAt ≤ updatedAt always).
+      const backfilledStartedAt =
+        item.startedAt ?? (item.status === "in_progress" ? (item.updatedAt ?? 0) : undefined);
       const task: Task = {
         ...item,
         subject: item.subject ?? "",
@@ -685,6 +698,7 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
         version: safeVersion,
         createdAt: item.createdAt ?? 0,
         updatedAt: item.updatedAt ?? 0,
+        ...(backfilledStartedAt !== undefined ? { startedAt: backfilledStartedAt } : {}),
       };
       items.set(task.id, task);
     }

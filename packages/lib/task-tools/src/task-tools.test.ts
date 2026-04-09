@@ -267,6 +267,39 @@ describe("task_update", () => {
     expect((r2.task as Record<string, unknown>).status).toBe("completed");
   });
 
+  // Regression for review issue 7A: durationMs must reflect time since the task
+  // entered in_progress, NOT time since the most recent updatedAt patch. Before
+  // the fix, an activeForm patch mid-run would silently shorten the reported
+  // durationMs because it bumped task.updatedAt and task-update.ts subtracted
+  // from updatedAt instead of startedAt.
+  test("durationMs is anchored to startedAt, not bumped by activeForm patch", async () => {
+    const { create, update } = await setup();
+    const r1 = await exec(create, { subject: "Auth", description: "Do auth" });
+    const id = (r1.task as Record<string, unknown>).id as string;
+
+    // Enter in_progress — startedAt fixes here.
+    await exec(update, { task_id: id, status: "in_progress" });
+
+    // Spend some "wall time" running.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Patch activeForm — this bumps updatedAt but MUST NOT bump startedAt.
+    await exec(update, { task_id: id, active_form: "Almost done" });
+
+    // Spend a tiny bit more wall time so updatedAt diverges further.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Complete. The reported durationMs must be ≥ the total time spent in
+    // progress (~35ms), not just the time since the last patch (~5ms).
+    const r2 = await exec(update, { task_id: id, status: "completed", output: "done" });
+    expect(r2.ok).toBe(true);
+    const result = (r2 as Record<string, unknown>).result as Record<string, unknown>;
+    expect(typeof result.durationMs).toBe("number");
+    // Lower bound: at least 30ms (the first sleep) — proves the patch did not reset the clock.
+    // Upper bound is loose to tolerate scheduler jitter.
+    expect(result.durationMs as number).toBeGreaterThanOrEqual(30);
+  });
+
   test("status completed without output returns error", async () => {
     const { create, update } = await setup();
     const r1 = await exec(create, { subject: "Auth", description: "Do auth" });

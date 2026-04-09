@@ -123,9 +123,15 @@ export function createTaskUpdateTool(
                 "status 'completed' requires a non-empty 'output' field summarizing what was accomplished",
             };
           }
-          // durationMs: time since the task's last state change (when it became in_progress).
-          // task.updatedAt reflects the most recent transition — the in_progress assignment.
-          const durationMs = Math.max(0, Date.now() - task.updatedAt);
+          // durationMs: wall-clock time the task spent running.
+          //
+          // Prefer task.startedAt (set by the board on every pending → in_progress
+          // transition and NOT bumped by activeForm patches). Fall back to updatedAt
+          // for snapshots that pre-date the field — that's an over-approximation
+          // (it under-reports duration if activeForm was patched mid-run) but it
+          // matches the legacy behavior so old data still parses cleanly.
+          const startReference = task.startedAt ?? task.updatedAt;
+          const durationMs = Math.max(0, Date.now() - startReference);
           const taskResult = {
             taskId: id,
             output,

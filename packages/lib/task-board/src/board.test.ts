@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiError, TaskBoardEvent, TaskInput, TaskResult, TaskStatus } from "@koi/core";
+import type { KoiError, Task, TaskBoardEvent, TaskInput, TaskResult, TaskStatus } from "@koi/core";
 import { taskItemId } from "@koi/core";
 import { createTaskBoard } from "./board.js";
 
@@ -1230,5 +1230,164 @@ describe("activeForm", () => {
     if (!r3.ok) return;
     expect(r3.value.get(taskItemId("a"))?.status).toBe("failed");
     expect(r3.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task.startedAt — accurate run-duration anchor (#1557 review fix 7A)
+// ---------------------------------------------------------------------------
+//
+// startedAt is set on every pending → in_progress transition and is NOT
+// bumped by activeForm (or other update()) patches. Consumers compute
+// durationMs from startedAt rather than updatedAt so the metric reflects
+// the real wall-clock running time, not "time since last patch".
+
+describe("startedAt", () => {
+  test("created tasks have no startedAt until assigned", () => {
+    const board = createTaskBoard();
+    const r = board.add(input("a"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.get(taskItemId("a"))?.startedAt).toBeUndefined();
+  });
+
+  test("assign sets startedAt on pending → in_progress", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const before = Date.now();
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    const after = Date.now();
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt = r2.value.get(taskItemId("a"))?.startedAt;
+    expect(startedAt).toBeDefined();
+    // Bound the timestamp on both sides — guards against clock drift / wrong field copy
+    expect(startedAt as number).toBeGreaterThanOrEqual(before);
+    expect(startedAt as number).toBeLessThanOrEqual(after);
+  });
+
+  test("update(activeForm) does NOT bump startedAt", async () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt0 = r2.value.get(taskItemId("a"))?.startedAt;
+
+    // Tiny delay so updatedAt would differ if it were being copied
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const r3 = r2.value.update(taskItemId("a"), { activeForm: "Working hard" });
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    const t3 = r3.value.get(taskItemId("a"));
+    // startedAt is preserved — only updatedAt should advance
+    expect(t3?.startedAt).toBe(startedAt0);
+    expect(t3?.updatedAt ?? 0).toBeGreaterThanOrEqual(startedAt0 ?? 0);
+  });
+
+  test("retry path resets startedAt on the next assign", async () => {
+    const board = createTaskBoard({ maxRetries: 3 });
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt0 = r2.value.get(taskItemId("a"))?.startedAt;
+
+    // Retryable failure puts the task back to pending; startedAt is left alone
+    // because the task may be inspected before re-assignment.
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r3 = r2.value.fail(taskItemId("a"), err);
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.status).toBe("pending");
+    expect(r3.value.get(taskItemId("a"))?.startedAt).toBe(startedAt0);
+
+    // Tiny delay so the next startedAt is observably different
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const r4 = r3.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r4.ok).toBe(true);
+    if (!r4.ok) return;
+    const startedAt1 = r4.value.get(taskItemId("a"))?.startedAt;
+    expect(startedAt1).toBeDefined();
+    expect(startedAt1).not.toBe(startedAt0);
+    expect(startedAt1 as number).toBeGreaterThan(startedAt0 ?? 0);
+  });
+
+  test("snapshot loader backfills startedAt from updatedAt for in_progress tasks", () => {
+    // Simulate a snapshot from before the field existed: in_progress task with no startedAt.
+    // The loader should backfill it to updatedAt (best-effort approximation).
+    const legacyTask: Task = {
+      id: taskItemId("a"),
+      subject: "Legacy",
+      description: "Pre-existing in_progress task",
+      dependencies: [],
+      retries: 0,
+      version: 1,
+      status: "in_progress",
+      assignedTo: agentId("w1"),
+      createdAt: 1000,
+      updatedAt: 5000,
+    };
+    const board = createTaskBoard(undefined, { items: [legacyTask], results: [] });
+    expect(board.get(taskItemId("a"))?.startedAt).toBe(5000);
+  });
+
+  test("snapshot loader leaves startedAt undefined for non-in_progress tasks", () => {
+    // Pending and terminal tasks have no startedAt, even on backfill.
+    const legacyPending: Task = {
+      id: taskItemId("a"),
+      subject: "Pending",
+      description: "Pending",
+      dependencies: [],
+      retries: 0,
+      version: 0,
+      status: "pending",
+      createdAt: 1000,
+      updatedAt: 5000,
+    };
+    const legacyCompleted: Task = {
+      id: taskItemId("b"),
+      subject: "Done",
+      description: "Done",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "completed",
+      createdAt: 1000,
+      updatedAt: 9000,
+    };
+    const board = createTaskBoard(undefined, {
+      items: [legacyPending, legacyCompleted],
+      results: [],
+    });
+    expect(board.get(taskItemId("a"))?.startedAt).toBeUndefined();
+    expect(board.get(taskItemId("b"))?.startedAt).toBeUndefined();
+  });
+
+  test("snapshot loader preserves explicit startedAt over backfill", () => {
+    const task: Task = {
+      id: taskItemId("a"),
+      subject: "Modern",
+      description: "Has startedAt explicitly",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "in_progress",
+      assignedTo: agentId("w1"),
+      createdAt: 1000,
+      updatedAt: 9000,
+      startedAt: 7000,
+    };
+    const board = createTaskBoard(undefined, { items: [task], results: [] });
+    // 7000, not 9000 — explicit field wins
+    expect(board.get(taskItemId("a"))?.startedAt).toBe(7000);
   });
 });

@@ -133,6 +133,20 @@ export interface Task {
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /**
+   * Wall-clock timestamp when the task most recently entered `in_progress`.
+   *
+   * Set on every `pending → in_progress` transition (initial assignment AND
+   * retry-after-failure). Not bumped by `update()` patches such as `activeForm`
+   * — those bump `updatedAt` only. Use this (rather than `updatedAt`) to compute
+   * accurate `durationMs` on completion.
+   *
+   * `undefined` for tasks that were created but never assigned, and for tasks
+   * loaded from snapshots that pre-date this field (the board's snapshot
+   * loader backfills it from `updatedAt` only when the persisted status is
+   * `in_progress`, so the legacy approximation stays close to wall time).
+   */
+  readonly startedAt?: number | undefined;
 }
 
 /**
