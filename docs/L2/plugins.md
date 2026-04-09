@@ -104,3 +104,48 @@ Branded type constructor for plugin identifiers.
 
 Required fields: `name` (kebab-case), `version` (semver), `description`.
 All other fields are optional. Path fields (`skills`, `hooks`, `mcpServers`) are opaque relative paths — interpretation is delegated to their respective subsystems.
+
+## Lifecycle Operations
+
+Plugin lifecycle is managed through `@koi/plugins` CRUD functions:
+
+| Function | Purpose |
+|----------|---------|
+| `installPlugin(config, sourcePath)` | Copy plugin from local path into `userRoot/<name>/` with TOCTOU protection |
+| `removePlugin(config, name)` | Clean disabled state, then delete plugin directory |
+| `enablePlugin(config, name)` | Remove from disabled set (idempotent, rejects non-existent names) |
+| `disablePlugin(config, name)` | Add to disabled set (idempotent, rejects non-existent names) |
+| `updatePlugin(config, name, sourcePath)` | Rollback-safe swap with backup directory + post-copy validation |
+| `listPlugins(config)` | Discover all plugins with enabled/disabled status overlay |
+| `createGatedRegistry(registryConfig, userRoot)` | Factory returning a `PluginRegistry` that gates discovery/load by disabled state |
+| `recoverOrphanedUpdates(userRoot)` | Restores `.backup` dirs from interrupted updates, cleans `.updating` staging |
+
+### State persistence
+
+Disabled-plugin state is stored in `<userRoot>/state.json` as `{ "disabled": ["plugin-a", ...] }`. All plugins are enabled by default. Writes use per-write unique temp files + atomic rename for crash safety. The `createGatedRegistry` re-reads state on every `discover()` and `load()` call, preserving the last known disabled set on read failures.
+
+### Name validation
+
+All lifecycle operations validate plugin names via `isPluginId()` (kebab-case regex) before any filesystem operations, preventing path traversal attacks.
+
+### CLI integration
+
+The `koi plugin` CLI command exposes all lifecycle operations:
+
+```
+koi plugin install <path>         Install from local directory
+koi plugin remove <name>          Remove installed plugin
+koi plugin enable <name>          Enable a disabled plugin
+koi plugin disable <name>         Disable a plugin
+koi plugin update <name> <path>   Update with rollback-safe swap
+koi plugin list [--json]          List plugins with status
+```
+
+## Session Activation
+
+When the TUI or CLI `start` command launches a session, enabled plugins automatically contribute their components via `loadPluginComponents()` (in `plugin-activation.ts`):
+
+- **Skills**: Plugin skill directories are scanned for `SKILL.md` files, parsed into `SkillMetadata`, and registered via `skillsRuntime.registerExternal()`
+- **Hooks**: Plugin `hooks.json` configs are loaded via `loadHooks()` and merged with user hooks before `createHookMiddleware()`
+- **MCP servers**: Plugin `.mcp.json` configs are loaded via `loadMcpJsonFile()`, connections created, and added as providers to `createKoi()`
+- **Middleware**: Names are collected but not resolved (no factory registry yet) — logged as a warning

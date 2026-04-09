@@ -101,6 +101,28 @@ koi admin                          # Manifest-backed admin server on :9200
 koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 ```
 
+### `koi plugin`
+
+Plugin lifecycle management. Subcommands operate on `~/.koi/plugins/` (user root).
+
+```bash
+koi plugin install <path>         # Copy plugin from local directory
+koi plugin remove <name>          # Remove installed plugin
+koi plugin enable <name>          # Enable a disabled plugin
+koi plugin disable <name>         # Disable a plugin
+koi plugin update <name> <path>   # Rollback-safe update from new source
+koi plugin list [--json]          # List plugins with enabled/disabled status
+```
+
+Install copies the source directory into `~/.koi/plugins/<name>/` with TOCTOU validation.
+Update uses a backup+rename swap with automatic rollback on failure and crash recovery via `recoverOrphanedUpdates()`.
+Enable/disable persists state in `~/.koi/plugins/state.json`; all plugins are enabled by default.
+Name validation rejects non-kebab-case names to prevent path traversal.
+
+**Session activation:** When `koi tui` or `koi start` launches, `loadPluginComponents()` discovers
+enabled plugins via `createGatedRegistry` and wires their skills, hooks, and MCP servers into the
+session. Plugin middleware names are collected but not resolved (no factory registry yet).
+
 ### `koi tui`
 
 Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
@@ -156,6 +178,7 @@ Engine adapter is wired directly from environment variables. Manifest-based
 - **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - **Hook loading:** At startup, `loadHooks()` reads `~/.koi/hooks.json` (if present) and passes the loaded hooks to `createHookMiddleware()`. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
+- **Plugin activation:** At startup, `loadPluginComponents()` discovers enabled plugins from `~/.koi/plugins/` via `createGatedRegistry` and merges their components into the session: plugin hooks are prepended to user hooks before `createHookMiddleware()`; plugin MCP server configs create additional `McpConnection`s and a separate `McpComponentProvider`; plugin skill directories are scanned for `SKILL.md` files and registered via `skillsRuntime.registerExternal()`. Plugin MCP connections are cleaned up on shutdown alongside workspace MCP.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
 - `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.

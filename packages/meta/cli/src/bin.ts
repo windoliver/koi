@@ -30,6 +30,7 @@ Commands:
   doctor [manifest]      Diagnose service health
   stop [manifest]        Stop the service
   deploy [manifest]      Install/uninstall OS service
+  plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
 
 Global flags:
   --version, -V          Show version

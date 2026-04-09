@@ -14,6 +14,8 @@ export type { InitFlags } from "./init.js";
 export { isInitFlags, parseInitFlags } from "./init.js";
 export type { LogsFlags } from "./logs.js";
 export { isLogsFlags, parseLogsFlags } from "./logs.js";
+export type { PluginFlags, PluginSubcommand } from "./plugin.js";
+export { isPluginFlags, parsePluginFlags } from "./plugin.js";
 export type { ServeFlags } from "./serve.js";
 export { isServeFlags, parseServeFlags } from "./serve.js";
 export type { SessionsFlags } from "./sessions.js";
@@ -24,7 +26,6 @@ export type { StartFlags, StartMode } from "./start.js";
 export { isStartFlags, parseStartFlags } from "./start.js";
 export type { StatusFlags } from "./status.js";
 export { isStatusFlags, parseStatusFlags } from "./status.js";
-
 export type { StopFlags } from "./stop.js";
 export { isStopFlags, parseStopFlags } from "./stop.js";
 export type { TuiFlags } from "./tui.js";
@@ -42,6 +43,8 @@ import type { InitFlags } from "./init.js";
 import { parseInitFlags } from "./init.js";
 import type { LogsFlags } from "./logs.js";
 import { parseLogsFlags } from "./logs.js";
+import type { PluginFlags } from "./plugin.js";
+import { parsePluginFlags } from "./plugin.js";
 import type { ServeFlags } from "./serve.js";
 import { parseServeFlags } from "./serve.js";
 import type { SessionsFlags } from "./sessions.js";
@@ -68,6 +71,7 @@ export type CliFlags =
   | DoctorFlags
   | StopFlags
   | DeployFlags
+  | PluginFlags
   | BaseFlags;
 
 // ---------------------------------------------------------------------------
@@ -84,7 +88,8 @@ export type KnownCommand =
   | "status"
   | "doctor"
   | "stop"
-  | "deploy";
+  | "deploy"
+  | "plugin";
 
 const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "init",
@@ -97,6 +102,7 @@ const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "doctor",
   "stop",
   "deploy",
+  "plugin",
 ];
 
 export const COMMAND_NAMES: ReadonlyArray<KnownCommand> = KNOWN_COMMANDS;
@@ -122,6 +128,7 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
   doctor: parseDoctorFlags,
   stop: parseStopFlags,
   deploy: parseDeployFlags,
+  plugin: parsePluginFlags,
 };
 
 // ---------------------------------------------------------------------------
