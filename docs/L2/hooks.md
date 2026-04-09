@@ -4,7 +4,7 @@
 
 ## Layer
 
-L2 — depends on `@koi/core` (L0) and `@koi/validation` (L0u).
+L2 — depends on `@koi/core` (L0), `@koi/hook-prompt` (L0u), `@koi/redaction` (L0u), and `@koi/validation` (L0u).
 
 ## Purpose
 
@@ -55,11 +55,41 @@ vocabulary.
 
 ## Hook Types
 
-| Type | Trigger | Transport |
-|------|---------|-----------|
-| `command` | Shell command via `Bun.spawn` | Local process |
-| `http` | HTTP POST/PUT to a URL | Network |
-| `agent` | Sub-agent LLM loop via `SpawnFn` | In-process spawn |
+| Type | Trigger | Transport | Cost |
+|------|---------|-----------|------|
+| `command` | Shell command via `Bun.spawn` | Local process | 0 tokens |
+| `http` | HTTP POST/PUT to a URL | Network | 0 tokens |
+| `prompt` | Single-shot LLM verification | Model API call | ~100-200 tokens |
+| `agent` | Sub-agent LLM loop via `SpawnFn` | In-process spawn | ~4,000+ tokens |
+
+### Prompt Hook Type
+
+Prompt hooks make a single-shot LLM call for pass/fail verification. They fill
+the gap between static hooks (command/http) and expensive agent hooks — use them
+for simple semantic checks like "does this look safe?" without the overhead of a
+multi-turn agent loop.
+
+**Config example:**
+```typescript
+{
+  kind: "prompt",
+  name: "safety-check",
+  prompt: "Is this tool call safe? Respond with ok:true if safe, ok:false with reason if not.",
+  model: "anthropic/claude-sonnet-4-6",  // override model (default: cheap/fast)
+  maxTokens: 256,                         // default: 256
+  timeoutMs: 10000,                       // default: 10s
+  filter: { events: ["tool.before"], tools: ["Bash"] },
+  failClosed: true,                       // block on parse/API errors (default)
+}
+```
+
+**Decision mapping:** Same as agent hooks — `{ ok: true }` → `continue`, `{ ok: false, reason }` → `block`. No `modify` support.
+
+**Verdict parsing:** Uses `@koi/hook-prompt`'s hardened parser which handles fenced JSON extraction, string-boolean coercion (`"false"` → `false`), and plain-text denial language detection.
+
+**Per-session token budget:** `DEFAULT_PROMPT_SESSION_TOKEN_BUDGET` (50,000 tokens) prevents cost amplification from rapid-fire prompt hook invocations.
+
+**Wiring:** Requires a `PromptModelCaller` injected via `CreateHookMiddlewareOptions.promptCallFn`. The caller provides the model API call — the TUI wires this from its model adapter.
 
 ### Agent Hook Type
 
@@ -296,14 +326,15 @@ if (!result.ok) throw new Error(result.error.message);
 const middleware = createHookMiddleware({
   hooks: result.value,
   spawnFn,       // Required when any hook has kind: "agent" — provided by L1 engine
+  promptCallFn,  // Required when any hook has kind: "prompt" — PromptModelCaller
   onExecuted,    // Optional observer tap — e.g., from @koi/runtime's createHookObserver
 });
 // Wire into engine: createKoi({ middleware: [permissions, middleware, ...] })
 ```
 
-> **Note:** `createHookMiddleware()` throws at creation time if any agent hooks
-> are present but `spawnFn` is not provided. This is a fail-fast design — the
-> error surfaces during setup, not during event dispatch.
+> **Note:** `createHookMiddleware()` throws at creation time if agent hooks are
+> present without `spawnFn`, or prompt hooks are present without `promptCallFn`.
+> This is a fail-fast design — errors surface during setup, not during dispatch.
 
 ### Fail Mode
 
@@ -326,6 +357,7 @@ advisory agent hooks.
 | `agent-executor.ts` | `AgentHookExecutor` — sub-agent spawn, token accounting, verdict handling |
 | `agent-verdict.ts` | `HookVerdict` tool schema, verdict parsing, decision mapping |
 | `hook-executor.ts` | `HookExecutor` interface — extensible executor dispatch contract |
+| `prompt-adapter.ts` | `PromptExecutorAdapter` — bridges `@koi/hook-prompt` into `HookExecutor` with abort handling, token budgeting, payload capping |
 | `hook-validation.ts` | Shared validation — URL policy, timeout resolution, fail mode defaults |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
 | `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
@@ -334,5 +366,7 @@ advisory agent hooks.
 ## Dependencies
 
 - `@koi/core` — `HookConfig`, `HookFilter`, `HookEvent`, `Result`, `KoiError`
+- `@koi/hook-prompt` — `PromptModelCaller`, `createPromptExecutor`, `VerdictParseError`
+- `@koi/redaction` — secret redaction for payload forwarding
 - `@koi/validation` — `validateWith`, `zodToKoiError`
 - `zod` — schema definitions
