@@ -122,7 +122,11 @@ Plugin lifecycle is managed through `@koi/plugins` CRUD functions:
 
 ### State persistence
 
-Disabled-plugin state is stored in `<userRoot>/state.json` as `{ "disabled": ["plugin-a", ...] }`. All plugins are enabled by default. Writes use per-write unique temp files + atomic rename for crash safety. The `createGatedRegistry` re-reads state on every `discover()` and `load()` call, preserving the last known disabled set on read failures.
+Disabled-plugin state is stored in `<userRoot>/state.json` as `{ "disabled": ["plugin-a", ...] }`. All plugins are enabled by default. Writes use per-write unique temp files + atomic rename for crash safety. The `createGatedRegistry` re-reads state on every `discover()` and `load()` call. On state read failure: if state was never successfully read (corrupt file on first access), the registry **fails closed** — all plugins are blocked until a valid state is available. After a successful read, subsequent failures preserve the last known disabled set.
+
+### Symlink safety
+
+Plugin install and update operations use `cp({ dereference: true })` to flatten symlinks inside the source directory. This prevents symlink payloads that could escape containment checks after installation.
 
 ### Name validation
 

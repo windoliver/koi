@@ -114,10 +114,11 @@ koi plugin update <name> <path>   # Rollback-safe update from new source
 koi plugin list [--json]          # List plugins with enabled/disabled status
 ```
 
-Install copies the source directory into `~/.koi/plugins/<name>/` with TOCTOU validation.
+Install copies the source directory into `~/.koi/plugins/<name>/` with TOCTOU validation and symlink dereferencing (`dereference: true`).
 Update uses a backup+rename swap with automatic rollback on failure and crash recovery via `recoverOrphanedUpdates()`.
 Enable/disable persists state in `~/.koi/plugins/state.json`; all plugins are enabled by default.
 Name validation rejects non-kebab-case names to prevent path traversal.
+The gated registry fails closed on corrupt state — all plugins blocked until `state.json` is readable.
 
 **Session activation:** When `koi tui` or `koi start` launches, `loadPluginComponents()` discovers
 enabled plugins via `createGatedRegistry` and wires their skills, hooks, and MCP servers into the
