@@ -14,6 +14,7 @@ import type {
   PromptHookConfig,
 } from "@koi/core";
 import { z } from "zod";
+import { RESERVED_HEADER_NAMES, validateHeaders } from "./header-sanitize.js";
 
 // ---------------------------------------------------------------------------
 // Hook filter schema
@@ -98,7 +99,17 @@ function createHttpHookSchema(): z.ZodType<HttpHookConfig> {
         }
       }, "url must be HTTPS (HTTP loopback requires NODE_ENV=development or KOI_DEV=1)"),
     method: z.enum(["POST", "PUT"]).optional(),
-    headers: z.record(z.string(), z.string()).optional(),
+    headers: z
+      .record(z.string(), z.string())
+      .optional()
+      .refine((val) => {
+        if (val === undefined) return true;
+        return !Object.keys(val).some((k) => RESERVED_HEADER_NAMES.has(k.toLowerCase()));
+      }, "headers must not include reserved names: Host, Content-Length, Transfer-Encoding, Connection")
+      .refine((val) => {
+        if (val === undefined) return true;
+        return validateHeaders(val) === undefined;
+      }, "header names and values must not contain control characters (CR/LF/NUL)"),
     secret: z.string().optional(),
     allowedEnvVars: z.array(z.string().min(1)).min(1).optional(),
   });
