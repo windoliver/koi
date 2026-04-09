@@ -90,6 +90,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/checkpoint": {
+      "name": "@koi/checkpoint",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-store-sqlite": "workspace:*",
+      },
+    },
     "packages/lib/config": {
       "name": "@koi/config",
       "version": "0.0.0",
@@ -918,6 +928,8 @@
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
+
+    "@koi/checkpoint": ["@koi/checkpoint@workspace:packages/lib/checkpoint"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
