@@ -55,21 +55,23 @@ Three tables, deliberately small:
 ```sql
 CREATE TABLE snapshot_nodes (
   node_id      TEXT PRIMARY KEY,
-  parent_ids   TEXT NOT NULL,            -- JSON array of NodeId
-  content_hash TEXT NOT NULL,            -- SHA-256 of payload, for skip-if-unchanged
-  data         TEXT NOT NULL,            -- JSON-serialized payload T
-  created_at   INTEGER NOT NULL,         -- Unix ms
-  metadata     TEXT NOT NULL             -- JSON; includes SNAPSHOT_STATUS_KEY
+  chain_id     TEXT NOT NULL,              -- "home" chain returned by get()
+  parent_ids   TEXT NOT NULL DEFAULT '[]', -- JSON array of NodeId
+  content_hash TEXT NOT NULL,              -- SHA-256 of payload, for skip-if-unchanged
+  data         TEXT NOT NULL,              -- JSON-serialized payload T
+  created_at   INTEGER NOT NULL,           -- Unix ms
+  metadata     TEXT NOT NULL DEFAULT '{}'  -- JSON; includes SNAPSHOT_STATUS_KEY
 );
+CREATE INDEX idx_snapshot_nodes_chain ON snapshot_nodes(chain_id);
 
 CREATE TABLE chain_members (
-  chain_id     TEXT NOT NULL,
-  node_id      TEXT NOT NULL REFERENCES snapshot_nodes(node_id),
-  created_at   INTEGER NOT NULL,
-  seq          INTEGER NOT NULL,         -- monotonic per-chain ordering
+  chain_id   TEXT NOT NULL,
+  node_id    TEXT NOT NULL REFERENCES snapshot_nodes(node_id),
+  created_at INTEGER NOT NULL,
+  seq        INTEGER NOT NULL DEFAULT 0,   -- monotonic per-chain ordering
   PRIMARY KEY (chain_id, node_id)
 );
-CREATE INDEX idx_chain_members ON chain_members(chain_id, created_at DESC, seq DESC);
+CREATE INDEX idx_chain_members_chain ON chain_members(chain_id, created_at DESC, seq DESC);
 
 CREATE TABLE chain_heads (
   chain_id TEXT PRIMARY KEY,
@@ -77,7 +79,9 @@ CREATE TABLE chain_heads (
 );
 ```
 
-The `chain_members` bridge table is what enables forks: a single `snapshot_nodes` row can belong to multiple `chain_members` rows pointing at it from different chains. The `chain_heads` table makes `head(chainId)` an O(1) lookup.
+The `chain_members` bridge table is what enables forks: a single `snapshot_nodes` row can belong to multiple `chain_members` rows from different chains. The `chain_heads` table holds the head pointer per chain.
+
+The `snapshot_nodes.chain_id` column records the *home chain* — the chain a node was originally `put` into. It is what `get()` returns in `SnapshotNode<T>.chainId` and never changes after creation, even when the node is forked into other chains. Forks insert into `chain_members` only; they never rewrite `chain_id`.
 
 ---
 
@@ -194,11 +198,13 @@ Both modes use WAL journal mode.
 
 ## API
 
+The factory returns a sync-narrowed view of `SnapshotChainStore<T>` — exposed as `SqliteSnapshotStore<T>`. Every method is sync, but the type is structurally compatible with the L0 union interface so callers may upcast for portability.
+
 ```typescript
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { chainId, type AgentSnapshot } from "@koi/core";
 
-const store = await createSnapshotStoreSqlite<AgentSnapshot>({
+const store = createSnapshotStoreSqlite<AgentSnapshot>({
   path: "~/.koi/snapshots.sqlite",
   blobDir: "~/.koi/file-history",
   extractBlobRefs: extractBlobRefsFromAgentSnapshot,
@@ -206,21 +212,22 @@ const store = await createSnapshotStoreSqlite<AgentSnapshot>({
 });
 
 // Implements SnapshotChainStore<AgentSnapshot> from @koi/core
-const head = await store.head(chainId("session-abc"));
+const head = store.head(chainId("session-abc"));
+if (!head.ok || head.value === undefined) throw new Error("empty chain");
 
-const ancestors = await store.ancestors({
-  startNodeId: head.value!.nodeId,
+const ancestors = store.ancestors({
+  startNodeId: head.value.nodeId,
   maxDepth: 10,
 });
 
-await store.prune(chainId("session-abc"), { retainCount: 500 });
-await store.close();
+store.prune(chainId("session-abc"), { retainCount: 500 });
+store.close();
 ```
 
 ### In-Memory for Tests
 
 ```typescript
-const store = await createSnapshotStoreSqlite<AgentSnapshot>({
+const store = createSnapshotStoreSqlite<AgentSnapshot>({
   path: ":memory:",
 });
 // Identical API — no file I/O, no GC (no blobDir set)
