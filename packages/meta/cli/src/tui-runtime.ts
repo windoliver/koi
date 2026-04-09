@@ -15,6 +15,9 @@
  *   @koi/tools-web            — web_fetch
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
+ *   @koi/middleware-goal       — adaptive goal reminders (optional, via config.goals)
+ *   @koi/skills-runtime        — three-tier skill discovery (bundled → user → project)
+ *   @koi/skill-tool            — on-demand skill loading meta-tool (Skill)
  *
  * MCP wired: loads .mcp.json, creates resolver + provider, bridges MCP tools → skills.
  * Hook loading from user config is deferred — currently passes empty hooks.
@@ -60,6 +63,7 @@ import {
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
   createRetrySignalBroker,
@@ -71,6 +75,7 @@ import type { SkillsMcpBridge } from "@koi/runtime";
 import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
+import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
@@ -220,6 +225,13 @@ export interface TuiRuntimeConfig {
    * When omitted, no system prompt middleware is installed.
    */
   readonly systemPrompt?: string | undefined;
+  /**
+   * Goal objectives for the middleware-goal adaptive reminder system.
+   * When provided, createGoalMiddleware is installed in the middleware stack
+   * to inject goal reminders and detect drift/completion.
+   * When omitted, no goal middleware is installed.
+   */
+  readonly goals?: readonly string[] | undefined;
   /**
    * Session transcript config for JSONL recording + session resume.
    * When omitted, no session transcript middleware is installed.
@@ -468,6 +480,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
+    { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
   ] as const;
   const permBackend = createPermissionBackend({
     mode: "default",
@@ -675,6 +688,45 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     }),
   );
 
+  // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
+  // Three-tier discovery: bundled → user (~/.claude/skills) → project (.claude/skills).
+  // Project skills shadow user skills which shadow bundled skills.
+  //
+  // Known limitation: the Skill tool descriptor bakes the skill listing at creation
+  // time. After session reset, resolver.load() sees fresh files but the model still
+  // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
+  // in createKoi — tracked as a known limitation. The system prompt skill snapshot
+  // (built in tui-command.ts) is also static for the process lifetime.
+  // AbortController for skill loading — lives for the entire runtime lifetime.
+  // Not rotated on session reset (skill loading is stateless file reads).
+  const skillAbortController = new AbortController();
+  // skillsRuntime is provided by the caller (tui-command.ts) — reuse it for
+  // both MCP bridge wiring and the Skill meta-tool.
+  const skillToolResult =
+    skillsRuntime !== undefined
+      ? await createSkillTool({
+          resolver: skillsRuntime,
+          signal: skillAbortController.signal,
+          // No spawnFn — fork-mode skills are filtered out of discovery since the TUI
+          // cannot execute them (stubSpawnFn always returns EXTERNAL error).
+        })
+      : undefined;
+  const skillProvider = skillToolResult?.ok
+    ? createSingleToolProvider({
+        name: "skill",
+        toolName: "Skill",
+        createTool: () => skillToolResult.value,
+      })
+    : undefined;
+
+  // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
+  // Only installed when the caller provides objectives. Injects goal blocks
+  // into model messages and tracks drift/completion across turns.
+  const goalMw =
+    config.goals !== undefined && config.goals.length > 0
+      ? createGoalMiddleware({ objectives: config.goals })
+      : undefined;
+
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
   const engineAdapter = createTranscriptAdapter({
@@ -721,6 +773,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     permMw,
     exfiltrationGuardMw,
     semanticRetryMw,
+    ...(goalMw !== undefined ? [goalMw] : []),
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
@@ -755,6 +808,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       ...spawnToolProviders,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
+      ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
     loopDetection: false,
@@ -808,6 +862,19 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       boardRef.current = newBoard;
 
       // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      //
+      // Known limitation: goal middleware state and skill surfaces are NOT reset
+      // on session:new / agent:clear. Goal state (completed items, reminder
+      // backoff, drift) persists across TUI session resets. Skill descriptor
+      // listing and system prompt skill snapshot are static for the process
+      // lifetime. Both require a full TUI restart to refresh.
+      //
+      // Manual lifecycle hook cycling (onSessionEnd/onSessionStart) is unsafe
+      // here because the aborted run's engine finally block also calls
+      // onSessionEnd on the same sessionId, creating a race that can delete
+      // freshly-initialized goal state. Rebuilding the runtime on reset would
+      // fix both, but requires createKoi to support hot-swapping — tracked as
+      // a known limitation.
       await trajectoryStore.prune(Date.now() + 86_400_000);
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
