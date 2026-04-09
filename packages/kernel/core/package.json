@@ -17,6 +17,10 @@
       "types": "./dist/agent-resolver.d.ts",
       "import": "./dist/agent-resolver.js"
     },
+    "./bash-rule-pattern": {
+      "types": "./dist/bash-rule-pattern.d.ts",
+      "import": "./dist/bash-rule-pattern.js"
+    },
     "./config": {
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"

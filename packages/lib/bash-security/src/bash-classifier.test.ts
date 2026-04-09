@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  COMMAND_BYPASS_CASES,
-  EXFILTRATION_BYPASS_CASES,
-  SAFE_CASES,
-} from "./__tests__/bypass-cases.js";
 import { classifyCommand } from "./bash-classifier.js";
+import { COMMAND_BYPASS_CASES, EXFILTRATION_BYPASS_CASES, SAFE_CASES } from "./bypass-cases.js";
 
 describe("classifyCommand", () => {
   describe("blocks reverse shells", () => {

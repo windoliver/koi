@@ -5,9 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../../kernel/core" },
-    { "path": "../bash-ast" },
-    { "path": "../bash-security" }
-  ]
+  "references": [{ "path": "../../kernel/core" }, { "path": "../bash-security" }]
 }

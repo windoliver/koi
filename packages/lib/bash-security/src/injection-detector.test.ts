@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { INJECTION_BYPASS_CASES, SAFE_CASES } from "./__tests__/bypass-cases.js";
+import { INJECTION_BYPASS_CASES, SAFE_CASES } from "./bypass-cases.js";
 import { detectInjection } from "./injection-detector.js";
 
 describe("detectInjection", () => {

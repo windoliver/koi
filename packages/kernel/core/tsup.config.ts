@@ -5,6 +5,7 @@ export default defineConfig({
     "src/index.ts",
     "src/agent-definition.ts",
     "src/agent-resolver.ts",
+    "src/bash-rule-pattern.ts",
     "src/assembly.ts",
     "src/config.ts",
     "src/channel.ts",

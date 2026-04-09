@@ -10,7 +10,8 @@
  * The concrete implementation (@koi/tasks) is injected at L3 (tui-runtime).
  */
 
-import { type BashPolicy, classifyBashCommand, DEFAULT_BASH_POLICY } from "@koi/bash-security";
+import { classifyBashCommand, initializeBashAst } from "@koi/bash-ast";
+import { type BashPolicy, DEFAULT_BASH_POLICY } from "@koi/bash-security";
 import type {
   AgentId,
   JsonObject,
@@ -184,6 +185,10 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
           pattern: "",
         };
       }
+
+      // Ensure the bash AST parser is initialised before the sync classifier
+      // reads the cached parser (idempotent off the cached init promise).
+      await initializeBashAst();
 
       const command = args.command;
       if (typeof command !== "string" || command.trim() === "") {

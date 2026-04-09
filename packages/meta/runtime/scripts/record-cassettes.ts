@@ -2634,6 +2634,42 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 4,
   },
 
+  // bash-ast-too-complex: @koi/bash-ast — proves the transitional too-complex
+  //   fallback path. `KOI_GREETING=hello echo "$KOI_GREETING"` contains a
+  //   `simple_expansion` inside a double-quoted string, which the AST walker
+  //   rejects as too-complex (decision 8A: no variable scope tracking in
+  //   phase 1). Control then falls through to the @koi/bash-security regex
+  //   classifier, which finds no TTP match and allows the command. The
+  //   inline prefix assignment satisfies bash's `set -u` so the command
+  //   runs cleanly and produces the deterministic string "hello".
+  //
+  //   End-to-end this proves: (1) the AST walker routes $VAR-in-string to
+  //   too-complex, (2) the transitional regex fallback still permits
+  //   legitimate parameter expansion so users are not regressed until
+  //   #1622 ships an ask-user verdict, (3) the bash tool classifier wiring
+  //   is live through @koi/bash-ast.
+  //
+  //   TODO(#1622): once three-state permissions ship, update this query to
+  //   assert the model sees an ask-user elicitation instead of the command
+  //   running, and delete the regex fallback from @koi/bash-ast/classify.ts.
+  {
+    name: "bash-ast-too-complex",
+    prompt:
+      'Use the Bash tool to run the command `KOI_GREETING=hello echo "$KOI_GREETING"` and tell me the exact word that was printed.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () => createBashTool({ workspaceRoot: process.cwd() }),
+      }),
+    ],
+    maxTurns: 2,
+  },
+
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.
   //     Stub SpawnFn returns immediately (no real child agent launched).

@@ -39,6 +39,7 @@
     "@koi/permissions": "workspace:*",
     "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",
+    "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/sandbox-os": "workspace:*",

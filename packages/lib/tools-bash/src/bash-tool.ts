@@ -1,4 +1,5 @@
-import { type BashPolicy, classifyBashCommand, DEFAULT_BASH_POLICY } from "@koi/bash-security";
+import { classifyBashCommand, initializeBashAst } from "@koi/bash-ast";
+import { type BashPolicy, DEFAULT_BASH_POLICY } from "@koi/bash-security";
 import type {
   JsonObject,
   SandboxAdapter,
@@ -200,6 +201,12 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
     execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<BashResult> => {
       const signal = options?.signal;
       signal?.throwIfAborted();
+
+      // Ensure the bash AST parser is initialised before the sync classifier
+      // reads the cached parser. Idempotent: subsequent calls resolve
+      // immediately off the cached init promise. Runtime entrypoints may
+      // call initializeBashAst() eagerly at boot to warm this.
+      await initializeBashAst();
 
       const command = args.command;
       if (typeof command !== "string" || command.trim() === "") {
