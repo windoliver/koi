@@ -430,25 +430,6 @@ function safeStringify(value: unknown, maxLen: number): string {
   }
 }
 
-/**
- * Extract readable text from a ModelRequest's messages.
- * Issue 14: early-exit accumulator stops iterating once 500 chars are collected.
- */
-function extractModelRequestText(request: ModelRequest): string {
-  let buf = "";
-  outer: for (const msg of request.messages) {
-    for (const block of msg.content) {
-      if (block.kind !== "text") continue;
-      buf += block.text;
-      if (buf.length >= 500) {
-        buf = buf.slice(0, 500);
-        break outer;
-      }
-    }
-  }
-  return buf.length < 500 ? buf : `${buf}…`;
-}
-
 /** Compare two values by value (JSON serialization for non-primitives). */
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
