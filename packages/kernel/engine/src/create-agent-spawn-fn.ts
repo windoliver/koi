@@ -132,11 +132,13 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest = request.manifest;
     } else {
       const resolveResult = await resolver.resolve(request.agentName);
-      if (!resolveResult.ok) {
+      if (!resolveResult.ok && resolveResult.error.code === "NOT_FOUND") {
         // Dynamic agent creation: when the name doesn't match any registered
-        // definition, create an ad-hoc agent using the manifestTemplate + the
-        // request's description as its task. This matches Claude Code's behavior
-        // where the model creates agents on the fly from a prompt.
+        // definition (NOT_FOUND only), create an ad-hoc agent using the
+        // manifestTemplate + the request's description as its task. This matches
+        // Claude Code's behavior where the model creates agents on the fly.
+        // Other resolver errors (PERMISSION, VALIDATION, etc.) are preserved
+        // as hard failures to maintain fail-closed semantics.
         manifest = {
           ...manifestTemplate,
           name: request.agentName,
@@ -146,6 +148,9 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         if (systemPrompt === undefined) {
           systemPrompt = request.description;
         }
+      } else if (!resolveResult.ok) {
+        // Non-NOT_FOUND resolver errors: fail closed (preserve existing behavior)
+        return { ok: false, error: resolveResult.error };
       } else {
         const definition = resolveResult.value;
 

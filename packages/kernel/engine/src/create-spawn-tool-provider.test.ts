@@ -170,20 +170,25 @@ describe("createSpawnToolProvider", () => {
     expect(resolver.resolve).toHaveBeenCalledWith("researcher");
   });
 
-  test("Spawn tool execute throws KoiRuntimeError on SpawnResult failure", async () => {
-    // Spawn failures now propagate as thrown KoiRuntimeErrors (not { error, code } return payloads)
-    // so the engine's tool-failure path (retries, interruption, observability) sees a real failure.
+  test("Spawn tool execute throws KoiRuntimeError on non-NOT_FOUND resolver failure", async () => {
+    // Non-NOT_FOUND resolver errors (PERMISSION, VALIDATION, etc.) propagate as thrown
+    // KoiRuntimeErrors so the engine's tool-failure path sees a real failure.
+    // NOT_FOUND errors trigger dynamic agent creation instead (see next test).
     const ledger = createInMemorySpawnLedger(10);
-    const unknownResolver = {
+    const brokenResolver = {
       resolve: (_agentType: string) => ({
         ok: false as const,
-        error: { code: "NOT_FOUND" as const, message: "No such agent", retryable: false },
+        error: {
+          code: "PERMISSION" as const,
+          message: "Agent blocked by policy",
+          retryable: false,
+        },
       }),
       list: () => [],
     };
 
     const provider = createSpawnToolProvider({
-      resolver: unknownResolver,
+      resolver: brokenResolver,
       spawnLedger: ledger,
       adapter: MOCK_ADAPTER,
       manifestTemplate: MANIFEST_TEMPLATE,
@@ -194,8 +199,42 @@ describe("createSpawnToolProvider", () => {
     const tool = components.get("tool:Spawn") as Tool;
 
     await expect(
-      tool.execute({ agentName: "unknown-agent", description: "Do something" }),
-    ).rejects.toThrow("No such agent");
+      tool.execute({ agentName: "blocked-agent", description: "Do something" }),
+    ).rejects.toThrow("Agent blocked by policy");
+  });
+
+  test("Spawn tool creates dynamic agent on NOT_FOUND (no pre-defined definition required)", async () => {
+    // When agentName doesn't match any registered definition (NOT_FOUND),
+    // a dynamic agent is created from the description — matching Claude Code behavior.
+    const ledger = createInMemorySpawnLedger(10);
+    const notFoundResolver = {
+      resolve: (_agentType: string) => ({
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "No such agent", retryable: false },
+      }),
+      list: () => [],
+    };
+
+    const provider = createSpawnToolProvider({
+      resolver: notFoundResolver,
+      spawnLedger: ledger,
+      adapter: MOCK_ADAPTER,
+      manifestTemplate: MANIFEST_TEMPLATE,
+    });
+
+    const agent = createMockAgent();
+    const components = (await provider.attach(agent)) as ReadonlyMap<string, unknown>;
+    const tool = components.get("tool:Spawn") as Tool;
+
+    // Dynamic agent creation attempts to spawn — it will fail at the child assembly
+    // stage (no real engine), but critically it does NOT throw "No such agent".
+    try {
+      await tool.execute({ agentName: "my-custom-agent", description: "Count to 5" });
+    } catch (e: unknown) {
+      // Expected: child assembly fails without full engine wiring, but the error
+      // should NOT be "No such agent" — it should be a downstream spawn error.
+      expect(e instanceof Error ? e.message : "").not.toContain("No such agent");
+    }
   });
 
   test("Spawn tool inputSchema matches committed snapshot (schema contract test)", async () => {

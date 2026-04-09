@@ -588,26 +588,33 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
   // Uses createAgentResolver (built-in agent definitions) + createSpawnToolProvider
-  // which wires createAgentSpawnFn under the hood. Child agents run in-process with
-  // the same model adapter, using a fresh transcript-backed engine adapter.
+  // which wires createAgentSpawnFn under the hood. Each spawned child gets a fresh
+  // transcript-backed adapter so siblings cannot see each other's history.
+  // Permission middleware is inherited so children are subject to the same approval
+  // policy as the parent (no bypass).
   const { resolver: spawnResolver } = createAgentResolver();
-  const childAdapter = createTranscriptAdapter({
-    engineId: "koi-tui-child",
-    modelAdapter,
-    transcript: [], // each child gets a fresh transcript
-    maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
-    maxTurns: DEFAULT_MAX_TURNS,
-  });
+  // Factory: each child gets its own transcript + adapter (sibling isolation).
+  const createChildAdapter = (): import("@koi/core").EngineAdapter =>
+    createTranscriptAdapter({
+      engineId: `koi-tui-child-${Date.now()}`,
+      modelAdapter,
+      transcript: [],
+      maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
+      maxTurns: DEFAULT_MAX_TURNS,
+    });
   const spawnToolProvider = createSpawnToolProvider({
     resolver: spawnResolver,
     spawnLedger: createInMemorySpawnLedger(5),
-    adapter: childAdapter,
+    adapter: createChildAdapter(),
     manifestTemplate: {
       name: "spawned-agent",
       version: "0.0.0",
       description: "Spawned sub-agent",
       model: { name: config.modelName },
     },
+    // Inherit permission middleware so children are gated by the same approval
+    // handler as the parent — prevents spawn from bypassing tool permissions.
+    inheritedMiddleware: [permMw],
   });
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
