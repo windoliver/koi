@@ -1,0 +1,428 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "plugin-validate",
+  "agent": {
+    "name": "golden-plugin-validate",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "validate_plugin",
+        "description": "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:42.712Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:42.713Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-09T01:46:42.721Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the validate_plugin tool to check this manifest: {\"name\": \"hello-world\", \"version\": \"1.0.0\", \"description\": \"A greeting plugin\"}. Report whether it is valid.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 179,
+        "completion_tokens": 18
+      },
+      "duration_ms": 648,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "validate_plugin",
+            "description": "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "c5c4be782d97539c3b3127bc8302680bf5fbb3d2f0341b1c6ae9fdad8b85b8fb"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.372Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 650.849458,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.373Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 651.0692499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.374Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 652.081583,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.375Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 653.349541,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "tool",
+      "timestamp": "2026-04-09T01:46:43.376Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_validate_plugin_7",
+          "function_name": "validate_plugin",
+          "arguments": {
+            "manifest": {
+              "version": "1.0.0",
+              "name": "hello-world",
+              "description": "A greeting plugin"
+            }
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_validate_plugin_7",
+            "content": "{\"valid\":true,\"pluginName\":\"hello-world\",\"discoveredCount\":1,\"discoveredNames\":[\"seeded-plugin\"],\"errorCount\":0}"
+          }
+        ]
+      },
+      "duration_ms": 5,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775699203371
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.377Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "validate_plugin({\"manifest\":{\"version\":\"1.0.0\",\"name\":\"hello-world\",\"description\":\"A greeting plugin\"}})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.569374999999809,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.378Z",
+      "model_name": "hook:on-plugin-validate",
+      "message": "tool.succeeded → on-plugin-validate",
+      "duration_ms": 1.676040999999941,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-plugin-validate",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-plugin-validate"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.379Z",
+      "model_name": "middleware:hooks",
+      "message": "validate_plugin({\"manifest\":{\"version\":\"1.0.0\",\"name\":\"hello-world\",\"description\":\"A greeting plugin\"}})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 5.8901250000001255,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.380Z",
+      "model_name": "middleware:permissions",
+      "message": "validate_plugin({\"manifest\":{\"version\":\"1.0.0\",\"name\":\"hello-world\",\"description\":\"A greeting plugin\"}})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.426124999999956,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.381Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "validate_plugin({\"manifest\":{\"version\":\"1.0.0\",\"name\":\"hello-world\",\"description\":\"A greeting plugin\"}})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.713958000000048,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-09T01:46:43.383Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"valid\":true,\"pluginName\":\"hello-world\",\"discoveredCount\":1,\"discoveredNames\":[\"seeded-plugin\"],\"errorCount\":0}",
+      "observation": {
+        "results": [
+          {
+            "content": "The manifest is valid."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 234,
+        "completion_tokens": 5
+      },
+      "duration_ms": 459,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "validate_plugin",
+            "description": "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "c5c4be782d97539c3b3127bc8302680bf5fbb3d2f0341b1c6ae9fdad8b85b8fb"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.844Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 465.66691700000024,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.845Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 465.88812499999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.846Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 466.07387500000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-09T01:46:43.847Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 466.1622500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

@@ -38,6 +38,7 @@
     { "path": "../../lib/tools-bash" },
     { "path": "../../sandbox/sandbox-os" },
     { "path": "../../lib/session" },
+    { "path": "../../lib/plugins" },
     { "path": "../../security/permissions" },
     { "path": "../../security/skill-scanner" },
     { "path": "../../lib/skill-tool" },

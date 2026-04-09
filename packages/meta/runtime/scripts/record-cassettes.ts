@@ -74,6 +74,7 @@ import {
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { createPluginRegistry, validatePluginManifest } from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import {
@@ -2804,6 +2805,88 @@ const queries: readonly QueryConfig[] = [
       },
     ],
     providers: [], // Set dynamically below (after MCP server setup)
+    maxTurns: 2,
+  },
+
+  // plugin-validate: exercises @koi/plugins manifest validation + registry discovery
+  {
+    name: "plugin-validate",
+    prompt:
+      'Use the validate_plugin tool to check this manifest: {"name": "hello-world", "version": "1.0.0", "description": "A greeting plugin"}. Report whether it is valid.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-plugin-validate",
+        cmd: ["echo", "plugin-validated"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "plugin-validator",
+        toolName: "validate_plugin",
+        createTool: () => {
+          const result = buildTool({
+            name: "validate_plugin",
+            description:
+              "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                manifest: {
+                  type: "object",
+                  description: "The plugin manifest to validate",
+                },
+              },
+              required: ["manifest"],
+            },
+            origin: "primordial",
+            execute: async (args: JsonObject) => {
+              const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+              const { join } = await import("node:path");
+              const { tmpdir } = await import("node:os");
+
+              const validation = validatePluginManifest(args.manifest);
+
+              // Create a real plugin root with a seeded plugin for non-trivial discovery
+              const pluginRoot = await mkdtemp(join(tmpdir(), "koi-golden-plugins-"));
+              const seededDir = join(pluginRoot, "seeded-plugin");
+              await mkdir(seededDir, { recursive: true });
+              await writeFile(
+                join(seededDir, "plugin.json"),
+                JSON.stringify({
+                  name: "seeded-plugin",
+                  version: "0.1.0",
+                  description: "Golden test plugin",
+                }),
+              );
+
+              const registry = createPluginRegistry({ bundledRoot: pluginRoot });
+              const plugins = await registry.discover();
+              const errors = registry.errors();
+
+              // Cleanup temp dir
+              await rm(pluginRoot, { recursive: true, force: true });
+
+              return {
+                valid: validation.ok,
+                error: validation.ok ? undefined : validation.error.message,
+                pluginName: validation.ok ? validation.value.name : undefined,
+                discoveredCount: plugins.length,
+                discoveredNames: plugins.map((p) => p.name),
+                errorCount: errors.length,
+              };
+            },
+          });
+          if (!result.ok)
+            throw new Error(`Failed to build validate_plugin tool: ${result.error.message}`);
+          return result.value;
+        },
+      }),
+    ],
     maxTurns: 2,
   },
 ];

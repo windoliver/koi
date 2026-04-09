@@ -7443,7 +7443,6 @@ describe("Golden: @koi/skill-tool", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // L0+L3 golden queries: outcome-linkage (#1465)
 // ---------------------------------------------------------------------------
 
@@ -7655,5 +7654,96 @@ describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
     // Should have a model call step
     const modelStep = trajectory.steps.find((s) => s.source === "agent");
     expect(modelStep).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/plugins (2 queries: manifest validation + registry)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/plugins", () => {
+  test("validatePluginManifest accepts valid manifest and rejects invalid", async () => {
+    const { validatePluginManifest } = await import("@koi/plugins");
+
+    const valid = validatePluginManifest({
+      name: "test-plugin",
+      version: "1.0.0",
+      description: "A test plugin",
+    });
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.value.name).toBe("test-plugin");
+      expect(valid.value.version).toBe("1.0.0");
+    }
+
+    const invalid = validatePluginManifest({ name: "Bad Name!" });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("createPluginRegistry discovers from filesystem and returns empty for no roots", async () => {
+    const { createPluginRegistry } = await import("@koi/plugins");
+
+    const registry = createPluginRegistry({});
+    const plugins = await registry.discover();
+    expect(Array.isArray(plugins)).toBe(true);
+    expect(plugins).toHaveLength(0);
+    expect(registry.errors()).toHaveLength(0);
+  });
+
+  test("plugin-validate trajectory has correct ATIF structure", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-validate.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results: readonly { readonly content: string }[] };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to validate_plugin exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("validate_plugin");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — manifest validation + real discovery results
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly valid: boolean;
+      readonly pluginName: string;
+      readonly discoveredCount: number;
+      readonly discoveredNames: readonly string[];
+      readonly errorCount: number;
+    };
+    expect(output.valid).toBe(true);
+    expect(output.pluginName).toBe("hello-world");
+    expect(output.discoveredCount).toBe(1);
+    expect(output.discoveredNames).toEqual(["seeded-plugin"]);
+    expect(output.errorCount).toBe(0);
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-validate",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
   });
 });
