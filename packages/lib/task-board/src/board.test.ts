@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiError, TaskBoardEvent, TaskInput, TaskResult, TaskStatus } from "@koi/core";
+import type { KoiError, Task, TaskBoardEvent, TaskInput, TaskResult, TaskStatus } from "@koi/core";
 import { taskItemId } from "@koi/core";
 import { createTaskBoard } from "./board.js";
 
@@ -1230,5 +1230,526 @@ describe("activeForm", () => {
     if (!r3.ok) return;
     expect(r3.value.get(taskItemId("a"))?.status).toBe("failed");
     expect(r3.value.get(taskItemId("a"))?.activeForm).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task.startedAt — accurate run-duration anchor (#1557 review fix 7A)
+// ---------------------------------------------------------------------------
+//
+// startedAt is set on every pending → in_progress transition and is NOT
+// bumped by activeForm (or other update()) patches. Consumers compute
+// durationMs from startedAt rather than updatedAt so the metric reflects
+// the real wall-clock running time, not "time since last patch".
+
+describe("startedAt", () => {
+  test("created tasks have no startedAt until assigned", () => {
+    const board = createTaskBoard();
+    const r = board.add(input("a"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.get(taskItemId("a"))?.startedAt).toBeUndefined();
+  });
+
+  test("assign sets startedAt on pending → in_progress", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const before = Date.now();
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    const after = Date.now();
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt = r2.value.get(taskItemId("a"))?.startedAt;
+    expect(startedAt).toBeDefined();
+    // Bound the timestamp on both sides — guards against clock drift / wrong field copy
+    expect(startedAt as number).toBeGreaterThanOrEqual(before);
+    expect(startedAt as number).toBeLessThanOrEqual(after);
+  });
+
+  test("update(activeForm) does NOT bump startedAt", async () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt0 = r2.value.get(taskItemId("a"))?.startedAt;
+
+    // Tiny delay so updatedAt would differ if it were being copied
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const r3 = r2.value.update(taskItemId("a"), { activeForm: "Working hard" });
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    const t3 = r3.value.get(taskItemId("a"));
+    // startedAt is preserved — only updatedAt should advance
+    expect(t3?.startedAt).toBe(startedAt0);
+    expect(t3?.updatedAt ?? 0).toBeGreaterThanOrEqual(startedAt0 ?? 0);
+  });
+
+  test("retry path resets startedAt on the next assign", async () => {
+    const board = createTaskBoard({ maxRetries: 3 });
+    const r1 = board.add(input("a"));
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    const startedAt0 = r2.value.get(taskItemId("a"))?.startedAt;
+
+    // Retryable failure puts the task back to pending; startedAt is left alone
+    // because the task may be inspected before re-assignment.
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r3 = r2.value.fail(taskItemId("a"), err);
+    expect(r3.ok).toBe(true);
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.status).toBe("pending");
+    expect(r3.value.get(taskItemId("a"))?.startedAt).toBe(startedAt0);
+
+    // Tiny delay so the next startedAt is observably different
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const r4 = r3.value.assign(taskItemId("a"), agentId("w1"));
+    expect(r4.ok).toBe(true);
+    if (!r4.ok) return;
+    const startedAt1 = r4.value.get(taskItemId("a"))?.startedAt;
+    expect(startedAt1).toBeDefined();
+    expect(startedAt1).not.toBe(startedAt0);
+    expect(startedAt1 as number).toBeGreaterThan(startedAt0 ?? 0);
+  });
+
+  test("snapshot loader backfills startedAt from updatedAt for in_progress tasks", () => {
+    // Simulate a snapshot from before the field existed: in_progress task with no startedAt.
+    // The loader should backfill it to updatedAt (best-effort approximation).
+    const legacyTask: Task = {
+      id: taskItemId("a"),
+      subject: "Legacy",
+      description: "Pre-existing in_progress task",
+      dependencies: [],
+      retries: 0,
+      version: 1,
+      status: "in_progress",
+      assignedTo: agentId("w1"),
+      createdAt: 1000,
+      updatedAt: 5000,
+    };
+    const board = createTaskBoard(undefined, { items: [legacyTask], results: [] });
+    expect(board.get(taskItemId("a"))?.startedAt).toBe(5000);
+  });
+
+  test("snapshot loader leaves startedAt undefined for non-in_progress tasks", () => {
+    // Pending and terminal tasks have no startedAt, even on backfill.
+    const legacyPending: Task = {
+      id: taskItemId("a"),
+      subject: "Pending",
+      description: "Pending",
+      dependencies: [],
+      retries: 0,
+      version: 0,
+      status: "pending",
+      createdAt: 1000,
+      updatedAt: 5000,
+    };
+    const legacyCompleted: Task = {
+      id: taskItemId("b"),
+      subject: "Done",
+      description: "Done",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "completed",
+      createdAt: 1000,
+      updatedAt: 9000,
+    };
+    const board = createTaskBoard(undefined, {
+      items: [legacyPending, legacyCompleted],
+      results: [],
+    });
+    expect(board.get(taskItemId("a"))?.startedAt).toBeUndefined();
+    expect(board.get(taskItemId("b"))?.startedAt).toBeUndefined();
+  });
+
+  test("snapshot loader preserves explicit startedAt over backfill", () => {
+    const task: Task = {
+      id: taskItemId("a"),
+      subject: "Modern",
+      description: "Has startedAt explicitly",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "in_progress",
+      assignedTo: agentId("w1"),
+      createdAt: 1000,
+      updatedAt: 9000,
+      startedAt: 7000,
+    };
+    const board = createTaskBoard(undefined, { items: [task], results: [] });
+    // 7000, not 9000 — explicit field wins
+    expect(board.get(taskItemId("a"))?.startedAt).toBe(7000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blockedBy + cache (#1557 review fix 14A)
+// ---------------------------------------------------------------------------
+
+describe("blockedBy", () => {
+  test("returns undefined for tasks with no dependencies", () => {
+    const r = createTaskBoard().add(input("a"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.blockedBy(taskItemId("a"))).toBeUndefined();
+  });
+
+  test("returns the first incomplete dep for a pending task", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b"));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a", "b"]));
+    if (!r3.ok) return;
+    expect(r3.value.blockedBy(taskItemId("c"))).toBe(taskItemId("a"));
+  });
+
+  test("returns the next incomplete dep after the first completes", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b"));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a", "b"]));
+    if (!r3.ok) return;
+    const r4 = r3.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r4.ok) return;
+    const r5 = r4.value.complete(taskItemId("a"), result("a"));
+    if (!r5.ok) return;
+    // Now `a` is complete; `b` is the blocker
+    expect(r5.value.blockedBy(taskItemId("c"))).toBe(taskItemId("b"));
+  });
+
+  test("returns undefined when all deps are completed (task is ready)", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r3.ok) return;
+    const r4 = r3.value.complete(taskItemId("a"), result("a"));
+    if (!r4.ok) return;
+    expect(r4.value.blockedBy(taskItemId("b"))).toBeUndefined();
+  });
+
+  test("returns undefined for non-pending tasks", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) return;
+    // in_progress → no blocker
+    expect(r2.value.blockedBy(taskItemId("a"))).toBeUndefined();
+  });
+
+  test("returns undefined for unknown task IDs", () => {
+    const board = createTaskBoard();
+    expect(board.blockedBy(taskItemId("nonexistent"))).toBeUndefined();
+  });
+
+  test("repeated calls on the same snapshot return consistent answers (cache hit)", () => {
+    // The cache is internal — we can't directly observe hits, but we CAN verify
+    // that repeated calls return the same value AND that mutating the board
+    // (which produces a new snapshot) returns a possibly different value.
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+
+    // Pre-completion: 5 calls all return "a"
+    for (let i = 0; i < 5; i++) {
+      expect(r2.value.blockedBy(taskItemId("b"))).toBe(taskItemId("a"));
+    }
+
+    // After completion (new board snapshot), the cache is fresh
+    const r3 = r2.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r3.ok) return;
+    const r4 = r3.value.complete(taskItemId("a"), result("a"));
+    if (!r4.ok) return;
+    expect(r4.value.blockedBy(taskItemId("b"))).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lazy reverse adjacency (#1557 review fix 13A)
+// ---------------------------------------------------------------------------
+//
+// The reverse adjacency map is built only when fail()/kill()/dependentsOf() is
+// called — never on assign/complete/update/etc. We can't directly observe "did
+// the build happen" from outside the closure, but we CAN verify the queries
+// that DO need it still work correctly. Combined with the existing 100+ board
+// tests (which cover all mutation paths), this proves the lazy build doesn't
+// break anything.
+
+describe("lazy reverse adjacency", () => {
+  test("dependentsOf works after a series of assign-only mutations", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["a"]));
+    if (!r3.ok) return;
+    // The reverse adj has not been built yet — these mutations don't need it.
+    // Now ask for dependentsOf — it should build the adj on first call.
+    expect(r3.value.dependentsOf(taskItemId("a"))).toHaveLength(2);
+  });
+
+  test("kill cascade still computes unreachable correctly", () => {
+    const board = createTaskBoard();
+    const r1 = board.add(input("a"));
+    if (!r1.ok) return;
+    const r2 = r1.value.add(input("b", ["a"]));
+    if (!r2.ok) return;
+    const r3 = r2.value.add(input("c", ["b"]));
+    if (!r3.ok) return;
+    // Kill `a` — `b` and `c` become unreachable. This exercises the
+    // lazy reverse adj for the first time.
+    const r4 = r3.value.kill(taskItemId("a"));
+    if (!r4.ok) return;
+    const unreachable = r4.value.unreachable().map((t) => t.id);
+    expect(unreachable).toContain(taskItemId("b"));
+    expect(unreachable).toContain(taskItemId("c"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pending-only-marker invariant for metadata.delegatedTo (#1557 review L0u fix)
+// ---------------------------------------------------------------------------
+//
+// `delegatedTo` means "delegated but not yet claimed". Once a task is
+// claimed (assign), the marker is stale history. The board enforces this
+// invariant at every entry to / exit from `in_progress`:
+//
+//   - transitionTask(in_progress): strips delegatedTo on claim
+//   - unassign(): strips delegatedTo on in_progress → pending
+//   - fail() retry branch: strips delegatedTo on in_progress → pending
+//   - snapshot loader: normalizes legacy in_progress tasks with stale markers
+//
+// Combined with task_delegate being the only way to SET delegatedTo (and
+// only on pending tasks), this guarantees that in_progress tasks NEVER
+// carry a delegation marker. The @koi/spawn-tools recovery helper can
+// therefore skip in_progress tasks entirely.
+
+describe("metadata.delegatedTo pending-only invariant", () => {
+  test("assign() strips delegatedTo when claiming a delegated pending task", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "Delegated task",
+      metadata: { delegatedTo: "child-worker", kind: "research", priority: 3 },
+    });
+    if (!r1.ok) return;
+    expect(r1.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("child-worker");
+
+    const r2 = r1.value.assign(taskItemId("a"), agentId("child-worker"));
+    if (!r2.ok) return;
+    const claimed = r2.value.get(taskItemId("a"));
+    expect(claimed?.status).toBe("in_progress");
+    expect(claimed?.assignedTo).toBe(agentId("child-worker"));
+    // delegatedTo is GONE, but other metadata keys are preserved.
+    expect(claimed?.metadata !== undefined && "delegatedTo" in claimed.metadata).toBe(false);
+    expect(claimed?.metadata?.kind).toBe("research");
+    expect(claimed?.metadata?.priority).toBe(3);
+  });
+
+  test("assign() leaves metadata alone when no delegatedTo was present", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "No delegation",
+      metadata: { kind: "direct", tag: "quick" },
+    });
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("worker"));
+    if (!r2.ok) return;
+    const task = r2.value.get(taskItemId("a"));
+    expect(task?.metadata).toEqual({ kind: "direct", tag: "quick" });
+  });
+
+  test("assign() leaves undefined metadata as undefined", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "No metadata" });
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("worker"));
+    if (!r2.ok) return;
+    expect(r2.value.get(taskItemId("a"))?.metadata).toBeUndefined();
+  });
+
+  test("assign() collapses metadata to undefined when delegatedTo was the only key", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "Lone delegation marker",
+      metadata: { delegatedTo: "worker" },
+    });
+    if (!r1.ok) return;
+    const r2 = r1.value.assign(taskItemId("a"), agentId("worker"));
+    if (!r2.ok) return;
+    // Stripping the only key leaves an empty object — the helper collapses
+    // that to undefined so downstream serializers don't see dangling {}.
+    expect(r2.value.get(taskItemId("a"))?.metadata).toBeUndefined();
+  });
+
+  test("unassign() strips delegatedTo from in_progress → pending transition", () => {
+    // This path is primarily for snapshots loaded from a pre-invariant version
+    // of koi that left delegatedTo set on live in_progress tasks. unassign()
+    // is defense in depth — new in_progress tasks wouldn't have the marker
+    // because assign() already stripped it.
+    const legacyTask: Task = {
+      id: taskItemId("a"),
+      subject: "Legacy",
+      description: "Pre-invariant in_progress task",
+      dependencies: [],
+      retries: 0,
+      version: 1,
+      status: "in_progress",
+      assignedTo: agentId("old-worker"),
+      // Simulate legacy state BEFORE the snapshot backfill would see it.
+      // We construct the Task directly and insert it via the snapshot loader
+      // below, asserting the loader normalized it.
+      metadata: { delegatedTo: "old-worker", kind: "legacy" },
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    const board = createTaskBoard(undefined, { items: [legacyTask], results: [] });
+    // Snapshot loader should already have stripped the marker on load.
+    expect(board.get(taskItemId("a"))?.metadata?.delegatedTo).toBeUndefined();
+    expect(board.get(taskItemId("a"))?.metadata?.kind).toBe("legacy");
+
+    // But unassign() is also defensive — if some future caller somehow
+    // gets delegatedTo back onto an in_progress task (e.g. via a direct
+    // update() call) the unassign path strips it.
+    const r = board.unassign(taskItemId("a"));
+    if (!r.ok) return;
+    expect(r.value.get(taskItemId("a"))?.status).toBe("pending");
+    expect(r.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBeUndefined();
+    expect(r.value.get(taskItemId("a"))?.metadata?.kind).toBe("legacy");
+  });
+
+  test("fail() retry branch strips delegatedTo when retrying back to pending", () => {
+    // Same defense-in-depth — assign() already strips, but fail-retry is
+    // the other in_progress → pending exit and must also enforce the
+    // invariant for legacy state or update-side leakage.
+    const legacyTask: Task = {
+      id: taskItemId("a"),
+      subject: "Legacy",
+      description: "Pre-invariant in_progress task",
+      dependencies: [],
+      retries: 0,
+      version: 1,
+      status: "in_progress",
+      assignedTo: agentId("old-worker"),
+      metadata: { delegatedTo: "old-worker", kind: "legacy" },
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    const board = createTaskBoard({ maxRetries: 3 }, { items: [legacyTask], results: [] });
+    // Snapshot loader already stripped, so replant the marker via a direct
+    // update() to simulate the defense-in-depth scenario.
+    const rSeed = board.update(taskItemId("a"), {
+      metadata: { delegatedTo: "old-worker", kind: "legacy" },
+    });
+    if (!rSeed.ok) return;
+    expect(rSeed.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("old-worker");
+
+    // Retryable failure → task goes back to pending. delegatedTo must be stripped.
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r = rSeed.value.fail(taskItemId("a"), err);
+    if (!r.ok) return;
+    const retried = r.value.get(taskItemId("a"));
+    expect(retried?.status).toBe("pending");
+    expect(retried?.retries).toBe(1);
+    expect(retried?.metadata?.delegatedTo).toBeUndefined();
+    expect(retried?.metadata?.kind).toBe("legacy");
+  });
+
+  test("snapshot loader strips delegatedTo from legacy in_progress tasks", () => {
+    const legacyInProgress: Task = {
+      id: taskItemId("a"),
+      subject: "Legacy in_progress",
+      description: "Has stale delegatedTo",
+      dependencies: [],
+      retries: 0,
+      version: 1,
+      status: "in_progress",
+      assignedTo: agentId("w1"),
+      metadata: { delegatedTo: "stale-worker", kind: "research" },
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    const legacyPending: Task = {
+      id: taskItemId("b"),
+      subject: "Legacy pending",
+      description: "Has legit delegatedTo",
+      dependencies: [],
+      retries: 0,
+      version: 0,
+      status: "pending",
+      // Pending tasks' delegation markers are legitimate — loader leaves them alone.
+      metadata: { delegatedTo: "intended-worker" },
+      createdAt: 1000,
+      updatedAt: 1000,
+    };
+    const board = createTaskBoard(undefined, {
+      items: [legacyInProgress, legacyPending],
+      results: [],
+    });
+    // in_progress → stripped
+    expect(board.get(taskItemId("a"))?.metadata?.delegatedTo).toBeUndefined();
+    expect(board.get(taskItemId("a"))?.metadata?.kind).toBe("research");
+    // pending → preserved
+    expect(board.get(taskItemId("b"))?.metadata?.delegatedTo).toBe("intended-worker");
+  });
+
+  test("full round trip: delegate → claim → retry → re-delegate works without manual cleanup", () => {
+    // End-to-end verification of the invariant. No recovery helper calls —
+    // the board alone is sufficient to keep a task re-delegatable across
+    // the full state machine.
+    const board = createTaskBoard({ maxRetries: 3 });
+    const r1 = board.add({
+      id: taskItemId("a"),
+      description: "End-to-end invariant test",
+    });
+    if (!r1.ok) return;
+
+    // Coordinator delegates
+    const r2 = r1.value.update(taskItemId("a"), {
+      metadata: { delegatedTo: "child-worker" },
+    });
+    if (!r2.ok) return;
+    expect(r2.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("child-worker");
+
+    // Child claims — marker is stripped
+    const r3 = r2.value.assign(taskItemId("a"), agentId("child-worker"));
+    if (!r3.ok) return;
+    expect(r3.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBeUndefined();
+
+    // Child fails with retry — marker stays stripped
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r4 = r3.value.fail(taskItemId("a"), err);
+    if (!r4.ok) return;
+    expect(r4.value.get(taskItemId("a"))?.status).toBe("pending");
+    expect(r4.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBeUndefined();
+
+    // Coordinator re-delegates — succeeds because the marker was cleared
+    const r5 = r4.value.update(taskItemId("a"), {
+      metadata: { delegatedTo: "fresh-worker" },
+    });
+    if (!r5.ok) return;
+    expect(r5.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("fresh-worker");
   });
 });
