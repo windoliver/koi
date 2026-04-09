@@ -98,6 +98,7 @@ import {
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createTranscriptAdapter } from "./engine-adapter.js";
+import { loadPluginComponents } from "./plugin-activation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -395,6 +396,43 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // --- MCP setup (optional, from .mcp.json) ---
   const mcpSetup = await loadMcp(cwd, skillsRuntime);
 
+  // --- Plugin activation: load enabled plugins' hooks, MCP, skills ---
+  const pluginUserRoot = join(homedir(), ".koi", "plugins");
+  const pluginComponents = await loadPluginComponents(pluginUserRoot);
+  if (pluginComponents.errors.length > 0) {
+    for (const err of pluginComponents.errors) {
+      console.warn(`[koi tui] plugin "${err.plugin}": ${err.error}`);
+    }
+  }
+  if (pluginComponents.middlewareNames.length > 0) {
+    console.warn(
+      `[koi tui] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+    );
+  }
+
+  // Register plugin skills with the SkillsRuntime (if any)
+  if (skillsRuntime !== undefined && pluginComponents.skillMetadata.length > 0) {
+    skillsRuntime.registerExternal(pluginComponents.skillMetadata);
+  }
+
+  // Create additional MCP connections from plugins
+  let pluginMcpSetup: McpSetup | undefined;
+  if (pluginComponents.mcpServers.length > 0) {
+    const connections = pluginComponents.mcpServers.map((server) =>
+      createMcpConnection(resolveServerConfig(server)),
+    );
+    const resolver = createMcpResolver(connections);
+    const provider = createMcpComponentProvider({ resolver });
+    pluginMcpSetup = {
+      resolver,
+      provider,
+      bridge: undefined,
+      dispose: () => {
+        resolver.dispose();
+      },
+    };
+  }
+
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
   // and can't be rotated after createKoi assembly. The prune is awaited to
@@ -465,6 +503,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     // Absent or unreadable — silently skip (no hooks configured)
   }
 
+  // Merge plugin hooks with user hooks (plugin hooks run first, user hooks override)
+  const allHooks: readonly import("@koi/core").HookConfig[] = [
+    ...pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+    ...loadedHooks,
+  ];
+
   // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
   // single-shot LLM verification. Builds a minimal ModelRequest with the
   // verification prompt as a user message and the system prompt in the
@@ -488,9 +532,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   };
 
-  const hasPromptHooks = loadedHooks.some((h) => h.kind === "prompt");
+  const hasPromptHooks = allHooks.some((h) => h.kind === "prompt");
   const hookMw = createHookMiddleware({
-    hooks: loadedHooks,
+    hooks: allHooks,
     promptCallFn: hasPromptHooks ? promptCallFn : undefined,
     onExecuted: hookObserverTap,
   });
@@ -901,6 +945,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       ...spawnToolProviders,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
+      ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
       ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
@@ -981,6 +1026,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       const hadTasks = liveSubprocessCount > 0;
       bgController.abort();
       mcpSetup?.dispose();
+      pluginMcpSetup?.dispose();
       return hadTasks;
     },
   };
