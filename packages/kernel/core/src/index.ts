@@ -1014,11 +1014,12 @@ export type {
   EventCursor,
   FileOpKind,
   FileOpRecord,
+  SnapshotStatus,
   TraceEvent,
   TraceEventKind,
   TurnTrace,
 } from "./snapshot-time-travel.js";
-export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
+export { BACKTRACK_REASON_KEY, SNAPSHOT_STATUS_KEY } from "./snapshot-time-travel.js";
 // spawn — unified spawn types for all agent-spawning patterns
 export type {
   SpawnFn,

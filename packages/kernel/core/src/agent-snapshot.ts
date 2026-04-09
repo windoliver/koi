@@ -35,6 +35,19 @@ export interface AgentSnapshot {
   readonly components: ReadonlyMap<string, BrickRef>;
   /** Agent configuration snapshot (opaque, agent-defined). */
   readonly config: unknown;
+  /**
+   * Drift warnings recorded at checkpoint creation. Each entry describes a
+   * filesystem change observed by `git status --porcelain` that did NOT come
+   * through the tracked Edit/Write/MultiEdit pipeline (e.g., bash-mediated
+   * changes like `rm`, `mv`, `sed -i`, build artifacts).
+   *
+   * These changes are NOT restored on rewind. The list exists so the rewind
+   * UI can surface what the rewind cannot undo, rather than silently losing
+   * the user's mental model of file state. Empty array = no drift detected.
+   *
+   * See `docs/L2/checkpoint.md` § "Drift warnings".
+   */
+  readonly driftWarnings: readonly string[];
   /** Arbitrary metadata (e.g., trigger reason). */
   readonly metadata: Readonly<Record<string, unknown>>;
 }

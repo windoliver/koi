@@ -6,53 +6,160 @@ import type {
   CompensatingOp,
   EventCursor,
   FileOpRecord,
+  SnapshotStatus,
   TraceEvent,
   TraceEventKind,
   TurnTrace,
 } from "./snapshot-time-travel.js";
-import { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
+import { BACKTRACK_REASON_KEY, SNAPSHOT_STATUS_KEY } from "./snapshot-time-travel.js";
+
+const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
 
 describe("snapshot-time-travel types", () => {
   describe("FileOpRecord", () => {
-    test("write op with no previous content", () => {
+    test("create op records post-content hash only", () => {
       const record: FileOpRecord = {
+        kind: "create",
         callId: toolCallId("call-1"),
-        kind: "write",
         path: "/tmp/test.txt",
-        previousContent: undefined,
-        newContent: "hello",
+        postContentHash: HASH_A,
         turnIndex: 0,
         eventIndex: 3,
         timestamp: Date.now(),
       };
-      expect(record.kind).toBe("write");
-      expect(record.previousContent).toBeUndefined();
+      expect(record.kind).toBe("create");
+      if (record.kind === "create") {
+        expect(record.postContentHash).toBe(HASH_A);
+      }
     });
 
-    test("edit op with previous content", () => {
+    test("edit op records both pre and post content hashes", () => {
       const record: FileOpRecord = {
-        callId: toolCallId("call-2"),
         kind: "edit",
+        callId: toolCallId("call-2"),
         path: "/tmp/existing.txt",
-        previousContent: "old content",
-        newContent: "new content",
+        preContentHash: HASH_A,
+        postContentHash: HASH_B,
         turnIndex: 1,
         eventIndex: 7,
         timestamp: Date.now(),
       };
       expect(record.kind).toBe("edit");
-      expect(record.previousContent).toBe("old content");
+      if (record.kind === "edit") {
+        expect(record.preContentHash).toBe(HASH_A);
+        expect(record.postContentHash).toBe(HASH_B);
+      }
+    });
+
+    test("delete op records pre-content hash only", () => {
+      const record: FileOpRecord = {
+        kind: "delete",
+        callId: toolCallId("call-3"),
+        path: "/tmp/removed.txt",
+        preContentHash: HASH_C,
+        turnIndex: 2,
+        eventIndex: 11,
+        timestamp: Date.now(),
+      };
+      expect(record.kind).toBe("delete");
+      if (record.kind === "delete") {
+        expect(record.preContentHash).toBe(HASH_C);
+      }
+    });
+
+    test("rename is modeled as delete + create with shared renameId", () => {
+      const renameId = "rename-xyz";
+      const now = Date.now();
+
+      const removed: FileOpRecord = {
+        kind: "delete",
+        callId: toolCallId("call-4"),
+        path: "/tmp/old-name.txt",
+        preContentHash: HASH_A,
+        turnIndex: 3,
+        eventIndex: 13,
+        timestamp: now,
+        renameId,
+      };
+
+      const added: FileOpRecord = {
+        kind: "create",
+        callId: toolCallId("call-4"),
+        path: "/tmp/new-name.txt",
+        postContentHash: HASH_A,
+        turnIndex: 3,
+        eventIndex: 14,
+        timestamp: now,
+        renameId,
+      };
+
+      expect(removed.renameId).toBe(renameId);
+      expect(added.renameId).toBe(renameId);
+      // Same content hash on both halves of a content-preserving rename:
+      if (removed.kind === "delete" && added.kind === "create") {
+        expect(removed.preContentHash).toBe(added.postContentHash);
+      }
+    });
+
+    test("exhaustive kind check compiles", () => {
+      const records: readonly FileOpRecord[] = [
+        {
+          kind: "create",
+          callId: toolCallId("c"),
+          path: "/x",
+          postContentHash: HASH_A,
+          turnIndex: 0,
+          eventIndex: 0,
+          timestamp: 0,
+        },
+        {
+          kind: "edit",
+          callId: toolCallId("c"),
+          path: "/x",
+          preContentHash: HASH_A,
+          postContentHash: HASH_B,
+          turnIndex: 0,
+          eventIndex: 0,
+          timestamp: 0,
+        },
+        {
+          kind: "delete",
+          callId: toolCallId("c"),
+          path: "/x",
+          preContentHash: HASH_A,
+          turnIndex: 0,
+          eventIndex: 0,
+          timestamp: 0,
+        },
+      ];
+      for (const record of records) {
+        switch (record.kind) {
+          case "create":
+          case "edit":
+          case "delete":
+            break;
+          default: {
+            const _exhaustive: never = record;
+            throw new Error(`Unhandled: ${String(_exhaustive)}`);
+          }
+        }
+      }
     });
   });
 
   describe("CompensatingOp", () => {
-    test("restore op restores file content", () => {
+    test("restore op references content by hash, not literal bytes", () => {
       const op: CompensatingOp = {
         kind: "restore",
         path: "/tmp/test.txt",
-        content: "original",
+        contentHash: HASH_A,
       };
       expect(op.kind).toBe("restore");
+      if (op.kind === "restore") {
+        expect(op.contentHash).toBe(HASH_A);
+      }
     });
 
     test("delete op removes created file", () => {
@@ -66,7 +173,7 @@ describe("snapshot-time-travel types", () => {
     test("exhaustive kind check compiles", () => {
       const ops: readonly CompensatingOp[] = [
         { kind: "delete", path: "/tmp/x" },
-        { kind: "restore", path: "/tmp/y", content: "c" },
+        { kind: "restore", path: "/tmp/y", contentHash: HASH_B },
       ];
       for (const op of ops) {
         switch (op.kind) {
@@ -76,6 +183,41 @@ describe("snapshot-time-travel types", () => {
             break;
           default: {
             const _exhaustive: never = op;
+            throw new Error(`Unhandled: ${String(_exhaustive)}`);
+          }
+        }
+      }
+    });
+  });
+
+  describe("SnapshotStatus + SNAPSHOT_STATUS_KEY", () => {
+    test("SNAPSHOT_STATUS_KEY has correct value", () => {
+      expect(SNAPSHOT_STATUS_KEY).toBe("koi:snapshot_status");
+    });
+
+    test("complete and incomplete are valid statuses", () => {
+      const complete: SnapshotStatus = "complete";
+      const incomplete: SnapshotStatus = "incomplete";
+      expect(complete).toBe("complete");
+      expect(incomplete).toBe("incomplete");
+    });
+
+    test("can be used as metadata key on SnapshotNode", () => {
+      const metadata: Readonly<Record<string, unknown>> = {
+        [SNAPSHOT_STATUS_KEY]: "incomplete" satisfies SnapshotStatus,
+      };
+      expect(metadata[SNAPSHOT_STATUS_KEY]).toBe("incomplete");
+    });
+
+    test("exhaustive status check compiles", () => {
+      const statuses: readonly SnapshotStatus[] = ["complete", "incomplete"];
+      for (const status of statuses) {
+        switch (status) {
+          case "complete":
+          case "incomplete":
+            break;
+          default: {
+            const _exhaustive: never = status;
             throw new Error(`Unhandled: ${String(_exhaustive)}`);
           }
         }
