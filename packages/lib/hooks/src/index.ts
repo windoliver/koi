@@ -27,6 +27,8 @@ export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middlewa
 export { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
 export type { PayloadStatus, RedactedPayload } from "./payload-redaction.js";
 export { extractStructure, redactEventData } from "./payload-redaction.js";
+export type { CreatePromptAdapterOptions } from "./prompt-adapter.js";
+export { PromptExecutorAdapter } from "./prompt-adapter.js";
 export type { CreateHookRegistryOptions, HookRegistry } from "./registry.js";
 export { createHookRegistry } from "./registry.js";
 export {

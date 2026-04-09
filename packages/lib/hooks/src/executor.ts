@@ -352,6 +352,7 @@ function executeSingleHook(
   sessionSignal: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
   agentExecutor?: HookExecutor | undefined,
+  promptExecutor?: HookExecutor | undefined,
 ): Promise<HookExecutionResult> {
   const timeoutMs = resolveTimeout(hook);
   const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
@@ -377,16 +378,16 @@ function executeSingleHook(
       return agentExecutor.execute(hook, event, composedSignal);
     }
     case "prompt": {
-      // Prompt hooks are executed by the @koi/hook-prompt package, not by this
-      // generic executor. If one reaches here, it means no prompt executor was
-      // wired. Return a fail-closed error so the hook is not silently skipped.
-      return Promise.resolve({
-        ok: false as const,
-        hookName: hook.name,
-        error: "Prompt hooks require a dedicated executor — wire @koi/hook-prompt",
-        durationMs: 0,
-        failClosed: hook.failClosed,
-      });
+      if (promptExecutor === undefined) {
+        return Promise.resolve({
+          ok: false as const,
+          hookName: hook.name,
+          error: "Prompt hooks require promptCallFn — provide it via CreateHookMiddlewareOptions",
+          durationMs: 0,
+          failClosed: hook.failClosed,
+        });
+      }
+      return promptExecutor.execute(hook, event, composedSignal);
     }
     default: {
       const _exhaustive: never = hook;
@@ -419,6 +420,7 @@ export async function executeHooks(
   sessionSignal?: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
   agentExecutor?: HookExecutor | undefined,
+  promptExecutor?: HookExecutor | undefined,
 ): Promise<readonly HookExecutionResult[]> {
   const matching = hooks.filter((h) => matchesHookFilter(h.filter, event));
   if (matching.length === 0) {
@@ -433,7 +435,14 @@ export async function executeHooks(
     if (parallelBatch.length === 0) return;
     const settled = await Promise.allSettled(
       parallelBatch.map((entry) =>
-        executeSingleHook(entry.hook, event, sessionSignal, envPolicy, agentExecutor),
+        executeSingleHook(
+          entry.hook,
+          event,
+          sessionSignal,
+          envPolicy,
+          agentExecutor,
+          promptExecutor,
+        ),
       ),
     );
     for (let i = 0; i < settled.length; i++) {
@@ -461,7 +470,14 @@ export async function executeHooks(
     if (hook.serial === true) {
       // Flush any pending parallel batch before running serial hook
       await flushParallel();
-      results[i] = await executeSingleHook(hook, event, sessionSignal, envPolicy, agentExecutor);
+      results[i] = await executeSingleHook(
+        hook,
+        event,
+        sessionSignal,
+        envPolicy,
+        agentExecutor,
+        promptExecutor,
+      );
     } else {
       parallelBatch.push({ hook, index: i });
     }
