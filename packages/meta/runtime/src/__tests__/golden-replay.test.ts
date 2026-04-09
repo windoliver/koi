@@ -7692,4 +7692,58 @@ describe("Golden: @koi/plugins", () => {
     expect(plugins).toHaveLength(0);
     expect(registry.errors()).toHaveLength(0);
   });
+
+  test("plugin-validate trajectory has correct ATIF structure", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-validate.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results: readonly { readonly content: string }[] };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to validate_plugin exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("validate_plugin");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — manifest validation + real discovery results
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly valid: boolean;
+      readonly pluginName: string;
+      readonly discoveredCount: number;
+      readonly discoveredNames: readonly string[];
+      readonly errorCount: number;
+    };
+    expect(output.valid).toBe(true);
+    expect(output.pluginName).toBe("hello-world");
+    expect(output.discoveredCount).toBe(1);
+    expect(output.discoveredNames).toEqual(["seeded-plugin"]);
+    expect(output.errorCount).toBe(0);
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-validate",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
+  });
 });
