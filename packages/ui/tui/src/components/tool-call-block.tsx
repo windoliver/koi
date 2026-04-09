@@ -25,6 +25,7 @@ import {
   type ResultDisplay,
   type ToolDisplay,
 } from "../tool-display.js";
+import { DEFAULT_SPINNER } from "./spinners.js";
 
 type ToolCallData = TuiAssistantBlock & { readonly kind: "tool_call" };
 
@@ -34,15 +35,15 @@ interface ToolCallBlockProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
-const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
 function StatusIndicator(props: {
   readonly status: ToolCallData["status"];
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
   switch (props.status) {
-    case "running":
-      return <text fg={COLORS.cyan}>{SPINNER[props.spinnerFrame() % SPINNER.length] ?? "⠋"}</text>;
+    case "running": {
+      const frames = DEFAULT_SPINNER.frames;
+      return <text fg={COLORS.cyan}>{frames[props.spinnerFrame() % frames.length] ?? " "}</text>;
+    }
     case "complete":
       return <text fg={COLORS.success}>✓</text>;
     case "error":
