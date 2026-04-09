@@ -16,7 +16,7 @@
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
  *
- * MCP transport wiring is deferred — tracked as a follow-up to #1542.
+ * MCP wired: loads .mcp.json, creates resolver + provider, bridges MCP tools → skills.
  * Hook loading from user config is deferred — currently passes empty hooks.
  *
  * Returns the KoiRuntime, the mutable transcript array (for session resets),
@@ -49,6 +49,14 @@ import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import type { McpResolver } from "@koi/mcp";
+import {
+  createMcpComponentProvider,
+  createMcpConnection,
+  createMcpResolver,
+  loadMcpJsonFile,
+  resolveServerConfig,
+} from "@koi/mcp";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -59,9 +67,11 @@ import {
 } from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
+import type { SkillsMcpBridge } from "@koi/runtime";
+import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
+import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -220,6 +230,12 @@ export interface TuiRuntimeConfig {
         readonly sessionId: SessionId;
       }
     | undefined;
+  /**
+   * Optional SkillsRuntime for MCP bridge integration.
+   * When provided and .mcp.json exists, MCP tools are registered as skills
+   * via createSkillsMcpBridge.
+   */
+  readonly skillsRuntime?: SkillsRuntime | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -293,6 +309,55 @@ export interface TuiRuntimeHandle {
 }
 
 // ---------------------------------------------------------------------------
+// MCP loading (optional, from .mcp.json)
+// ---------------------------------------------------------------------------
+
+interface McpSetup {
+  readonly resolver: McpResolver;
+  readonly provider: import("@koi/core").ComponentProvider;
+  readonly bridge: SkillsMcpBridge | undefined;
+  readonly dispose: () => void;
+}
+
+async function loadMcp(
+  cwd: string,
+  skillsRuntime: SkillsRuntime | undefined,
+): Promise<McpSetup | undefined> {
+  const mcpConfigPath = join(cwd, ".mcp.json");
+  const result = await loadMcpJsonFile(mcpConfigPath);
+  if (!result.ok) return undefined;
+  if (result.value.servers.length === 0) return undefined;
+
+  const connections = result.value.servers.map((server) =>
+    createMcpConnection(resolveServerConfig(server)),
+  );
+  const resolver = createMcpResolver(connections);
+  const provider = createMcpComponentProvider({ resolver });
+
+  // Wire bridge if skillsRuntime provided
+  let bridge: SkillsMcpBridge | undefined;
+  if (skillsRuntime !== undefined) {
+    bridge = createSkillsMcpBridge({ resolver, runtime: skillsRuntime });
+    try {
+      await bridge.sync();
+    } catch {
+      // Non-fatal — MCP tools just won't appear as skills
+      bridge = undefined;
+    }
+  }
+
+  return {
+    resolver,
+    provider,
+    bridge,
+    dispose: () => {
+      bridge?.dispose();
+      resolver.dispose();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -301,10 +366,13 @@ export interface TuiRuntimeHandle {
  *
  * Blueprint: record-cassettes.ts — this is the same composition used in
  * golden query recording, simplified to the TUI's surface (no ATIF file writes,
- * no hook agent executor, no MCP server lifecycle).
+ * no hook agent executor). MCP loaded from .mcp.json when present.
  */
 export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd() } = config;
+  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+
+  // --- MCP setup (optional, from .mcp.json) ---
+  const mcpSetup = await loadMcp(cwd, skillsRuntime);
 
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
@@ -686,6 +754,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       webProvider,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       ...spawnToolProviders,
+      ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
     ],
     approvalHandler,
     loopDetection: false,
@@ -751,6 +820,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // (task_stop can change board state without killing the OS process).
       const hadTasks = liveSubprocessCount > 0;
       bgController.abort();
+      mcpSetup?.dispose();
       return hadTasks;
     },
   };
