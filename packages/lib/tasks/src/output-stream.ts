@@ -65,7 +65,8 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
 
   const evict = (): void => {
     while (bufferedBytes > maxBytes && chunks.length > 1) {
-      const evicted = chunks[0]!;
+      const evicted = chunks[0];
+      if (evicted === undefined) break;
       chunks = chunks.slice(1);
       bufferedBytes -= evicted.byteLength;
     }
@@ -80,7 +81,8 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
     let hi = chunks.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (chunks[mid]!.offset + chunks[mid]!.byteLength <= targetOffset) {
+      const midChunk = chunks[mid];
+      if (midChunk !== undefined && midChunk.offset + midChunk.byteLength <= targetOffset) {
         lo = mid + 1;
       } else {
         hi = mid;
@@ -106,7 +108,7 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
       let skipBytes = fromOffset - first.offset;
       // UTF-8 continuation bytes start with 0b10xxxxxx (0x80-0xBF).
       // Advance past any continuation bytes to the next character start.
-      while (skipBytes < encoded.byteLength && (encoded[skipBytes]! & 0xc0) === 0x80) {
+      while (skipBytes < encoded.byteLength && ((encoded[skipBytes] ?? 0) & 0xc0) === 0x80) {
         skipBytes += 1;
       }
       if (skipBytes < encoded.byteLength) {
@@ -143,7 +145,9 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
       while (bytePos < encoded.byteLength) {
         const sliceEnd = Math.min(bytePos + maxBytes, encoded.byteLength);
         const sliceBytes = encoded.slice(bytePos, sliceEnd);
-        const sliceContent = decoder.decode(sliceBytes, { stream: bytePos + maxBytes < encoded.byteLength });
+        const sliceContent = decoder.decode(sliceBytes, {
+          stream: bytePos + maxBytes < encoded.byteLength,
+        });
         writeChunk(sliceContent, now);
         bytePos = sliceEnd;
       }

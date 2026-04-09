@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KoiError, TaskResult } from "@koi/core";

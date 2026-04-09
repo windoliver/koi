@@ -72,7 +72,10 @@ function sortedSkills(agent: Agent): readonly SkillComponent[] {
 function collectSkillContent(agent: Agent): string | undefined {
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return undefined;
-  return sorted.map((s) => s.content).join(SEPARATOR);
+  // Filter empty content (e.g., MCP-derived metadata-only skills)
+  const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
+  if (bodies.length === 0) return undefined;
+  return bodies.join(SEPARATOR);
 }
 
 /**

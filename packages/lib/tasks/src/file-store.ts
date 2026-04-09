@@ -45,7 +45,7 @@ const TMP_FILE_REGEX = /\.tmp$/;
 /** Extract the numeric ID from a task filename, or undefined if not a task file. */
 function extractIdNumber(filename: string): number | undefined {
   const match = TASK_FILE_REGEX.exec(filename);
-  return match !== null ? parseInt(match[1]!, 10) : undefined;
+  return match !== null && match[1] !== undefined ? parseInt(match[1], 10) : undefined;
 }
 
 /** Build the filename for a task ID. */

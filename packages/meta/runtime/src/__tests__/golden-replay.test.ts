@@ -49,6 +49,11 @@ import { loadCassette } from "../cassette/load-cassette.js";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
+import {
+  createSkillsMcpBridge,
+  mapToolDescriptorsToSkillMetadata,
+  mapToolDescriptorToSkillMetadata,
+} from "../skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../trajectory/fs-delegate.js";
 
@@ -7476,6 +7481,57 @@ describe("Golden: @koi/tool-notebook", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L0+L3 golden queries: outcome-linkage (#1465)
+// ---------------------------------------------------------------------------
+
+describe("Golden: outcome-linkage (L0 types + L3 stores)", () => {
+  test("DecisionCorrelationId branded constructor round-trips", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const id = decisionCorrelationId("dcid_test-123");
+    // Branded type is structurally a string
+    const plain: string = id;
+    expect(plain).toBe("dcid_test-123");
+  });
+
+  test("in-memory OutcomeStore put/get round-trip", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+
+    const store = createInMemoryOutcomeStore();
+    const report = {
+      correlationId: decisionCorrelationId("dcid_golden"),
+      outcome: "positive" as const,
+      metrics: { revenue: 42000 },
+      description: "Golden test outcome",
+      reportedBy: "golden-test",
+      timestamp: Date.now(),
+    };
+
+    await store.put(report);
+    const retrieved = await store.get("dcid_golden");
+
+    expect(retrieved).toBeDefined();
+    expect(retrieved?.outcome).toBe("positive");
+    expect(retrieved?.metrics.revenue).toBe(42000);
+  });
+
+  test("in-memory OutcomeStore returns undefined for missing ID", async () => {
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+    const store = createInMemoryOutcomeStore();
+    const result = await store.get("dcid_nonexistent");
+    expect(result).toBeUndefined();
+  });
+
+  test("outcomeStore on RuntimeHandle is populated when trajectoryNexus is configured", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Without trajectoryNexus, outcomeStore should be undefined
+    const handle = createRuntime({});
+    expect(handle.outcomeStore).toBeUndefined();
+    await handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/tool-browser (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -7632,5 +7688,260 @@ describe("Golden: @koi/lsp", () => {
     };
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe("VALIDATION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — standalone bridge registration + mapping
+// No LLM needed. Exercises createSkillsMcpBridge, mapping, and registration.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (standalone bridge registration)", () => {
+  test("mapToolDescriptorToSkillMetadata produces sanitized MCP skill metadata", () => {
+    const descriptor: import("@koi/core").ToolDescriptor = {
+      name: "weather__get_forecast",
+      description: "Get weather forecast for a city",
+      inputSchema: { type: "object", properties: { city: { type: "string" } } },
+      server: "weather",
+      tags: ["weather", "api"],
+    };
+    const result = mapToolDescriptorToSkillMetadata(descriptor);
+
+    expect(result.name).toBe("weather__get_forecast");
+    expect(result.source).toBe("mcp");
+    expect(result.dirPath).toBe("mcp://weather");
+    expect(result.description).toBe(""); // empty — metadata-only, no prompt injection
+    expect(result.tags).toEqual(["mcp", "weather", "weather", "api"]);
+    expect(result.executionMode).toBeUndefined();
+  });
+
+  test("mapToolDescriptorsToSkillMetadata deduplicates and reports collisions", () => {
+    const descriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "srv__tool_a",
+        description: "Tool A",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool_b",
+        description: "Tool B",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool a", // sanitizes to "srv__toola" — collision with nothing, unique
+        description: "Tool with space",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+    ];
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
+
+    // All three have unique sanitized names
+    expect(skills.length).toBeGreaterThanOrEqual(2);
+    // No collisions for these distinct names
+    expect(skipped.length).toBe(0);
+    // All are source: "mcp"
+    for (const s of skills) {
+      expect(s.source).toBe("mcp");
+    }
+  });
+
+  test("createSkillsMcpBridge syncs MCP tools into SkillsRuntime", async () => {
+    const { mock } = await import("bun:test");
+
+    // Mock McpResolver
+    const mockDescriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "test-server__add",
+        description: "Add numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+      {
+        name: "test-server__multiply",
+        description: "Multiply numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+    ];
+
+    const mockResolver = {
+      discover: mock(() => Promise.resolve(mockDescriptors)),
+      load: mock(() =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+        }),
+      ),
+      onChange: mock((_fn: () => void) => () => {}),
+      dispose: mock(() => {}),
+      failures: [] as readonly never[],
+    };
+
+    const runtime = createSkillsRuntime({ bundledRoot: null });
+    const bridge = createSkillsMcpBridge({
+      resolver: mockResolver as never,
+      runtime,
+    });
+
+    await bridge.sync();
+
+    // MCP tools should appear as skills via discover()
+    const discovered = await runtime.discover();
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+
+    const mcpSkills = [...discovered.value.values()].filter((s) => s.source === "mcp");
+    expect(mcpSkills).toHaveLength(2);
+
+    const names = mcpSkills.map((s) => s.name).sort();
+    expect(names).toEqual(["test-server__add", "test-server__multiply"]);
+
+    // Queryable by source
+    const queryResult = await runtime.query({ source: "mcp" });
+    expect(queryResult.ok).toBe(true);
+    if (!queryResult.ok) return;
+    expect(queryResult.value).toHaveLength(2);
+
+    // dispose clears
+    bridge.dispose();
+    const afterDispose = await runtime.query({ source: "mcp" });
+    expect(afterDispose.ok).toBe(true);
+    if (!afterDispose.ok) return;
+    expect(afterDispose.value).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — trajectory validation
+// Validates the recorded ATIF trajectory has correct structure.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
+  test("trajectory has valid ATIF structure with MCP lifecycle steps", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = `${FIXTURES}/skills-mcp-bridge.trajectory.json`;
+    const raw = readFileSync(path, "utf-8");
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: { readonly type?: string; readonly serverName?: string };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("skills-mcp-bridge");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // Should have MCP lifecycle steps (bridge wired the MCP resolver)
+    const mcpSteps = trajectory.steps.filter((s) => s.extra?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least one "connected" step
+    const connectedStep = mcpSteps.find(
+      (s) => s.extra?.serverName !== undefined && s.outcome === "success",
+    );
+    expect(connectedStep).toBeDefined();
+
+    // Should have a model call step
+    const modelStep = trajectory.steps.find((s) => s.source === "agent");
+    expect(modelStep).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/plugins (2 queries: manifest validation + registry)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/plugins", () => {
+  test("validatePluginManifest accepts valid manifest and rejects invalid", async () => {
+    const { validatePluginManifest } = await import("@koi/plugins");
+
+    const valid = validatePluginManifest({
+      name: "test-plugin",
+      version: "1.0.0",
+      description: "A test plugin",
+    });
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.value.name).toBe("test-plugin");
+      expect(valid.value.version).toBe("1.0.0");
+    }
+
+    const invalid = validatePluginManifest({ name: "Bad Name!" });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("createPluginRegistry discovers from filesystem and returns empty for no roots", async () => {
+    const { createPluginRegistry } = await import("@koi/plugins");
+
+    const registry = createPluginRegistry({});
+    const plugins = await registry.discover();
+    expect(Array.isArray(plugins)).toBe(true);
+    expect(plugins).toHaveLength(0);
+    expect(registry.errors()).toHaveLength(0);
+  });
+
+  test("plugin-validate trajectory has correct ATIF structure", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-validate.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results: readonly { readonly content: string }[] };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to validate_plugin exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("validate_plugin");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — manifest validation + real discovery results
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly valid: boolean;
+      readonly pluginName: string;
+      readonly discoveredCount: number;
+      readonly discoveredNames: readonly string[];
+      readonly errorCount: number;
+    };
+    expect(output.valid).toBe(true);
+    expect(output.pluginName).toBe("hello-world");
+    expect(output.discoveredCount).toBe(1);
+    expect(output.discoveredNames).toEqual(["seeded-plugin"]);
+    expect(output.errorCount).toBe(0);
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-validate",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
   });
 });

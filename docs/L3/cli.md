@@ -131,7 +131,13 @@ koi tui
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
 so the key is not forwarded to OpenRouter.
 
-**Flags:** none — engine adapter is wired directly from environment variables. Manifest-based
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--goal` | string (repeatable) | — | Goal objectives for adaptive reminder middleware |
+
+Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
 
 **Behaviour:**
@@ -145,7 +151,9 @@ so the key is not forwarded to OpenRouter.
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT registered until real TUI dialogs are wired (tracked in #1582). Without dialog integration: plan-mode would flip a boolean without gating Bash/fs access, and AskUserQuestion would auto-answer without showing the user.
 - **No agent_spawn:** `agent_spawn` is intentionally not registered — child workers only have Glob/Grep (read-only) but the child prompt says "write files, run commands" which they cannot do. Deferred until workers route through `createKoi` with full middleware (#1582).
 - **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp).
-- **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode (when `spawnFn` is available) delegates to a sub-agent. The Skill tool is only registered when `createSkillTool()` succeeds at startup.
+- **MCP wiring:** If `.mcp.json` exists in CWD, `createTuiRuntime()` loads MCP server configs, creates an `McpResolver` + `McpComponentProvider` (tools appear as available tools), and bridges MCP tools into the skill registry via `createSkillsMcpBridge` (tools discoverable via `query({ source: "mcp" })`). MCP connections are cleaned up on shutdown. Without `.mcp.json`, MCP loading is silently skipped.
+- **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode is disabled in TUI (no `spawnFn`). The Skill tool is only registered when `createSkillTool()` succeeds at startup.
+- **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - **Hook loading:** At startup, `loadHooks()` reads `~/.koi/hooks.json` (if present) and passes the loaded hooks to `createHookMiddleware()`. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
@@ -254,11 +262,14 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory` |
+
+> **Outcome linkage (#1465):** `@koi/event-trace` allowlist updated with `decisionCorrelationId` for decision-outcome correlation. No CLI-facing changes — the correlation ID is internal trajectory metadata set by upstream middleware.
 
 ---
 

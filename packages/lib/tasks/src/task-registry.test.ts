@@ -2,14 +2,20 @@ import { describe, expect, mock, test } from "bun:test";
 import type { TaskItemId } from "@koi/core";
 import type { TaskOutputStream } from "./output-stream.js";
 import type { RuntimeTaskBase } from "./task-kinds.js";
-import { type TaskKindLifecycle, createTaskRegistry } from "./task-registry.js";
+import { createTaskRegistry, type TaskKindLifecycle } from "./task-registry.js";
 
 function makeLifecycle(kind: string): TaskKindLifecycle {
   return {
     kind: kind as TaskKindLifecycle["kind"],
-    start: mock(async (_taskId: TaskItemId, _output: TaskOutputStream, _config: unknown): Promise<RuntimeTaskBase> => {
-      throw new Error("not implemented");
-    }),
+    start: mock(
+      async (
+        _taskId: TaskItemId,
+        _output: TaskOutputStream,
+        _config: unknown,
+      ): Promise<RuntimeTaskBase> => {
+        throw new Error("not implemented");
+      },
+    ),
     stop: mock(async (_state: RuntimeTaskBase): Promise<void> => {}),
   };
 }

@@ -763,6 +763,15 @@ export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // nexus-path — branded string type for Nexus namespace paths
 export type { NexusPath } from "./nexus-path.js";
 export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
+// outcome linkage — decision-to-business-outcome correlation
+export type {
+  DecisionCorrelationId,
+  OutcomeReport,
+  OutcomeReportInput,
+  OutcomeStore,
+  OutcomeValence,
+} from "./outcome-linkage.js";
+export { decisionCorrelationId } from "./outcome-linkage.js";
 // permission backend — pluggable authorization contract
 export type {
   PermissionBackend,

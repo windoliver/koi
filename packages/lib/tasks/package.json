@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
+    "lint": "biome check --vcs-enabled=false src/",
     "test": "bun test"
   },
   "dependencies": {

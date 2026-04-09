@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AgentId, ManagedTaskBoard, TaskBoardStore, TaskItemId } from "@koi/core";
 import { taskItemId } from "@koi/core";
-import { createOutputStream } from "./output-stream.js";
 import type { RuntimeTaskBase } from "./task-kinds.js";
-import { type TaskKindLifecycle, createTaskRegistry } from "./task-registry.js";
+import { createTaskRegistry, type TaskKindLifecycle } from "./task-registry.js";
 import { createTaskRunner } from "./task-runner.js";
 
 // ---------------------------------------------------------------------------
@@ -13,16 +12,26 @@ import { createTaskRunner } from "./task-runner.js";
 const AGENT_ID = "agent_1" as AgentId;
 
 function createMockStore(): TaskBoardStore {
-  const listeners = new Set<(event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void>();
+  const listeners = new Set<
+    (event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void
+  >();
   return {
     get: mock(() => undefined),
     put: mock(() => {}),
     delete: mock(() => {}),
     list: mock(() => []),
     nextId: mock(() => taskItemId("task_1")),
-    watch: (listener: (event: { readonly kind: string; readonly item?: unknown; readonly id?: TaskItemId }) => void) => {
+    watch: (
+      listener: (event: {
+        readonly kind: string;
+        readonly item?: unknown;
+        readonly id?: TaskItemId;
+      }) => void,
+    ) => {
       listeners.add(listener);
-      return () => { listeners.delete(listener); };
+      return () => {
+        listeners.delete(listener);
+      };
     },
     reset: mock(() => {}),
     [Symbol.asyncDispose]: mock(async () => {}),
@@ -76,16 +85,22 @@ function createMockBoard(store: TaskBoardStore): ManagedTaskBoard {
 function createShellLifecycle(): TaskKindLifecycle {
   return {
     kind: "local_shell",
-    start: mock(async (id: TaskItemId, output: TaskOutputStream, _config: unknown): Promise<RuntimeTaskBase> => {
-      return {
-        kind: "local_shell",
-        taskId: id,
-        cancel: mock(() => {}),
-        output,
-        startedAt: Date.now(),
-        command: "echo test",
-      } as unknown as RuntimeTaskBase;
-    }),
+    start: mock(
+      async (
+        id: TaskItemId,
+        output: TaskOutputStream,
+        _config: unknown,
+      ): Promise<RuntimeTaskBase> => {
+        return {
+          kind: "local_shell",
+          taskId: id,
+          cancel: mock(() => {}),
+          output,
+          startedAt: Date.now(),
+          command: "echo test",
+        } as unknown as RuntimeTaskBase;
+      },
+    ),
     stop: mock(async (_state: RuntimeTaskBase): Promise<void> => {}),
   };
 }
@@ -183,7 +198,7 @@ describe("createTaskRunner", () => {
 
     const task = runner.get(taskId);
     expect(task).toBeDefined();
-    expect(task!.kind).toBe("local_shell");
+    expect(task?.kind).toBe("local_shell");
   });
 
   test("get returns undefined for unknown task", () => {
@@ -202,6 +217,7 @@ describe("createTaskRunner", () => {
     await runner.start(taskId, "local_shell");
 
     // Write to the task's output stream
+    // biome-ignore lint/style/noNonNullAssertion: test — taskId was just created above
     const task = runner.get(taskId)!;
     task.output.write("hello ");
     task.output.write("world");
@@ -210,7 +226,7 @@ describe("createTaskRunner", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.chunks).toHaveLength(2);
-      expect(result.value.chunks[0]!.content).toBe("hello ");
+      expect(result.value.chunks[0]?.content).toBe("hello ");
       expect(result.value.nextOffset).toBe(11);
     }
   });
@@ -223,6 +239,7 @@ describe("createTaskRunner", () => {
     const taskId = taskItemId("task_1");
     await runner.start(taskId, "local_shell");
 
+    // biome-ignore lint/style/noNonNullAssertion: test — taskId was just created above
     const task = runner.get(taskId)!;
     task.output.write("aaa");
     task.output.write("bbb");
@@ -231,7 +248,7 @@ describe("createTaskRunner", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.chunks).toHaveLength(1);
-      expect(result.value.chunks[0]!.content).toBe("bbb");
+      expect(result.value.chunks[0]?.content).toBe("bbb");
     }
   });
 
@@ -281,7 +298,9 @@ describe("createTaskRunner", () => {
     expect(runner.active()).toHaveLength(1);
 
     // Simulate external terminal event from store
-    const storeWithListeners = store as unknown as { readonly _listeners: Set<(event: unknown) => void> };
+    const storeWithListeners = store as unknown as {
+      readonly _listeners: Set<(event: unknown) => void>;
+    };
     for (const listener of storeWithListeners._listeners) {
       listener({
         kind: "put",
