@@ -622,15 +622,14 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
   });
 
-  test("hijack flow — delegate to A, claim by B, B dies, A still alive → task is re-delegatable", async () => {
-    // Codex adversarial review round 2 finding: in_progress tasks can be
-    // "hijacked" — delegated to agent A but claimed by agent B via
-    // task_update(status: in_progress), which calls board.assign(id, B)
-    // without validating that B matches delegatedTo. If we key cleanup off
-    // metadata.delegatedTo instead of assignedTo, the liveness check runs
-    // against A (the wrong identity) and we miss a stale task whose actual
-    // worker (B) is dead. Post-unassign the task is pending with a stale
-    // delegatedTo marker and task_delegate rejects re-delegation.
+  test("hijack flow — delegate to A, claim by B, B dies → task is re-delegatable", async () => {
+    // Codex adversarial review round 2 raised the hijack scenario: tasks
+    // can be "hijacked" by claim-mismatch (delegated to A, claimed by B).
+    // Under the current "always clear delegatedTo on in_progress" policy
+    // (round 3), this case is covered automatically — no matter who the
+    // delegated-to identity was, if the task is in_progress it's about to
+    // be requeued by orphan recovery and the marker must be cleared. This
+    // test pins the end-to-end recovery path.
     const board = await freshBoard();
     const id = await board.nextId();
     await board.add({ id, description: "Hijacked task" });
@@ -644,12 +643,10 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.assignedTo).toBe(agentId("agent-B"));
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("agent-A");
 
-    // Step 3: crash. agent-B dies. agent-A is still alive but had nothing
-    // to do with the task. liveAgentIds = {"agent-A"}.
-    // Pre-fix behavior: needsClear compares delegatedTo ("agent-A") against
-    //   liveAgentIds — "agent-A" IS live, so skip. Task left with stale marker.
-    // Post-fix: needsClear compares assignedTo ("agent-B") against
-    //   liveAgentIds — "agent-B" is NOT live, so clear.
+    // Step 3: crash. Recovery runs with liveAgentIds = {"agent-A"} (warm
+    // restart — agent-A is still around but had nothing to do with the
+    // task). The in_progress task gets cleared regardless of the identity
+    // check because it's about to be requeued anyway.
     const staleResult = await recoverStaleDelegations(board, new Set(["agent-A"]));
     expect(staleResult.failed).toHaveLength(0);
     expect(staleResult.cleared).toEqual([id]);
@@ -666,25 +663,44 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
   });
 
-  test("legitimate in_progress task with live assignee and matching delegatedTo is NOT cleared", async () => {
-    // Conservative counterpart to the hijack test: if the assignee is alive
-    // the task is legitimately running, so recoveryStaleDelegations should
-    // leave the delegatedTo marker alone (even though it's now redundant).
-    // This keeps the recovery pass surgical — no unnecessary writes to
-    // healthy in-flight work.
+  test("warm restart — in_progress task with live assignee: clear + requeue + re-delegate succeeds", async () => {
+    // Codex adversarial review round 3 finding: the two recovery helpers
+    // must compose. recoverOrphanedTasks unconditionally unassigns every
+    // non-coordinator in_progress task regardless of assignee liveness
+    // (the coordinator has revoked ownership). If recoverStaleDelegations
+    // preserved delegatedTo when the assignee was alive, the task would
+    // become pending with a stale marker and block re-delegation.
+    //
+    // The correct policy is: in_progress tasks always get delegatedTo
+    // cleared. This test pins that composition contract end-to-end under
+    // a warm restart (liveAgentIds contains the assignee).
     const board = await freshBoard();
     const id = await board.nextId();
-    await board.add({ id, description: "Healthy in-flight task" });
+    await board.add({ id, description: "In-flight task" });
     await board.update(id, { metadata: { delegatedTo: "agent-X" } });
     await board.assign(id, agentId("agent-X"));
     expect(board.snapshot().get(id)?.assignedTo).toBe(agentId("agent-X"));
 
-    const result = await recoverStaleDelegations(board, new Set(["agent-X"]));
-    // Nothing to clear — assignee is alive.
-    expect(result.cleared).toHaveLength(0);
-    expect(result.failed).toHaveLength(0);
-    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("agent-X");
-    expect(board.snapshot().get(id)?.status).toBe("in_progress");
+    // Warm restart: agent-X is in the live set.
+    const staleResult = await recoverStaleDelegations(board, new Set(["agent-X"]));
+    expect(staleResult.failed).toHaveLength(0);
+    // Even though agent-X is alive, the in_progress task's delegatedTo is
+    // cleared because orphan recovery is about to requeue it.
+    expect(staleResult.cleared).toEqual([id]);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
+
+    // Orphan recovery: unassigns the task unconditionally, regardless of
+    // whether agent-X is alive.
+    const orphanResult = await recoverOrphanedTasks(board, agentId("new-coord"));
+    expect(orphanResult.requeued).toEqual([id]);
+    expect(board.snapshot().get(id)?.status).toBe("pending");
+
+    // The new coordinator can re-delegate. Without the clear in the
+    // previous step, this would fail because the old marker would still
+    // be present.
+    const reDelegate = await board.update(id, { metadata: { delegatedTo: "fresh-worker" } });
+    expect(reDelegate.ok).toBe(true);
+    expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("fresh-worker");
   });
 
   test("real flow — reverse order (orphan-recovery first) also works", async () => {

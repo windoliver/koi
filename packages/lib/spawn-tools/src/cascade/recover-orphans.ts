@@ -162,20 +162,24 @@ export interface StaleDelegationResult {
  * Skips terminal tasks (completed/failed/killed) because the board rejects
  * update() on those, and the delegation history is harmless there anyway.
  *
- * For `in_progress` tasks, liveness is checked against `assignedTo`, NOT
- * against `delegatedTo`. Under the public tool flow, `task_delegate` sets
- * `metadata.delegatedTo = "agent-A"`, but a different agent B can claim the
- * task via `task_update(in_progress)` (which calls `board.assign(id, B)`
- * without validating the assignee matches `delegatedTo`). In that "hijack"
- * case, `delegatedTo` is stale historical metadata and the real worker is
- * whoever `assignedTo` points at. If the assignee is dead, orphan recovery
- * will unassign the task — we must clear `delegatedTo` now so the task can
- * be re-delegated post-unassign. If the assignee is alive, the task is
- * legitimately running and we leave everything alone (even though the
- * `delegatedTo` marker no longer matches the worker).
+ * The policy for non-terminal tasks has to compose with the other restart
+ * helper, `recoverOrphanedTasks`. That helper unconditionally unassigns
+ * EVERY non-coordinator `in_progress` task on restart, regardless of
+ * assignee liveness — the coordinator has revoked ownership, period. So
+ * every `in_progress` task on the board is about to become `pending` again
+ * and will need to be re-delegatable. If we leave `delegatedTo` set on an
+ * in_progress task and orphan-recovery then requeues it, `task_delegate`
+ * will reject the pending task as already-delegated. The only safe policy
+ * is: **always clear `delegatedTo` on in_progress tasks**.
  *
- * For `pending` tasks the delegation is still in flight — liveness is
- * checked directly against `delegatedTo`.
+ * This also covers the hijack case automatically (delegate to A, claim by
+ * B, both identities are irrelevant — the task is getting requeued either
+ * way) and the malformed-value case (any present marker regardless of type).
+ *
+ * For `pending` tasks the delegation hasn't been claimed yet, so we check
+ * `delegatedTo` against `liveAgentIds` directly. A legitimate in-flight
+ * delegation to a live worker is preserved. A stale delegation to a dead
+ * worker is cleared so the task can be re-delegated.
  *
  * Malformed markers (non-string, null, empty string) are cleared
  * unconditionally because `task_delegate` rejects any present `delegatedTo`
@@ -191,18 +195,11 @@ function needsClear(task: Task, liveAgentIds: ReadonlySet<string>): boolean {
   // as "already delegated" regardless of the value's type).
   if (typeof value !== "string" || value.length === 0) return true;
 
-  if (task.status === "in_progress") {
-    // Use assignedTo as the authoritative worker identity. delegatedTo is
-    // historical at this point — it recorded who the task was INTENDED for,
-    // not who's actually running it.
-    const assignee = task.assignedTo;
-    // No assignee on an in_progress task is a board invariant violation;
-    // be defensive and clear the marker so recovery can re-delegate.
-    if (assignee === undefined) return true;
-    // Dead assignee → orphan recovery will unassign the task. Clear the
-    // delegation marker now so the task can be re-delegated afterward.
-    return !liveAgentIds.has(assignee);
-  }
+  // in_progress tasks: always clear. The companion recoverOrphanedTasks
+  // will unassign every non-coordinator in_progress task on restart, so
+  // the delegation marker must be cleared now for the post-requeue task
+  // to be re-delegatable.
+  if (task.status === "in_progress") return true;
 
   // Pending task — the delegation hasn't been claimed yet. Clear only if
   // the delegated agent is not in the live set.
