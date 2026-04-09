@@ -157,13 +157,18 @@ export function createPluginRegistry(config: PluginRegistryConfig = {}): PluginR
         };
       }
       freshManifest = revalidated.value;
-    } catch {
+    } catch (err: unknown) {
+      // Distinguish I/O failures (retryable) from other errors
+      const isIoError =
+        err instanceof Error &&
+        "code" in err &&
+        typeof (err as { code: unknown }).code === "string";
       return {
         ok: false,
         error: {
-          code: "PERMISSION",
-          message: `Plugin manifest unreadable at load time: ${id}`,
-          retryable: false,
+          code: isIoError ? "INTERNAL" : "PERMISSION",
+          message: `Plugin manifest unreadable at load time: ${err instanceof Error ? err.message : String(err)}`,
+          retryable: isIoError,
           context: { pluginId: id, dirPath: meta.dirPath },
         },
       };
