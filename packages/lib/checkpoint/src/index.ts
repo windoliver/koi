@@ -9,8 +9,16 @@
  */
 
 export { blobPath, hasBlob, readBlob, writeBlobFromFile } from "./cas-store.js";
+export type { CreateCheckpointInput } from "./checkpoint.js";
+export { createCheckpoint } from "./checkpoint.js";
 export type { CreateCheckpointMiddlewareInput } from "./checkpoint-middleware.js";
 export { createCheckpointMiddleware } from "./checkpoint-middleware.js";
+export {
+  type ApplyResult,
+  applyCompensatingOps,
+  computeCompensatingOps,
+  toCompensating,
+} from "./compensating-ops.js";
 export { createGitStatusDriftDetector, parsePorcelain } from "./drift-detector.js";
 export {
   buildFileOpRecord,
@@ -18,4 +26,11 @@ export {
   capturePreImage,
   extractPath,
 } from "./file-tracking.js";
-export type { CheckpointMiddlewareConfig, CheckpointPayload, DriftDetector } from "./types.js";
+export { runRestore } from "./restore-protocol.js";
+export type {
+  Checkpoint,
+  CheckpointMiddlewareConfig,
+  CheckpointPayload,
+  DriftDetector,
+  RewindResult,
+} from "./types.js";
