@@ -321,6 +321,29 @@ InboundMessage → deriveSessionKey() → serial queue → runtime.run()
 
 ---
 
+## ATIF Decision Metadata in TUI
+
+All decision-making middleware wired into the CLI runtime emit structured
+decision metadata via `ctx.reportDecision`. Spans with decisions are persisted
+to the ATIF store and surfaced in the TUI via the `/trajectory` command.
+
+The TUI reads from the store directly — no mid-turn EngineEvent streaming is
+needed. When users type `/trajectory` in the TUI, they see:
+- Permission decisions per tool call (allow/deny + reason + source)
+- Hook dispatch results (tool.before / tool.succeeded / compact.before)
+- Goal injection events (which objectives were active + the injected block)
+- Skill attachments (which skills + systemPrompt preview)
+- Exfiltration-guard detections (when secrets were blocked or redacted)
+- Semantic-retry actions (rewrite/abort with failure history)
+
+See each L2 package's "ATIF Trace Integration" section in `docs/L2/*.md` for
+the exact decision payload shapes. The CI enforcement test in
+`packages/meta/runtime/src/__tests__/golden-replay.test.ts` ensures every
+decision-making middleware wired into the runtime emits at least one span
+with non-empty `decisions` metadata in full-stack replay.
+
+---
+
 ## Testing
 
 31 tests across 4 test files:

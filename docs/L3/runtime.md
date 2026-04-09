@@ -107,6 +107,37 @@ Follow the Doc → Tests → Code workflow:
 6. **Assert**: add `describe("Golden: @koi/<name>", ...)` to `golden-replay.test.ts`
 7. **CI gates**: `check:orphans`, `check:golden-queries`, `check:doc-wiring` must all pass
 
+## ATIF Decision Metadata (reportDecision)
+
+Every decision-making L2 middleware must emit structured decision metadata via
+`ctx.reportDecision?.(decision)` when something interesting happens (action
+taken, not passthrough). The trace wrapper injects a per-call `reportDecision`
+callback that buffers decisions into the MW span's `metadata.decisions[]` array.
+
+**Rules:**
+- Only emit when an actual decision was made (block, deny, inject, rewrite,
+  detect, filter). Passthrough turns emit no decision — silence is the signal.
+- Include context: what was checked (`toolInput`, `toolId`, `event`), what
+  action was taken (`action`, `aggregated`, `phase`), and **why** (`reason`,
+  `source`, per-hook reasons).
+- Truncate large payloads with a 300-char preview helper — never emit raw
+  tool inputs/outputs that could leak secrets.
+- The trajectory store is the source of truth; TUI's `/trajectory` command
+  reads from it — no need to wire decisions into mid-turn EngineEvents.
+
+The CI enforcement describe block in `golden-replay.test.ts` runs all
+decision-making middleware together and asserts every one emits at least one
+span with a non-empty `decisions` array. Add new L2 middleware to that block
+when introducing new decision-making packages.
+
+Current middleware with decision metadata:
+- `@koi/middleware-permissions` — filter phase (when filtering) + every tool execute
+- `@koi/hooks` — when hooks match tool.before / tool.succeeded / compact.before
+- `@koi/middleware-goal` — only on turns where a goal block is injected
+- `@koi/skills-runtime` — only when skills are actually attached
+- `@koi/middleware-exfiltration-guard` — on every secret detection / fail-closed path
+- `@koi/middleware-semantic-retry` — on retry/abort actions (silent on success)
+
 ---
 
 ## CI Gates
