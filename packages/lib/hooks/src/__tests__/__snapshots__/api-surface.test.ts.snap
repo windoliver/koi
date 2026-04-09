@@ -425,6 +425,41 @@ declare function aggregatePostDecisions(results: readonly HookExecutionResult[])
 declare function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware;
 
 /**
+ * Payload redaction for agent hook prompts.
+ *
+ * Two modes:
+ * 1. Structure extraction (default): replace leaf values with type placeholders
+ * 2. Secret redaction (forwardRawPayload): mask secrets while preserving values
+ */
+
+/**
+ * Extract a structural summary of event data — keys and type placeholders only.
+ * Returns undefined for undefined input.
+ */
+declare function extractStructure(data: JsonObject | undefined): JsonObject | undefined;
+/** Describes the actual processing applied to a payload. */
+type PayloadStatus = "redacted" | "unredacted" | "structure_only" | "truncated_redacted" | "truncated_unredacted";
+/** Result of payload processing — includes both data and status for accurate prompt notes. */
+interface RedactedPayload {
+    readonly data: JsonObject | undefined;
+    readonly status: PayloadStatus;
+}
+/**
+ * Apply secret redaction to event data using \`@koi/redaction\`.
+ *
+ * Returns the processed data AND a status describing what was actually done,
+ * so the caller can render an accurate prompt note.
+ *
+ * Processing order:
+ * 1. Redact secrets (unless config.enabled === false)
+ * 2. Serialize the result
+ * 3. Truncate if oversized (truncation always operates on already-redacted data)
+ *
+ * Non-serializable data (circular refs, BigInt) falls back to structure-only.
+ */
+declare function redactEventData(data: JsonObject | undefined, config: HookRedactionConfig | undefined): RedactedPayload;
+
+/**
  * Prompt executor adapter — bridges @koi/hook-prompt into the HookExecutor interface.
  *
  * Wraps the lightweight PromptHookExecutor (which returns bare HookDecision) with
@@ -459,41 +494,6 @@ declare class PromptExecutorAdapter implements HookExecutor {
     private consumeBudget;
     private getOrCreateBudget;
 }
-
-/**
- * Payload redaction for agent hook prompts.
- *
- * Two modes:
- * 1. Structure extraction (default): replace leaf values with type placeholders
- * 2. Secret redaction (forwardRawPayload): mask secrets while preserving values
- */
-
-/**
- * Extract a structural summary of event data — keys and type placeholders only.
- * Returns undefined for undefined input.
- */
-declare function extractStructure(data: JsonObject | undefined): JsonObject | undefined;
-/** Describes the actual processing applied to a payload. */
-type PayloadStatus = "redacted" | "unredacted" | "structure_only" | "truncated_redacted" | "truncated_unredacted";
-/** Result of payload processing — includes both data and status for accurate prompt notes. */
-interface RedactedPayload {
-    readonly data: JsonObject | undefined;
-    readonly status: PayloadStatus;
-}
-/**
- * Apply secret redaction to event data using \`@koi/redaction\`.
- *
- * Returns the processed data AND a status describing what was actually done,
- * so the caller can render an accurate prompt note.
- *
- * Processing order:
- * 1. Redact secrets (unless config.enabled === false)
- * 2. Serialize the result
- * 3. Truncate if oversized (truncation always operates on already-redacted data)
- *
- * Non-serializable data (circular refs, BigInt) falls back to structure-only.
- */
-declare function redactEventData(data: JsonObject | undefined, config: HookRedactionConfig | undefined): RedactedPayload;
 
 /**
  * Hook registry — session-scoped hook registration and cleanup.
