@@ -342,7 +342,11 @@ describe("recoverStaleDelegations", () => {
     const id1 = await addDelegatedTask(board, "Task 1", "dead-worker");
     const id2 = await addDelegatedTask(board, "Task 2", "another-dead-worker");
 
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(result.failed).toHaveLength(0);
     expect(result.cleared).toHaveLength(2);
 
@@ -362,7 +366,11 @@ describe("recoverStaleDelegations", () => {
     const idLive = await addDelegatedTask(board, "Live task", "live-worker");
     const idDead = await addDelegatedTask(board, "Dead task", "dead-worker");
 
-    const result = await recoverStaleDelegations(board, new Set<string>(["live-worker"]));
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(["live-worker"]),
+      agentId("recovery-coord"),
+    );
     expect(result.cleared).toHaveLength(1);
     expect(result.cleared[0]).toBe(idDead);
 
@@ -385,7 +393,11 @@ describe("recoverStaleDelegations", () => {
     await board.assign(inProgressId, agentId("some-agent"));
     expect(board.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBe("dead-worker");
 
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(result.failed).toHaveLength(0);
     expect(result.cleared).toHaveLength(2);
     const clearedSet = new Set<TaskItemId>(result.cleared);
@@ -405,7 +417,11 @@ describe("recoverStaleDelegations", () => {
     await board.kill(id);
     expect(board.snapshot().get(id)?.status).toBe("killed");
 
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     // Killed tasks are skipped — no cleared, no failed
     expect(result.cleared).toHaveLength(0);
     expect(result.failed).toHaveLength(0);
@@ -422,7 +438,11 @@ describe("recoverStaleDelegations", () => {
       metadata: { delegatedTo: "dead-worker", kind: "research", priority: 5 },
     });
 
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(result.cleared).toEqual([id]);
     const task = board.snapshot().get(id);
     expect(task?.metadata?.delegatedTo).toBeUndefined();
@@ -433,7 +453,11 @@ describe("recoverStaleDelegations", () => {
   test("returns empty result when no pending tasks have a delegation", async () => {
     const board = await freshBoard();
     await addTask(board, "Plain pending task");
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(result.cleared).toEqual([]);
     expect(result.failed).toEqual([]);
   });
@@ -464,7 +488,11 @@ describe("recoverStaleDelegations", () => {
       metadata: { delegatedTo: "" },
     });
 
-    const result = await recoverStaleDelegations(board, new Set<string>());
+    const result = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     // All three malformed markers are cleared — task_delegate would otherwise
     // reject these tasks as "already delegated" regardless of the value's type.
     expect(result.failed).toHaveLength(0);
@@ -498,13 +526,91 @@ describe("recoverStaleDelegations", () => {
       }),
     };
 
-    const result = await recoverStaleDelegations(failingBoard, new Set<string>());
+    const result = await recoverStaleDelegations(
+      failingBoard,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     // Processing stops at the first store error
     expect(result.cleared).toEqual([]);
     expect(result.failed).toHaveLength(1);
     // The real board state is unchanged (the proxy only intercepted update)
     expect(realBoard.snapshot().get(id1)?.metadata?.delegatedTo).toBe("dead");
     expect(realBoard.snapshot().get(id2)?.metadata?.delegatedTo).toBe("dead");
+  });
+
+  test("coordinator-owned in_progress tasks are left alone (orphan-recovery won't requeue them)", async () => {
+    // Codex adversarial review round 4: recoverOrphanedTasks only requeues
+    // tasks where assignedTo !== coordinatorAgentId. A coordinator-owned
+    // in_progress task with a delegatedTo marker is NOT going to be
+    // requeued, so clearing its delegation is out of scope for recovery.
+    // Leaving it alone is the only safe behavior — and critically, it keeps
+    // a write failure on such a task from fail-stopping the whole pass.
+    const board = await freshBoard();
+    const coord = agentId("coord");
+    const coordOwnedId = await board.nextId();
+    await board.add({
+      id: coordOwnedId,
+      description: "Coord is working on this",
+      metadata: { delegatedTo: "some-historical-agent" },
+    });
+    await board.assign(coordOwnedId, coord);
+
+    // Also add a stale pending delegation so we can verify it's still processed.
+    const staleId = await addDelegatedTask(board, "Stale pending", "dead-worker");
+
+    const result = await recoverStaleDelegations(board, new Set<string>(), coord);
+    // Stale pending task is cleared; coordinator-owned in_progress is left alone.
+    expect(result.failed).toHaveLength(0);
+    expect(result.cleared).toEqual([staleId]);
+    // Coordinator-owned in_progress still has its delegation marker
+    expect(board.snapshot().get(coordOwnedId)?.metadata?.delegatedTo).toBe("some-historical-agent");
+    expect(board.snapshot().get(coordOwnedId)?.status).toBe("in_progress");
+  });
+
+  test("fail-stop isolation — in_progress write failure does NOT strand pending cleanup", async () => {
+    // Round-4 regression the reviewer asked for: even if a non-coordinator
+    // in_progress task's update() fails mid-pass, pending stale delegations
+    // that were already processed (pending is handled FIRST) stay cleared.
+    const realBoard = await freshBoard();
+    const coord = agentId("new-coord");
+
+    // Stale pending delegation — should be processed and cleared.
+    const pendingStaleId = await addDelegatedTask(realBoard, "Stale pending", "dead-worker");
+
+    // Non-coordinator in_progress task with a delegation — should be in
+    // scope for cleanup (orphan-recovery would requeue it), but its
+    // update() is going to fail.
+    const inProgressId = await addDelegatedTask(realBoard, "Sick in-progress", "dead-worker");
+    await realBoard.assign(inProgressId, agentId("child-worker"));
+
+    // Wrap the board so update() fails ONLY for the in_progress task.
+    const flakeyBoard: ManagedTaskBoard = {
+      ...realBoard,
+      update: async (taskId, patch) => {
+        if (taskId === inProgressId) {
+          return {
+            ok: false as const,
+            error: {
+              code: "EXTERNAL" as const,
+              message: "simulated store outage on live in_progress task",
+              retryable: true,
+            },
+          };
+        }
+        return realBoard.update(taskId, patch);
+      },
+    };
+
+    const result = await recoverStaleDelegations(flakeyBoard, new Set<string>(), coord);
+    // Pending pass runs first and commits the pending cleanup.
+    expect(result.cleared).toEqual([pendingStaleId]);
+    // In_progress pass fails on the flaky task.
+    expect(result.failed).toEqual([inProgressId]);
+    // The pending task's delegatedTo is actually cleared on the real board.
+    expect(realBoard.snapshot().get(pendingStaleId)?.metadata?.delegatedTo).toBeUndefined();
+    // The in_progress task's metadata is unchanged (update was blocked).
+    expect(realBoard.snapshot().get(inProgressId)?.metadata?.delegatedTo).toBe("dead-worker");
   });
 
   test("skips per-task races (VALIDATION) and keeps processing", async () => {
@@ -532,7 +638,11 @@ describe("recoverStaleDelegations", () => {
       },
     };
 
-    const result = await recoverStaleDelegations(skippingBoard, new Set<string>());
+    const result = await recoverStaleDelegations(
+      skippingBoard,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     // id1 and id3 cleared, id2 skipped (not in cleared OR failed)
     expect(result.failed).toHaveLength(0);
     const cleared = new Set<TaskItemId>(result.cleared);
@@ -557,7 +667,7 @@ describe("recoverStaleDelegations", () => {
 
     const newCoord = agentId("new-coord");
     const orphanResult = await recoverOrphanedTasks(board, newCoord);
-    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+    const staleResult = await recoverStaleDelegations(board, new Set<string>(), newCoord);
 
     // Orphan recovery: both in_progress tasks → pending, same IDs
     expect(orphanResult.requeued).toHaveLength(2);
@@ -600,7 +710,11 @@ describe("recoverStaleDelegations", () => {
     // Step 3: coordinator crashes. New coordinator restarts and runs recovery
     // in the WRONG order (stale-delegations BEFORE orphan-recovery). The fix
     // means this order must still work end-to-end.
-    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+    const staleResult = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(staleResult.failed).toHaveLength(0);
     // in_progress task was picked up and its delegatedTo cleared
     expect(staleResult.cleared).toEqual([id]);
@@ -647,7 +761,11 @@ describe("recoverStaleDelegations", () => {
     // restart — agent-A is still around but had nothing to do with the
     // task). The in_progress task gets cleared regardless of the identity
     // check because it's about to be requeued anyway.
-    const staleResult = await recoverStaleDelegations(board, new Set(["agent-A"]));
+    const staleResult = await recoverStaleDelegations(
+      board,
+      new Set(["agent-A"]),
+      agentId("recovery-coord"),
+    );
     expect(staleResult.failed).toHaveLength(0);
     expect(staleResult.cleared).toEqual([id]);
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
@@ -682,7 +800,11 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.assignedTo).toBe(agentId("agent-X"));
 
     // Warm restart: agent-X is in the live set.
-    const staleResult = await recoverStaleDelegations(board, new Set(["agent-X"]));
+    const staleResult = await recoverStaleDelegations(
+      board,
+      new Set(["agent-X"]),
+      agentId("recovery-coord"),
+    );
     expect(staleResult.failed).toHaveLength(0);
     // Even though agent-X is alive, the in_progress task's delegatedTo is
     // cleared because orphan recovery is about to requeue it.
@@ -720,7 +842,11 @@ describe("recoverStaleDelegations", () => {
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBe("child-worker");
 
     // Stale-delegation cleanup runs second — clears the marker.
-    const staleResult = await recoverStaleDelegations(board, new Set<string>());
+    const staleResult = await recoverStaleDelegations(
+      board,
+      new Set<string>(),
+      agentId("recovery-coord"),
+    );
     expect(staleResult.cleared).toEqual([id]);
     expect(board.snapshot().get(id)?.metadata?.delegatedTo).toBeUndefined();
 
