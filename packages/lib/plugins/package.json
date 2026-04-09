@@ -16,6 +16,9 @@
     "lint": "biome check .",
     "test": "bun test"
   },
+  "koi": {
+    "optional": true
+  },
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
