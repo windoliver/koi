@@ -200,3 +200,33 @@ fails. The `result` is still returned in full — the error is advisory.
   v2 simplifies: drops review/synthesize (out of scope), adds get/list/stop/output,
   replaces ad-hoc validation with Zod schemas, and moves ownership enforcement into the
   board layer rather than the tool layer.
+
+## Review hardening (#1557 review — PR #1659)
+
+### `task_update.execute()` split into per-status handlers
+
+The original `execute()` closure was 165 lines with 5 levels of nesting and 5
+near-duplicate "rebuild-success-response-from-snapshot" blocks. It's now a 15-line
+dispatcher that validates input, looks up the task, and delegates to one of 5 per-status
+handlers (`handleStartInProgress`, `handleComplete`, `handleFail`, `handleKill`,
+`handleMetadataPatch`), each <30 lines. A single `buildSuccess(board, id, extras?)`
+helper replaces the duplicate response construction. `computeDurationMs(task)` centralizes
+the `task.startedAt ?? task.updatedAt` fallback. Pure refactor — all 70 existing tests
+pass unchanged, including the `durationMs` regression added in PR #1 of this punch list.
+
+### Named-tool test lookup
+
+`task-tools.test.ts` previously used positional destructuring
+(`const [create, , update] = tools as [Tool, Tool, Tool, Tool, Tool, Tool]`) with three
+different stale length checks (`< 6` vs `< 7`) because the file wasn't updated when
+`task_delegate` was added. Replaced with a `createNamedTaskTools(config)` helper that
+looks up each tool by `descriptor.name` and asserts the expected count once (one
+`EXPECTED_TOOL_COUNT` constant). Zero positional destructures remain.
+
+### `durationMs` anchored to `Task.startedAt`
+
+`task_update(completed)` now computes `durationMs` from `task.startedAt ?? task.updatedAt`
+instead of `task.updatedAt` alone. The new `startedAt` field is set by the board on every
+`pending → in_progress` transition and is NOT bumped by `update()` patches, so an
+`activeForm` mid-run patch no longer silently shortens the reported run duration.
+Backfilled for snapshots loaded from pre-field-existence versions.
