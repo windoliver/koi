@@ -24,7 +24,7 @@
  *   Bash, bash_background  — shell execution via @koi/tools-bash
  *   fs_read/write/edit     — filesystem via @koi/fs-local
  *   task_*                 — background task management via @koi/task-tools
- *   agent_spawn — intentionally NOT registered until workers route through createKoi (#1582)
+ *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
 import { readdir } from "node:fs/promises";

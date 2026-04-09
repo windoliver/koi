@@ -25,7 +25,7 @@
 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ApprovalHandler,
   InboundMessage,
@@ -36,7 +36,6 @@ import type {
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
-  SpawnFn,
 } from "@koi/core";
 import {
   createSingleToolProvider,
@@ -45,7 +44,12 @@ import {
   memoryRecordId,
 } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
-import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
+import {
+  createInMemorySpawnLedger,
+  createKoi,
+  createSpawnToolProvider,
+  createSystemPromptMiddleware,
+} from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -62,7 +66,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
-import { createSpawnTools } from "@koi/spawn-tools";
+// createSpawnTools replaced by createSpawnToolProvider from @koi/engine for real spawning
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
@@ -582,30 +586,29 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
   const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
 
-  // --- @koi/spawn-tools: agent_spawn (error stub — spawning not supported in TUI) ---
-  // Returns a hard error so the model knows spawning failed and can fall back.
-  // Full spawning requires agent-runtime + harness wiring.
-  const stubSpawnFn: SpawnFn = async (request) => ({
-    ok: false,
-    error: {
-      code: "EXTERNAL",
-      message: `agent_spawn is not available in koi tui. Cannot delegate to "${request.agentName}". Complete the task directly instead of spawning.`,
-      retryable: false,
+  // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
+  // Uses createAgentResolver (built-in agent definitions) + createSpawnToolProvider
+  // which wires createAgentSpawnFn under the hood. Child agents run in-process with
+  // the same model adapter, using a fresh transcript-backed engine adapter.
+  const { resolver: spawnResolver } = createAgentResolver();
+  const childAdapter = createTranscriptAdapter({
+    engineId: "koi-tui-child",
+    modelAdapter,
+    transcript: [], // each child gets a fresh transcript
+    maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
+    maxTurns: DEFAULT_MAX_TURNS,
+  });
+  const spawnToolProvider = createSpawnToolProvider({
+    resolver: spawnResolver,
+    spawnLedger: createInMemorySpawnLedger(5),
+    adapter: childAdapter,
+    manifestTemplate: {
+      name: "spawned-agent",
+      version: "0.0.0",
+      description: "Spawned sub-agent",
+      model: { name: config.modelName },
     },
   });
-  const spawnToolsAll = createSpawnTools({
-    spawnFn: stubSpawnFn,
-    board: taskBoard,
-    agentId: tuiAgentId,
-    signal: bgController.signal,
-  });
-  const spawnToolProviders = spawnToolsAll.map((tool) =>
-    createSingleToolProvider({
-      name: `spawn-${tool.descriptor.name}`,
-      toolName: tool.descriptor.name,
-      createTool: () => tool,
-    }),
-  );
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -685,7 +688,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ...taskToolProviders,
       webProvider,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
-      ...spawnToolProviders,
+      spawnToolProvider,
     ],
     approvalHandler,
     loopDetection: false,

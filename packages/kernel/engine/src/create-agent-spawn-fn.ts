@@ -133,34 +133,47 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     } else {
       const resolveResult = await resolver.resolve(request.agentName);
       if (!resolveResult.ok) {
-        return { ok: false, error: resolveResult.error };
-      }
-      const definition = resolveResult.value;
+        // Dynamic agent creation: when the name doesn't match any registered
+        // definition, create an ad-hoc agent using the manifestTemplate + the
+        // request's description as its task. This matches Claude Code's behavior
+        // where the model creates agents on the fly from a prompt.
+        manifest = {
+          ...manifestTemplate,
+          name: request.agentName,
+          description: request.description,
+        };
+        // Use description as system prompt if none explicitly provided
+        if (systemPrompt === undefined) {
+          systemPrompt = request.description;
+        }
+      } else {
+        const definition = resolveResult.value;
 
-      // 2. Build manifest: template provides infrastructure defaults (channels, middleware stack),
-      //    definition.manifest overrides with agent-specific controls (permissions, delegation,
-      //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
-      //    dropped security and isolation fields defined on the resolved agent.
-      //
-      //    The `spawn` field is deep-merged so that template-level env/channel ceilings
-      //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
-      //    resolved definition specifies spawn.tools without its own spawn.env or channels.
-      const mergedSpawn =
-        manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
-          ? {
-              ...manifestTemplate?.spawn,
-              ...definition.manifest.spawn,
-            }
-          : undefined;
-      manifest = {
-        ...manifestTemplate,
-        ...definition.manifest,
-        ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
-      };
+        // 2. Build manifest: template provides infrastructure defaults (channels, middleware stack),
+        //    definition.manifest overrides with agent-specific controls (permissions, delegation,
+        //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
+        //    dropped security and isolation fields defined on the resolved agent.
+        //
+        //    The `spawn` field is deep-merged so that template-level env/channel ceilings
+        //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
+        //    resolved definition specifies spawn.tools without its own spawn.env or channels.
+        const mergedSpawn =
+          manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
+            ? {
+                ...manifestTemplate?.spawn,
+                ...definition.manifest.spawn,
+              }
+            : undefined;
+        manifest = {
+          ...manifestTemplate,
+          ...definition.manifest,
+          ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
+        };
 
-      // 3. Use definition's systemPrompt if request didn't provide one
-      if (systemPrompt === undefined) {
-        systemPrompt = extractSystemPrompt(definition);
+        // 3. Use definition's systemPrompt if request didn't provide one
+        if (systemPrompt === undefined) {
+          systemPrompt = extractSystemPrompt(definition);
+        }
       }
     }
 

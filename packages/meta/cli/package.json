@@ -37,6 +37,7 @@
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/event-trace": "workspace:*",
+    "@koi/agent-runtime": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/hooks": "workspace:*",

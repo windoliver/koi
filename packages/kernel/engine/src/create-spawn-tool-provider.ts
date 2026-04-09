@@ -82,7 +82,7 @@ const SPAWN_TOOL_INPUT_SCHEMA: JsonObject = {
     agentName: {
       type: "string",
       description:
-        'Name of the agent to spawn (e.g. "researcher", "coder", "reviewer"). Must match a known agent definition.',
+        'Name for the spawned agent. Use a built-in name ("researcher", "coder", "reviewer") for pre-defined behavior, or any descriptive name for a dynamic agent created from the description.',
     },
     description: {
       type: "string",
