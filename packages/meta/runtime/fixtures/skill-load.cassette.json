@@ -1,7 +1,7 @@
 {
   "name": "skill-load",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775670693154,
+  "recordedAt": 1775692721951,
   "chunks": [
     {
       "kind": "text_delta",
@@ -9,11 +9,7 @@
     },
     {
       "kind": "text_delta",
-      "delta": ", yellow"
-    },
-    {
-      "kind": "text_delta",
-      "delta": ", and blue.\n"
+      "delta": ", yellow, and blue.\n"
     },
     {
       "kind": "usage",
@@ -26,7 +22,7 @@
         "content": "Red, yellow, and blue.\n",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "stop",
-        "responseId": "gen-1775670692-D9ORlHe6sAuP1tLbncnN",
+        "responseId": "gen-1775692721-A6etWmGPcfiXVPfTiBbp",
         "richContent": [
           {
             "kind": "text",

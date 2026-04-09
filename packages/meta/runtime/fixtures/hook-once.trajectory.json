@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.105Z",
+      "timestamp": "2026-04-08T23:58:54.542Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.106Z",
+      "timestamp": "2026-04-08T23:58:54.543Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T17:51:45.108Z",
+      "timestamp": "2026-04-08T23:58:54.545Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 152,
         "completion_tokens": 14
       },
-      "duration_ms": 859,
+      "duration_ms": 893,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -83,10 +83,10 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.972Z",
+      "timestamp": "2026-04-08T23:58:55.444Z",
       "model_name": "hook:first-tool-guard",
       "message": "tool.before → first-tool-guard",
-      "duration_ms": 2.2595000000001164,
+      "duration_ms": 2.6309590000018943,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -103,7 +103,7 @@
     {
       "step_id": 4,
       "source": "tool",
-      "timestamp": "2026-04-08T17:51:45.973Z",
+      "timestamp": "2026-04-08T23:58:55.445Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_4",
@@ -128,10 +128,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.977Z",
+      "timestamp": "2026-04-08T23:58:55.448Z",
       "model_name": "hook:always-hook",
       "message": "tool.succeeded → always-hook",
-      "duration_ms": 6.510874999999942,
+      "duration_ms": 5.010082999997394,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -148,14 +148,14 @@
     {
       "step_id": 6,
       "source": "tool",
-      "timestamp": "2026-04-08T17:51:45.981Z",
+      "timestamp": "2026-04-08T23:58:55.452Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_6",
           "function_name": "add_numbers",
           "arguments": {
-            "b": 20,
-            "a": 10
+            "a": 10,
+            "b": 20
           }
         }
       ],
@@ -173,10 +173,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.984Z",
+      "timestamp": "2026-04-08T23:58:55.554Z",
       "model_name": "hook:always-hook",
       "message": "tool.succeeded → always-hook",
-      "duration_ms": 6.561958999998751,
+      "duration_ms": 106.9841249999954,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -193,10 +193,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.985Z",
+      "timestamp": "2026-04-08T23:58:55.555Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 863.0707919999986,
+      "duration_ms": 897.2391659999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -205,7 +205,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775670705971,
+        "_original_timestamp": 1775692735443,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -214,7 +214,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.986Z",
+      "timestamp": "2026-04-08T23:58:55.556Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -224,7 +224,7 @@
           }
         ]
       },
-      "duration_ms": 9.41570800000045,
+      "duration_ms": 8.553541999997833,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -233,7 +233,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775670705980,
+        "_original_timestamp": 1775692735451,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -242,9 +242,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.987Z",
+      "timestamp": "2026-04-08T23:58:55.557Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -252,7 +252,7 @@
           }
         ]
       },
-      "duration_ms": 6.872332999999344,
+      "duration_ms": 107.3426660000041,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -269,10 +269,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.988Z",
+      "timestamp": "2026-04-08T23:58:55.558Z",
       "model_name": "middleware:permissions",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 863.0529170000009,
+      "duration_ms": 897.1990000000005,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -281,7 +281,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670705970,
+        "_original_timestamp": 1775692735442,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -290,7 +290,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.989Z",
+      "timestamp": "2026-04-08T23:58:55.559Z",
       "model_name": "middleware:permissions",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -300,7 +300,7 @@
           }
         ]
       },
-      "duration_ms": 9.358291999997164,
+      "duration_ms": 8.468166999999085,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -313,12 +313,13 @@
           {
             "phase": "execute",
             "toolId": "add_numbers",
+            "toolInput": "{\"b\":4,\"a\":3}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670705979,
+        "_original_timestamp": 1775692735450,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -327,9 +328,9 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.990Z",
+      "timestamp": "2026-04-08T23:58:55.560Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -337,7 +338,7 @@
           }
         ]
       },
-      "duration_ms": 6.8339580000028946,
+      "duration_ms": 107.2847499999989,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -350,12 +351,13 @@
           {
             "phase": "execute",
             "toolId": "add_numbers",
+            "toolInput": "{\"a\":10,\"b\":20}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670705986,
+        "_original_timestamp": 1775692735556,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -364,10 +366,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.991Z",
+      "timestamp": "2026-04-08T23:58:55.561Z",
       "model_name": "middleware:hooks",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 862.9781249999942,
+      "duration_ms": 897.0929590000014,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -376,7 +378,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670705969,
+        "_original_timestamp": 1775692735441,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -385,7 +387,7 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.992Z",
+      "timestamp": "2026-04-08T23:58:55.562Z",
       "model_name": "middleware:hooks",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -395,7 +397,7 @@
           }
         ]
       },
-      "duration_ms": 9.2846669999999,
+      "duration_ms": 8.334374999998545,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -408,29 +410,31 @@
           {
             "event": "tool.before",
             "toolId": "add_numbers",
+            "toolInput": "{\"b\":4,\"a\":3}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "first-tool-guard",
                 "decision": "continue",
-                "durationMs": 2.2595000000001164
+                "durationMs": 2.6309590000018943
               }
             ]
           },
           {
             "event": "tool.succeeded",
             "toolId": "add_numbers",
+            "toolOutput": "{\"result\":7}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "always-hook",
                 "decision": "continue",
-                "durationMs": 6.510874999999942
+                "durationMs": 5.010082999997394
               }
             ]
           }
         ],
-        "_original_timestamp": 1775670705978,
+        "_original_timestamp": 1775692735449,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -439,9 +443,9 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.993Z",
+      "timestamp": "2026-04-08T23:58:55.563Z",
       "model_name": "middleware:hooks",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -449,7 +453,7 @@
           }
         ]
       },
-      "duration_ms": 6.7658749999973224,
+      "duration_ms": 107.20229200000176,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -462,17 +466,18 @@
           {
             "event": "tool.succeeded",
             "toolId": "add_numbers",
+            "toolOutput": "{\"result\":30}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "always-hook",
                 "decision": "continue",
-                "durationMs": 6.561958999998751
+                "durationMs": 106.9841249999954
               }
             ]
           }
         ],
-        "_original_timestamp": 1775670705985,
+        "_original_timestamp": 1775692735555,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -481,10 +486,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.994Z",
+      "timestamp": "2026-04-08T23:58:55.564Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.",
-      "duration_ms": 862.9368749999994,
+      "duration_ms": 897.0507500000022,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -493,7 +498,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670705968,
+        "_original_timestamp": 1775692735440,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -502,7 +507,7 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.995Z",
+      "timestamp": "2026-04-08T23:58:55.565Z",
       "model_name": "middleware:semantic-retry",
       "message": "add_numbers({\"b\":4,\"a\":3})",
       "observation": {
@@ -512,7 +517,7 @@
           }
         ]
       },
-      "duration_ms": 0.08029099999839673,
+      "duration_ms": 0.15691700000024866,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -521,7 +526,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670705975,
+        "_original_timestamp": 1775692735447,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -530,9 +535,9 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:45.996Z",
+      "timestamp": "2026-04-08T23:58:55.566Z",
       "model_name": "middleware:semantic-retry",
-      "message": "add_numbers({\"b\":20,\"a\":10})",
+      "message": "add_numbers({\"a\":10,\"b\":20})",
       "observation": {
         "results": [
           {
@@ -540,7 +545,7 @@
           }
         ]
       },
-      "duration_ms": 0.06424999999580905,
+      "duration_ms": 0.07204099999944447,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -549,7 +554,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670705983,
+        "_original_timestamp": 1775692735454,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -558,7 +563,7 @@
     {
       "step_id": 20,
       "source": "agent",
-      "timestamp": "2026-04-08T17:51:46.018Z",
+      "timestamp": "2026-04-08T23:58:55.574Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":30}",
       "observation": {
@@ -569,10 +574,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 210,
+        "prompt_tokens": 211,
         "completion_tokens": 28
       },
-      "duration_ms": 671,
+      "duration_ms": 797,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -591,10 +596,10 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:46.694Z",
+      "timestamp": "2026-04-08T23:58:56.376Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.{\"result\":7}{\"result\":30}",
-      "duration_ms": 673.018084000003,
+      "duration_ms": 798.7259580000027,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -611,10 +616,10 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:46.695Z",
+      "timestamp": "2026-04-08T23:58:56.377Z",
       "model_name": "middleware:permissions",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.{\"result\":7}{\"result\":30}",
-      "duration_ms": 672.9978750000009,
+      "duration_ms": 798.6923749999987,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -623,7 +628,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670706693,
+        "_original_timestamp": 1775692736375,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -632,10 +637,10 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:46.696Z",
+      "timestamp": "2026-04-08T23:58:56.378Z",
       "model_name": "middleware:hooks",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.{\"result\":7}{\"result\":30}",
-      "duration_ms": 672.8609169999982,
+      "duration_ms": 798.541959000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -644,7 +649,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670706691,
+        "_original_timestamp": 1775692736373,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -653,10 +658,10 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-08T17:51:46.697Z",
+      "timestamp": "2026-04-08T23:58:56.379Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the add_numbers tool to compute 3 + 4, then use it again to compute 10 + 20. Report both results.{\"result\":7}{\"result\":30}",
-      "duration_ms": 672.8114580000038,
+      "duration_ms": 798.4977500000023,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -665,7 +670,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670706690,
+        "_original_timestamp": 1775692736372,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

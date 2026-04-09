@@ -1,36 +1,36 @@
 {
   "name": "task-board",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775670669532,
+  "recordedAt": 1775692711628,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9"
+      "callId": "tool_task_create_j2mQEFELVxIJczvuNB8q"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
+      "callId": "tool_task_create_j2mQEFELVxIJczvuNB8q",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
-      "delta": "{\"subject\":\"Review README\",\"description\":\"Review the README for typos\"}"
+      "callId": "tool_task_create_j2mQEFELVxIJczvuNB8q",
+      "delta": "{\"description\":\"Review the README for typos\",\"subject\":\"Review README\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj"
+      "callId": "tool_task_list_Mxc8UKKDItK50OsmhLPx"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
+      "callId": "tool_task_list_Mxc8UKKDItK50OsmhLPx",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
+      "callId": "tool_task_list_Mxc8UKKDItK50OsmhLPx",
       "delta": "{}"
     },
     {
@@ -40,11 +40,11 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_lg4qnOFy4y74uAAIEyZ9"
+      "callId": "tool_task_create_j2mQEFELVxIJczvuNB8q"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_oSG4sjjOxcp0lUGS4CAj"
+      "callId": "tool_task_list_Mxc8UKKDItK50OsmhLPx"
     },
     {
       "kind": "done",
@@ -52,20 +52,20 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775670668-Iz7q1XMsjtgbJRy8wWgp",
+        "responseId": "gen-1775692710-zFoXehSBXlKq7U8iH5h3",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_lg4qnOFy4y74uAAIEyZ9",
+            "id": "tool_task_create_j2mQEFELVxIJczvuNB8q",
             "name": "task_create",
             "arguments": {
-              "subject": "Review README",
-              "description": "Review the README for typos"
+              "description": "Review the README for typos",
+              "subject": "Review README"
             }
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_oSG4sjjOxcp0lUGS4CAj",
+            "id": "tool_task_list_Mxc8UKKDItK50OsmhLPx",
             "name": "task_list",
             "arguments": {}
           }

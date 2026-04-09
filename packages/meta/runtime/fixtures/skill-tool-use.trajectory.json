@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:35.317Z",
+      "timestamp": "2026-04-09T00:00:00.613Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:35.318Z",
+      "timestamp": "2026-04-09T00:00:00.614Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T17:53:35.320Z",
+      "timestamp": "2026-04-09T00:00:00.616Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 213,
         "completion_tokens": 5
       },
-      "duration_ms": 654,
+      "duration_ms": 829,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -83,7 +83,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T17:53:35.975Z",
+      "timestamp": "2026-04-09T00:00:01.446Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Skill_3",
@@ -107,10 +107,10 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.130Z",
+      "timestamp": "2026-04-09T00:00:01.453Z",
       "model_name": "hook:on-skill-tool-exec",
       "message": "tool.succeeded → on-skill-tool-exec",
-      "duration_ms": 153.11100000000442,
+      "duration_ms": 2.7249159999919357,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -127,10 +127,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.131Z",
+      "timestamp": "2026-04-09T00:00:01.454Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 661.7382919999945,
+      "duration_ms": 832.9055410000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -139,7 +139,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775670815982,
+        "_original_timestamp": 1775692801452,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -148,7 +148,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.133Z",
+      "timestamp": "2026-04-09T00:00:01.456Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -158,7 +158,7 @@
           }
         ]
       },
-      "duration_ms": 156.29074999998556,
+      "duration_ms": 3.5005419999943115,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -175,10 +175,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.134Z",
+      "timestamp": "2026-04-09T00:00:01.457Z",
       "model_name": "middleware:permissions",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 661.7242499999993,
+      "duration_ms": 832.8765839999978,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -187,7 +187,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670815981,
+        "_original_timestamp": 1775692801451,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -196,7 +196,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.135Z",
+      "timestamp": "2026-04-09T00:00:01.458Z",
       "model_name": "middleware:permissions",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -206,7 +206,7 @@
           }
         ]
       },
-      "duration_ms": 156.03475000002072,
+      "duration_ms": 3.4217920000082813,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -219,12 +219,13 @@
           {
             "phase": "execute",
             "toolId": "Skill",
+            "toolInput": "{\"skill\":\"bullet-points\"}",
             "action": "allow",
-            "durationMs": 1,
+            "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670816132,
+        "_original_timestamp": 1775692801455,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -233,10 +234,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.136Z",
+      "timestamp": "2026-04-09T00:00:01.459Z",
       "model_name": "middleware:hooks",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 661.6490409999969,
+      "duration_ms": 832.8112090000068,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -245,7 +246,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670815980,
+        "_original_timestamp": 1775692801450,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -254,7 +255,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.137Z",
+      "timestamp": "2026-04-09T00:00:01.460Z",
       "model_name": "middleware:hooks",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -264,7 +265,7 @@
           }
         ]
       },
-      "duration_ms": 155.44987499999115,
+      "duration_ms": 3.326459000003524,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -277,17 +278,18 @@
           {
             "event": "tool.succeeded",
             "toolId": "Skill",
+            "toolOutput": "{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
             "aggregated": "continue",
             "hooks": [
               {
                 "name": "on-skill-tool-exec",
                 "decision": "continue",
-                "durationMs": 153.11100000000442
+                "durationMs": 2.7249159999919357
               }
             ]
           }
         ],
-        "_original_timestamp": 1775670816131,
+        "_original_timestamp": 1775692801454,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -296,7 +298,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.138Z",
+      "timestamp": "2026-04-09T00:00:01.461Z",
       "model_name": "middleware:semantic-retry",
       "message": "Skill({\"skill\":\"bullet-points\"})",
       "observation": {
@@ -306,7 +308,7 @@
           }
         ]
       },
-      "duration_ms": 1.1767080000136048,
+      "duration_ms": 0.4187499999970896,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -315,7 +317,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670815977,
+        "_original_timestamp": 1775692801448,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -324,10 +326,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.139Z",
+      "timestamp": "2026-04-09T00:00:01.462Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"",
-      "duration_ms": 661.5964170000225,
+      "duration_ms": 832.7695420000091,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -336,7 +338,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670815979,
+        "_original_timestamp": 1775692801449,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -345,7 +347,7 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T17:53:36.226Z",
+      "timestamp": "2026-04-09T00:00:01.482Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
       "observation": {
@@ -356,10 +358,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 255,
+        "prompt_tokens": 258,
         "completion_tokens": 5
       },
-      "duration_ms": 613,
+      "duration_ms": 668,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -378,10 +380,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.844Z",
+      "timestamp": "2026-04-09T00:00:02.155Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
-      "duration_ms": 614.7892500000016,
+      "duration_ms": 669.963917000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -398,10 +400,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.845Z",
+      "timestamp": "2026-04-09T00:00:02.156Z",
       "model_name": "middleware:permissions",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
-      "duration_ms": 614.7671670000127,
+      "duration_ms": 669.9461670000019,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -410,7 +412,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670816843,
+        "_original_timestamp": 1775692802154,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -419,10 +421,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.846Z",
+      "timestamp": "2026-04-09T00:00:02.157Z",
       "model_name": "middleware:hooks",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
-      "duration_ms": 614.5680409999914,
+      "duration_ms": 669.8211250000022,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -431,7 +433,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670816841,
+        "_original_timestamp": 1775692802152,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -440,10 +442,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:36.847Z",
+      "timestamp": "2026-04-09T00:00:02.158Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use the Skill tool to invoke the \"bullet-points\" skill. After invoking it, say \"Skill loaded successfully.\"{\"ok\":false,\"error\":{\"code\":\"INTERNAL\",\"message\":\"Skill execution cancelled — abort signal already fired\",\"retryable\":false,\"context\":{\"reason\":\"aborted\"}}}",
-      "duration_ms": 614.511959000025,
+      "duration_ms": 669.7877909999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -452,7 +454,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670816840,
+        "_original_timestamp": 1775692802151,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

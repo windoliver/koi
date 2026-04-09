@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:16.824Z",
+      "timestamp": "2026-04-08T23:59:28.153Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:16.825Z",
+      "timestamp": "2026-04-08T23:59:28.154Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,7 +62,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:16.827Z",
+      "timestamp": "2026-04-08T23:59:28.156Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
       "observation": {
@@ -76,7 +76,7 @@
         "prompt_tokens": 695,
         "completion_tokens": 12
       },
-      "duration_ms": 804,
+      "duration_ms": 885,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -107,7 +107,7 @@
     {
       "step_id": 3,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:17.632Z",
+      "timestamp": "2026-04-08T23:59:29.042Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "List your available tools by name.",
       "observation": {
@@ -121,7 +121,7 @@
         "prompt_tokens": 0,
         "completion_tokens": 0
       },
-      "duration_ms": 615,
+      "duration_ms": 769,
       "outcome": "failure",
       "extra": {
         "totalMessages": 1,
@@ -140,7 +140,7 @@
     {
       "step_id": 4,
       "source": "tool",
-      "timestamp": "2026-04-08T17:52:17.633Z",
+      "timestamp": "2026-04-08T23:59:29.043Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Spawn_4",
@@ -159,19 +159,19 @@
           }
         ]
       },
-      "duration_ms": 616,
+      "duration_ms": 770,
       "outcome": "success",
       "extra": {
-        "_original_timestamp": 1775670737632
+        "_original_timestamp": 1775692769042
       }
     },
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:17.636Z",
+      "timestamp": "2026-04-08T23:59:29.046Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
-      "duration_ms": 807.8493750000052,
+      "duration_ms": 888.400250000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -188,7 +188,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.252Z",
+      "timestamp": "2026-04-08T23:59:29.816Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
@@ -198,7 +198,7 @@
           }
         ]
       },
-      "duration_ms": 617.0646249999991,
+      "duration_ms": 771.0720419999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -215,10 +215,10 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.253Z",
+      "timestamp": "2026-04-08T23:59:29.817Z",
       "model_name": "middleware:permissions",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
-      "duration_ms": 807.8381250000093,
+      "duration_ms": 888.3822089999958,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -227,7 +227,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670737635,
+        "_original_timestamp": 1775692769045,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -236,7 +236,7 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.254Z",
+      "timestamp": "2026-04-08T23:59:29.818Z",
       "model_name": "middleware:permissions",
       "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
@@ -246,7 +246,7 @@
           }
         ]
       },
-      "duration_ms": 617.0099999999948,
+      "duration_ms": 770.9890829999931,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -259,12 +259,13 @@
           {
             "phase": "execute",
             "toolId": "Spawn",
+            "toolInput": "{\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670738251,
+        "_original_timestamp": 1775692769815,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -273,10 +274,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.255Z",
+      "timestamp": "2026-04-08T23:59:29.819Z",
       "model_name": "middleware:hooks",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
-      "duration_ms": 807.7018329999992,
+      "duration_ms": 888.1873340000093,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -285,7 +286,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670737634,
+        "_original_timestamp": 1775692769044,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -294,7 +295,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.256Z",
+      "timestamp": "2026-04-08T23:59:29.820Z",
       "model_name": "middleware:hooks",
       "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
@@ -304,7 +305,7 @@
           }
         ]
       },
-      "duration_ms": 616.9317500000034,
+      "duration_ms": 770.8927499999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -313,7 +314,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670738250,
+        "_original_timestamp": 1775692769814,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -322,10 +323,10 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.257Z",
+      "timestamp": "2026-04-08T23:59:29.821Z",
       "model_name": "middleware:semantic-retry",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.",
-      "duration_ms": 807.6488329999993,
+      "duration_ms": 888.1244999999981,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -334,7 +335,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670737633,
+        "_original_timestamp": 1775692769043,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -343,7 +344,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:18.258Z",
+      "timestamp": "2026-04-08T23:59:29.822Z",
       "model_name": "middleware:semantic-retry",
       "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
@@ -353,7 +354,7 @@
           }
         ]
       },
-      "duration_ms": 616.8554159999912,
+      "duration_ms": 770.8234579999989,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -362,7 +363,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670738249,
+        "_original_timestamp": 1775692769813,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -371,21 +372,21 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:18.288Z",
+      "timestamp": "2026-04-08T23:59:29.864Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"output\":\"\"}",
       "observation": {
         "results": [
           {
-            "content": "The coordinator agent did not respond with a list of tools. I will retry this request.\n"
+            "content": "I did not get a response from the coordinator because `output` is empty. I will retry the request to the coordinator using semantic retry.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 727,
-        "completion_tokens": 31
+        "prompt_tokens": 724,
+        "completion_tokens": 41
       },
-      "duration_ms": 998,
+      "duration_ms": 982,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -416,7 +417,7 @@
     {
       "step_id": 14,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:19.287Z",
+      "timestamp": "2026-04-08T23:59:30.847Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "List your available tools by name.",
       "observation": {
@@ -430,7 +431,7 @@
         "prompt_tokens": 0,
         "completion_tokens": 0
       },
-      "duration_ms": 653,
+      "duration_ms": 723,
       "outcome": "failure",
       "extra": {
         "totalMessages": 1,
@@ -449,14 +450,14 @@
     {
       "step_id": 15,
       "source": "tool",
-      "timestamp": "2026-04-08T17:52:19.288Z",
+      "timestamp": "2026-04-08T23:59:30.848Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Spawn_15",
           "function_name": "Spawn",
           "arguments": {
-            "agentName": "coordinator",
-            "description": "List your available tools by name."
+            "description": "List your available tools by name.",
+            "agentName": "coordinator"
           }
         }
       ],
@@ -468,19 +469,19 @@
           }
         ]
       },
-      "duration_ms": 654,
+      "duration_ms": 724,
       "outcome": "success",
       "extra": {
-        "_original_timestamp": 1775670739287
+        "_original_timestamp": 1775692770847
       }
     },
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.291Z",
+      "timestamp": "2026-04-08T23:59:30.851Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}",
-      "duration_ms": 1000.0084160000115,
+      "duration_ms": 983.0477079999982,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -497,9 +498,9 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.945Z",
+      "timestamp": "2026-04-08T23:59:31.575Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -507,7 +508,7 @@
           }
         ]
       },
-      "duration_ms": 655.1371250000084,
+      "duration_ms": 724.5756660000043,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -524,10 +525,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.946Z",
+      "timestamp": "2026-04-08T23:59:31.576Z",
       "model_name": "middleware:permissions",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}",
-      "duration_ms": 999.9842500000086,
+      "duration_ms": 983.0306670000136,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -536,7 +537,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670739290,
+        "_original_timestamp": 1775692770850,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -545,9 +546,9 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.947Z",
+      "timestamp": "2026-04-08T23:59:31.577Z",
       "model_name": "middleware:permissions",
-      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -555,7 +556,7 @@
           }
         ]
       },
-      "duration_ms": 655.0842089999933,
+      "duration_ms": 724.5137499999983,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -568,12 +569,13 @@
           {
             "phase": "execute",
             "toolId": "Spawn",
+            "toolInput": "{\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670739944,
+        "_original_timestamp": 1775692771574,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -582,10 +584,10 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.948Z",
+      "timestamp": "2026-04-08T23:59:31.578Z",
       "model_name": "middleware:hooks",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}",
-      "duration_ms": 999.8305409999884,
+      "duration_ms": 982.8407089999964,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -594,7 +596,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670739289,
+        "_original_timestamp": 1775692770849,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -603,9 +605,9 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.949Z",
+      "timestamp": "2026-04-08T23:59:31.579Z",
       "model_name": "middleware:hooks",
-      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -613,7 +615,7 @@
           }
         ]
       },
-      "duration_ms": 655.0053329999937,
+      "duration_ms": 724.4441660000011,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -622,7 +624,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670739943,
+        "_original_timestamp": 1775692771573,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -631,10 +633,10 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.950Z",
+      "timestamp": "2026-04-08T23:59:31.580Z",
       "model_name": "middleware:semantic-retry",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}",
-      "duration_ms": 999.771041999993,
+      "duration_ms": 982.7937079999974,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -643,7 +645,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670739288,
+        "_original_timestamp": 1775692770848,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -652,9 +654,9 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:19.951Z",
+      "timestamp": "2026-04-08T23:59:31.581Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Spawn({\"agentName\":\"coordinator\",\"description\":\"List your available tools by name.\"})",
+      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -662,7 +664,7 @@
           }
         ]
       },
-      "duration_ms": 654.9345420000027,
+      "duration_ms": 724.3741250000021,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -671,7 +673,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670739942,
+        "_original_timestamp": 1775692771572,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -680,21 +682,21 @@
     {
       "step_id": 24,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:19.985Z",
+      "timestamp": "2026-04-08T23:59:31.616Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"output\":\"\"}",
       "observation": {
         "results": [
           {
-            "content": "I seem to be having trouble getting a list of the coordinator's tools. I will try again.\n"
+            "content": "I did not receive a response listing the available tools. I will try again.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 761,
-        "completion_tokens": 34
+        "prompt_tokens": 757,
+        "completion_tokens": 30
       },
-      "duration_ms": 992,
+      "duration_ms": 957,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -725,9 +727,9 @@
     {
       "step_id": 25,
       "source": "agent",
-      "timestamp": "2026-04-08T17:52:20.977Z",
+      "timestamp": "2026-04-08T23:59:32.574Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "List your available tools by name.",
+      "message": "List your available tools, by name.",
       "observation": {
         "results": [
           {
@@ -758,13 +760,13 @@
     {
       "step_id": 26,
       "source": "tool",
-      "timestamp": "2026-04-08T17:52:20.978Z",
+      "timestamp": "2026-04-08T23:59:32.575Z",
       "tool_calls": [
         {
           "tool_call_id": "call_Spawn_26",
           "function_name": "Spawn",
           "arguments": {
-            "description": "List your available tools by name.",
+            "description": "List your available tools, by name.",
             "agentName": "coordinator"
           }
         }
@@ -777,16 +779,19 @@
           }
         ]
       },
-      "duration_ms": 718,
-      "outcome": "success"
+      "duration_ms": 719,
+      "outcome": "success",
+      "extra": {
+        "_original_timestamp": 1775692772574
+      }
     },
     {
       "step_id": 27,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:20.982Z",
+      "timestamp": "2026-04-08T23:59:32.578Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}{\"output\":\"\"}",
-      "duration_ms": 992.9726670000091,
+      "duration_ms": 958.9818749999977,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -803,9 +808,9 @@
     {
       "step_id": 28,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.700Z",
+      "timestamp": "2026-04-08T23:59:33.297Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"description\":\"List your available tools, by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -813,7 +818,7 @@
           }
         ]
       },
-      "duration_ms": 719.2132500000007,
+      "duration_ms": 720.6301250000106,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -830,10 +835,10 @@
     {
       "step_id": 29,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.701Z",
+      "timestamp": "2026-04-08T23:59:33.298Z",
       "model_name": "middleware:permissions",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}{\"output\":\"\"}",
-      "duration_ms": 992.9565409999923,
+      "duration_ms": 958.8918330000015,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -842,7 +847,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670740981,
+        "_original_timestamp": 1775692772577,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -851,9 +856,9 @@
     {
       "step_id": 30,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.702Z",
+      "timestamp": "2026-04-08T23:59:33.299Z",
       "model_name": "middleware:permissions",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"description\":\"List your available tools, by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -861,7 +866,7 @@
           }
         ]
       },
-      "duration_ms": 719.1578339999978,
+      "duration_ms": 720.525542000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -874,12 +879,13 @@
           {
             "phase": "execute",
             "toolId": "Spawn",
+            "toolInput": "{\"description\":\"List your available tools, by name.\",\"agentName\":\"coordinator\"}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670741699,
+        "_original_timestamp": 1775692773296,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -888,10 +894,10 @@
     {
       "step_id": 31,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.703Z",
+      "timestamp": "2026-04-08T23:59:33.300Z",
       "model_name": "middleware:hooks",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}{\"output\":\"\"}",
-      "duration_ms": 992.8234169999923,
+      "duration_ms": 958.4566249999916,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -900,7 +906,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670740980,
+        "_original_timestamp": 1775692772576,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -909,9 +915,9 @@
     {
       "step_id": 32,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.704Z",
+      "timestamp": "2026-04-08T23:59:33.301Z",
       "model_name": "middleware:hooks",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"description\":\"List your available tools, by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -919,7 +925,7 @@
           }
         ]
       },
-      "duration_ms": 719.0952919999982,
+      "duration_ms": 720.359375,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -928,7 +934,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670741698,
+        "_original_timestamp": 1775692773295,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -937,10 +943,10 @@
     {
       "step_id": 33,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.705Z",
+      "timestamp": "2026-04-08T23:59:33.302Z",
       "model_name": "middleware:semantic-retry",
       "message": "You have Glob, Grep, ToolSearch, and Spawn tools. Use the Spawn tool with agentName='coordinator' to delegate: 'List your available tools by name.' Then report which tools the coordinator listed.{\"output\":\"\"}{\"output\":\"\"}",
-      "duration_ms": 992.7663330000069,
+      "duration_ms": 958.2734999999957,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -949,7 +955,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670740979,
+        "_original_timestamp": 1775692772575,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -958,9 +964,9 @@
     {
       "step_id": 34,
       "source": "system",
-      "timestamp": "2026-04-08T17:52:21.706Z",
+      "timestamp": "2026-04-08T23:59:33.303Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Spawn({\"description\":\"List your available tools by name.\",\"agentName\":\"coordinator\"})",
+      "message": "Spawn({\"description\":\"List your available tools, by name.\",\"agentName\":\"coordinator\"})",
       "observation": {
         "results": [
           {
@@ -968,7 +974,7 @@
           }
         ]
       },
-      "duration_ms": 719.023749999993,
+      "duration_ms": 720.2457910000085,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -977,7 +983,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670741697,
+        "_original_timestamp": 1775692773294,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }

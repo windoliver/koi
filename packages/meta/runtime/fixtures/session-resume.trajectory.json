@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:32.538Z",
+      "timestamp": "2026-04-08T23:59:57.996Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:32.539Z",
+      "timestamp": "2026-04-08T23:59:57.997Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-08T17:53:32.541Z",
+      "timestamp": "2026-04-08T23:59:57.999Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 194,
         "completion_tokens": 7
       },
-      "duration_ms": 777,
+      "duration_ms": 826,
       "outcome": "success",
       "extra": {
         "totalMessages": 5,
@@ -83,7 +83,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-08T17:53:33.319Z",
+      "timestamp": "2026-04-08T23:59:58.826Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_3",
@@ -108,7 +108,7 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.328Z",
+      "timestamp": "2026-04-08T23:59:58.835Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "add_numbers({\"b\":25,\"a\":15})",
       "observation": {
@@ -118,7 +118,7 @@
           }
         ]
       },
-      "duration_ms": 1.1911660000041593,
+      "duration_ms": 0.4526250000053551,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -135,7 +135,7 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.329Z",
+      "timestamp": "2026-04-08T23:59:58.836Z",
       "model_name": "middleware:permissions",
       "message": "add_numbers({\"b\":25,\"a\":15})",
       "observation": {
@@ -145,7 +145,7 @@
           }
         ]
       },
-      "duration_ms": 0.9870419999933802,
+      "duration_ms": 0.4086249999963911,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -158,12 +158,13 @@
           {
             "phase": "execute",
             "toolId": "add_numbers",
+            "toolInput": "{\"b\":25,\"a\":15}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1775670813327,
+        "_original_timestamp": 1775692798834,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -172,10 +173,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.330Z",
+      "timestamp": "2026-04-08T23:59:58.837Z",
       "model_name": "middleware:permissions",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
-      "duration_ms": 780.409249999997,
+      "duration_ms": 829.5032080000092,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -184,7 +185,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775670813329,
+        "_original_timestamp": 1775692798836,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -193,7 +194,7 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.331Z",
+      "timestamp": "2026-04-08T23:59:58.838Z",
       "model_name": "middleware:hooks",
       "message": "add_numbers({\"b\":25,\"a\":15})",
       "observation": {
@@ -203,7 +204,7 @@
           }
         ]
       },
-      "duration_ms": 0.7620420000166632,
+      "duration_ms": 0.35733299999265,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -212,7 +213,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670813324,
+        "_original_timestamp": 1775692798831,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -221,10 +222,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.332Z",
+      "timestamp": "2026-04-08T23:59:58.839Z",
       "model_name": "middleware:hooks",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
-      "duration_ms": 780.25,
+      "duration_ms": 829.416458000007,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -233,7 +234,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670813326,
+        "_original_timestamp": 1775692798833,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -242,7 +243,7 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.333Z",
+      "timestamp": "2026-04-08T23:59:58.840Z",
       "model_name": "middleware:semantic-retry",
       "message": "add_numbers({\"b\":25,\"a\":15})",
       "observation": {
@@ -252,7 +253,7 @@
           }
         ]
       },
-      "duration_ms": 0.5105829999956768,
+      "duration_ms": 0.282666999992216,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -261,7 +262,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670813322,
+        "_original_timestamp": 1775692798829,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -270,10 +271,10 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.334Z",
+      "timestamp": "2026-04-08T23:59:58.841Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
-      "duration_ms": 780.2119160000002,
+      "duration_ms": 829.3917499999952,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -282,7 +283,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670813325,
+        "_original_timestamp": 1775692798832,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -291,7 +292,7 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.335Z",
+      "timestamp": "2026-04-08T23:59:58.842Z",
       "model_name": "middleware:@koi/session:transcript",
       "message": "add_numbers({\"b\":25,\"a\":15})",
       "observation": {
@@ -301,7 +302,7 @@
           }
         ]
       },
-      "duration_ms": 0.40158299999893643,
+      "duration_ms": 0.2485409999935655,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -310,7 +311,7 @@
         "phase": "observe",
         "priority": 200,
         "nextCalled": true,
-        "_original_timestamp": 1775670813320,
+        "_original_timestamp": 1775692798827,
         "__koi": {
           "identifier": "middleware:@koi/session:transcript"
         }
@@ -319,10 +320,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.336Z",
+      "timestamp": "2026-04-08T23:59:58.843Z",
       "model_name": "middleware:@koi/session:transcript",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
-      "duration_ms": 780.1696670000092,
+      "duration_ms": 829.3754170000029,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -331,7 +332,7 @@
         "phase": "observe",
         "priority": 200,
         "nextCalled": true,
-        "_original_timestamp": 1775670813323,
+        "_original_timestamp": 1775692798830,
         "__koi": {
           "identifier": "middleware:@koi/session:transcript"
         }
@@ -340,21 +341,21 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-04-08T17:53:33.533Z",
+      "timestamp": "2026-04-08T23:59:58.872Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":40}",
       "observation": {
         "results": [
           {
-            "content": "The result of 3 + 7 is 10, and the result of 15 + 25 is 40."
+            "content": "The result of 3 + 7 is 10 and the result of 15 + 25 is 40."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 225,
-        "completion_tokens": 29
+        "prompt_tokens": 223,
+        "completion_tokens": 28
       },
-      "duration_ms": 687,
+      "duration_ms": 742,
       "outcome": "success",
       "extra": {
         "totalMessages": 7,
@@ -373,10 +374,10 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:33.534Z",
+      "timestamp": "2026-04-08T23:59:58.873Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.",
-      "duration_ms": 780.4225410000072,
+      "duration_ms": 829.525542000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -385,7 +386,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775670813330,
+        "_original_timestamp": 1775692798837,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -394,10 +395,10 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:34.224Z",
+      "timestamp": "2026-04-08T23:59:59.618Z",
       "model_name": "middleware:permissions",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.{\"result\":40}",
-      "duration_ms": 687.5221249999886,
+      "duration_ms": 743.296875,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -414,10 +415,10 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:34.225Z",
+      "timestamp": "2026-04-08T23:59:59.619Z",
       "model_name": "middleware:hooks",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.{\"result\":40}",
-      "duration_ms": 687.3760830000101,
+      "duration_ms": 743.2162910000043,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -426,7 +427,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775670814223,
+        "_original_timestamp": 1775692799617,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -435,10 +436,10 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:34.226Z",
+      "timestamp": "2026-04-08T23:59:59.620Z",
       "model_name": "middleware:semantic-retry",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.{\"result\":40}",
-      "duration_ms": 687.3292920000094,
+      "duration_ms": 743.1831669999956,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -447,7 +448,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775670814222,
+        "_original_timestamp": 1775692799616,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -456,10 +457,10 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:34.227Z",
+      "timestamp": "2026-04-08T23:59:59.621Z",
       "model_name": "middleware:@koi/session:transcript",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.{\"result\":40}",
-      "duration_ms": 687.3126660000125,
+      "duration_ms": 743.1695409999957,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -468,7 +469,7 @@
         "phase": "observe",
         "priority": 200,
         "nextCalled": true,
-        "_original_timestamp": 1775670814221,
+        "_original_timestamp": 1775692799615,
         "__koi": {
           "identifier": "middleware:@koi/session:transcript"
         }
@@ -477,10 +478,10 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-08T17:53:34.228Z",
+      "timestamp": "2026-04-08T23:59:59.622Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "Use add_numbers to compute 3 + 7.call-crashed-01{\"result\":10}The result of 3 + 7 is 10.The previous session crashed mid-conversation. You previously used add_numbers to compute 3+7=10. Now use add_numbers to compute 15 + 25. Report both results.{\"result\":40}",
-      "duration_ms": 687.5384170000034,
+      "duration_ms": 743.3134169999976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -489,7 +490,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1775670814225,
+        "_original_timestamp": 1775692799619,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }

@@ -1,69 +1,31 @@
 {
   "name": "memory-store",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775670678143,
+  "recordedAt": 1775692716181,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "memory_store",
-      "callId": "tool_memory_store_aXhfuy1QgS8aPSJleJui"
+      "callId": "tool_memory_store_lDGCeLSUDlASrpVZSmuW"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_aXhfuy1QgS8aPSJleJui",
+      "callId": "tool_memory_store_lDGCeLSUDlASrpVZSmuW",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_memory_store_aXhfuy1QgS8aPSJleJui",
-      "delta": "{\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"name\":\"testing approach\",\"type\":\"feedback\",\"description\":\"always write failing tests first\"}"
-    },
-    {
-      "kind": "tool_call_start",
-      "toolName": "memory_recall",
-      "callId": "tool_memory_recall_sKwLCtzpiv7qArkESKMZ"
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_sKwLCtzpiv7qArkESKMZ",
-      "delta": ""
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_recall_sKwLCtzpiv7qArkESKMZ",
-      "delta": "{\"query\":\"testing\"}"
-    },
-    {
-      "kind": "tool_call_start",
-      "toolName": "memory_search",
-      "callId": "tool_memory_search_KjIN6u0ICCtruFmhqjBE"
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_search_KjIN6u0ICCtruFmhqjBE",
-      "delta": ""
-    },
-    {
-      "kind": "tool_call_delta",
-      "callId": "tool_memory_search_KjIN6u0ICCtruFmhqjBE",
-      "delta": "{\"type\":\"feedback\"}"
+      "callId": "tool_memory_store_lDGCeLSUDlASrpVZSmuW",
+      "delta": "{\"content\":\"Rule: write failing tests before implementation.\\n**Why:** catches regressions early.\\n**How to apply:** TDD workflow for all new features.\",\"description\":\"always write failing tests first\",\"name\":\"testing approach\",\"type\":\"feedback\"}"
     },
     {
       "kind": "usage",
       "inputTokens": 385,
-      "outputTokens": 55
+      "outputTokens": 45
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_memory_store_aXhfuy1QgS8aPSJleJui"
-    },
-    {
-      "kind": "tool_call_end",
-      "callId": "tool_memory_recall_sKwLCtzpiv7qArkESKMZ"
-    },
-    {
-      "kind": "tool_call_end",
-      "callId": "tool_memory_search_KjIN6u0ICCtruFmhqjBE"
+      "callId": "tool_memory_store_lDGCeLSUDlASrpVZSmuW"
     },
     {
       "kind": "done",
@@ -71,39 +33,23 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775670677-rmgErpRSjFnx9Obw9aYt",
+        "responseId": "gen-1775692715-pOMIt1GhEKTNkcS9gbhc",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_memory_store_aXhfuy1QgS8aPSJleJui",
+            "id": "tool_memory_store_lDGCeLSUDlASrpVZSmuW",
             "name": "memory_store",
             "arguments": {
               "content": "Rule: write failing tests before implementation.\n**Why:** catches regressions early.\n**How to apply:** TDD workflow for all new features.",
+              "description": "always write failing tests first",
               "name": "testing approach",
-              "type": "feedback",
-              "description": "always write failing tests first"
-            }
-          },
-          {
-            "kind": "tool_call",
-            "id": "tool_memory_recall_sKwLCtzpiv7qArkESKMZ",
-            "name": "memory_recall",
-            "arguments": {
-              "query": "testing"
-            }
-          },
-          {
-            "kind": "tool_call",
-            "id": "tool_memory_search_KjIN6u0ICCtruFmhqjBE",
-            "name": "memory_search",
-            "arguments": {
               "type": "feedback"
             }
           }
         ],
         "usage": {
           "inputTokens": 385,
-          "outputTokens": 55
+          "outputTokens": 45
         },
         "metadata": {
           "promptPrefixFingerprint": "60b5bcc734c67c0fbfeeaf548f952852200c2c1a431d9c8ef7b57cca3d8b748b"
