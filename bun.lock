@@ -283,6 +283,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/snapshot-store-sqlite": {
+      "name": "@koi/snapshot-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/spawn-tools": {
       "name": "@koi/spawn-tools",
       "version": "0.0.0",
@@ -1002,6 +1010,8 @@
     "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
+
+    "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 
     "@koi/spawn-tools": ["@koi/spawn-tools@workspace:packages/lib/spawn-tools"],
 
