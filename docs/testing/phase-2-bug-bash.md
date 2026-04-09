@@ -3,7 +3,7 @@
 > Scenario-based end-to-end test plan covering every shipped Phase 1 and Phase 2 subsystem.
 > All scenarios run through the TUI via tmux (not raw CLI) so TUI-side bugs are also surfaced.
 
-**Scope**: shipped Phase 1 + Phase 2 features. New issues (#1622–#1654) are out of scope.
+**Scope**: shipped Phase 1 + Phase 2 features — including nexus-fs connectors (gdrive, gmail) and inline OAuth flows via the Python bridge (closed #1438). New issues (#1622–#1654) are out of scope.
 **Format**: each scenario is `user query → expected turn → follow-up → expected behavior → pass criteria`.
 **Execution**: scenarios are independent — you can run them in any order. Reset state between scenarios.
 
@@ -549,22 +549,179 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Verify**: `cat /tmp/koi-test.txt` == "hello"
 **Pass**: file exists with correct content
 
-#### M2. fs-nexus backend basic operations
-**Tags**: fs-nexus backend, Nexus integration
-**Setup**: Nexus running (§1.4); config points to nexus backend
-**User query**: `Create a file named greeting.txt with content "hi" in my Nexus workspace.`
-**Expected**: file written via Nexus API, not local filesystem
-**Verify**: Nexus API query confirms file exists; local `/tmp` unchanged
-**Pass**: round-trip through Nexus works
-**Watch**: silent fallback to local backend on Nexus error; auth header missing
+#### M2. fs-nexus local transport, single local mount
+**Tags**: fs-nexus local transport, Python bridge, nexus-filesystem-backend
+**Setup**: config uses `createLocalTransport({ mountUri: "local:///tmp/koi-bugbash-fixture" })`
+**User query**: `Create a file named greeting.txt with content "hi" at the root of the mount.`
+**Expected**: file written via the Python bridge → nexus-fs → local filesystem; NOT through the direct fs-local backend
+**Verify**: `cat $FIXTURE/greeting.txt` == "hi"; trajectory shows a `write` RPC call going through fs-nexus, not fs-local
+**Pass**: round-trip through the bridge works; startup reports the mount in `transport.mounts`
+**Watch**: silent fallback to fs-local on bridge spawn failure; stdin pipe buffered; Python subprocess orphaned on exit
 
-#### M3. Backend switching mid-session
-**Tags**: fs-nexus + fs-local coexistence
-**Setup**: both backends configured
-**User query**: operations that touch both local and Nexus paths
-**Expected**: each operation routes to the correct backend based on path prefix or scope
-**Pass**: no cross-backend confusion
-**Watch**: path resolver picking wrong backend; write appearing on both
+#### M3. Backend switching mid-session (dual-backend manifest)
+**Tags**: dual-backend filesystem, manifest-driven backend selection, file-resolution
+**Setup**: manifest declares both fs-local and fs-nexus backends with distinct path scopes (e.g., fs-local for `/tmp/scratch`, fs-nexus for `/workspace`)
+**User query**: `Write "a" to /tmp/scratch/a.txt and "b" to /workspace/b.txt.`
+**Expected**: first write routes to fs-local; second routes to fs-nexus
+**Verify**: `/tmp/scratch/a.txt` exists locally; `/workspace/b.txt` exists via Nexus API but NOT in local `/workspace`
+**Pass**: path resolver picks the right backend per operation; no cross-backend bleed
+**Watch**: write appearing on both backends; path resolver falling through to default; permissions evaluated against wrong backend scope
+
+---
+
+### Group R — Nexus-fs connectors & inline OAuth
+
+> This group exercises the bridge auth notification protocol (closed #1438) and multi-mount nexus-fs connectors.
+> **Setup caveat**: connectors that require real OAuth (gdrive, gmail, etc.) need real provider credentials. For CI, use the scripted Python bridge fakes from `packages/lib/fs-nexus/src/local-transport.test.ts` as a reference — each scenario below notes whether it needs a real provider or can run against a fake bridge.
+
+#### R1. Multi-mount: local + gdrive
+**Tags**: fs-nexus local transport, multi-mount, `mountUri` array
+**Setup**: real gdrive credentials OR scripted fake bridge; `createLocalTransport({ mountUri: ["local:///tmp/koi-bugbash-fixture", "gdrive://my-drive"] })`
+**User query**: `List the mounts you have access to.`
+**Expected turn**: agent lists both `/local/...` and `/gdrive` from `transport.mounts`
+**Follow-up**: `Read README.md from the local mount and list the top-level folders on my gdrive mount.`
+**Expected follow-up**: local read succeeds immediately; gdrive list either succeeds (if pre-authed) or triggers R2 OAuth flow
+**Verify**: startup capture shows both mounts in the ready payload; trajectory shows distinct RPC calls tagged by mount
+**Pass**: both mounts discoverable and independently operable
+**Watch**: second mount silently dropped on bridge startup error; mount order affecting routing; mount prefix resolver confusing `/gdrive/foo` vs `/gdrive-foo/`
+
+#### R2. Inline OAuth — local mode (browser callback)
+**Tags**: bridge auth notifications, `auth_required`, `auth_complete`, fs-nexus/auth-notifications
+**Setup**: gdrive mount with NO existing token (`rm -f ~/.config/nexus-fs/tokens.db`); localhost callback server reachable
+**User query**: `Show me the first 10 files in my gdrive root.`
+**Expected turn sequence**:
+  1. Bridge catches `AuthenticationError` on the first I/O call
+  2. Bridge sends `auth_required` notification (`mode: "local"`) on stdout
+  3. Koi channel shows: **"Authorize google-drive to continue"** with the OAuth URL
+  4. User clicks link → completes OAuth in browser → callback fires → token stored
+  5. Bridge retries the original operation → succeeds
+  6. Bridge sends `auth_complete` notification → channel shows "google-drive authorization complete. Continuing..."
+  7. Agent receives the file list and reports it
+**Verify**:
+- TUI capture contains the `auth_required` message followed by `auth_complete`
+- `ls ~/.config/nexus-fs/tokens.db` exists after completion
+- Trajectory shows the original operation succeeded on the retry, not the initial attempt
+**Pass**: user sees the link, completes OAuth, the original turn resumes without restart
+**Watch**:
+- OAuth URL leaking query params in the channel message (should be delivered fully, but logs must redact — see R9)
+- `auth_required` message not reaching the channel (channel.send() swallowed the error, see R8)
+- Bridge polling the token database at >1s intervals causing long latency
+- Original call not retried after auth completes (waits forever)
+- Multiple `auth_required` notifications sent for one call
+
+#### R3. Inline OAuth — remote mode (paste redirect URL)
+**Tags**: bridge auth remote mode, `submitAuthCode`, `correlation_id`
+**Setup**: gdrive mount, no token, simulate SSH/headless by disabling localhost callback; `mode: "remote"` flow
+**User query**: `List gdrive root.`
+**Expected turn**:
+  1. Bridge sends `auth_required` with `mode: "remote"`, `instructions`, and a `correlation_id`
+  2. Channel shows the auth URL PLUS the instructions (stripped of query params in logs but full URL in the channel message)
+  3. User completes OAuth in a browser on another machine → gets the final redirect URL
+  4. User pastes the redirect URL into the TUI
+  5. Channel adapter forwards via `transport.submitAuthCode(redirectUrl, correlationId)` — correlation_id must match the one from the notification
+  6. Bridge validates, stores the token, retries, succeeds, sends `auth_complete`
+**Verify**: TUI shows the full flow; `~/.config/nexus-fs/tokens.db` populated after pasting
+**Pass**: remote OAuth works without localhost callback access
+**Watch**:
+- `correlation_id` not propagated → stale paste accepted
+- Paste handler echoing the URL into the conversation visibly after submission (should be consumed silently)
+- Validation regex rejecting valid redirect URLs
+- Timeout between `auth_required` and paste not surfaced to user (they think it froze)
+
+#### R4. Stale correlation_id rejection
+**Tags**: bridge auth remote mode security, replay protection
+**Setup**: trigger an R3 flow, then abort it (close the TUI before pasting). Reopen TUI, trigger a new OAuth flow, and attempt to paste the FIRST redirect URL with the FIRST correlation_id
+**Expected**: bridge rejects the stale paste; new flow's `correlation_id` is the only valid one; user sees an error and is prompted to use the new URL
+**Verify**: bridge log / capture shows the rejection
+**Pass**: stale URLs cannot be reused to poison a subsequent auth attempt
+**Watch**: bridge accepting the stale URL (CSRF-class bug); rejection producing a crash instead of an error; error message leaking the expected correlation_id
+
+#### R5. Auth failure on one mount does not block other mounts
+**Tags**: serial call queue, per-mount auth isolation, fs-nexus multi-mount
+**Reference**: behavior verified in `packages/lib/fs-nexus/src/local-transport.test.ts:444` ("local mount call succeeds after gdrive auth failure resolves (serial ordering)")
+**Setup**: two mounts — `local:///ws` and `gdrive://my-drive`; gdrive auth will time out (no token + no user interaction)
+**User query**: `Read /gdrive/secret.txt and then read /ws/README.md.`
+**Expected turn sequence** (serial, per the test):
+  1. Agent issues the gdrive read → bridge sends `auth_required` → user ignores it → auth times out with `AUTH_REQUIRED`/`-32007` error
+  2. Agent receives the gdrive error → continues to the next tool call
+  3. Agent issues the local read → succeeds
+**Verify**: trajectory shows gdrive call failed with `AUTH_REQUIRED`, then local call succeeded in the same session
+**Pass**: the local call completes even though the gdrive call is still "in-flight waiting for auth" OR already errored; no deadlock
+**Watch**: bridge call queue deadlocking; local call failing because the transport is in an errored state; partial recovery where only the first post-error call works
+
+#### R6. Token persistence across sessions
+**Tags**: nexus-fs token store, session restart
+**Setup**: complete R2 successfully so a real token exists in `~/.config/nexus-fs/tokens.db`
+**Action**: kill the TUI and Nexus tmux sessions; relaunch both
+**User query**: `Read my gdrive root again.`
+**Expected**: NO `auth_required` notification; operation succeeds immediately
+**Verify**: trajectory shows a single successful read with no auth events
+**Pass**: token is reused across runtime restarts
+**Watch**: token DB being cleared on TUI shutdown; token re-generation request even with a valid token; token expiry check racing with in-flight calls
+
+#### R7. `auth_progress` heartbeat delivery
+**Tags**: `auth_progress` notification, channel heartbeat
+**Setup**: scripted fake bridge that delays `auth_complete` by 30+ seconds and emits `auth_progress` every 5s
+**User query**: any read against the gdrive mount
+**Expected**: channel receives 5-6 `auth_progress` messages with elapsed seconds before `auth_complete`
+**Verify**: TUI capture shows the progress messages in order with increasing elapsed times
+**Pass**: progress messages arrive without blocking the agent loop
+**Watch**: progress flood overwhelming the channel; out-of-order elapsed values; TUI not rendering subsequent updates (stale buffer)
+
+#### R8. Channel delivery failure for `auth_required`
+**Tags**: error recovery, OAuth URL redaction in logs, `createAuthNotificationHandler` error handler
+**Setup**: wrap the channel adapter to force `channel.send()` to reject for the first call; bridge sends `auth_required`
+**Expected**:
+  - Handler swallows the rejection (per `auth-notifications.ts` lines 55-64)
+  - Error logged to stderr in the form `Failed to deliver auth_required for <provider>: <err>. User will not see the authorization link (redacted: <origin/path>)`
+  - The logged URL must be **redacted** — origin + path only, no query params
+**Verify**: stderr capture contains the exact error template; grep the stderr for `?` inside the redacted URL (should find none in the redacted portion)
+**Pass**: bridge reader loop does not crash; user sees nothing but stderr has an actionable diagnostic
+**Watch**: unredacted URL in stderr leaking anti-CSRF state or account identifiers; reader loop exiting on the swallowed rejection; second `auth_required` in the same session never delivered
+
+#### R9. OAuth URL redaction on logging paths
+**Tags**: URL redaction (`redactUrl`), log hygiene
+**Setup**: any path that logs an OAuth URL (R8 + internal debug logging)
+**Verify**: every logged OAuth URL shows only `${origin}${pathname}` — no `?` and no `#`
+**Pass**: no query params or fragments ever appear in logs
+**Watch**: stack traces printing the raw URL; middleware extracting the URL to separate log fields without redaction; telemetry sinks receiving the unredacted URL
+
+#### R10. Bridge process crash recovery
+**Tags**: Python bridge lifecycle, transport resilience
+**Setup**: any active mount; running session
+**Action** (out of band): `pkill -f 'fs-nexus.*bridge.py'` to kill the bridge subprocess
+**User query**: `Read README.md from the local mount.`
+**Expected**: the transport detects the dead subprocess, surfaces a clean error, and either re-spawns the bridge OR reports a terminal failure with a clear message (confirm which behavior is current)
+**Verify**: no zombie Python processes; no half-open file descriptors
+**Pass**: deterministic behavior (either clean recovery or clean failure) — never a hang
+**Watch**: hanging the turn waiting for the dead bridge; respawn loop that burns CPU; stdin buffer bleeding between old and new bridge
+
+#### R11. Gmail connector (OAuth-based, read-only path)
+**Tags**: gmail:// connector, nexus-fs OAuth parity
+**Setup**: `mountUri: "gmail://my-inbox"` with no token
+**User query**: `List the 5 most recent emails in my inbox.`
+**Expected**: inline OAuth flow fires (R2 path); on completion, the agent reads gmail data and reports subjects/senders
+**Verify**: trajectory shows the same `auth_required` → `auth_complete` pattern as gdrive
+**Pass**: the OAuth flow is connector-agnostic — gmail works identically to gdrive
+**Watch**: gmail-specific error codes not mapped to `AUTH_REQUIRED`; scope mismatch (requesting drive scope for gmail, or vice versa); rate limits on the gmail API not surfaced as retryable errors
+
+#### R12. Concurrent operations across mounts serialize correctly
+**Tags**: fs-nexus serial call queue, multi-mount concurrency
+**Setup**: local + gdrive mounts, both pre-authed
+**User query**: `In parallel, read 5 files from the local mount and list 5 files from gdrive.`
+**Expected**: agent issues multiple tool calls; the transport serializes them (per the queue comment in local-transport.test.ts) but ordering is stable
+**Verify**: trajectory shows the calls interleaved in time but each call completes before the next starts on the transport layer
+**Pass**: no cross-contamination of responses; no hang; error in one call does not poison others
+**Watch**: response correlation by `id` not working under load; queue holding a slot after a call errors; backpressure not applied when the queue grows
+
+#### R13. Config validation for mount URIs
+**Tags**: `validate-config`, config error surfacing
+**Setup**: config with a malformed mount URI (e.g., `"not-a-uri"`, `"gdrive://"` with empty account, `"file:///"` with traversal like `../..`)
+**Action**: start the TUI
+**Expected**: startup fails fast with a clear error message pointing at the bad URI; no bridge process started
+**Verify**: `validate-config.test.ts` patterns apply; no orphan Python process after failed startup
+**Pass**: invalid configs never reach the bridge
+**Watch**: path traversal reaching the bridge; empty mount silently ignored; error message leaking filesystem layout
 
 ---
 
@@ -733,8 +890,21 @@ bun test --filter=@koi/runtime
 | event-trace ATIF | A1, B2, P1 |
 | harness composition | A1, O1 |
 | fs-local | M1 |
-| fs-nexus | M2, M3 |
-| file-resolution | M1, M2 |
+| fs-nexus local transport | M2, R1, R5, R10, R12 |
+| fs-nexus Python bridge | M2, R2, R3, R7, R8, R10 |
+| fs-nexus multi-mount (mountUri array) | R1, R5, R12 |
+| fs-nexus bridge auth notifications (auth_required) | R2, R3, R7, R8 |
+| fs-nexus bridge auth notifications (auth_complete) | R2, R3, R7 |
+| fs-nexus bridge auth notifications (auth_progress) | R7 |
+| fs-nexus remote OAuth mode (submitAuthCode + correlation_id) | R3, R4 |
+| fs-nexus OAuth URL redaction (redactUrl) | R8, R9 |
+| fs-nexus token persistence (tokens.db) | R6, R11 |
+| fs-nexus connectors: gdrive | R1, R2, R5, R6 |
+| fs-nexus connectors: gmail | R11 |
+| fs-nexus serial call queue | R5, R12 |
+| fs-nexus config validation | R13 |
+| dual-backend filesystem (manifest-driven routing) | M3 |
+| file-resolution | M1, M2, M3 |
 | agent-runtime subagent spawn | H1, H2 |
 | agent-runtime inheritance | H1, H3 |
 | session JSONL transcript | A1, A2, K2 |
@@ -770,7 +940,7 @@ bun test --filter=@koi/runtime
 
 The bug bash is done when:
 
-1. **All Group A–J scenarios have been run at least once by one tester** (core functionality).
+1. **All Group A–J and R scenarios have been run at least once by one tester** (core functionality + connector OAuth flows).
 2. **All P0/blocker bugs filed have been either fixed or triaged** with an owner and a target release.
 3. **Coverage matrix shows every shipped subsystem has at least one green scenario**.
 4. **No subsystem is in "unknown state"** — every row either passed, is a known bug, or is explicitly out of scope for this bash.
@@ -795,6 +965,9 @@ When multiple testers run in parallel, divide by group to avoid stepping on each
 | T4 | J, K, L | `<worktree>-bb-t4` |
 | T5 | M, N, O | `<worktree>-bb-t5` |
 | T6 | P, Q | `<worktree>-bb-t6` |
+| T7 | R (nexus-fs connectors + OAuth) | `<worktree>-bb-t7` |
+
+> Group R requires either real provider credentials (gdrive, gmail) OR the scripted Python bridge fake patterns from `packages/lib/fs-nexus/src/local-transport.test.ts`. Assign to a tester with access to sandbox credentials or allocate time to set up the fakes.
 
 Each tester uses their own worktree copy (via `git worktree add`) to avoid filesystem and tmux contention.
 
