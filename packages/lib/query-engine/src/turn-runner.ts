@@ -312,11 +312,28 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       for (const tc of validToolCalls) {
         const descriptor = descriptorMap.get(tc.toolName);
         if (descriptor !== undefined && tc.parsedArgs !== undefined) {
-          coercedArgsMap.set(
-            tc.callId,
-            coerceToolArgs(tc.parsedArgs as JsonObject, descriptor.inputSchema),
-          );
+          const coerced = coerceToolArgs(tc.parsedArgs as JsonObject, descriptor.inputSchema);
+          coercedArgsMap.set(tc.callId, coerced);
         }
+      }
+
+      // Emit observability event when coercion changed any arguments.
+      // Transcript records raw model output; execution uses coerced values.
+      const coercedEntries = validToolCalls.filter((tc) => {
+        const coerced = coercedArgsMap.get(tc.callId);
+        return coerced !== undefined && coerced !== tc.parsedArgs;
+      });
+      if (coercedEntries.length > 0) {
+        yield {
+          kind: "custom",
+          type: "args_coerced",
+          data: {
+            coerced: coercedEntries.map((tc) => ({
+              toolName: tc.toolName,
+              callId: tc.callId,
+            })),
+          },
+        };
       }
 
       // Validate tool arguments against advertised inputSchema
@@ -746,6 +763,9 @@ function appendAssistantTurn(
     type: "function" as const,
     function: {
       name: tc.toolName,
+      // Transcript records rawArgs (model output) for replay fidelity.
+      // Execution uses coercedArgsMap values. When they differ, a
+      // "coerced_args" custom event is emitted for observability.
       arguments: tc.rawArgs,
     },
   }));

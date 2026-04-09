@@ -61,62 +61,73 @@ function validateWarningThreshold(
 // Iteration Guard — stream timeout helpers
 // ---------------------------------------------------------------------------
 
+interface EffectiveTimeout {
+  readonly ms: number;
+  readonly source: "wall_clock" | "inactivity";
+}
+
 /**
- * Compute the effective timeout for the next stream chunk based on both
- * wall-clock and inactivity limits. Returns the tighter of the two,
- * or undefined if no timeout enforcement is active.
+ * Compute the effective timeout for the next awaited operation based on both
+ * wall-clock and inactivity limits. Returns the tighter of the two with its
+ * source, or undefined if no timeout enforcement is active.
  */
 function computeEffectiveTimeout(
   limits: IterationLimits,
   startedAt: number,
   lastActivityMs: number,
-): number | undefined {
+): EffectiveTimeout | undefined {
   const now = Date.now();
-  const candidates: number[] = [];
+  // let justified: mutable tracking of best (smallest) timeout candidate
+  let bestMs: number | undefined;
+  let bestSource: "wall_clock" | "inactivity" = "wall_clock";
 
   // Wall-clock remaining
   const wallRemaining = limits.maxDurationMs - (now - startedAt);
-  if (wallRemaining > 0) {
-    candidates.push(wallRemaining);
-  } else {
-    // Already past wall-clock — will be caught by next checkLimits, but
-    // use a minimal timeout so the race resolves immediately.
-    return 0;
+  if (wallRemaining <= 0) {
+    return { ms: 0, source: "wall_clock" };
   }
+  bestMs = wallRemaining;
+  bestSource = "wall_clock";
 
   // Inactivity remaining
   if (limits.maxInactivityMs !== undefined) {
     const inactivityRemaining = limits.maxInactivityMs - (now - lastActivityMs);
-    if (inactivityRemaining > 0) {
-      candidates.push(inactivityRemaining);
-    } else {
-      return 0;
+    if (inactivityRemaining <= 0) {
+      return { ms: 0, source: "inactivity" };
+    }
+    if (inactivityRemaining < bestMs) {
+      bestMs = inactivityRemaining;
+      bestSource = "inactivity";
     }
   }
 
-  return candidates.length > 0 ? Math.min(...candidates) : undefined;
+  return bestMs !== undefined ? { ms: bestMs, source: bestSource } : undefined;
 }
 
 /**
  * Create a promise that rejects after `ms` milliseconds with a TIMEOUT error.
  * The timer is unref'd so it doesn't keep the process alive.
  */
-function createTimeoutRejection(ms: number, limits: IterationLimits): Promise<never> {
+function createTimeoutRejection(
+  timeout: EffectiveTimeout,
+  limits: IterationLimits,
+): Promise<never> {
   return new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => {
-      const isInactivity = limits.maxInactivityMs !== undefined && ms <= limits.maxInactivityMs;
-      const message = isInactivity
-        ? `Inactivity timeout: stream stalled for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
-        : `Duration limit exceeded: stream stalled past wall-clock limit (${limits.maxDurationMs}ms)`;
+      const message =
+        timeout.source === "inactivity"
+          ? `Inactivity timeout: no activity for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
+          : `Duration limit exceeded: ${limits.maxDurationMs}ms wall-clock limit reached`;
       reject(
         KoiRuntimeError.from("TIMEOUT", message, {
           retryable: false,
-          context: isInactivity
-            ? { maxInactivityMs: limits.maxInactivityMs }
-            : { maxDurationMs: limits.maxDurationMs },
+          context:
+            timeout.source === "inactivity"
+              ? { maxInactivityMs: limits.maxInactivityMs }
+              : { maxDurationMs: limits.maxDurationMs },
         }),
       );
-    }, ms);
+    }, timeout.ms);
     // Unref so the timer doesn't prevent process exit
     if (typeof timer === "object" && "unref" in timer) {
       (timer as { unref: () => void }).unref();
@@ -216,10 +227,14 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       checkLimits();
       touchActivity();
 
-      const response = await next(request);
-      // Reset activity after successful completion — the model responded,
-      // so the agent is actively working. Do not throw post-await: a completed
-      // model call should be accepted and limits re-checked at the next boundary.
+      // Race the model call against inactivity + wall-clock timeouts.
+      // Without this, a non-streaming provider that stops responding would
+      // hang the session indefinitely (same risk as stalled streams).
+      const timeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
+      const response =
+        timeout === undefined
+          ? await next(request)
+          : await Promise.race([next(request), createTimeoutRejection(timeout, limits)]);
       touchActivity();
 
       trackUsage(response.usage?.inputTokens ?? 0, response.usage?.outputTokens ?? 0);
@@ -238,14 +253,11 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
             for (;;) {
               // Race the next chunk against inactivity + wall-clock timeouts.
               // Without this, a stalled provider stream would hang indefinitely.
-              const effectiveTimeoutMs = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
+              const chunkTimeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
               const result =
-                effectiveTimeoutMs === undefined
+                chunkTimeout === undefined
                   ? await iter.next()
-                  : await Promise.race([
-                      iter.next(),
-                      createTimeoutRejection(effectiveTimeoutMs, limits),
-                    ]);
+                  : await Promise.race([iter.next(), createTimeoutRejection(chunkTimeout, limits)]);
               if (result.done) break;
               const chunk = result.value;
               touchActivity();

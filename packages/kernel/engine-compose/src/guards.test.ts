@@ -221,7 +221,7 @@ describe("createIterationGuard", () => {
   });
 
   test("throws KoiRuntimeError when duration limit exceeded", async () => {
-    // Very short duration limit
+    // Very short duration limit — the timeout race fires during the model call
     const guard = createIterationGuard({ maxDurationMs: 1 });
     const wrap = getModelWrap(guard);
     const next: ModelNext = mock(async () => {
@@ -231,10 +231,7 @@ describe("createIterationGuard", () => {
     });
     const ctx = mockTurnContext();
 
-    // First call succeeds (checkLimits runs before next(), elapsed ~ 0ms)
-    await wrap(ctx, mockModelRequest(), next);
-
-    // Second call: elapsed > 1ms, should throw
+    // Call exceeds maxDurationMs during execution — timeout race fires
     try {
       await wrap(ctx, mockModelRequest(), next);
       expect.unreachable("should have thrown");
@@ -2105,7 +2102,8 @@ describe("createIterationGuard inactivity", () => {
   });
 
   test("wall-clock maxDurationMs still fires as hard cap even with activity", async () => {
-    // maxDurationMs is very short, maxInactivityMs is long
+    // maxDurationMs is very short, maxInactivityMs is long.
+    // The timeout race fires during the model call since next() takes 10ms > 1ms limit.
     const guard = createIterationGuard({ maxDurationMs: 1, maxInactivityMs: 5_000 });
     const wrap = getModelWrap(guard);
     const next: ModelNext = mock(async () => {
@@ -2114,10 +2112,7 @@ describe("createIterationGuard inactivity", () => {
     });
     const ctx = mockTurnContext();
 
-    // First call succeeds (checkLimits at ~0ms, next takes ~10ms)
-    await wrap(ctx, mockModelRequest(), next);
-
-    // Second call: elapsed > 1ms, wall-clock fires at checkLimits
+    // Wall-clock race fires during the slow model call
     try {
       await wrap(ctx, mockModelRequest(), next);
       expect.unreachable("should have thrown");
@@ -2194,25 +2189,25 @@ describe("createIterationGuard inactivity", () => {
     expect(toolNext).toHaveBeenCalledTimes(0);
   });
 
-  test("slow non-streaming model call completes and resets activity", async () => {
-    // A model call that blocks > inactivityMs should still succeed (side effects
-    // committed). The inactivity limit applies at the *next* boundary.
+  test("non-streaming model call that never resolves is terminated by inactivity race", async () => {
     const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
     const wrap = getModelWrap(guard);
     const ctx = mockTurnContext();
-    const slowModelNext: ModelNext = mock(async () => {
-      await new Promise((r) => setTimeout(r, 50));
-      return mockModelResponse();
-    });
+    // Model call that never resolves — simulates a hung provider
+    const hangingNext: ModelNext = mock(
+      () => new Promise<ModelResponse>(() => {}), // never resolves
+    );
 
-    // Slow call completes — activity reset after successful return
-    const response = await wrap(ctx, mockModelRequest(), slowModelNext);
-    expect(response.content).toBe("ok");
-
-    // Immediate next call should succeed (activity was reset)
-    const fastNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
-    await wrap(ctx, mockModelRequest(), fastNext);
-    expect(fastNext).toHaveBeenCalledTimes(1);
+    try {
+      await wrap(ctx, mockModelRequest(), hangingNext);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Inactivity timeout");
+      }
+    }
   });
 
   test("slow tool call completes without being reclassified as timeout", async () => {
