@@ -580,10 +580,11 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
 
   // --- @koi/tool-notebook: .ipynb read/add/replace/delete ---
-  const notebookReadTool = createNotebookReadTool({});
-  const notebookAddCellTool = createNotebookAddCellTool({});
-  const notebookReplaceCellTool = createNotebookReplaceCellTool({});
-  const notebookDeleteCellTool = createNotebookDeleteCellTool({});
+  const notebookConfig = { cwd };
+  const notebookReadTool = createNotebookReadTool(notebookConfig);
+  const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
+  const notebookReplaceCellTool = createNotebookReplaceCellTool(notebookConfig);
+  const notebookDeleteCellTool = createNotebookDeleteCellTool(notebookConfig);
   const notebookProviders = [
     createSingleToolProvider({
       name: "notebook-read",

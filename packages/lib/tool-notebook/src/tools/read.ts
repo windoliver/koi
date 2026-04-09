@@ -9,10 +9,13 @@ import { parsePath } from "../parse-args.js";
 
 export interface NotebookToolConfig {
   readonly policy?: ToolPolicy | undefined;
+  /** Workspace root for path containment. When set, paths are resolved relative to cwd and must stay within it. */
+  readonly cwd?: string | undefined;
 }
 
 export function createNotebookReadTool(config: NotebookToolConfig): Tool {
   const policy = config.policy ?? DEFAULT_UNSANDBOXED_POLICY;
+  const { cwd } = config;
 
   return {
     descriptor: {
@@ -38,7 +41,7 @@ export function createNotebookReadTool(config: NotebookToolConfig): Tool {
         return { error: "Operation cancelled", code: "CANCELLED" };
       }
 
-      const pathResult = parsePath(args, "path");
+      const pathResult = parsePath(args, "path", cwd);
       if (!pathResult.ok) return pathResult.err;
 
       const path = pathResult.value;

@@ -5,6 +5,7 @@
  * performing runtime type narrowing on raw JsonObject args from the LLM.
  */
 
+import { resolve } from "node:path";
 import type { JsonObject } from "@koi/core";
 import type { CellType } from "./notebook-parser.js";
 
@@ -17,13 +18,28 @@ export type ParseResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly err: ValidationError };
 
-export function parsePath(args: JsonObject, key: string): ParseResult<string> {
+export function parsePath(args: JsonObject, key: string, cwd?: string): ParseResult<string> {
   const value = args[key];
   if (typeof value !== "string") {
     return { ok: false, err: { error: `${key} must be a string`, code: "VALIDATION" } };
   }
   if (value.trim().length === 0) {
     return { ok: false, err: { error: `${key} must be a non-empty string`, code: "VALIDATION" } };
+  }
+  // Workspace containment: resolve and verify path stays under cwd
+  if (cwd !== undefined) {
+    const resolved = resolve(cwd, value);
+    const normalizedCwd = resolve(cwd);
+    if (!resolved.startsWith(`${normalizedCwd}/`) && resolved !== normalizedCwd) {
+      return {
+        ok: false,
+        err: {
+          error: `${key} must be within the workspace root (${normalizedCwd})`,
+          code: "VALIDATION",
+        },
+      };
+    }
+    return { ok: true, value: resolved };
   }
   return { ok: true, value };
 }

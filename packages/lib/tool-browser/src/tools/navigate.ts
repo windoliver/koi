@@ -77,6 +77,26 @@ export function createBrowserNavigateTool(
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }
+
+      // Post-redirect policy check: verify the committed URL is still allowed.
+      // Redirects can land on a different origin than the one initially approved.
+      if (isUrlAllowed !== undefined && result.value.url !== urlResult.value) {
+        const finalScheme = validateUrlScheme(result.value.url);
+        if (!finalScheme.ok) {
+          return {
+            error: `Navigation redirected to a disallowed scheme: ${result.value.url}`,
+            code: "PERMISSION",
+          };
+        }
+        const finalAllowed = await isUrlAllowed(result.value.url);
+        if (!finalAllowed) {
+          return {
+            error: `Navigation redirected to a disallowed URL: ${result.value.url}`,
+            code: "PERMISSION",
+          };
+        }
+      }
+
       return result.value;
     },
   };

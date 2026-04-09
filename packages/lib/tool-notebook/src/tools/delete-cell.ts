@@ -10,6 +10,7 @@ import type { NotebookToolConfig } from "./read.js";
 
 export function createNotebookDeleteCellTool(config: NotebookToolConfig): Tool {
   const policy = config.policy ?? DEFAULT_UNSANDBOXED_POLICY;
+  const { cwd } = config;
 
   return {
     descriptor: {
@@ -39,7 +40,7 @@ export function createNotebookDeleteCellTool(config: NotebookToolConfig): Tool {
         return { error: "Operation cancelled", code: "CANCELLED" };
       }
 
-      const pathResult = parsePath(args, "path");
+      const pathResult = parsePath(args, "path", cwd);
       if (!pathResult.ok) return pathResult.err;
 
       const indexResult = parseRequiredIndex(args, "index");
