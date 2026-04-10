@@ -5,13 +5,12 @@
  */
 
 import { resolve } from "node:path";
-import type { ExternalServerConfig, ResolvedMcpServerConfig } from "@koi/mcp";
+import type { McpServerConfig, ResolvedMcpServerConfig } from "@koi/mcp";
 import {
   computeServerKey,
   createMcpConnection,
   createOAuthAuthProvider,
   loadMcpJsonFile,
-  normalizeMcpServers,
   resolveServerConfig,
 } from "@koi/mcp";
 import { createSecureStorage } from "@koi/secure-storage";
@@ -44,14 +43,14 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
 // ---------------------------------------------------------------------------
 
 async function runList(flags: McpFlags): Promise<ExitCode> {
-  const configs = await loadConfigs();
-  if (configs === undefined) {
+  const loaded = await loadConfigs();
+  if (loaded === undefined) {
     jsonOut(flags, { error: "No .mcp.json found" });
     if (!flags.json) console.log("No .mcp.json found.");
     return ExitCode.FAILURE;
   }
 
-  const { servers, unsupported, rejected } = normalizeMcpServers(configs);
+  const { servers, unsupported } = loaded;
 
   const entries = servers.map((s) => ({
     name: s.name,
@@ -60,7 +59,7 @@ async function runList(flags: McpFlags): Promise<ExitCode> {
   }));
 
   if (flags.json) {
-    console.log(JSON.stringify({ servers: entries, unsupported, rejected }, null, 2));
+    console.log(JSON.stringify({ servers: entries, unsupported }, null, 2));
   } else {
     if (entries.length === 0) {
       console.log("No configured MCP servers.");
@@ -73,9 +72,6 @@ async function runList(flags: McpFlags): Promise<ExitCode> {
     }
     if (unsupported.length > 0) {
       console.log(`\nUnsupported: ${unsupported.join(", ")}`);
-    }
-    if (rejected.length > 0) {
-      console.log(`\nRejected: ${rejected.join(", ")}`);
     }
   }
 
@@ -252,7 +248,12 @@ async function runDebug(flags: McpFlags): Promise<ExitCode> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function loadConfigs(): Promise<Readonly<Record<string, ExternalServerConfig>> | undefined> {
+interface LoadedConfig {
+  readonly servers: readonly McpServerConfig[];
+  readonly unsupported: readonly string[];
+}
+
+async function loadConfigs(): Promise<LoadedConfig | undefined> {
   const cwd = process.cwd();
   const paths = [
     resolve(cwd, ".mcp.json"),
@@ -262,17 +263,17 @@ async function loadConfigs(): Promise<Readonly<Record<string, ExternalServerConf
   for (const p of paths) {
     const result = await loadMcpJsonFile(p);
     if (result.ok) {
-      return result.value.mcpServers;
+      return result.value;
     }
   }
   return undefined;
 }
 
 async function resolveServer(name: string): Promise<ResolvedMcpServerConfig | undefined> {
-  const configs = await loadConfigs();
-  if (configs === undefined) return undefined;
+  const loaded = await loadConfigs();
+  if (loaded === undefined) return undefined;
 
-  const { servers } = normalizeMcpServers(configs);
+  const { servers } = loaded;
   const server = servers.find((s) => s.name === name);
   if (server === undefined) return undefined;
 
