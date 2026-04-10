@@ -80,11 +80,12 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
   const resolved = result.value;
   const sessions = new Map<SessionId, RulesSessionState>();
 
-  /** Perform full discovery → load → merge cycle. */
+  /** Perform full discovery → load → merge cycle using current cwd. */
   async function loadRules(): Promise<RulesSessionState> {
-    const gitRoot = await findGitRoot(resolved.cwd);
+    const cwd = resolved.getCwd();
+    const gitRoot = await findGitRoot(cwd);
     const discovered = await discoverRulesFiles(
-      resolved.cwd,
+      cwd,
       gitRoot,
       resolved.filenames,
       resolved.searchDirs,
@@ -125,11 +126,12 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return;
 
-      // Re-discover to detect newly created/deleted rules files,
-      // then check mtime on previously loaded files.
-      const gitRoot = await findGitRoot(resolved.cwd);
+      // Re-discover using current cwd to detect newly created/deleted files
+      // and to pick up deeper rules when the session navigates into subdirs.
+      const cwd = resolved.getCwd();
+      const gitRoot = await findGitRoot(cwd);
       const discovered = await discoverRulesFiles(
-        resolved.cwd,
+        cwd,
         gitRoot,
         resolved.filenames,
         resolved.searchDirs,

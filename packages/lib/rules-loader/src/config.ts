@@ -9,14 +9,18 @@ import type { KoiError, Result } from "@koi/core";
 // ---------------------------------------------------------------------------
 
 export interface RulesLoaderConfig {
-  /** Recognized rules filenames to scan for. Default: ["CLAUDE.md", "AGENTS.md"] */
+  /** Recognized rules filenames to scan for. Default: ["CLAUDE.md", "AGENTS.md", "context.md"] */
   readonly filenames?: readonly string[] | undefined;
   /** Subdirectories to check at each level. Default: [".", ".koi"] */
   readonly searchDirs?: readonly string[] | undefined;
   /** Maximum token budget for merged rules content. Default: 8000 */
   readonly maxTokens?: number | undefined;
-  /** Working directory to start discovery from. Default: process.cwd() */
-  readonly cwd?: string | undefined;
+  /**
+   * Working directory to start discovery from.
+   * Can be a string (fixed) or a function (dynamic, called each turn).
+   * Default: process.cwd()
+   */
+  readonly cwd?: string | (() => string) | undefined;
   /** Set to false to disable rules loading entirely. Default: true */
   readonly enabled?: boolean | undefined;
 }
@@ -25,7 +29,7 @@ export interface ResolvedConfig {
   readonly filenames: readonly string[];
   readonly searchDirs: readonly string[];
   readonly maxTokens: number;
-  readonly cwd: string;
+  readonly getCwd: () => string;
   readonly enabled: boolean;
 }
 
@@ -33,7 +37,7 @@ export interface ResolvedConfig {
 // Defaults
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_FILENAMES: readonly string[] = ["CLAUDE.md", "AGENTS.md"];
+export const DEFAULT_FILENAMES: readonly string[] = ["CLAUDE.md", "AGENTS.md", "context.md"];
 export const DEFAULT_SEARCH_DIRS: readonly string[] = [".", ".koi"];
 export const DEFAULT_MAX_TOKENS = 8000;
 
@@ -71,11 +75,19 @@ export interface MergedRuleset {
 // ---------------------------------------------------------------------------
 
 export function resolveConfig(config?: RulesLoaderConfig): ResolvedConfig {
+  const cwdOption = config?.cwd;
+  const getCwd: () => string =
+    cwdOption === undefined
+      ? () => process.cwd()
+      : typeof cwdOption === "function"
+        ? cwdOption
+        : () => cwdOption;
+
   return {
     filenames: config?.filenames ?? DEFAULT_FILENAMES,
     searchDirs: config?.searchDirs ?? DEFAULT_SEARCH_DIRS,
     maxTokens: config?.maxTokens ?? DEFAULT_MAX_TOKENS,
-    cwd: config?.cwd ?? process.cwd(),
+    getCwd,
     enabled: config?.enabled ?? true,
   };
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_FILENAMES, DEFAULT_SEARCH_DIRS } from "../config.js";
@@ -153,5 +153,41 @@ describe("discoverRulesFiles", () => {
     const result = await discoverRulesFiles(tempDir, tempDir, ["RULES.md"], ["."]);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(tempDir, "RULES.md"));
+  });
+
+  test("rejects symlinked rules files pointing outside repo boundary", async () => {
+    // Create a file outside the repo boundary
+    const outside = join(tmpdir(), `koi-outside-${Date.now()}`);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.md"), "sensitive data");
+
+    // Symlink CLAUDE.md → outside/secret.md
+    symlinkSync(join(outside, "secret.md"), join(tempDir, "CLAUDE.md"));
+
+    const result = await discoverRulesFiles(
+      tempDir,
+      tempDir,
+      DEFAULT_FILENAMES,
+      DEFAULT_SEARCH_DIRS,
+    );
+    // Symlink escaping the boundary should be rejected
+    expect(result.filter((f) => f.path.includes("CLAUDE.md"))).toHaveLength(0);
+
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("discovers .koi/context.md with default config", async () => {
+    const koiDir = join(tempDir, ".koi");
+    mkdirSync(koiDir);
+    writeFileSync(join(koiDir, "context.md"), "project context");
+
+    const result = await discoverRulesFiles(
+      tempDir,
+      tempDir,
+      DEFAULT_FILENAMES,
+      DEFAULT_SEARCH_DIRS,
+    );
+    expect(result).toHaveLength(1);
+    expect(at(result, 0).path).toBe(join(koiDir, "context.md"));
   });
 });

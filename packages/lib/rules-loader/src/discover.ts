@@ -5,23 +5,43 @@
  * rules filenames. Returns files ordered root-first (broadest scope first).
  */
 
-import { stat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { DiscoveredFile } from "./config.js";
 
+function isEnoent(e: unknown): boolean {
+  return e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT";
+}
+
 /**
- * Check whether a file exists (follows symlinks).
- * Returns true if the file exists, false on ENOENT, throws on other errors.
+ * Check whether a file exists and, if it is a symlink, verify its resolved
+ * target stays within the allowed boundary. Returns the real path if valid,
+ * or `undefined` if the file is missing, not a regular file, or a symlink
+ * that escapes the boundary.
  */
-async function fileExists(path: string): Promise<boolean> {
+async function validateCandidate(
+  path: string,
+  boundary: string | undefined,
+): Promise<string | undefined> {
   try {
-    const s = await stat(path);
-    return s.isFile();
-  } catch (e: unknown) {
-    if (e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT") {
-      return false;
+    const ls = await lstat(path);
+    if (!ls.isFile() && !ls.isSymbolicLink()) return undefined;
+
+    if (ls.isSymbolicLink()) {
+      const resolved = await realpath(path);
+      // Symlink must resolve within the boundary (git root or cwd)
+      if (boundary !== undefined && !resolved.startsWith(`${boundary}/`) && resolved !== boundary) {
+        return undefined;
+      }
+      // Verify the resolved target is a regular file
+      const targetStat = await lstat(resolved);
+      if (!targetStat.isFile()) return undefined;
     }
+
+    return path;
+  } catch (e: unknown) {
+    if (isEnoent(e)) return undefined;
     throw e;
   }
 }
@@ -65,6 +85,8 @@ export async function discoverRulesFiles(
   const dirs = gitRoot !== undefined ? collectDirectories(cwd, gitRoot) : [resolve(cwd)];
   // dirs is cwd-first; we want root-first, so reverse
   const rootFirst = [...dirs].reverse();
+  // Boundary for symlink validation: git root or cwd
+  const boundary = gitRoot !== undefined ? resolve(gitRoot) : resolve(cwd);
 
   const discovered: DiscoveredFile[] = [];
 
@@ -74,7 +96,8 @@ export async function discoverRulesFiles(
     for (const searchDir of searchDirs) {
       for (const filename of filenames) {
         const candidate = searchDir === "." ? join(dir, filename) : join(dir, searchDir, filename);
-        if (await fileExists(candidate)) {
+        const valid = await validateCandidate(candidate, boundary);
+        if (valid !== undefined) {
           discovered.push({ path: candidate, depth });
         }
       }
