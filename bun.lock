@@ -40,6 +40,9 @@
         "@koi/hash": "workspace:*",
         "@koi/session-repair": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
     },
     "packages/kernel/engine-compose": {
       "name": "@koi/engine-compose",
@@ -346,6 +349,14 @@
         "@koi/core": "workspace:*",
         "@koi/task-board": "workspace:*",
         "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/lib/test": {
+      "name": "@koi/test",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/tool-browser": {
@@ -1047,6 +1058,8 @@
     "@koi/task-tools": ["@koi/task-tools@workspace:packages/lib/task-tools"],
 
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
+
+    "@koi/test": ["@koi/test@workspace:packages/lib/test"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 

@@ -20,7 +20,9 @@
     "@koi/hash": "workspace:*",
     "@koi/session-repair": "workspace:*"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@koi/test": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
