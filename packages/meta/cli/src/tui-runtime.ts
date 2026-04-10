@@ -576,7 +576,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     backend: permBackend,
     description: "koi tui — default permission mode",
     ...(config.persistentApprovals !== undefined
-      ? { persistentApprovals: config.persistentApprovals }
+      ? { persistentApprovals: config.persistentApprovals, persistentAgentId: "koi-tui" }
       : {}),
   });
 

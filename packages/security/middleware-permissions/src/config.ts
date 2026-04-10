@@ -88,6 +88,20 @@ export interface PermissionsMiddlewareConfig {
    * survive process restart. Constructed externally via `createApprovalStore`.
    */
   readonly persistentApprovals?: ApprovalStore;
+  /**
+   * Stable agent identifier for persistent grant keys. When set, persistent
+   * "always" grants are keyed by this value instead of the per-process agentId
+   * (which is a random UUID, regenerated on each restart).
+   *
+   * This is required for persistent grants to work across TUI/CLI restarts,
+   * where the manifest name (e.g. "koi-tui") identifies the logical agent
+   * while ctx.session.agentId changes every launch.
+   *
+   * When unset, persistent grants use ctx.session.agentId (unstable across
+   * restarts — useful only for multi-agent runtimes where each agent has a
+   * durable identity managed externally).
+   */
+  readonly persistentAgentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +245,13 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     }
     if (typeof store.revoke !== "function") {
       return fail("config.persistentApprovals.revoke must be a function");
+    }
+  }
+
+  // persistentAgentId — non-empty string if set
+  if (config.persistentAgentId !== undefined) {
+    if (typeof config.persistentAgentId !== "string" || config.persistentAgentId.length === 0) {
+      return fail("config.persistentAgentId must be a non-empty string");
     }
   }
 

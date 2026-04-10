@@ -415,7 +415,13 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
 export function createPermissionsMiddleware(
   config: PermissionsMiddlewareConfig,
 ): PermissionsMiddlewareHandle {
-  const { backend, auditSink, description, persistentApprovals: persistentStore } = config;
+  const {
+    backend,
+    auditSink,
+    description,
+    persistentApprovals: persistentStore,
+    persistentAgentId,
+  } = config;
   const originalSink = config.onApprovalStep;
   // Additive runtime sinks — each createRuntime registers its own dispatch relay.
   // Using an array allows a single permissions handle to be shared across runtimes.
@@ -1192,10 +1198,13 @@ export function createPermissionsMiddleware(
     // a broken store means more prompts, not silent denials or silent allows.
     // Persistent grants require a real user identity — anonymous sessions
     // must not share a durable principal, so we skip the store entirely.
+    // Use persistentAgentId if configured (stable across restarts) — falls back
+    // to the per-process agentId for multi-agent runtimes.
     const persistentUserId = ctx.session.userId;
+    const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
       try {
-        if (persistentStore.has(persistentUserId, ctx.session.agentId, request.toolId)) {
+        if (persistentStore.has(persistentUserId, persistentAid, request.toolId)) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
             toolId: request.toolId,
@@ -1526,13 +1535,14 @@ export function createPermissionsMiddleware(
         // Fail-safe: if persist throws, the tool still executes (approval was given)
         // but permanence is not recorded. The user gets re-prompted next session.
         const grantUserId = ctx.session.userId;
+        const grantAgentId = persistentAgentId ?? ctx.session.agentId;
         if (
           approvalResult.scope === "always" &&
           persistentStore !== undefined &&
           grantUserId !== undefined
         ) {
           try {
-            persistentStore.grant(grantUserId, ctx.session.agentId, request.toolId, clock());
+            persistentStore.grant(grantUserId, grantAgentId, request.toolId, clock());
           } catch {
             // Approval was given — execute the tool. Permanence just wasn't recorded.
           }
