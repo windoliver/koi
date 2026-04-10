@@ -124,6 +124,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/decision-ledger": {
+      "name": "@koi/decision-ledger",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/edit-match": {
       "name": "@koi/edit-match",
       "version": "0.0.0",
@@ -508,6 +515,7 @@
         "@koi/channel-cli": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
@@ -980,6 +988,8 @@
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
+
+    "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 
     "@koi/dream": ["@koi/dream@workspace:packages/mm/dream"],
 

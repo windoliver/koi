@@ -7,6 +7,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../kernel/core" },
+    { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/agent-runtime" },
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },

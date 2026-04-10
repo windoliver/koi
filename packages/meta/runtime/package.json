@@ -16,6 +16,7 @@
     "@koi/channel-cli": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/decision-ledger": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",

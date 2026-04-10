@@ -1538,6 +1538,106 @@ describe("Golden: @koi/middleware-permissions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/decision-ledger (2 queries)
+//
+// Standalone — no cassette replay. Exercises the factory with fake sinks
+// per the constraint documented in docs/L2/decision-ledger.md: today's
+// runtime recorder does not wire an AuditSink or ReportStore, and denial
+// tracker / run-report state is only finalized on onSessionEnd, so a
+// replay-driven ledger assertion is not yet achievable. See follow-up
+// #1469 Phase 2(a) notes for the lifecycle extension work.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/decision-ledger", () => {
+  test("interleaves trajectory + audit entries by timestamp with stable source order on ties", async () => {
+    const { createDecisionLedger } = await import("@koi/decision-ledger");
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+    type Audit = import("@koi/core").AuditEntry;
+
+    const steps: readonly Step[] = [
+      {
+        stepIndex: 1,
+        timestamp: 100,
+        source: "agent",
+        kind: "model_call",
+        identifier: "m-1",
+        outcome: "success",
+        durationMs: 5,
+      },
+      {
+        stepIndex: 2,
+        timestamp: 300,
+        source: "tool",
+        kind: "tool_call",
+        identifier: "t-1",
+        outcome: "success",
+        durationMs: 5,
+      },
+    ];
+    const audits: readonly Audit[] = [
+      {
+        timestamp: 200,
+        sessionId: "s-golden",
+        agentId: "agent-a",
+        turnIndex: 1,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+      {
+        timestamp: 300,
+        sessionId: "s-golden",
+        agentId: "agent-a",
+        turnIndex: 2,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+    ];
+
+    const trajectoryStore = { getDocument: async (): Promise<readonly Step[]> => steps };
+    const auditSink = {
+      log: async (): Promise<void> => {},
+      query: async (): Promise<readonly Audit[]> => audits,
+    };
+
+    const ledger = createDecisionLedger({ trajectoryStore, auditSink });
+    const result = await ledger.getLedger("s-golden");
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.entries.map((e) => `${e.kind}@${e.timestamp}`)).toEqual([
+      "trajectory-step@100",
+      "audit@200",
+      // timestamp 300 tie — trajectory wins per concatenation order + stable sort
+      "trajectory-step@300",
+      "audit@300",
+    ]);
+    expect(result.value.sources.trajectory.state).toBe("present");
+    expect(result.value.sources.audit.state).toBe("present");
+    expect(result.value.sources.report.state).toBe("unqueryable");
+  });
+
+  test("degrades gracefully when audit and report sinks are absent", async () => {
+    const { createDecisionLedger } = await import("@koi/decision-ledger");
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+    const trajectoryStore = {
+      getDocument: async (): Promise<readonly Step[]> => [],
+    };
+    const ledger = createDecisionLedger({ trajectoryStore });
+    const result = await ledger.getLedger("s-empty");
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.entries).toEqual([]);
+    expect(result.value.sources.trajectory.state).toBe("missing");
+    expect(result.value.sources.audit.state).toBe("unqueryable");
+    expect(result.value.sources.report.state).toBe("unqueryable");
+    expect(result.value.runReport).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/tools-core (2 queries)
 // ---------------------------------------------------------------------------
 
