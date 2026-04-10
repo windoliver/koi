@@ -13,7 +13,14 @@
  * the rewind." That's all this type carries.
  */
 
-import type { FileOpRecord, KoiError, KoiMiddleware, NodeId, SessionId } from "@koi/core";
+import type {
+  FileOpRecord,
+  KoiError,
+  KoiMiddleware,
+  NodeId,
+  SessionId,
+  SessionTranscript,
+} from "@koi/core";
 
 /**
  * The payload stored in the snapshot chain for each captured turn.
@@ -35,6 +42,17 @@ export interface CheckpointPayload {
    * disabled in config).
    */
   readonly driftWarnings: readonly string[];
+  /**
+   * Number of conversation transcript entries that existed at end of this
+   * turn. Captured only when a `SessionTranscript` is wired into the
+   * checkpoint config; absent otherwise. On rewind, the restore protocol
+   * passes this value to `SessionTranscript.truncate(sid, n)` so the
+   * conversation log shrinks back to the snapshot's turn boundary.
+   *
+   * Absent or undefined means "checkpoint has no opinion about the
+   * conversation log" — rewind will not touch the transcript.
+   */
+  readonly transcriptEntryCount?: number;
   /** Unix ms when the checkpoint was created. */
   readonly capturedAt: number;
 }
@@ -68,6 +86,24 @@ export interface CheckpointMiddlewareConfig {
    * (useful for tests or environments without git).
    */
   readonly driftDetector?: DriftDetector | null;
+
+  /**
+   * Optional `SessionTranscript` from `@koi/core`. If provided, the
+   * checkpoint middleware records the post-turn entry count in each
+   * snapshot and the restore protocol calls `transcript.truncate()` on
+   * rewind so the conversation log shrinks back to the snapshot's turn
+   * boundary.
+   *
+   * The transcript is injected via the L0 interface — the checkpoint
+   * package never imports a concrete `@koi/session` implementation. The
+   * runtime composes them at L3 (`@koi/runtime`).
+   *
+   * Pass `undefined` to disable conversation truncation entirely (file
+   * state is still captured and restored). This is useful for tests that
+   * don't have a transcript and for sessions where the conversation half
+   * of rewind is handled elsewhere.
+   */
+  readonly transcript?: SessionTranscript;
 }
 
 /**

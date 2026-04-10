@@ -26,6 +26,7 @@ import type {
   TranscriptLoadResult,
   TranscriptPage,
   TranscriptPageOptions,
+  TruncateResult,
 } from "@koi/core";
 import { transcriptEntryId, validateNonEmpty } from "@koi/core";
 import { extractMessage } from "@koi/errors";
@@ -315,6 +316,70 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     });
   };
 
+  const truncate = async (
+    sid: SessionId,
+    keepFirstN: number,
+  ): Promise<Result<TruncateResult, KoiError>> => {
+    const check = validateNonEmpty(sid, "Session ID");
+    if (!check.ok) return check;
+
+    if (keepFirstN < 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "keepFirstN must be non-negative",
+          retryable: false,
+        },
+      };
+    }
+
+    return serialized(filePath(sid), async () => {
+      try {
+        const file = Bun.file(filePath(sid));
+        if (!(await file.exists())) {
+          return { ok: true as const, value: { kept: 0, dropped: 0 } };
+        }
+
+        const text = await file.text();
+        const { entries } = parseJsonlLines(text);
+
+        if (keepFirstN >= entries.length) {
+          // Nothing to drop — log is already shorter than the requested cap.
+          return { ok: true as const, value: { kept: entries.length, dropped: 0 } };
+        }
+
+        const kept = entries.slice(0, keepFirstN);
+        const dropped = entries.length - kept.length;
+
+        if (kept.length === 0) {
+          // Truncating to zero entries — remove the file rather than leave
+          // an empty JSONL behind.
+          await unlink(filePath(sid));
+          return { ok: true as const, value: { kept: 0, dropped } };
+        }
+
+        const jsonl = `${kept.map((e) => JSON.stringify(e)).join("\n")}\n`;
+        // Atomic replace: write to temp, then rename (POSIX atomic).
+        const tmp = `${filePath(sid)}.tmp`;
+        await Bun.write(tmp, jsonl);
+        await rename(tmp, filePath(sid));
+
+        return { ok: true as const, value: { kept: kept.length, dropped } };
+      } catch (e: unknown) {
+        return {
+          ok: false as const,
+          error: {
+            code: "INTERNAL" as const,
+            message: `Failed to truncate transcript: ${extractMessage(e)}`,
+            retryable: false,
+            cause: e,
+          },
+        };
+      }
+    });
+  };
+
   const remove = async (sid: SessionId): Promise<Result<void, KoiError>> => {
     const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
@@ -346,5 +411,5 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
     // No resources to release for file-based store
   };
 
-  return { append, load, loadPage, compact, remove, close };
+  return { append, load, loadPage, compact, truncate, remove, close };
 }

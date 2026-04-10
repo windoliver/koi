@@ -31,6 +31,8 @@ import type {
   KoiError,
   NodeId,
   Result,
+  SessionId,
+  SessionTranscript,
   SnapshotChainStore,
   SnapshotNode,
 } from "@koi/core";
@@ -51,6 +53,18 @@ export interface RestoreInput {
   readonly chainId: ChainId;
   readonly blobDir: string;
   readonly target: RestoreTarget;
+  /**
+   * Optional `SessionTranscript` for conversation log truncation. If
+   * provided AND the target snapshot carries a `transcriptEntryCount`,
+   * the protocol calls `transcript.truncate(sessionId, count)` between
+   * the file-restore step and the chain-marker step.
+   *
+   * Pass `undefined` to skip transcript truncation entirely (file state
+   * is still restored).
+   */
+  readonly transcript?: SessionTranscript;
+  /** Session ID — required when `transcript` is provided. */
+  readonly sessionId?: SessionId;
 }
 
 /**
@@ -62,7 +76,7 @@ export interface RestoreInput {
  * to retry, surface the error, or both.
  */
 export async function runRestore(input: RestoreInput): Promise<RewindResult> {
-  const { store, chainId, blobDir, target } = input;
+  const { store, chainId, blobDir, target, transcript, sessionId } = input;
 
   // ---- Step 1: locate the current head and walk to the target ----
   const headResult = await store.head(chainId);
@@ -124,14 +138,45 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     }
   }
 
+  // ---- Step 3b: truncate the conversation transcript (if wired) ----
+  // Runs AFTER file restore and BEFORE the chain marker write so that a
+  // failure here leaves the chain head unchanged — the user can re-run
+  // rewind and converge. The truncate is itself idempotent (truncating to
+  // a count <= existing length is safe to repeat).
+  if (transcript !== undefined && sessionId !== undefined) {
+    const targetCount = targetNode.data.transcriptEntryCount;
+    if (targetCount !== undefined) {
+      const truncResult = await transcript.truncate(sessionId, targetCount);
+      if (!truncResult.ok) {
+        return {
+          ok: false,
+          error: internal(
+            `Restore failed: conversation log truncate to ${targetCount} entries failed`,
+            truncResult.error,
+          ),
+        };
+      }
+    }
+  }
+
   // ---- Step 4: write the rewind marker as a new chain head ----
-  const markerPayload: CheckpointPayload = {
-    turnIndex: targetNode.data.turnIndex,
-    sessionId: targetNode.data.sessionId,
-    fileOps: [],
-    driftWarnings: [],
-    capturedAt: Date.now(),
-  };
+  const markerPayload: CheckpointPayload =
+    targetNode.data.transcriptEntryCount !== undefined
+      ? {
+          turnIndex: targetNode.data.turnIndex,
+          sessionId: targetNode.data.sessionId,
+          fileOps: [],
+          driftWarnings: [],
+          transcriptEntryCount: targetNode.data.transcriptEntryCount,
+          capturedAt: Date.now(),
+        }
+      : {
+          turnIndex: targetNode.data.turnIndex,
+          sessionId: targetNode.data.sessionId,
+          fileOps: [],
+          driftWarnings: [],
+          capturedAt: Date.now(),
+        };
   const markerMetadata: Readonly<Record<string, unknown>> = {
     "koi:snapshot_status": "complete",
     "koi:rewind_target": targetNode.nodeId,
