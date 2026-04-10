@@ -105,6 +105,7 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
       targetNodeId: targetNode.nodeId,
       opsApplied: 0,
       turnsRewound: 0,
+      driftWarnings: [],
     };
   }
 
@@ -194,12 +195,16 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     };
   }
 
+  // Surface drift warnings from the target snapshot. The user needs to know
+  // which paths the rewind cannot restore (bash-mediated changes, etc.) so
+  // they can manually reconcile if necessary.
   return {
     ok: true,
     newHeadNodeId: markerResult.value.nodeId,
     targetNodeId: targetNode.nodeId,
     opsApplied,
     turnsRewound,
+    driftWarnings: targetNode.data.driftWarnings,
   };
 }
 

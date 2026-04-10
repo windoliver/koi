@@ -793,7 +793,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const result = createTuiApp({
     store,
     permissionBridge,
-    onCommand: (commandId: string): void => {
+    onCommand: (commandId: string, args: string): void => {
       switch (commandId) {
         case "agent:interrupt":
           onInterrupt();
@@ -802,12 +802,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           resetConversation();
           break;
         case "agent:rewind":
-          // /rewind rolls back the previous turn (file edits + conversation)
-          // via @koi/checkpoint. Always rewinds 1 turn — multi-turn rewind
-          // requires arg parsing through the slash dispatch chain, which is
-          // a separate refactor (the current onCommand callback doesn't
-          // accept args). Users who need to go further back can call /rewind
-          // multiple times.
+          // /rewind <n> rolls back N turns (file edits + conversation) via
+          // @koi/checkpoint. `args` comes from the slash dispatch chain
+          // (parseSlashCommand → handleSlashSelect → handleCommandSelect →
+          // onCommand). Defaults to 1 when no arg is given. Negative or
+          // non-integer args are surfaced as REWIND_INVALID_ARGS.
           void (async (): Promise<void> => {
             if (runtimeHandle === null) {
               store.dispatch({
@@ -817,7 +816,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            const result = await runtimeHandle.checkpoint.rewind(tuiSessionId, 1);
+
+            // Parse the rewind count: empty string defaults to 1, otherwise
+            // require a positive integer. Reject anything else loudly so the
+            // user knows their `/rewind <garbage>` was malformed.
+            let n = 1;
+            const trimmed = args.trim();
+            if (trimmed.length > 0) {
+              const parsed = Number.parseInt(trimmed, 10);
+              if (!Number.isInteger(parsed) || parsed < 1 || String(parsed) !== trimmed) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "REWIND_INVALID_ARGS",
+                  message: `Usage: /rewind [n] — n must be a positive integer (got "${trimmed}").`,
+                });
+                return;
+              }
+              n = parsed;
+            }
+
+            const result = await runtimeHandle.checkpoint.rewind(tuiSessionId, n);
             if (!result.ok) {
               store.dispatch({
                 kind: "add_error",
@@ -826,12 +844,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+
             // After a successful rewind the conversation transcript and any
             // tracked file edits from the previous turn are gone. Clear the
             // in-memory transcript array and TUI message log so the displayed
             // state matches what /rewind actually restored.
             runtimeHandle.transcript.splice(0);
             store.dispatch({ kind: "clear_messages" });
+
+            // Surface drift warnings — paths the rewind could not restore
+            // because they were modified outside the tracked tool pipeline
+            // (bash-mediated rm/mv/sed, build artifacts). The user needs to
+            // know these so they can manually reconcile.
+            if (result.driftWarnings.length > 0) {
+              const head = `Rewound ${result.turnsRewound} turn${result.turnsRewound === 1 ? "" : "s"}, but ${result.driftWarnings.length} change${result.driftWarnings.length === 1 ? "" : "s"} could not be restored:`;
+              const body = result.driftWarnings.map((w) => `  ${w}`).join("\n");
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_DRIFT",
+                message: `${head}\n${body}`,
+              });
+            }
           })();
           break;
         case "system:quit":

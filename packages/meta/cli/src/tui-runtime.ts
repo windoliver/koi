@@ -27,7 +27,8 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
@@ -1183,10 +1184,16 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
 
   // --- Checkpoint (#1625): always wired in the TUI ---
+  // Captures end-of-turn snapshots so /rewind can roll back the active session.
+  const koiHomeDir = join(homedir(), ".koi");
+  const snapshotDir = join(koiHomeDir, "snapshots");
+  mkdirSync(snapshotDir, { recursive: true });
+  const workspaceHash = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+  const snapshotPath = join(snapshotDir, `${workspaceHash}.sqlite`);
   const checkpointHandle = createCheckpoint({
-    store: createSnapshotStoreSqlite({ path: ":memory:" }),
+    store: createSnapshotStoreSqlite({ path: snapshotPath }),
     config: {
-      blobDir: join(homedir(), ".koi", "file-history"),
+      blobDir: join(koiHomeDir, "file-history"),
       driftDetector: null,
       ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
     },

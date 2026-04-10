@@ -134,6 +134,17 @@ export type RewindResult =
       readonly opsApplied: number;
       /** Number of snapshot turns rewound past (length of the path from old head to target). */
       readonly turnsRewound: number;
+      /**
+       * Drift warnings copied from the target snapshot's payload — paths
+       * that were modified outside the tracked tool pipeline (bash-mediated
+       * `rm`, `mv`, `sed -i`, build artifacts) and are NOT restorable by
+       * rewind. The caller should surface these to the user so they
+       * understand what their checkpoint cannot undo.
+       *
+       * Empty when the target snapshot has no recorded drift, or when the
+       * rewind was a no-op (rewind 0).
+       */
+      readonly driftWarnings: readonly string[];
     }
   | { readonly ok: false; readonly error: KoiError };
 
