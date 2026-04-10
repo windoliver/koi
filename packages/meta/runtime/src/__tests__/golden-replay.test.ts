@@ -8489,3 +8489,154 @@ describe("Golden: @koi/memory-team-sync", () => {
     expect(secretResult.blocked?.reason).toBe("secret_detected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/checkpoint + @koi/snapshot-store-sqlite — capture / rewind
+// round-trip via the runtime, no LLM cassette needed (rewind is deterministic).
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/checkpoint + @koi/snapshot-store-sqlite", () => {
+  test("createRuntime wires checkpoint when config.checkpoint is provided", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    const { mkdirSync, mkdtempSync, rmSync: rm } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-cp-blobs-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const transcriptDir = mkdtempSync(join(tmpdir(), "koi-rt-cp-transcripts-"));
+
+    const runtime = createRuntime({
+      session: { transcriptDir },
+      checkpoint: { blobDir },
+    });
+
+    try {
+      // The runtime exposes a Checkpoint handle on its return value.
+      expect(runtime.checkpoint).toBeDefined();
+      expect(typeof runtime.checkpoint?.rewind).toBe("function");
+      expect(typeof runtime.checkpoint?.rewindTo).toBe("function");
+      expect(typeof runtime.checkpoint?.currentHead).toBe("function");
+
+      // The checkpoint middleware is registered in the middleware chain.
+      const names = runtime.middleware.map((mw) => mw.name);
+      expect(names).toContain("checkpoint");
+    } finally {
+      await runtime.dispose();
+      rm(blobDir, { recursive: true, force: true });
+      rm(transcriptDir, { recursive: true, force: true });
+    }
+  });
+
+  test("checkpoint is undefined when config.checkpoint is omitted", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    const runtime = createRuntime({});
+    try {
+      expect(runtime.checkpoint).toBeUndefined();
+      const names = runtime.middleware.map((mw) => mw.name);
+      expect(names).not.toContain("checkpoint");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  test("end-to-end capture + rewind round-trip via the runtime handle", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    const {
+      mkdirSync,
+      mkdtempSync,
+      readFileSync,
+      rmSync: rm,
+      writeFileSync,
+    } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-cp-rt-blobs-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const workDir = mkdtempSync(join(tmpdir(), "koi-rt-cp-rt-work-"));
+
+    const runtime = createRuntime({
+      checkpoint: { blobDir },
+    });
+
+    try {
+      const checkpoint = runtime.checkpoint;
+      if (checkpoint === undefined) throw new Error("checkpoint not wired");
+
+      const sessionId = "golden-checkpoint-session" as never;
+
+      // Drive the middleware directly with synthetic TurnContexts and a
+      // tool handler that mutates a real file. This exercises capture
+      // (wrapToolCall + onAfterTurn) without needing an actual engine loop.
+      const wrap = checkpoint.middleware.wrapToolCall;
+      const onAfter = checkpoint.middleware.onAfterTurn;
+      if (wrap === undefined || onAfter === undefined) throw new Error("hooks missing");
+
+      function ctx(turnIndex: number): {
+        readonly session: {
+          readonly agentId: string;
+          readonly sessionId: typeof sessionId;
+          readonly runId: never;
+          readonly metadata: Record<string, unknown>;
+        };
+        readonly turnIndex: number;
+        readonly turnId: never;
+        readonly messages: never[];
+        readonly metadata: Record<string, unknown>;
+      } {
+        return {
+          session: {
+            agentId: "agent-cp",
+            sessionId,
+            runId: "run-cp" as never,
+            metadata: {},
+          },
+          turnIndex,
+          turnId: `turn-${turnIndex}` as never,
+          messages: [],
+          metadata: {},
+        };
+      }
+
+      const target = join(workDir, "golden.txt");
+
+      // Turn 0: create the file
+      await wrap(
+        ctx(0) as never,
+        { toolId: "fs_write", input: { path: target, content: "v1" } },
+        async () => {
+          writeFileSync(target, "v1");
+          return { output: { ok: true } };
+        },
+      );
+      await onAfter(ctx(0) as never);
+
+      // Turn 1: edit the file
+      await wrap(
+        ctx(1) as never,
+        { toolId: "fs_write", input: { path: target, content: "v2" } },
+        async () => {
+          writeFileSync(target, "v2");
+          return { output: { ok: true } };
+        },
+      );
+      await onAfter(ctx(1) as never);
+
+      expect(readFileSync(target, "utf8")).toBe("v2");
+
+      // Programmatic rewind via the runtime handle.
+      const result = await checkpoint.rewind(sessionId, 1);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.turnsRewound).toBe(1);
+
+      // File restored to turn 0 state.
+      expect(readFileSync(target, "utf8")).toBe("v1");
+    } finally {
+      await runtime.dispose();
+      rm(blobDir, { recursive: true, force: true });
+      rm(workDir, { recursive: true, force: true });
+    }
+  });
+});

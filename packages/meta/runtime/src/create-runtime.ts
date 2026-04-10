@@ -1,4 +1,5 @@
 import { createAgentResolver } from "@koi/agent-runtime";
+import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
   ChannelAdapter,
@@ -45,6 +46,7 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
+import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
 import {
   createFileSystemProvider,
@@ -93,17 +95,52 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Prepend session transcript middleware when transcriptDir is configured.
   // Observe-phase, priority 200 — runs after event-trace (priority 100) so
   // spans are already open when the transcript write occurs.
-  const sessionTranscriptMw =
+  //
+  // The transcript instance is reused for the checkpoint package so /rewind
+  // can call truncate() on the same conversation log the session middleware
+  // appends to. Both halves of session rollback see the same source of truth.
+  const sharedTranscript =
     config.session !== undefined
+      ? createJsonlTranscript({ baseDir: config.session.transcriptDir })
+      : undefined;
+  const sessionTranscriptMw =
+    sharedTranscript !== undefined
       ? createSessionTranscriptMiddleware({
-          transcript: createJsonlTranscript({ baseDir: config.session.transcriptDir }),
+          transcript: sharedTranscript,
           sessionId: sessionId("runtime"),
         })
       : undefined;
-  const baseMiddleware: readonly KoiMiddleware[] =
-    sessionTranscriptMw !== undefined
-      ? [sessionTranscriptMw, ...resolvedMiddleware]
-      : resolvedMiddleware;
+
+  // Checkpoint (#1625) — wires capture middleware + CAS blob store, exposes
+  // a programmatic rewind handle on the runtime. Optional: only constructed
+  // when config.checkpoint is provided. Shares the SessionTranscript with
+  // session middleware so /rewind truncates the conversation log alongside
+  // the file-state restore.
+  const checkpointHandle: Checkpoint | undefined =
+    config.checkpoint !== undefined
+      ? createCheckpoint({
+          store: createSnapshotStoreSqlite({
+            path: config.checkpoint.snapshotPath ?? ":memory:",
+          }),
+          config: {
+            blobDir: config.checkpoint.blobDir,
+            // Drift detection runs git status on every turn. Disable for now —
+            // the runtime doesn't know whether the cwd is a git repo and the
+            // capture path should not require git availability. Callers who
+            // want drift can pass a custom detector via createCheckpoint
+            // directly (this runtime config is the simple shared default).
+            driftDetector: null,
+            ...(sharedTranscript !== undefined ? { transcript: sharedTranscript } : {}),
+          },
+        })
+      : undefined;
+  const checkpointMw = checkpointHandle?.middleware;
+
+  const baseMiddleware: readonly KoiMiddleware[] = [
+    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
+    ...(checkpointMw !== undefined ? [checkpointMw] : []),
+    ...resolvedMiddleware,
+  ];
 
   // Install exfiltration guard by default when: (1) not explicitly disabled,
   // (2) not already provided, and (3) the adapter has terminals so the intercept
@@ -339,6 +376,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     spawnProvider,
     agentWarnings,
     agentConflicts,
+    checkpoint: checkpointHandle,
     filesystemBackend,
     filesystemProvider,
     dispose: async () => {

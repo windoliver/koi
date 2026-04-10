@@ -3,6 +3,7 @@ import type {
   AgentResolverDirs,
   RegistryConflictWarning,
 } from "@koi/agent-runtime";
+import type { Checkpoint } from "@koi/checkpoint";
 import type {
   AgentResolver,
   ApprovalHandler,
@@ -215,6 +216,31 @@ export interface RuntimeConfig {
     | undefined;
 
   /**
+   * Checkpoint configuration for session-level rollback (#1625).
+   *
+   * When provided, wires `@koi/checkpoint` and `@koi/snapshot-store-sqlite`:
+   *   - end-of-turn snapshots capture file ops to a CAS blob store
+   *   - the chain DAG persists in SQLite at `snapshotPath`
+   *   - if `config.session.transcriptDir` is also set, the same `SessionTranscript`
+   *     is wired in so /rewind also truncates the conversation log
+   *
+   * The resulting `Checkpoint` handle is exposed on the RuntimeHandle as
+   * `runtime.checkpoint`, providing programmatic `rewind(sessionId, n)` and
+   * `rewindTo(sessionId, nodeId)` methods.
+   *
+   * When omitted, no checkpoint middleware is added and `runtime.checkpoint`
+   * is `undefined`.
+   */
+  readonly checkpoint?:
+    | {
+        /** SQLite database path for the snapshot chain. Default: `:memory:`. */
+        readonly snapshotPath?: string | undefined;
+        /** Content-addressed blob directory for file pre/post-image storage. */
+        readonly blobDir: string;
+      }
+    | undefined;
+
+  /**
    * Retry signal reader for cross-middleware retry coordination.
    * When provided, event-trace middleware annotates trajectory steps with
    * retry metadata (outcome: "retry", retryOfTurn, retryAttempt, etc.).
@@ -332,6 +358,16 @@ export interface RuntimeHandle {
    * Phase 1: put + get only. Stores at /outcomes/{correlationId}.json.
    */
   readonly outcomeStore: OutcomeStore | undefined;
+
+  /**
+   * Checkpoint handle for programmatic session rollback (#1625).
+   * Only populated when `config.checkpoint` is provided.
+   *
+   * Exposes `rewind(sessionId, n)` and `rewindTo(sessionId, nodeId)` for
+   * file-state and conversation-log rollback. The TUI's `/rewind` slash
+   * command and any programmatic caller use this handle.
+   */
+  readonly checkpoint: Checkpoint | undefined;
 
   /**
    * Resolved filesystem backend. Only populated when filesystem is explicitly
