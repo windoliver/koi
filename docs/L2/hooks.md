@@ -398,13 +398,64 @@ Agent hooks default to closed because the whole point of spawning an LLM for
 verification is that the check matters. Override with `failMode: "open"` for
 advisory agent hooks.
 
+## Hook Policy Tiers
+
+Hooks are classified into three tiers with different precedence and disable-ability:
+
+| Tier | Source | Can be disabled by user? | Execution order |
+|------|--------|--------------------------|-----------------|
+| `managed` | Enterprise/admin config | No (unless admin sets `disableAllHooks`) | First |
+| `user` | `~/.koi/hooks.json` or project config | Yes | Second |
+| `session` | In-memory / programmatic (e.g., plugin hooks) | Yes | Third |
+
+### Policy Filtering
+
+The `HookPolicy` interface (L0) controls which tiers are active:
+
+| Flag | Effect |
+|------|--------|
+| `disableAllHooks` + actor `"managed"` | Kills ALL hooks (nuclear switch) |
+| `disableAllHooks` + actor `"user"` | Kills user + session; managed survive |
+| `managedOnly` | Only managed-tier hooks run |
+| `allowUserHooks` (default: true) | When false, user-tier hooks suppressed |
+| `allowSessionHooks` (default: true) | When false, session-tier hooks suppressed |
+
+### Registered Hooks
+
+`RegisteredHook` annotates a `HookConfig` with a stable ID (`${tier}:${hook.name}`) and its tier. Stable IDs prevent loss of tracking when policies are reapplied or arrays are reordered. Cross-tier name collisions are rejected at validation time.
+
+### API
+
+```typescript
+import { createRegisteredHooks, loadRegisteredHooks, applyPolicy, groupByTier } from "@koi/hooks";
+
+// Tag raw configs with a tier
+const userHooks = createRegisteredHooks(loadedConfigs, "user");
+const pluginHooks = createRegisteredHooks(pluginConfigs, "session");
+
+// Load and tag in one step (validates via loadHooks + tags)
+const result = loadRegisteredHooks(rawJson, "user");
+
+// Filter by policy
+const active = applyPolicy([...userHooks, ...pluginHooks], policy, "user");
+
+// Group for phased dispatch
+const groups = groupByTier(active); // { managed, user, session }
+```
+
+### CLI / TUI Wiring
+
+- `koi start`: User hooks from `~/.koi/hooks.json` are tagged `"user"`. Plugin hooks are tagged `"session"`.
+- `koi tui`: Same tier tagging. Agent hooks (kind: `"agent"`) are filtered out (TUI has no `spawnFn`).
+
 ## Module Structure
 
 | File | Responsibility |
 |------|---------------|
 | `schema.ts` | Zod schemas for hook config validation |
-| `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]` |
-| `registry.ts` | `HookRegistry` — session-scoped registration/cleanup + hook-agent suppression |
+| `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]`; `loadRegisteredHooks()` — load + tag with tier |
+| `policy.ts` | `RegisteredHook`, `HookTier`, `applyPolicy()`, `groupByTier()`, `validateNoDuplicateNames()` |
+| `registry.ts` | `HookRegistry` — session-scoped registration/cleanup + hook-agent suppression + tier-phased dispatch |
 | `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout + decision parsing |
 | `agent-executor.ts` | `AgentHookExecutor` — sub-agent spawn, token accounting, verdict handling |
 | `agent-verdict.ts` | `HookVerdict` tool schema, verdict parsing, decision mapping |
