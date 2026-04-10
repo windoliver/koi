@@ -264,6 +264,42 @@ describe("persistent approval — middleware integration", () => {
     expect(mw.listPersistentApprovals()).toEqual([]);
   });
 
+  test("persistentAgentId enables grant replay across different session agentIds", async () => {
+    const store = makeStore();
+    const mw = createPermissionsMiddleware({
+      backend: askBackend(),
+      persistentApprovals: store,
+      persistentAgentId: "koi-tui",
+    });
+
+    // First launch: user grants permanent approval
+    const grantHandler = mock(
+      async (): Promise<ApprovalDecision> => ({ kind: "always-allow", scope: "always" }),
+    );
+    const ctx1 = makeTurnContext({
+      agentId: "random-uuid-1",
+      requestApproval: grantHandler,
+    });
+    await mw.wrapToolCall?.(ctx1, makeToolRequest("bash"), noopToolHandler);
+
+    // Verify grant is stored under the stable persistentAgentId, not the random UUID
+    expect(store.has("user-1", "koi-tui", "bash")).toBe(true);
+    expect(store.has("user-1", "random-uuid-1", "bash")).toBe(false);
+
+    // Second launch: new random agentId, no prompt should appear
+    const denyHandler = mock(
+      async (): Promise<ApprovalDecision> => ({ kind: "deny", reason: "should not prompt" }),
+    );
+    const ctx2 = makeTurnContext({
+      agentId: "random-uuid-2",
+      requestApproval: denyHandler,
+    });
+    const result = await mw.wrapToolCall?.(ctx2, makeToolRequest("bash"), noopToolHandler);
+
+    expect(result?.output).toBe("done");
+    expect(denyHandler).not.toHaveBeenCalled();
+  });
+
   test("persistent grant emits audit with permissionEvent 'remembered'", async () => {
     const store = makeStore();
     store.grant("user-1", "agent:test", "bash", Date.now());
