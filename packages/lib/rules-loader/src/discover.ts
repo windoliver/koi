@@ -6,7 +6,7 @@
  */
 
 import { lstat, realpath } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 import type { DiscoveredFile } from "./config.js";
 
@@ -28,9 +28,13 @@ async function validateCandidate(
     // Resolve the canonical path to catch symlinks anywhere in the chain
     const resolved = await realpath(path);
 
-    // Verify the resolved target is within the repo boundary
-    if (boundary !== undefined && resolved !== boundary && !resolved.startsWith(`${boundary}/`)) {
-      return undefined;
+    // Verify the resolved target is within the repo boundary.
+    // Uses path.relative() for cross-platform containment (handles Windows backslashes).
+    if (boundary !== undefined) {
+      const rel = relative(boundary, resolved);
+      if (rel.startsWith("..") || rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) {
+        return undefined;
+      }
     }
 
     // Verify the resolved target is a regular file

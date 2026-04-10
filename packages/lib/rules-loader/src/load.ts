@@ -17,9 +17,11 @@ import type { DiscoveredFile, LoadedFile } from "./config.js";
  */
 export async function loadRulesFile(file: DiscoveredFile): Promise<Result<LoadedFile, KoiError>> {
   try {
-    // Read from the canonical path to prevent TOCTOU symlink swaps
-    const content = await readFile(file.realPath, "utf-8");
+    // Stat before read to capture mtime, then read the canonical path.
+    // If the file changes during read, the next onBeforeTurn stat will
+    // detect the mtime difference and trigger a reload.
     const fileStat = await stat(file.realPath);
+    const content = await readFile(file.realPath, "utf-8");
     const tokens = estimateTokens(content);
 
     return {
