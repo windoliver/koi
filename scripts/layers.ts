@@ -48,7 +48,10 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/audit-sink-ndjson",
+  "@koi/audit-sink-sqlite",
   "@koi/mcp",
+  "@koi/middleware-audit",
   "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",

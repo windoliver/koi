@@ -29,6 +29,7 @@
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type {
   Agent,
   ComponentProvider,
@@ -67,6 +68,7 @@ import { createMcpServer } from "@koi/mcp-server";
 import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
+import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
@@ -3380,6 +3382,25 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+  },
+
+  // @koi/middleware-audit + @koi/audit-sink-sqlite
+  // Exercises the audit middleware end-to-end: session_start, model_call, session_end
+  // events are captured by the SQLite in-memory sink. Trajectory proves the middleware
+  // fires without blocking the agent loop (fire-and-forget enqueue pattern).
+  {
+    name: "audit-log",
+    prompt: "What is 2+2? Answer with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    extraMiddleware: [
+      createAuditMiddleware({
+        sink: createSqliteAuditSink({ dbPath: ":memory:" }),
+      }),
+    ],
   },
 ];
 

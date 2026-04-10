@@ -8,16 +8,29 @@
 import type { JsonObject } from "./common.js";
 
 export interface AuditEntry {
+  /** Schema version — increment when the shape changes. Readers gate on this field. */
+  readonly schema_version: number;
   readonly timestamp: number;
   readonly sessionId: string;
   readonly agentId: string;
   readonly turnIndex: number;
-  readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access";
+  readonly kind:
+    | "model_call"
+    | "tool_call"
+    | "session_start"
+    | "session_end"
+    | "secret_access"
+    | "permission_decision"
+    | "config_change";
   readonly request?: unknown;
   readonly response?: unknown;
   readonly error?: unknown;
   readonly durationMs: number;
   readonly metadata?: JsonObject;
+  /** SHA-256 hex of the previous entry's canonical JSON. Genesis entry uses 64 zero chars. */
+  readonly prev_hash?: string;
+  /** Base64url Ed25519 signature over the entry (excluding this field). */
+  readonly signature?: string;
 }
 
 export interface AuditSink {

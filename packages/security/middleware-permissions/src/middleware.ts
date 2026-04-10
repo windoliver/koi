@@ -593,11 +593,12 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "tool_call",
+      kind: "permission_decision",
       durationMs,
       metadata: {
         permissionCheck: true,
@@ -663,11 +664,12 @@ export function createPermissionsMiddleware(
       meta.scope = approval.scope;
     }
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "tool_call",
+      kind: "permission_decision",
       durationMs,
       metadata: meta as JsonObject,
     };
@@ -727,11 +729,12 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "model_call",
+      kind: "permission_decision",
       durationMs: 0,
       metadata: {
         permissionCheck: true,

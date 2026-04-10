@@ -15,6 +15,7 @@ import type {
 import type { KoiErrorCode } from "./errors.js";
 import type { InboundMessage } from "./message.js";
 import type { ModelContentBlock, ModelStopReason } from "./model-adapter.js";
+import type { PermissionDecision, PermissionQuery } from "./permission-backend.js";
 
 export interface SessionContext {
   readonly agentId: string;
@@ -143,6 +144,16 @@ export type ApprovalDecision =
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
 
 /**
+ * A config key-value change, emitted by any package that mutates agent configuration.
+ * Used by the `onConfigChange` middleware hook for audit trail purposes.
+ */
+export interface ConfigChange {
+  readonly key: string;
+  readonly oldValue: unknown;
+  readonly newValue: unknown;
+}
+
+/**
  * A middleware's self-description for the LLM.
  *
  * Good descriptions are concise, factual, and actionable:
@@ -236,6 +247,22 @@ export interface KoiMiddleware {
     request: ToolRequest,
     next: ToolHandler,
   ) => Promise<ToolResponse>;
+  /**
+   * Called after a permission decision is made for a tool call.
+   * Implementors (e.g. audit middleware) use this to record decisions.
+   * Fire-and-forget — must not block the agent loop.
+   */
+  readonly onPermissionDecision?: (
+    ctx: TurnContext,
+    query: PermissionQuery,
+    decision: PermissionDecision,
+  ) => void | Promise<void>;
+  /**
+   * Called when agent configuration changes at runtime.
+   * Implementors (e.g. audit middleware) use this for config change audit trails.
+   * Fire-and-forget — must not block the agent loop.
+   */
+  readonly onConfigChange?: (ctx: SessionContext, change: ConfigChange) => void | Promise<void>;
   /** Self-description injected into model calls. Required. Return undefined to skip injection. */
   readonly describeCapabilities: (ctx: TurnContext) => CapabilityFragment | undefined;
 }
