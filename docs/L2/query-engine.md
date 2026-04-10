@@ -44,6 +44,30 @@ Pure state machine driving the model→tool→model loop (#1233).
 - `runTurn(config)` — async generator that drives the turn loop via `ComposedCallHandlers`, yielding `EngineEvent`s.
 - `validateToolArgs(args, descriptor)` — lightweight JSON Schema validation (allowlist-based, fail-closed on unsupported keywords). Recognized property keywords: `type`, `description`, `title`, `default`, `items`, `properties`, `required`, plus constraint keywords (`minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minItems`, `maxItems`). Constraint keywords are recognized but not deeply validated — Zod handles runtime validation. The structural keywords (`items`, `properties`, `required`) are allowlisted so tools that declare array or object parameters pass validation; their nested contents are not deeply validated — only top-level property types are checked.
 
+### `tool_result` event emission (#1583)
+
+After each tool finishes executing, `runTurn` yields a separate `tool_result` event
+carrying the actual `ToolResponse.output`. This is distinct from `tool_call_end`,
+which carries the `AccumulatedToolCall` metadata (toolName, callId, parsedArgs)
+that the model produced — NOT the execution output.
+
+Two events fire per tool call:
+
+1. `tool_call_end` — emitted by `consumeModelStream` when arg streaming finishes.
+   `event.result` is `AccumulatedToolCall` (metadata + parsed args).
+2. `tool_result` — emitted by `runTurn` after `callHandlers.toolCall(...)` returns.
+   `event.output` is the actual `ToolResponse.output` (file contents, command stdout, etc.).
+
+Within-turn duplicates (see "Within-Turn Tool Call Dedup" below) also receive
+their own `tool_result` event with the replicated output, so consumers see one
+event per `callId` regardless of dedup.
+
+Output collectors (`createTextCollector`, `createVerdictCollector` in `@koi/engine`)
+read from `tool_result.output`, not `tool_call_end.result`, so spawned child
+agents that finish on a tool call return the real output. The TUI's
+`tool_call` block reducer handler consumes `tool_result` to mark the block
+complete, capture duration, and store the result for accordion display.
+
 ### Types
 
 - `TurnPhase` — `"idle" | "model" | "tool_execution" | "continue" | "complete"`
