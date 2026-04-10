@@ -17,13 +17,15 @@
 import type { InboundMessage, TokenEstimator } from "@koi/core";
 import type { ReplacementRef, ReplacementStore } from "@koi/core/replacement";
 import { maybeAwait } from "./async-util.js";
+import { FALLBACK_ESTIMATOR } from "./fallback-estimator.js";
 import { findOptimalSplit } from "./find-split.js";
 import { microcompact } from "./micro-compact.js";
 import { findValidSplitPoints, rescuePinnedGroups } from "./pair-boundaries.js";
 import { shouldCompact } from "./policy.js";
 import type { ReplacementOutcome } from "./replacement.js";
 import { collectRefsFromOutcomes, evaluateMessageResults } from "./replacement.js";
-import type { ResolvedConfig } from "./types.js";
+import { selectivelyPrune } from "./selective-prune.js";
+import type { CompactionEvent, ResolvedConfig, SummaryAnchor } from "./types.js";
 import { COMPACTION_DEFAULTS } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ export type BudgetEnforcementResult =
       readonly compaction: "noop";
       readonly messages: readonly InboundMessage[];
       readonly totalTokens: number;
+      readonly events: readonly CompactionEvent[];
       /** Present only when replacement occurred in this turn. */
       readonly replacement?: ReplacementInfo;
     }
@@ -64,8 +67,9 @@ export type BudgetEnforcementResult =
       readonly originalTokens: number;
       readonly compactedTokens: number;
       readonly strategy: string;
+      readonly events: readonly CompactionEvent[];
       readonly replacement?: ReplacementInfo;
-      /** Messages that were dropped by micro-compaction (excludes rescued pinned messages). */
+      /** Messages dropped during budget enforcement (prune + compaction). */
       readonly droppedMessages?: readonly InboundMessage[];
       /** True when the onBeforeDrop callback threw — preservation may have failed. */
       readonly preservationFailed?: boolean;
@@ -77,8 +81,9 @@ export type BudgetEnforcementResult =
       readonly messages: readonly InboundMessage[];
       readonly splitIdx: number;
       readonly totalTokens: number;
+      readonly events: readonly CompactionEvent[];
       readonly replacement?: ReplacementInfo;
-      /** Messages that will be dropped by full compaction (excludes rescued pinned messages). */
+      /** Messages dropped during budget enforcement (prune + compaction). */
       readonly droppedMessages?: readonly InboundMessage[];
       /** True when the onBeforeDrop callback threw — preservation may have failed. */
       readonly preservationFailed?: boolean;
@@ -93,6 +98,8 @@ export type BudgetEnforcementResult =
 export interface BudgetConfig {
   readonly contextWindowSize?: number;
   readonly preserveRecent?: number;
+  readonly prunePreserveLastK?: number;
+  readonly modelId?: string;
   readonly tokenEstimator?: TokenEstimator;
   readonly softTriggerFraction?: number;
   readonly hardTriggerFraction?: number;
@@ -116,6 +123,7 @@ export function budgetConfigFromResolved(resolved: ResolvedConfig): BudgetConfig
   return {
     contextWindowSize: resolved.contextWindowSize,
     preserveRecent: resolved.preserveRecent,
+    prunePreserveLastK: resolved.prunePreserveLastK,
     tokenEstimator: resolved.tokenEstimator,
     softTriggerFraction: resolved.micro.triggerFraction,
     hardTriggerFraction: resolved.full.triggerFraction,
@@ -158,7 +166,7 @@ function computeDroppedMessages(
  * Compute messages dropped by micro-compaction by comparing the original
  * message array against the surviving messages (referential identity).
  */
-function computeMicroDroppedMessages(
+function computeRemovedMessages(
   original: readonly InboundMessage[],
   surviving: readonly InboundMessage[],
 ): readonly InboundMessage[] {
@@ -173,28 +181,64 @@ function computeMicroDroppedMessages(
 }
 
 // ---------------------------------------------------------------------------
-// Fallback estimator
+// Tail helpers
 // ---------------------------------------------------------------------------
 
-const FALLBACK_ESTIMATOR: TokenEstimator = {
-  estimateText(text: string): number {
-    return Math.ceil(text.length / 4);
-  },
-  estimateMessages(messages: readonly InboundMessage[]): number {
-    let total = 0; // let: accumulator
-    for (const msg of messages) {
-      total += 4;
-      for (const block of msg.content) {
-        if (block.kind === "text") {
-          total += Math.ceil(block.text.length / 4);
-        } else {
-          total += 100;
-        }
-      }
-    }
-    return total;
-  },
-};
+function buildTailWithRescued(
+  allMessages: readonly InboundMessage[],
+  splitIdx: number,
+): readonly InboundMessage[] {
+  const rescued = rescuePinnedGroups(allMessages, splitIdx);
+  const rawTail = allMessages.slice(splitIdx);
+  if (rescued.length === 0) return rawTail;
+  return [...rescued, ...rawTail];
+}
+
+async function buildSummaryAnchor(
+  droppedMessages: readonly InboundMessage[],
+  estimator: TokenEstimator,
+  tokensAfter: number,
+  modelId?: string,
+): Promise<SummaryAnchor | undefined> {
+  const firstDropped = droppedMessages[0];
+  const lastDropped = droppedMessages[droppedMessages.length - 1];
+  if (firstDropped === undefined || lastDropped === undefined) {
+    return undefined;
+  }
+
+  const tokensBefore = await maybeAwait(estimator.estimateMessages(droppedMessages, modelId));
+  return {
+    fromTimestamp: firstDropped.timestamp,
+    toTimestamp: lastDropped.timestamp,
+    tokensBefore,
+    tokensAfter,
+  };
+}
+
+interface PreservationStatus {
+  readonly preservationFailed?: boolean;
+  readonly preservationError?: unknown;
+}
+
+async function fireOnBeforeDrop(
+  dropped: readonly InboundMessage[],
+  config?: BudgetConfig,
+): Promise<PreservationStatus> {
+  if (dropped.length === 0 || config?.onBeforeDrop === undefined) {
+    return {};
+  }
+
+  try {
+    await Promise.resolve(config.onBeforeDrop(dropped));
+  } catch (e: unknown) {
+    return {
+      preservationFailed: true,
+      preservationError: e,
+    };
+  }
+
+  return {};
+}
 
 // ---------------------------------------------------------------------------
 // Main orchestrator
@@ -224,7 +268,9 @@ export async function enforceBudget(
 ): Promise<BudgetEnforcementResult> {
   const contextWindowSize = config?.contextWindowSize ?? COMPACTION_DEFAULTS.contextWindowSize;
   const preserveRecent = config?.preserveRecent ?? COMPACTION_DEFAULTS.preserveRecent;
+  const prunePreserveLastK = config?.prunePreserveLastK ?? COMPACTION_DEFAULTS.prunePreserveLastK;
   const estimator = config?.tokenEstimator ?? FALLBACK_ESTIMATOR;
+  const modelId = config?.modelId;
   const softFraction = config?.softTriggerFraction ?? COMPACTION_DEFAULTS.micro.triggerFraction;
   const hardFraction = config?.hardTriggerFraction ?? COMPACTION_DEFAULTS.full.triggerFraction;
   const microTarget = config?.microTargetFraction ?? COMPACTION_DEFAULTS.micro.targetFraction;
@@ -263,7 +309,7 @@ export async function enforceBudget(
       for (let i = 0; i < previews.length; i++) {
         const text = previews[i];
         if (text !== undefined) {
-          newResultTokens += await Promise.resolve(estimator.estimateText(text));
+          newResultTokens += await Promise.resolve(estimator.estimateText(text, modelId));
         }
       }
 
@@ -278,14 +324,14 @@ export async function enforceBudget(
     } else {
       // No store — estimate raw result tokens for budget accounting
       for (const text of results) {
-        newResultTokens += await Promise.resolve(estimator.estimateText(text));
+        newResultTokens += await Promise.resolve(estimator.estimateText(text, modelId));
       }
     }
   }
 
   // Stage 2: Estimate tokens on POST-INGESTION state
   // = existing messages + new tool results (as previews or originals)
-  const existingTokens = await maybeAwait(estimator.estimateMessages(messages));
+  const existingTokens = await maybeAwait(estimator.estimateMessages(messages, modelId));
   const totalTokens = existingTokens + newResultTokens;
 
   // Stage 3: Policy decision on post-ingestion total
@@ -296,85 +342,125 @@ export async function enforceBudget(
       compaction: "noop",
       messages,
       totalTokens,
+      events: [],
       ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
     };
   }
 
-  // Stage 4: Microcompact (operates on existing messages only —
-  // new results haven't been ingested into the message array yet)
-  // Reserve space for the incoming tool result so post-compaction + result fits.
-  if (decision === "micro") {
-    const targetTokens = Math.floor(contextWindowSize * microTarget) - newResultTokens;
-    const result = await microcompact(messages, targetTokens, preserveRecent, estimator);
+  const checkpointMessages = messages;
+  let workingMessages = checkpointMessages;
+  const events: CompactionEvent[] = [];
 
-    // If micro-compaction met the target (post-compaction + result fits), return it.
-    // Otherwise promote to full compaction.
-    if (result.compactedTokens + newResultTokens <= Math.floor(contextWindowSize * microTarget)) {
-      const droppedMessages = computeMicroDroppedMessages(messages, result.messages);
+  try {
+    const pruneResult = await selectivelyPrune(workingMessages, prunePreserveLastK, estimator);
+    workingMessages = pruneResult.messages;
+    events.push(...pruneResult.events);
+    events.push({
+      kind: "compaction.triggered",
+      signal: decision,
+      tokensBefore: totalTokens,
+      contextWindow: contextWindowSize,
+    });
 
-      // Fire onBeforeDrop callback before returning (gives caller a chance
-      // to extract decision-relevant facts from the about-to-be-lost messages).
-      // Fail-open: callback failure is surfaced via preservationFailed/Error
-      // but must not prevent compaction from completing.
-      let preservationFailed = false;
-      let preservationError: unknown;
-      if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
-        try {
-          await Promise.resolve(config.onBeforeDrop(droppedMessages));
-        } catch (e: unknown) {
-          preservationFailed = true;
-          preservationError = e;
-        }
+    // Stage 4: Microcompact (operates on existing messages only —
+    // new results haven't been ingested into the message array yet)
+    // Reserve space for the incoming tool result so post-compaction + result fits.
+    if (decision === "micro") {
+      const targetTokens = Math.floor(contextWindowSize * microTarget) - newResultTokens;
+      const result = await microcompact(
+        workingMessages,
+        targetTokens,
+        preserveRecent,
+        estimator,
+        modelId,
+      );
+
+      // If micro-compaction met the target (post-compaction + result fits), return it.
+      // Otherwise promote to full compaction.
+      if (result.compactedTokens + newResultTokens <= Math.floor(contextWindowSize * microTarget)) {
+        const droppedMessages = computeRemovedMessages(checkpointMessages, result.messages);
+        const compactionDroppedMessages = computeRemovedMessages(workingMessages, result.messages);
+        const summaryAnchor = await buildSummaryAnchor(
+          compactionDroppedMessages,
+          estimator,
+          0,
+          modelId,
+        );
+        const preservation = await fireOnBeforeDrop(droppedMessages, config);
+
+        events.push({
+          kind: "compaction.completed",
+          signal: "micro",
+          tokensBefore: totalTokens,
+          tokensAfter: result.compactedTokens + newResultTokens,
+          ...(summaryAnchor !== undefined ? { summaryAnchor } : {}),
+        });
+
+        return {
+          compaction: "micro",
+          messages: result.messages,
+          originalTokens: result.originalTokens,
+          compactedTokens: result.compactedTokens,
+          strategy: result.strategy,
+          events,
+          ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+          ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
+          ...preservation,
+        };
       }
-
-      return {
-        compaction: "micro",
-        messages: result.messages,
-        originalTokens: result.originalTokens,
-        compactedTokens: result.compactedTokens,
-        strategy: result.strategy,
-        ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
-        ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
-        ...(preservationFailed ? { preservationFailed, preservationError } : {}),
-      };
+      // Fall through to full compaction
     }
-    // Fall through to full compaction
+
+    // Stage 5: Full compact — compute split, don't summarize
+    // Reserve space for the incoming tool result in the split budget.
+    const validSplitPoints = findValidSplitPoints(workingMessages, preserveRecent);
+    const splitIdx = await findOptimalSplit(
+      workingMessages,
+      validSplitPoints,
+      contextWindowSize - newResultTokens,
+      maxSummaryTokens,
+      estimator,
+      modelId,
+    );
+
+    const fullSurvivingMessages =
+      splitIdx >= 0 ? buildTailWithRescued(workingMessages, splitIdx) : workingMessages;
+    const droppedMessages = computeRemovedMessages(checkpointMessages, fullSurvivingMessages);
+    const compactionDroppedMessages =
+      splitIdx >= 0 ? computeDroppedMessages(workingMessages, splitIdx) : [];
+    const summaryAnchor = await buildSummaryAnchor(
+      compactionDroppedMessages,
+      estimator,
+      splitIdx >= 0 ? maxSummaryTokens : 0,
+      modelId,
+    );
+    const preservation = await fireOnBeforeDrop(droppedMessages, config);
+    const survivingTokens = await maybeAwait(
+      estimator.estimateMessages(fullSurvivingMessages, modelId),
+    );
+    const tokensAfter = survivingTokens + newResultTokens + (splitIdx >= 0 ? maxSummaryTokens : 0);
+
+    events.push({
+      kind: "compaction.completed",
+      signal: "full",
+      tokensBefore: totalTokens,
+      tokensAfter,
+      ...(summaryAnchor !== undefined ? { summaryAnchor } : {}),
+    });
+
+    return {
+      compaction: "full",
+      messages: workingMessages,
+      splitIdx,
+      totalTokens,
+      events,
+      ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
+      ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
+      ...preservation,
+    };
+  } catch (error: unknown) {
+    workingMessages = checkpointMessages;
+    void workingMessages;
+    throw error;
   }
-
-  // Stage 5: Full compact — compute split, don't summarize
-  // Reserve space for the incoming tool result in the split budget.
-  const validSplitPoints = findValidSplitPoints(messages, preserveRecent);
-  const splitIdx = await findOptimalSplit(
-    messages,
-    validSplitPoints,
-    contextWindowSize - newResultTokens,
-    maxSummaryTokens,
-    estimator,
-  );
-
-  const droppedMessages = computeDroppedMessages(messages, splitIdx);
-
-  // Fire onBeforeDrop callback before returning.
-  // Fail-open: callback failure is surfaced via preservationFailed/Error
-  // but must not prevent compaction from completing.
-  let preservationFailed = false;
-  let preservationError: unknown;
-  if (droppedMessages.length > 0 && config?.onBeforeDrop !== undefined) {
-    try {
-      await Promise.resolve(config.onBeforeDrop(droppedMessages));
-    } catch (e: unknown) {
-      preservationFailed = true;
-      preservationError = e;
-    }
-  }
-
-  return {
-    compaction: "full",
-    messages,
-    splitIdx,
-    totalTokens,
-    ...(replacementInfo !== undefined ? { replacement: replacementInfo } : {}),
-    ...(droppedMessages.length > 0 ? { droppedMessages } : {}),
-    ...(preservationFailed ? { preservationFailed, preservationError } : {}),
-  };
 }

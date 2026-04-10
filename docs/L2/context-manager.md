@@ -2,6 +2,8 @@
 
 `@koi/context-manager` is an L0u utility package that manages context window pressure through tiered compaction policies: microcompact (truncation at soft threshold) and full compact (LLM summarization at hard threshold), with exponential backoff on failure. As L0u, it is importable by any L1 or L2 package.
 
+**v2 additions (issue #1623):** per-model context window calibration via `@koi/model-registry`, selective tool-output pruning (Phase 2), telemetry events, and `rehydrateConfig` for mid-session model switching.
+
 ---
 
 ## Why It Exists
@@ -49,8 +51,15 @@ L0u @koi/context-manager        ─ this package (importable by L1 + L2)
 ```
 index.ts                    ← public re-exports
 │
-├── types.ts                ← CompactionManagerConfig (nested), CompactionState
+├── types.ts                ← CompactionManagerConfig, CompactionState,
+│                              CompactionPolicy, ResolvedCompactionPolicy,
+│                              CompactionEvent, SummaryAnchor
+├── fallback-estimator.ts   ← FALLBACK_ESTIMATOR (4 chars/token, shared)
+├── resolve-thresholds.ts   ← resolveThresholds() — single canonical threshold resolution
+├── resolve-config.ts       ← resolveConfig() — full config with validation
+├── rehydrate-config.ts     ← rehydrateConfig() — mid-session model switch recalibration
 ├── policy.ts               ← shouldCompact() → "noop" | "micro" | "full"
+├── selective-prune.ts      ← selectivelyPrune() — Phase 2: drop oldest tool pairs
 ├── micro-compact.ts        ← truncation (default) and LLM strategies
 ├── backoff.ts              ← exponential backoff counter (pure)
 ├── pressure-trend.ts       ← PressureTrendTracker (circular buffer, ported from v1)
@@ -58,6 +67,8 @@ index.ts                    ← public re-exports
 ├── pair-boundaries.ts      ← AI+Tool pair boundary detection (ported from v1)
 └── overflow-recovery.ts    ← catch overflow → force-compact → retry (ported from v1)
 ```
+
+Depends on: `@koi/core`, `@koi/errors`, `@koi/model-registry`, `@koi/token-estimator`
 
 ---
 
@@ -189,18 +200,25 @@ Generic retry wrapper for context-overflow errors.
 
 ```typescript
 interface CompactionManagerConfig {
+  // Per-model calibration (issue #1623)
+  readonly modelId?: string;                     // active model ID → registry lookup
+  readonly globalPolicy?: Partial<CompactionPolicy>;          // global threshold overrides
+  readonly perModelPolicy?: Record<string, Partial<CompactionPolicy>>; // per-model overrides
+  readonly modelWindowOverrides?: Record<string, number>;    // override registry window sizes
+
+  // Legacy / explicit fields (still supported; modelId + policy take precedence)
   readonly contextWindowSize?: number;           // default: 200_000
   readonly preserveRecent?: number;              // default: 4
   readonly tokenEstimator?: TokenEstimator;
 
   readonly micro?: {
-    readonly triggerFraction?: number;            // default: 0.50
+    readonly triggerFraction?: number;            // default: 0.50 (or globalPolicy.softTriggerFraction)
     readonly targetFraction?: number;             // default: 0.35
     readonly strategy?: "truncate" | "summarize"; // default: "truncate"
   };
 
   readonly full?: {
-    readonly triggerFraction?: number;            // default: 0.75
+    readonly triggerFraction?: number;            // default: 0.75 (or globalPolicy.hardTriggerFraction)
     readonly maxSummaryTokens?: number;           // default: 1000
   };
 
@@ -209,7 +227,49 @@ interface CompactionManagerConfig {
     readonly cap?: number;                       // default: 32
   };
 }
+
+interface CompactionPolicy {
+  readonly softTriggerFraction: number;   // fraction of window for micro trigger
+  readonly hardTriggerFraction: number;   // fraction of window for full trigger
+  readonly prunePreserveLastK: number;    // preserve last K tool pairs from selective pruning
+}
 ```
+
+**Threshold resolution order (per field):** `perModelPolicy[modelId]` → `globalPolicy` → `micro/full.triggerFraction` → `COMPACTION_DEFAULTS`.
+
+**Context window resolution order:** `modelWindowOverrides[modelId]` → `@koi/model-registry` → `contextWindowSize` → `200_000`.
+
+### `resolveThresholds(config?, modelId?): ResolvedCompactionPolicy`
+
+Returns the effective `{ contextWindow, softTriggerFraction, hardTriggerFraction, prunePreserveLastK }` for the given model. Single canonical resolution site — call this instead of reading config fields directly.
+
+### `rehydrateConfig(state, config, newModelId): CompactionState`
+
+Use when the model changes mid-session. Returns a new state with:
+- `resolvedPolicy` updated for the new model (window + per-model overrides applied)
+- `consecutiveFailures` and `skipUntilTurn` reset to 0 (backoff clears)
+- `epoch` and `currentTurn` preserved
+
+**Callers must also create a new `PressureTrendTracker`** — past token samples are relative to the old model's window and are meaningless after a switch.
+
+### `selectivelyPrune(messages, prunePreserveLastK, estimator): Promise<SelectivePruneResult>`
+
+Phase 2 compression: drops the oldest assistant+tool pairs from the message history, preserving the most recent `prunePreserveLastK` pairs. Returns the pruned message array and `CompactionEvent[]` (empty if nothing was pruned). Never removes user messages, system messages, or the last user message.
+
+### `enforceBudget(...): Promise<BudgetEnforcementResult>`
+
+Now returns `events: readonly CompactionEvent[]` in all result variants:
+
+```typescript
+type CompactionEvent =
+  | { kind: "compaction.triggered"; signal: "micro" | "full"; tokensBefore: number; contextWindow: number }
+  | { kind: "compaction.completed"; signal: "micro" | "full"; tokensBefore: number; tokensAfter: number; summaryAnchor?: SummaryAnchor }
+  | { kind: "tool_output.pruned"; pairsRemoved: number; tokensSaved: number };
+```
+
+Callers emit these events to their telemetry bus (context-manager stays pure — no bus import).
+
+Pipeline order: Phase 1 content replacement → budget check → Phase 2 selective pruning → micro/full compaction. A `CompactionCheckpoint` is saved before Phase 2; if compaction throws, the error propagates with the original messages intact.
 
 ### `CompactionState`
 
@@ -220,6 +280,7 @@ interface CompactionState {
   readonly lastTokenFraction: number;
   readonly consecutiveFailures: number;
   readonly skipUntilTurn: number;
+  readonly resolvedPolicy: ResolvedCompactionPolicy; // cached — updated by rehydrateConfig
 }
 ```
 
@@ -242,6 +303,14 @@ Both micro and full compact use the same summarizer LLM. A full three-state circ
 ### Why turn-based decay, not wall-clock?
 
 Message age is measured by array position (index 0 = oldest), not wall-clock time. Turns are discrete, countable, and perfectly deterministic — ideal for testing. Wall-clock time introduces timing-dependent test flakiness and adds no value in a turn-based conversation model.
+
+### Why per-model registry instead of a single contextWindowSize?
+
+A single `contextWindowSize: 200_000` silently degrades when you switch to `claude-opus-4-6` (1M) or `gpt-4o` (128K). With a 1M-window model, the 200K default fires compaction at 20% occupancy — wasting 800K of available context. With a 128K model, the 200K default never fires — causing context overflow. `@koi/model-registry` provides calibrated defaults for 10+ models with a pluggable override path. `resolveThresholds()` is the single resolution site — no ambiguity about which field wins.
+
+### Why selective pruning before compaction?
+
+Tool outputs are the dominant source of context bloat (research: JetBrains 2025, Anthropic context engineering guide). Dropping the oldest tool pairs (while preserving the most recent K) reduces context without an LLM call, extending the time until a more expensive compaction is needed. Phase 2 fires between the budget check and micro/full compaction as a cheap intermediate relief valve.
 
 ### Why summary-of-summaries folding?
 

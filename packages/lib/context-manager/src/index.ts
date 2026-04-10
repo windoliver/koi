@@ -31,6 +31,7 @@ export {
 export { shouldCompact } from "./policy.js";
 export type { PressureTrendTracker } from "./pressure-trend.js";
 export { createPressureTrendTracker } from "./pressure-trend.js";
+export { rehydrateConfig } from "./rehydrate-config.js";
 export type {
   ReplacementEvalConfig,
   ReplacementMessageOutcome,
@@ -46,11 +47,18 @@ export {
 } from "./replacement.js";
 export type { ConfigResult } from "./resolve-config.js";
 export { resolveConfig, validateResolvedConfig } from "./resolve-config.js";
+export { resolveThresholds } from "./resolve-thresholds.js";
+export type { SelectivePruneResult } from "./selective-prune.js";
+export { selectivelyPrune } from "./selective-prune.js";
 export type {
   CompactionDecision,
+  CompactionEvent,
   CompactionManagerConfig,
+  CompactionPolicy,
   CompactionState,
   ReplacementConfig,
+  ResolvedCompactionPolicy,
   ResolvedConfig,
+  SummaryAnchor,
 } from "./types.js";
 export { COMPACTION_DEFAULTS, INITIAL_STATE } from "./types.js";

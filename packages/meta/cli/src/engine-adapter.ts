@@ -10,8 +10,14 @@
  *     failed or interrupted turns leave no orphaned messages in the transcript.
  *   - callHandlers guard throws explicitly — createKoi always injects them; a
  *     missing handlers object means the adapter was called outside createKoi.
+ *   - When budgetConfig is supplied, enforceBudget replaces the naive message-count
+ *     slice with token-aware compaction (micro = truncate, full = optimal-split
+ *     truncate). The transcript is spliced in-place so future turns see the
+ *     compacted history.
  */
 
+import type { BudgetConfig } from "@koi/context-manager";
+import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
 import type {
   EngineAdapter,
   EngineEvent,
@@ -37,10 +43,20 @@ export interface TranscriptAdapterConfig {
    * always reads from the same object the caller controls.
    */
   readonly transcript: InboundMessage[];
-  /** Maximum messages to include in each context window (tail-sliced). */
+  /**
+   * Fallback: maximum messages to include in each context window (tail-sliced).
+   * Only used when budgetConfig is not set.
+   */
   readonly maxTranscriptMessages: number;
   /** Maximum model→tool→model turns per user submit. */
   readonly maxTurns: number;
+  /**
+   * Token-aware budget configuration. When set, enforceBudget() replaces the
+   * naive maxTranscriptMessages slice. Compaction fires at softTriggerFraction
+   * (micro: truncate) and hardTriggerFraction (full: optimal-split truncate).
+   * Set contextWindowSize or modelId so the registry can calibrate thresholds.
+   */
+  readonly budgetConfig?: BudgetConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +71,8 @@ export interface TranscriptAdapterConfig {
  * hooks, permissions) can intercept model and tool calls.
  */
 export function createTranscriptAdapter(config: TranscriptAdapterConfig): EngineAdapter {
-  const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns } = config;
+  const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns, budgetConfig } =
+    config;
 
   return {
     engineId,
@@ -82,12 +99,24 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         content: [{ kind: "text", text }],
       };
 
-      const contextWindow = [...transcript.slice(-maxTranscriptMessages), stagedUserMsg];
-
       return (async function* (): AsyncIterable<EngineEvent> {
+        // Build context window: token-aware compaction when budgetConfig is set,
+        // otherwise fall back to naive message-count tail-slice.
+        let contextMessages: readonly InboundMessage[];
+        if (budgetConfig !== undefined) {
+          const budgetResult = await enforceBudget([...transcript], undefined, budgetConfig);
+          if (budgetResult.compaction !== "noop") {
+            // Splice transcript in-place so future turns see the compacted history.
+            transcript.splice(0, transcript.length, ...budgetResult.messages);
+          }
+          contextMessages = budgetResult.messages;
+        } else {
+          contextMessages = transcript.slice(-maxTranscriptMessages);
+        }
+        const contextWindow = [...contextMessages, stagedUserMsg];
+
         // let: accumulated across streaming chunks, read after loop completes
         let deltaText = "";
-        let doneContentText = "";
 
         for await (const event of runTurn({
           callHandlers: handlers,
@@ -100,16 +129,6 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             deltaText += event.delta;
           }
           if (event.kind === "done") {
-            // Prefer authoritative done.output.content over accumulated deltas.
-            // Providers may finalize text in done.output.content in addition to
-            // (or instead of) emitting text_delta chunks.
-            doneContentText = event.output.content
-              .filter(
-                (b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text",
-              )
-              .map((b) => b.text)
-              .join("");
-
             // Only persist completed turns — interrupted/errored turns must not
             // corrupt the transcript. Commit user + assistant atomically so a
             // failed turn leaves no orphaned user prompt for the next turn.
@@ -138,4 +157,52 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
       })();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip the provider prefix from a model name.
+ * "anthropic:claude-opus-4-6" → "claude-opus-4-6"
+ * "claude-opus-4-6" → "claude-opus-4-6"
+ */
+export function bareModelId(modelName: string): string {
+  const colonIdx = modelName.indexOf(":");
+  return colonIdx >= 0 ? modelName.slice(colonIdx + 1) : modelName;
+}
+
+/**
+ * Build a fully-resolved BudgetConfig for a given model name.
+ *
+ * Calls resolveConfig({ modelId }) so the context window size is looked up
+ * from @koi/model-registry (e.g. claude-opus-4-6 → 1_000_000, gpt-4o → 128_000).
+ * Falls back to COMPACTION_DEFAULTS.contextWindowSize (200_000) for unknown models.
+ *
+ * Use this instead of passing { modelId } directly to enforceBudget — the raw
+ * modelId field in BudgetConfig is only used for token estimation, not window resolution.
+ *
+ * @param contextWindowOverride - Override the resolved window size (e.g. for testing
+ *   compaction with a tiny window without changing the real model config).
+ */
+export function budgetConfigForModel(
+  modelName: string,
+  contextWindowOverride?: number,
+): BudgetConfig {
+  const modelId = bareModelId(modelName);
+  const result = resolveConfig({ modelId });
+  // resolveConfig only fails on invalid fraction values — model registry lookup
+  // never produces invalid fractions, so this path is unreachable in practice.
+  if (!result.ok) {
+    return {
+      modelId,
+      ...(contextWindowOverride !== undefined ? { contextWindowSize: contextWindowOverride } : {}),
+    };
+  }
+  const resolved = budgetConfigFromResolved(result.value);
+  if (contextWindowOverride !== undefined) {
+    return { ...resolved, contextWindowSize: contextWindowOverride };
+  }
+  return resolved;
 }

@@ -93,7 +93,7 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
-import { createTranscriptAdapter } from "./engine-adapter.js";
+import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 
@@ -875,6 +875,14 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
+    budgetConfig: budgetConfigForModel(
+      modelName,
+      // KOI_COMPACTION_WINDOW: override context window size for testing compaction
+      // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
+      process.env.KOI_COMPACTION_WINDOW !== undefined
+        ? Number(process.env.KOI_COMPACTION_WINDOW)
+        : undefined,
+    ),
   });
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---

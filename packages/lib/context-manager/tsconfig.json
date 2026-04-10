@@ -13,6 +13,9 @@
       "path": "../errors"
     },
     {
+      "path": "../../lib/model-registry"
+    },
+    {
       "path": "../../mm/token-estimator"
     }
   ]
