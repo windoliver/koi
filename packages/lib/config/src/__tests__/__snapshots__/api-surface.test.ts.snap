@@ -1,9 +1,146 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/config API surface . has stable type surface 1`] = `
-"import { Result, KoiError } from '@koi/core';
-import { ConfigStore, KoiConfig, ConfigUnsubscribe, LogLevel, LimitsConfig, LoopDetectionConfigSection, SpawnConfig, ForgeConfigSection } from '@koi/core/config';
+"import { KoiConfig, ConfigStore, ConfigUnsubscribe, LogLevel, LimitsConfig, LoopDetectionConfigSection, SpawnConfig, ForgeConfigSection } from '@koi/core/config';
+import { KoiError, ChangeNotifier, Result } from '@koi/core';
 import { z } from 'zod';
+
+/**
+ * Reload classification — declares which config sections are safe to hot-apply
+ * and which require a process restart.
+ *
+ * Fail-closed: any changed path without a classification entry is treated as
+ * \`restart\`. This prevents silently hot-applying a newly added field that hasn't
+ * been deliberately classified.
+ *
+ * Longest-prefix match: a changed path \`modelRouter.targets\` matches the
+ * \`modelRouter\` entry. Deeper-scoped entries (if any are added later) win over
+ * shallower ones.
+ *
+ * An exhaustiveness test in classification.test.ts ensures every top-level
+ * section of DEFAULT_KOI_CONFIG is either in FIELD_CLASSIFICATION or in the
+ * explicit UNCLASSIFIED_SECTIONS allowlist — renaming or adding a section
+ * without deciding its class fails CI.
+ */
+type ReloadClass = "hot" | "restart";
+/**
+ * Dot-path → class mapping. Prefix match: a path \`foo.bar.baz\` matches the
+ * longest entry that is either equal to the path or a dot-prefix of it.
+ *
+ * Hot — safe to apply to a running agent:
+ * - \`logLevel\`: only affects future log emissions
+ * - \`loopDetection\`: runtime heuristic recomputed per turn
+ * - \`modelRouter\`: next model call picks up the new routing
+ * - \`features\`: feature flags are checked lazily
+ *
+ * Restart — affect in-flight semaphores / long-lived connections:
+ * - \`telemetry\`: would need to tear down and re-establish OTLP exporter
+ * - \`limits\`: mid-flight concurrency / budget changes are unsafe
+ */
+declare const FIELD_CLASSIFICATION: Readonly<Record<string, ReloadClass>>;
+/**
+ * Top-level sections deliberately left unclassified. They default to \`restart\`
+ * until a future PR opts them in. Must be kept in sync with the exhaustiveness
+ * test against DEFAULT_KOI_CONFIG.
+ */
+declare const UNCLASSIFIED_SECTIONS: readonly string[];
+interface ClassifiedPaths {
+    readonly hot: readonly string[];
+    readonly restart: readonly string[];
+}
+declare function classifyChangedPaths(paths: readonly string[]): ClassifiedPaths;
+
+/**
+ * ConfigConsumer — contract for packages that want to re-bind when the config
+ * changes at runtime.
+ *
+ * Contract is **best-effort, fire-and-forget**:
+ * - Handlers are invoked AFTER the store has been updated. They cannot veto.
+ * - Rejected promises are swallowed by the underlying ChangeNotifier;
+ *   consumers that need retries or error surfacing must handle it themselves.
+ * - Exceptions in one consumer do not block other consumers (enforced by
+ *   createMemoryChangeNotifier's try/catch snapshot iteration).
+ *
+ * If a real use case emerges for consumer-side rejection (e.g. a model adapter
+ * that needs to drain an in-flight stream before swapping), a follow-up PR
+ * will add a separate ConfigValidator interface with an awaited pre-apply
+ * phase. The current interface does not preclude that — it just doesn't
+ * ship with it.
+ */
+
+interface ConfigChange {
+    readonly prev: KoiConfig;
+    readonly next: KoiConfig;
+    /** Dot-paths that differ between prev and next (structural diff). */
+    readonly changedPaths: readonly string[];
+}
+interface ConfigConsumer {
+    readonly onConfigChange: (change: ConfigChange) => void | Promise<void>;
+}
+
+/**
+ * Structural diff between two config snapshots.
+ *
+ * Used by ConfigManager.reload() to determine which fields changed, so that
+ * classification, telemetry, and consumer notifications can carry a precise
+ * changed-paths list.
+ *
+ * Semantics:
+ * - Plain objects are walked recursively; each differing key yields a dot-path.
+ * - Arrays are compared by structural equality as a whole — if any element or
+ *   the length differs, the array's path is reported (no per-element diff).
+ *   This matches @koi/config deep-merge semantics where arrays replace wholesale.
+ * - Primitives compared with Object.is (handles NaN and -0 correctly).
+ * - Keys existing on only one side are reported.
+ * - Returns a deduplicated, lexicographically sorted list of dot-paths.
+ */
+type ChangedPath = string;
+declare function diffConfig(prev: unknown, next: unknown): readonly ChangedPath[];
+
+/**
+ * Config reload event bus — discriminated union carrying the lifecycle of
+ * each reload attempt.
+ *
+ * Event ordering for a successful reload:
+ *   attempted -> (store.set happens) -> applied -> changed
+ *
+ * For a rejected reload:
+ *   attempted -> rejected
+ *
+ * \`applied\` and \`changed\` carry the same payload today. The split is
+ * intentional: telemetry sinks subscribe to \`attempted\`/\`applied\`/\`rejected\`
+ * for observability, while feature consumers subscribe to \`changed\` via
+ * \`ConfigManager.registerConsumer\`.
+ */
+
+type ConfigRejectReason = "load" | "validation" | "restart-required";
+type ConfigReloadEvent = {
+    readonly kind: "attempted";
+    readonly filePath: string;
+} | {
+    readonly kind: "applied";
+    readonly filePath: string;
+    readonly prev: KoiConfig;
+    readonly next: KoiConfig;
+    readonly changedPaths: readonly string[];
+} | {
+    readonly kind: "rejected";
+    readonly filePath: string;
+    readonly reason: ConfigRejectReason;
+    readonly error: KoiError;
+    readonly restartRequiredPaths?: readonly string[];
+} | {
+    readonly kind: "changed";
+    readonly filePath: string;
+    readonly prev: KoiConfig;
+    readonly next: KoiConfig;
+    readonly changedPaths: readonly string[];
+};
+/**
+ * Creates a typed event bus over the generic ChangeNotifier primitive.
+ * Each ConfigManager owns one bus instance.
+ */
+declare function createConfigEventBus(): ChangeNotifier<ConfigReloadEvent>;
 
 /**
  * $include directive processing with cycle detection.
@@ -110,7 +247,23 @@ interface WritableConfigStore<T> extends ConfigStore<T> {
 declare function createConfigStore<T extends object>(initial: T): WritableConfigStore<T>;
 
 /**
- * ConfigManager — wires store + loader + validation + watcher.
+ * ConfigManager — wires store + loader + validation + watcher + event bus.
+ *
+ * Reload pipeline (per plan §5):
+ *   single-flight gate
+ *     -> attempted event
+ *     -> load file
+ *     -> deepMerge + validate
+ *     -> diff against current store
+ *     -> classify changed paths
+ *     -> reject if any path is restart-required
+ *     -> store.set
+ *     -> applied event
+ *     -> changed event (ConfigConsumer handlers)
+ *
+ * Single-flight: concurrent reload() calls are coalesced into at most one
+ * trailing reload. This prevents interleaved store.set() calls when the file
+ * watcher fires multiple rapid events.
  */
 
 /** Sane defaults for all 8 KoiConfig sections. */
@@ -124,7 +277,7 @@ interface CreateConfigManagerOptions {
     /** Debounce interval for file watching in ms. Defaults to 300. */
     readonly watchDebounceMs?: number | undefined;
 }
-/** High-level config manager: store + reload + watch. */
+/** High-level config manager: store + reload + watch + events. */
 interface ConfigManager {
     /** The reactive config store. */
     readonly store: WritableConfigStore<KoiConfig>;
@@ -134,10 +287,20 @@ interface ConfigManager {
     readonly watch: () => ConfigUnsubscribe;
     /** Stops watching and cleans up. */
     readonly dispose: () => void;
+    /** Typed event bus for reload lifecycle and telemetry. */
+    readonly events: ChangeNotifier<ConfigReloadEvent>;
+    /**
+     * Registers a feature-level consumer that re-binds on every successful
+     * reload with a non-empty diff. Returns an unsubscribe function.
+     *
+     * Consumers are fire-and-forget: rejected promises are swallowed. Use
+     * \`events\` directly if you need telemetry-level granularity.
+     */
+    readonly registerConsumer: (consumer: ConfigConsumer) => ConfigUnsubscribe;
 }
 /**
  * Creates a ConfigManager that wires together loading, validation,
- * the reactive store, and file watching.
+ * the reactive store, file watching, and the event bus.
  *
  * Starts with \`DEFAULT_KOI_CONFIG\` — call \`reload()\` to load from disk.
  */
@@ -211,6 +374,19 @@ declare function selectConfig<T, S>(store: ConfigStore<T>, selector: (config: T)
 
 /**
  * Debounced file watcher for config hot-reload.
+ *
+ * Handles two failure modes that \`fs.watch()\` does NOT handle cleanly on its
+ * own (Codex HIGH #4):
+ *
+ * 1. Genuine watcher errors (NFS disconnect, permission loss): the \`error\`
+ *    event is propagated and the watcher is closed.
+ *
+ * 2. Rename-on-save: atomic editors (vim, VS Code) save via
+ *    \`write temp -> rename(temp, target)\`. fs.watch emits \`rename\` on the
+ *    target path and then silently keeps pointing at the now-dead inode.
+ *    No further \`change\` events ever arrive. We re-arm the watcher on
+ *    \`rename\` events by closing the current FSWatcher and re-opening it on
+ *    the same path (with a short retry if the new file isn't visible yet).
  */
 
 /** Options for \`watchConfigFile()\`. */
@@ -221,15 +397,21 @@ interface WatchConfigOptions {
     readonly onChange: () => void | Promise<void>;
     /** Debounce interval in milliseconds. Defaults to 300. */
     readonly debounceMs?: number | undefined;
+    /**
+     * Called when the watcher hits an unrecoverable error (NFS disconnect,
+     * permission loss). Optional — default is silent.
+     */
+    readonly onError?: ((err: unknown) => void) | undefined;
 }
 /**
  * Watches a config file for changes using \`fs.watch()\`.
  *
  * Returns an unsubscribe function that stops watching.
  * Multiple rapid writes are coalesced by the debounce interval.
+ * Rename-on-save events re-arm the watcher automatically.
  */
 declare function watchConfigFile(options: WatchConfigOptions): ConfigUnsubscribe;
 
-export { type ConfigManager, type CreateConfigManagerOptions, DEFAULT_KOI_CONFIG, type LoadConfigOptions, type ProcessIncludesOptions, type ResolvedKoiOptions, SENSITIVE_PATTERN, type WatchConfigOptions, type WritableConfigStore, createConfigManager, createConfigStore, deepMerge, getKoiConfigJsonSchema, interpolateEnv, loadConfig, loadConfigFromString, maskConfig, processIncludes, resolveConfig, resolveKoiOptions, selectConfig, validateKoiConfig, watchConfigFile };
+export { type ChangedPath, type ClassifiedPaths, type ConfigChange, type ConfigConsumer, type ConfigManager, type ConfigRejectReason, type ConfigReloadEvent, type CreateConfigManagerOptions, DEFAULT_KOI_CONFIG, FIELD_CLASSIFICATION, type LoadConfigOptions, type ProcessIncludesOptions, type ReloadClass, type ResolvedKoiOptions, SENSITIVE_PATTERN, UNCLASSIFIED_SECTIONS, type WatchConfigOptions, type WritableConfigStore, classifyChangedPaths, createConfigEventBus, createConfigManager, createConfigStore, deepMerge, diffConfig, getKoiConfigJsonSchema, interpolateEnv, loadConfig, loadConfigFromString, maskConfig, processIncludes, resolveConfig, resolveKoiOptions, selectConfig, validateKoiConfig, watchConfigFile };
 "
 `;

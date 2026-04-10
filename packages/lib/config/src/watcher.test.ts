@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { watchConfigFile } from "./watcher.js";
@@ -68,5 +68,62 @@ describe("watchConfigFile", () => {
     // Wait for debounce to settle
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(callCount).toBe(1);
+  });
+
+  test("dispose while a debounced change is pending clears the timer", async () => {
+    let callCount = 0;
+    const unsub = watchConfigFile({
+      filePath: configPath,
+      onChange: () => {
+        callCount++;
+      },
+      debounceMs: 200,
+    });
+    cleanup = undefined;
+    writeFileSync(configPath, "logLevel: debug\n");
+    // Dispose BEFORE debounce fires.
+    unsub();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(callCount).toBe(0);
+  });
+
+  test("rename-on-save: atomic tmp+rename triggers onChange and re-arms", async () => {
+    let callCount = 0;
+    cleanup = watchConfigFile({
+      filePath: configPath,
+      onChange: () => {
+        callCount++;
+      },
+      debounceMs: 30,
+    });
+    // First rename-on-save cycle
+    const tmp = `${configPath}.tmp`;
+    writeFileSync(tmp, "logLevel: debug\n");
+    renameSync(tmp, configPath);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(callCount).toBeGreaterThanOrEqual(1);
+
+    // A subsequent plain write should still trigger the re-armed watcher.
+    writeFileSync(configPath, "logLevel: warn\n");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("rearm gives up and calls onError when file disappears permanently", async () => {
+    let errorSeen = false;
+    cleanup = watchConfigFile({
+      filePath: configPath,
+      onChange: () => {},
+      debounceMs: 30,
+      onError: () => {
+        errorSeen = true;
+      },
+    });
+    // Delete the file outright — the watcher will fire `rename`, try to rearm,
+    // and give up after retries.
+    unlinkSync(configPath);
+    // Wait longer than the sum of REARM_DELAYS_MS (50+100+200 = 350ms).
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(errorSeen).toBe(true);
   });
 });
