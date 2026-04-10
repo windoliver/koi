@@ -5,7 +5,7 @@
  */
 
 import { resolve } from "node:path";
-import type { ResolvedMcpServerConfig } from "@koi/mcp";
+import type { ExternalServerConfig, ResolvedMcpServerConfig } from "@koi/mcp";
 import {
   computeServerKey,
   createMcpConnection,
@@ -252,9 +252,7 @@ async function runDebug(flags: McpFlags): Promise<ExitCode> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function loadConfigs(): Promise<
-  Record<string, { type?: string; [k: string]: unknown }> | undefined
-> {
+async function loadConfigs(): Promise<Readonly<Record<string, ExternalServerConfig>> | undefined> {
   const cwd = process.cwd();
   const paths = [
     resolve(cwd, ".mcp.json"),
@@ -264,7 +262,7 @@ async function loadConfigs(): Promise<
   for (const p of paths) {
     const result = await loadMcpJsonFile(p);
     if (result.ok) {
-      return result.value.mcpServers as Record<string, { type?: string; [k: string]: unknown }>;
+      return result.value.mcpServers;
     }
   }
   return undefined;
