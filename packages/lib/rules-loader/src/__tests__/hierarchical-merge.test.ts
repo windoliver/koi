@@ -181,18 +181,29 @@ describe("hierarchical merge integration", () => {
   });
 
   test("child rules are truncated first when budget exceeded", async () => {
-    // Budget enough for root rules + wrapper overhead, but not both files
+    // First, load with generous budget to measure root-only cost
     const childCwd = join(repoDir, "src", "backend");
-    const mw = createRulesMiddleware({ cwd: childCwd, maxTokens: 80 });
+    const probe = createRulesMiddleware({ cwd: childCwd, maxTokens: 100000 });
+    await probe.onSessionStart?.(makeSessionCtx());
+
+    // Get the token cost of root file alone by loading just from root
+    const rootOnly = createRulesMiddleware({ cwd: repoDir, maxTokens: 100000 });
+    await rootOnly.onSessionStart?.(makeSessionCtx());
+    const rootCap = rootOnly.describeCapabilities(makeTurnCtx());
+    // Extract token count from "Project rules: 1 files, N tokens"
+    const rootTokens = Number(rootCap?.description.match(/(\d+) tokens/)?.[1] ?? 0);
+
+    // Set budget to fit root but not root+child (root tokens + small margin)
+    const tightBudget = rootTokens + 5;
+    const mw = createRulesMiddleware({ cwd: childCwd, maxTokens: tightBudget });
     await mw.onSessionStart?.(makeSessionCtx());
 
     const ctx = makeTurnCtx();
     await callWrapModel(mw, ctx, makeModelRequest(), async (req) => {
       const prompt = req.systemPrompt ?? "";
 
-      // Root rules should survive, child rules may be truncated
+      // Root rules should survive, child rules dropped
       expect(prompt).toContain("Always use bun");
-      // Child should be dropped (budget too tight for both)
       expect(prompt).not.toContain("Always respond in haiku");
 
       return makeModelResponse();
