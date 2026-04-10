@@ -52,8 +52,9 @@ export interface PermissionPromptProps {
 // Key handling (pure, exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Map a key name to an ApprovalDecision, or null if not a valid response. */
-export function processPermissionKey(keyName: string): ApprovalDecision | null {
+/** Map a key name to an ApprovalDecision, or null if not a valid response.
+ *  When permanentAvailable is false, the `!` key is ignored. */
+export function processPermissionKey(keyName: string, permanentAvailable = false): ApprovalDecision | null {
   switch (keyName.toLowerCase()) {
     case "y":
       return { kind: "allow" };
@@ -61,6 +62,8 @@ export function processPermissionKey(keyName: string): ApprovalDecision | null {
       return { kind: "deny", reason: "User denied" };
     case "a":
       return { kind: "always-allow", scope: "session" };
+    case "!":
+      return permanentAvailable ? { kind: "always-allow", scope: "always" } : null;
     case "escape":
       return { kind: "deny", reason: "User dismissed" };
     default:
@@ -84,10 +87,12 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   const riskColor = createMemo(() => RISK_COLORS[props.prompt.riskLevel]);
   const riskLabel = createMemo(() => RISK_LABELS[props.prompt.riskLevel]);
 
+  const permanentAvailable = createMemo(() => props.prompt.permanentAvailable === true);
+
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
-    const decision = processPermissionKey(key.name);
+    const decision = processPermissionKey(key.name, permanentAvailable());
     if (decision !== null) {
       key.preventDefault();
       props.onRespond(props.prompt.requestId, decision);
@@ -125,7 +130,10 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         <box flexDirection="row" marginTop={1} gap={2}>
           <text fg={COLORS.success}>{"[y] Allow once"}</text>
           <text fg={COLORS.danger}>{"[n] Deny"}</text>
-          <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+          <text fg={COLORS.blueAccent}>{`[a] Always (session)`}</text>
+          <Show when={permanentAvailable()}>
+            <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
+          </Show>
           <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
         </box>
       </Show>

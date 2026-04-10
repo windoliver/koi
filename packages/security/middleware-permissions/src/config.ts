@@ -8,6 +8,8 @@ import type { PermissionBackend } from "@koi/core/permission-backend";
 import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import type { CircuitBreakerConfig } from "@koi/errors";
 
+import type { ApprovalStore } from "./approval-store.js";
+
 // ---------------------------------------------------------------------------
 // Cache config
 // ---------------------------------------------------------------------------
@@ -80,6 +82,12 @@ export interface PermissionsMiddlewareConfig {
   readonly denialEscalation?: boolean | DenialEscalationConfig;
   /** Callback emitted after each approval decision, producing a source:"user" trajectory step. */
   readonly onApprovalStep?: (sessionId: string, step: RichTrajectoryStep) => void;
+  /**
+   * Persistent approval store for cross-session "always" grants.
+   * When configured, "always-allow" decisions are persisted to SQLite and
+   * survive process restart. Constructed externally via `createApprovalStore`.
+   */
+  readonly persistentApprovals?: ApprovalStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +215,23 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // onApprovalStep — must be a function if set
   if (config.onApprovalStep !== undefined && typeof config.onApprovalStep !== "function") {
     return fail("config.onApprovalStep must be a function");
+  }
+
+  // persistentApprovals — object with has/grant/revoke methods
+  if (config.persistentApprovals !== undefined) {
+    if (typeof config.persistentApprovals !== "object" || config.persistentApprovals === null) {
+      return fail("config.persistentApprovals must be an object");
+    }
+    const store = config.persistentApprovals as Record<string, unknown>;
+    if (typeof store.has !== "function") {
+      return fail("config.persistentApprovals.has must be a function");
+    }
+    if (typeof store.grant !== "function") {
+      return fail("config.persistentApprovals.grant must be a function");
+    }
+    if (typeof store.revoke !== "function") {
+      return fail("config.persistentApprovals.revoke must be a function");
+    }
   }
 
   return { ok: true, value: config as unknown as PermissionsMiddlewareConfig };
