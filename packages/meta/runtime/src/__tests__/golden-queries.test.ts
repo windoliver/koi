@@ -453,7 +453,7 @@ eval("malicious");
 // ---------------------------------------------------------------------------
 
 import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
-import type { InboundMessage } from "@koi/core";
+import type { InboundMessage, ModelRequest, ModelResponse } from "@koi/core";
 
 describe("Golden: @koi/context-manager", () => {
   function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
@@ -500,5 +500,119 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.contextWindowSize).toBe(1_000_000);
     expect(cfg.softTriggerFraction).toBeDefined();
     expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/model-router (#1626)
+// ---------------------------------------------------------------------------
+
+import {
+  createModelRouter,
+  createModelRouterMiddleware,
+  validateRouterConfig,
+} from "@koi/model-router";
+
+describe("Golden: @koi/model-router", () => {
+  function makeRequest(text = "hello"): ModelRequest {
+    return {
+      messages: [{ senderId: "user", content: [{ kind: "text", text }], timestamp: 0 }],
+      model: "placeholder",
+    };
+  }
+
+  function makeResponse(model: string): ModelResponse {
+    return { content: `from ${model}`, model, usage: { inputTokens: 5, outputTokens: 10 } };
+  }
+
+  test("fallback routing: primary fails → secondary serves request", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const result = await router.route(makeRequest());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.model).toBe("safe");
+
+    const metrics = router.getMetrics();
+    expect(metrics.totalRequests).toBe(1);
+    expect(metrics.byTarget.get("primary:fast")?.failures).toBe(1);
+    expect(metrics.byTarget.get("backup:safe")?.requests).toBe(1);
+
+    const health = router.getHealth();
+    expect(health.get("primary:fast")?.state).toBe("CLOSED");
+    expect(health.get("backup:safe")?.state).toBe("CLOSED");
+    router.dispose();
+  });
+
+  test("middleware factory wires router into KoiMiddleware with correct priority", () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [{ provider: "p", model: "m", adapterConfig: {} }],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "p",
+        {
+          id: "p",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("m");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "x" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    expect(mw.name).toBe("model-router");
+    expect(mw.priority).toBe(900);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    router.dispose();
   });
 });
