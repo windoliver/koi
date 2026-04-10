@@ -134,8 +134,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   };
 
   // --- 401 handling ---
+  // On 401: try refreshing first (access token may have expired normally).
+  // Only clear tokens and prompt re-auth if refresh also fails.
   const handleUnauthorized = async (): Promise<void> => {
     const tm = await getTokenManager();
+    // Attempt to get a fresh access token via refresh
+    const refreshed = await tm.getAccessToken();
+    if (refreshed !== undefined) {
+      // Refresh succeeded — the next reconnect will pick up the new token.
+      // No need to clear tokens or prompt user.
+      return;
+    }
+    // Refresh failed or no tokens — clear stale state and notify user
     await tm.clearTokens();
     await runtime.onReauthNeeded(serverName);
   };

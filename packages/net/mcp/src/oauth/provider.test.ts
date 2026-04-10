@@ -91,7 +91,7 @@ describe("createOAuthAuthProvider", () => {
     expect(result).toBe("valid-token");
   });
 
-  test("handleUnauthorized clears tokens and notifies runtime", async () => {
+  test("handleUnauthorized clears tokens and notifies runtime when refresh fails", async () => {
     const storage = createMockStorage();
     const runtime = createMockRuntime();
 
@@ -107,10 +107,10 @@ describe("createOAuthAuthProvider", () => {
       storage,
     });
 
-    // Pre-store tokens
+    // Pre-store expired tokens (no refresh token — can't refresh)
     const { computeServerKey } = await import("./tokens.js");
     const key = computeServerKey("test", "https://mcp.example.com");
-    await storage.set(key, JSON.stringify({ accessToken: "old" }));
+    await storage.set(key, JSON.stringify({ accessToken: "old", expiresAt: Date.now() - 1000 }));
 
     await provider.handleUnauthorized();
 

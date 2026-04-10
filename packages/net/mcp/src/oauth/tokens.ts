@@ -92,24 +92,43 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       return undefined;
     }
 
+    // Capture the refresh token we used — needed for compare-and-swap below
+    const usedRefreshToken = tokens.refreshToken;
+
     const refreshResult = await refreshAccessToken(
-      tokens.refreshToken,
+      usedRefreshToken,
       metadata.tokenEndpoint,
       clientId,
     );
-    if (!refreshResult.ok) {
-      if (refreshResult.terminal) {
-        // Terminal failure (invalid_grant, revoked) — clear tokens under lock
-        await storage.withLock(storageKey, () => storage.delete(storageKey));
-      }
-      return undefined;
-    }
 
-    // Write-back refreshed tokens under lock
-    await storage.withLock(storageKey, () =>
-      storage.set(storageKey, JSON.stringify(refreshResult.tokens)),
-    );
-    return refreshResult.tokens.accessToken;
+    // Compare-and-swap: under lock, check that the on-disk refresh token
+    // still matches what we used. If another process already refreshed and
+    // rotated the token, our result (or deletion) is stale — skip it.
+    return storage.withLock(storageKey, async () => {
+      const current = await getTokens();
+
+      if (!refreshResult.ok) {
+        if (refreshResult.terminal && current?.refreshToken === usedRefreshToken) {
+          // Only clear if no one else has refreshed since we started
+          await storage.delete(storageKey);
+        }
+        // If another process already refreshed, return their access token
+        if (current !== undefined && !isExpired(current)) {
+          return current.accessToken;
+        }
+        return undefined;
+      }
+
+      // Another process may have already written a newer token set
+      if (current?.refreshToken !== undefined && current.refreshToken !== usedRefreshToken) {
+        // Someone else already refreshed — use theirs if valid
+        if (!isExpired(current)) return current.accessToken;
+      }
+
+      // Write our refreshed tokens
+      await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
+      return refreshResult.tokens.accessToken;
+    });
   };
 
   return { getAccessToken, storeTokens, clearTokens, hasTokens };
