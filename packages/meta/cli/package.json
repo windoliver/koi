@@ -64,7 +64,6 @@
     "@koi/tasks": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/tool-notebook": "workspace:*",
-    "@koi/lsp": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/secure-storage": "workspace:*",
     "@koi/tools-bash": "workspace:*",
