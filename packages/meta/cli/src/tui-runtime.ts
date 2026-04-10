@@ -61,6 +61,7 @@ import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createExtractionMiddleware } from "@koi/middleware-extraction";
 import { createGoalMiddleware } from "@koi/middleware-goal";
+import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
   createRetrySignalBroker,
@@ -254,6 +255,11 @@ export interface TuiRuntimeConfig {
    * via createSkillsMcpBridge.
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
+  /**
+   * Persistent approval store for cross-session "always" grants.
+   * When provided, durable approvals survive process restart.
+   */
+  readonly persistentApprovals?: ApprovalStore | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -569,6 +575,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: "koi tui — default permission mode",
+    persistentApprovals: config.persistentApprovals,
   });
 
   // --- @koi/fs-local: local filesystem backend ---
