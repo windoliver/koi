@@ -1,0 +1,543 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "bash-ast-too-complex",
+  "agent": {
+    "name": "golden-bash-ast-too-complex",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "Bash",
+        "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:57.326Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:57.327Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-10T01:19:57.336Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the Bash tool to run this exact command and report the output: `export KOI_GREETING=hello; echo \"$KOI_GREETING\"`",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 303,
+        "completion_tokens": 21
+      },
+      "duration_ms": 924,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Bash",
+            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "2c279190e5bb639f7d84ab7cf4ca152717a07ac362703b9add5fdd780c11918a"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-10T01:19:58.263Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_Bash_3",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "export KOI_GREETING=hello; echo \"$KOI_GREETING\""
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_Bash_3",
+            "content": "{\"stdout\":\"hello\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}"
+          }
+        ]
+      },
+      "duration_ms": 39,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.280Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 942.8667909999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.307Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Bash({\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 40.50920899999983,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.308Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 941.5891659999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998279,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.309Z",
+      "model_name": "middleware:permissions",
+      "message": "Bash({\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 40.19095800000014,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "Bash",
+            "toolInput": "{\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1775783998306,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.310Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 940.579166,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998278,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.311Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 940.4754580000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the Bash tool to run this exact command and report the output: `export KOI_GREETING=hello; echo \"$KOI_GREETING\"`",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the Bash tool to run this exact command and report the output: `export KOI_GREETING=hello; echo \"$KOI_GREETING\"`"
+          }
+        ],
+        "_original_timestamp": 1775783998277,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.312Z",
+      "model_name": "middleware:goal",
+      "message": "Bash({\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 39.41079200000013,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998305,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.313Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 940.129291,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998276,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.314Z",
+      "model_name": "middleware:hooks",
+      "message": "Bash({\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 39.396792000000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998304,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.315Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 939.6834999999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998275,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.316Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Bash({\"command\":\"export KOI_GREETING=hello; echo \\\"$KOI_GREETING\\\"\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 39.0434580000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998303,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "timestamp": "2026-04-10T01:19:58.338Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"stdout\":\"hello\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":7}",
+      "observation": {
+        "results": [
+          {
+            "content": "The command `export KOI_GREETING=hello; echo \"$KOI_GREETING\"` was executed successfully. The standard output is \"hello\"."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 311,
+        "completion_tokens": 33
+      },
+      "duration_ms": 625,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Bash",
+            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "2c279190e5bb639f7d84ab7cf4ca152717a07ac362703b9add5fdd780c11918a"
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.970Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 626.4697080000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.971Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 626.4523750000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998969,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.972Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 626.1193749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998967,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.973Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 626.0979159999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998966,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.974Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 626.075625,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998965,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-10T01:19:58.975Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 626.0368749999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775783998964,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    }
+  ]
+}

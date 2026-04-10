@@ -58,6 +58,9 @@ export type {
 export { forgedSkill, fsSkill } from "./assembly.js";
 // audit backend — structured audit logging contract
 export type { AuditEntry, AuditSink, RedactionRule } from "./audit-backend.js";
+// bash rule pattern — shared argv matcher contract between @koi/bash-ast and
+// the permissions package (owned by L0 so both sides compile against one shape)
+export type { BashArgMatcher, BashRulePattern } from "./bash-rule-pattern.js";
 // brick component map — per-kind ECS type mapping
 export type { BrickComponentMap } from "./brick-component-map.js";
 // brick composition — pipeline algebra types
@@ -614,6 +617,7 @@ export type {
   HookEventName,
   HookExecutionResult,
   HookFilter,
+  HookPolicy,
   HookRedactionConfig,
   HookType,
   HttpHookConfig,

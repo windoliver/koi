@@ -18,6 +18,7 @@
 "layer:L0u":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/bash-ast/**"
       - "packages/**/bash-security/**"
       - "packages/**/channel-base/**"
       - "packages/**/config/**"
@@ -31,6 +32,8 @@
       - "packages/**/hash/**"
       - "packages/**/hook-prompt/**"
       - "packages/**/redaction/**"
+      - "packages/**/rules-loader/**"
+      - "packages/**/secure-storage/**"
       - "packages/**/session-repair/**"
       - "packages/**/shutdown/**"
       - "packages/**/skill-scanner/**"
@@ -53,6 +56,7 @@
     - any-glob-to-any-file:
       - "packages/**"
       - "!packages/**/agent/cli/**"
+      - "!packages/**/bash-ast/**"
       - "!packages/**/bash-security/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/cli/**"
@@ -69,7 +73,9 @@
       - "!packages/**/hash/**"
       - "!packages/**/hook-prompt/**"
       - "!packages/**/redaction/**"
+      - "!packages/**/rules-loader/**"
       - "!packages/**/runtime/**"
+      - "!packages/**/secure-storage/**"
       - "!packages/**/session-repair/**"
       - "!packages/**/shutdown/**"
       - "!packages/**/skill-scanner/**"

@@ -813,3 +813,54 @@ is pending, the approval is cancelled with a `PERMISSION` error instead of silen
 winning and executing the tool in what the user believes is a fresh session.
 
 > **Maintenance note (PR #1506):** Added `biome-ignore lint/style/noNonNullAssertion` annotations with justification comments to bounds-checked index accesses in the batch permission resolver. The `uncachedIndices`/`validated` array indexing invariant (`j < both arrays' lengths`) is preserved; restructuring to remove `!` would break the length-check guard. No functional changes.
+
+---
+
+## Persistent Approval Memory (#1622)
+
+Cross-session "always" approval scope backed by SQLite. When a user grants `always-allow`
+with scope `"always"`, the decision persists to a durable store and survives process restart.
+
+### New exports
+
+- `createApprovalStore(config)` — SQLite-backed persistent approval store
+- `ApprovalStore` interface with `has`, `grant`, `revoke`, `revokeAll`, `list`, `close`
+- `ApprovalGrant` type — `{ userId, agentId, toolId, grantedAt }`
+
+### New config options
+
+- `persistentApprovals?: ApprovalStore` — inject the store for cross-session grants
+- `persistentAgentId?: string` — stable agent identifier for persistent grant keys
+  (required for grants to survive restart, since `ctx.session.agentId` is a random UUID)
+
+### Lookup cascade (updated)
+
+1. **Persistent store (SQLite)** — `has(userId, persistentAgentId, toolId)`, fail-open on error
+2. Session always-allow set (in-memory, existing behavior)
+3. Approval cache (TTL, existing behavior)
+4. Prompt user
+
+### Security invariants
+
+- Anonymous sessions (`userId === undefined`) cannot create or replay persistent grants
+- Grant key includes `userId` to prevent cross-user inheritance
+- Schema version field (`schema_version`) lets apps invalidate stale grants on policy changes
+- No destructive startup pruning — lookups filter by version for rollback safety
+- Fail-open on store errors (corrupt/locked DB → fall through to prompt, not silent deny)
+- Fail-safe on persist errors (tool executes after user approval, permanence just not recorded)
+
+### New handle methods
+
+- `revokePersistentApproval(userId, agentId, toolId)` — revoke a specific grant
+- `revokeAllPersistentApprovals()` — revoke all grants
+- `listPersistentApprovals()` — list all grants (for UI/diagnostics)
+
+### Audit events
+
+New `metadata.permissionEvent` field on audit entries:
+- `"asked"` — backend returned `ask`, prompting user
+- `"granted"` — user allowed the tool call
+- `"denied"` — user denied the tool call
+- `"remembered"` — persistent or session grant matched (fast-path replay)
+
+See `docs/L2/security-permissions.md` for the end-to-end flow and TUI integration details.

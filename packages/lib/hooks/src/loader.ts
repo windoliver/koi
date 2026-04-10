@@ -7,6 +7,8 @@
 import type { HookConfig, KoiError, Result } from "@koi/core";
 import { HOOK_EVENT_KINDS } from "@koi/core";
 import { validateWith } from "@koi/validation";
+import type { HookTier, RegisteredHook } from "./policy.js";
+import { createRegisteredHooks } from "./policy.js";
 import { hookConfigArraySchema } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -110,4 +112,46 @@ function loadHooksInternal(raw: unknown): Result<LoadHooksResult, KoiError> {
   const warnings = collectEventWarnings(active);
 
   return { ok: true, value: { hooks: active, warnings } };
+}
+
+// ---------------------------------------------------------------------------
+// Registered hooks loader — validates + tags with tier
+// ---------------------------------------------------------------------------
+
+/** Successful load result for registered hooks including optional warnings. */
+export interface LoadRegisteredHooksResult {
+  readonly hooks: readonly RegisteredHook[];
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Validates raw hook config and returns `RegisteredHook[]` tagged with the given tier.
+ *
+ * Combines `loadHooks` validation with `createRegisteredHooks` tagging.
+ */
+export function loadRegisteredHooks(
+  raw: unknown,
+  tier: HookTier,
+): Result<readonly RegisteredHook[], KoiError> {
+  const result = loadHooksInternal(raw);
+  if (!result.ok) return result;
+  return { ok: true, value: createRegisteredHooks(result.value.hooks, tier) };
+}
+
+/**
+ * Like `loadRegisteredHooks`, but also returns warnings for unknown event kinds.
+ */
+export function loadRegisteredHooksWithDiagnostics(
+  raw: unknown,
+  tier: HookTier,
+): Result<LoadRegisteredHooksResult, KoiError> {
+  const result = loadHooksInternal(raw);
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    value: {
+      hooks: createRegisteredHooks(result.value.hooks, tier),
+      warnings: result.value.warnings,
+    },
+  };
 }

@@ -8,6 +8,7 @@ export default defineConfig({
       composite: false,
     },
   },
+  external: ["bun:sqlite"],
   clean: true,
   treeshake: true,
   target: "node22",

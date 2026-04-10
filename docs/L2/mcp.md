@@ -1,7 +1,7 @@
 # @koi/mcp — MCP Transport Layer
 
 **Layer:** L2  
-**Depends on:** `@koi/core` (L0), `@koi/errors` (L0u), `@koi/validation` (L0u), `@modelcontextprotocol/sdk`
+**Depends on:** `@koi/core` (L0), `@koi/errors` (L0u), `@koi/secure-storage` (L0u), `@koi/validation` (L0u), `@modelcontextprotocol/sdk`
 
 ## Purpose
 
@@ -79,6 +79,11 @@ Built-in: `createBearerAuthProvider(token)` for static tokens.
 | `tool-adapter.ts` | MCP→Koi tool mapping, namespacing helpers |
 | `resolver.ts` | `createMcpResolver()` — Resolver<ToolDescriptor, Tool> |
 | `component-provider.ts` | `createMcpComponentProvider()` — ECS integration |
+| `oauth/provider.ts` | `createOAuthAuthProvider()` — OAuth 2.0 lifecycle |
+| `oauth/tokens.ts` | Token persistence + locked refresh via `@koi/secure-storage` |
+| `oauth/discovery.ts` | RFC 9728/8414 metadata discovery |
+| `oauth/pkce.ts` | PKCE code verifier + S256 challenge |
+| `oauth/types.ts` | `OAuthRuntime`, `OAuthTokens`, `McpOAuthConfig` |
 
 ## Resolver
 
@@ -150,9 +155,79 @@ interface McpAuthProvider {
 }
 ```
 
-Async-ready: implementations can be sync (static bearer token) or async (OAuth 2.1 token refresh). Callers always `await` the result.
+Async-ready: implementations can be sync (static bearer token) or async (OAuth 2.0 token refresh). Callers always `await` the result.
 
-Built-in: `createBearerAuthProvider(token)` for static API keys.
+Built-in providers:
+- `createBearerAuthProvider(token)` — static API keys
+- `createOAuthAuthProvider(options)` — full OAuth 2.0 with PKCE, token refresh, and keychain storage
+
+## OAuth 2.0 Support
+
+OAuth is supported for HTTP transport only (SSE does not inject auth headers).
+
+### Configuration
+
+```json
+{
+  "mcpServers": {
+    "remote-server": {
+      "type": "http",
+      "url": "https://mcp.example.com/v1",
+      "oauth": {
+        "clientId": "my-client-id",
+        "callbackPort": 8912,
+        "authServerMetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server"
+      }
+    }
+  }
+}
+```
+
+### Architecture
+
+OAuth is split across two layers:
+
+- **Transport layer** (`@koi/mcp`): token management, PKCE, metadata discovery, token exchange, refresh
+- **Host layer** (CLI): browser launch, callback server, user interaction via `OAuthRuntime` interface
+
+```typescript
+interface OAuthRuntime {
+  readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<string>;
+  readonly onReauthNeeded: (serverName: string) => Promise<void>;
+}
+```
+
+### Token Storage
+
+Tokens are stored in the OS keychain via `@koi/secure-storage` (L0u):
+- macOS: Keychain Services via `security` CLI
+- Linux: libsecret via `secret-tool` CLI
+- No insecure fallback — throws on unsupported platforms
+
+File-based locking (`~/.koi/locks/`) ensures safe concurrent access across agent and CLI processes.
+
+### OAuth Flow
+
+1. **Discovery**: RFC 9728 (Protected Resource Metadata) → RFC 8414 (Authorization Server Metadata)
+2. **Authorization**: PKCE challenge → browser → callback server → auth code
+3. **Token Exchange**: POST to token endpoint with code + verifier
+4. **Refresh**: Automatic on `token()` when access token is expired
+5. **Re-auth**: On 401 mid-session, connection transitions to `auth-needed` state
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `koi mcp list` | List configured servers and transport type |
+| `koi mcp auth <server>` | Run OAuth flow (opens browser) |
+| `koi mcp logout <server>` | Clear stored tokens |
+| `koi mcp debug <server>` | Connection diagnostic |
+
+All support `--json` for machine-readable output.
+
+### Mid-Session 401 Handling
+
+When `listTools()` or `callTool()` receives a 401/403, the connection transitions to `auth-needed` state (not `error`). This allows the host to trigger re-authentication without losing the connection context.
 
 ## Tool Origin
 

@@ -16,6 +16,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  * Importable by both L1 and L2 packages.
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/bash-ast",
   "@koi/bash-security",
   "@koi/channel-base",
   "@koi/config",
@@ -29,6 +30,8 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/hash",
   "@koi/hook-prompt",
   "@koi/redaction",
+  "@koi/rules-loader",
+  "@koi/secure-storage",
   "@koi/session-repair",
   "@koi/shutdown",
   "@koi/skill-scanner",
@@ -45,6 +48,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/mcp",
   "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",

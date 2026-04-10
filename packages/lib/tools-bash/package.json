@@ -17,6 +17,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
     "@koi/core": "workspace:*"
   },

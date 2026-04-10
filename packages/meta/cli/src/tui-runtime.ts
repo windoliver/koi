@@ -27,7 +27,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
 import type {
@@ -57,20 +57,15 @@ import {
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver } from "@koi/mcp";
-import {
-  createMcpComponentProvider,
-  createMcpConnection,
-  createMcpResolver,
-  loadMcpJsonFile,
-  resolveServerConfig,
-} from "@koi/mcp";
+import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createExtractionMiddleware } from "@koi/middleware-extraction";
 import { createGoalMiddleware } from "@koi/middleware-goal";
+import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
   createRetrySignalBroker,
@@ -79,6 +74,7 @@ import {
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { runTurn } from "@koi/query-engine";
+import { createRulesMiddleware } from "@koi/rules-loader";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
@@ -104,6 +100,7 @@ import {
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createTranscriptAdapter } from "./engine-adapter.js";
+import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 
 // ---------------------------------------------------------------------------
@@ -278,6 +275,11 @@ export interface TuiRuntimeConfig {
    * via createSkillsMcpBridge.
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
+  /**
+   * Persistent approval store for cross-session "always" grants.
+   * When provided, durable approvals survive process restart.
+   */
+  readonly persistentApprovals?: ApprovalStore | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -370,9 +372,7 @@ async function loadMcp(
   if (!result.ok) return undefined;
   if (result.value.servers.length === 0) return undefined;
 
-  const connections = result.value.servers.map((server) =>
-    createMcpConnection(resolveServerConfig(server)),
-  );
+  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
   const resolver = createMcpResolver(connections);
   const provider = createMcpComponentProvider({ resolver });
 
@@ -439,7 +439,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   let pluginMcpSetup: McpSetup | undefined;
   if (pluginComponents.mcpServers.length > 0) {
     const connections = pluginComponents.mcpServers.map((server) =>
-      createMcpConnection(resolveServerConfig(server)),
+      createOAuthAwareMcpConnection(server),
     );
     const resolver = createMcpResolver(connections);
     const provider = createMcpComponentProvider({ resolver });
@@ -505,28 +505,33 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // that delegates to the TUI's model adapter for single-shot verification.
   const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
   // let: justified — set after async load
-  let loadedHooks: readonly import("@koi/core").HookConfig[] = [];
+  let loadedHooks: readonly import("@koi/hooks").RegisteredHook[] = [];
   try {
     const raw: unknown = await Bun.file(hooksConfigPath).json();
-    const hookResult = loadHooks(raw);
+    const hookResult = loadRegisteredHooks(raw, "user");
     if (hookResult.ok) {
-      const agentHooks = hookResult.value.filter((h) => h.kind === "agent");
+      const agentHooks = hookResult.value.filter((rh) => rh.hook.kind === "agent");
       if (agentHooks.length > 0) {
         console.warn(
           `[koi tui] ${agentHooks.length} agent hook(s) skipped (not supported in TUI): ` +
-            agentHooks.map((h) => h.name).join(", "),
+            agentHooks.map((rh) => rh.hook.name).join(", "),
         );
       }
-      loadedHooks = hookResult.value.filter((h) => h.kind !== "agent");
+      loadedHooks = hookResult.value.filter((rh) => rh.hook.kind !== "agent");
     }
   } catch {
     // Absent or unreadable — silently skip (no hooks configured)
   }
 
-  // Merge plugin hooks with user hooks (plugin hooks run first, user hooks override)
-  const allHooks: readonly import("@koi/core").HookConfig[] = [
-    ...pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+  // Merge plugin hooks (session tier) with user hooks (user tier).
+  // Plugin hooks run first within their tier; user hooks in the next tier phase.
+  const pluginRegistered = createRegisteredHooks(
+    pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+    "session",
+  );
+  const allHooks: readonly import("@koi/hooks").RegisteredHook[] = [
     ...loadedHooks,
+    ...pluginRegistered,
   ];
 
   // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
@@ -552,7 +557,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   };
 
-  const hasPromptHooks = allHooks.some((h) => h.kind === "prompt");
+  const hasPromptHooks = allHooks.some((rh) => rh.hook.kind === "prompt");
   const hookMw = createHookMiddleware({
     hooks: allHooks,
     promptCallFn: hasPromptHooks ? promptCallFn : undefined,
@@ -590,6 +595,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: "koi tui — default permission mode",
+    ...(config.persistentApprovals !== undefined
+      ? { persistentApprovals: config.persistentApprovals, persistentAgentId: "koi-tui" }
+      : {}),
   });
 
   // --- @koi/fs-local: local filesystem backend ---
@@ -692,9 +700,30 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   // --- @koi/tools-bash: Bash execution (auto-sandboxed when OS adapter available) ---
   // createBashToolWithHooks exposes resetCwd() for session reset (agent:clear / session:new).
+  //
+  // elicit (#1634): when the bash-ast walker classifies a command as
+  // too-complex (non-hard-deny), the tool routes it through the same
+  // approvalHandler as the permissions middleware. The user sees a
+  // dialog asking whether to run the specific command. This closes
+  // the full fail-closed loop by replacing the transitional regex
+  // fallback with an explicit user decision.
+  const bashElicit = async (params: {
+    readonly command: string;
+    readonly reason: string;
+    readonly nodeType?: string;
+  }): Promise<boolean> => {
+    const reasonPrefix = params.nodeType !== undefined ? ` (${params.nodeType})` : "";
+    const decision = await approvalHandler({
+      toolId: "Bash",
+      input: { command: params.command },
+      reason: `AST walker cannot safely analyse this command${reasonPrefix}: ${params.reason}. Approval delegates to the regex TTP classifier for defense-in-depth.`,
+    });
+    return decision.kind === "allow" || decision.kind === "always-allow";
+  };
   const bashHandle = createBashToolWithHooks({
     workspaceRoot: cwd,
     trackCwd: true,
+    elicit: bashElicit,
     ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
       ? { sandboxAdapter, sandboxProfile }
       : {}),
@@ -725,6 +754,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         onSubprocessEnd: () => {
           liveSubprocessCount--;
         },
+        elicit: bashElicit,
         ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
           ? { sandboxAdapter, sandboxProfile }
           : {}),
@@ -848,6 +878,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
+
+  // --- @koi/rules-loader: discover and inject hierarchical project rules ---
+  // Walks from cwd to git root, merges CLAUDE.md / AGENTS.md / .koi/context.md
+  // into the system prompt on every model call. Uses process.cwd() by default
+  // so rules follow the workspace root.
+  const rulesMw = createRulesMiddleware({ cwd });
 
   // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
   // Wraps the in-memory memory backend as a MemoryComponent for the extraction
@@ -986,6 +1022,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     eventTraceMw,
     hookMw,
     hookObserverMw,
+    rulesMw,
     permMw,
     exfiltrationGuardMw,
     extractionMw,
@@ -1030,6 +1067,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
+    userId: userInfo().username,
     loopDetection: false,
   });
 

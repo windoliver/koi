@@ -1,0 +1,35 @@
+{
+  "name": "@koi/bash-ast",
+  "description": "AST-based bash command analysis for permission matching",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "refresh-grammar": "bun scripts/refresh-grammar.ts"
+  },
+  "dependencies": {
+    "@koi/bash-security": "workspace:*",
+    "@koi/core": "workspace:*",
+    "web-tree-sitter": "0.26.8"
+  },
+  "devDependencies": {
+    "fast-check": "4.3.0"
+  },
+  "files": [
+    "dist",
+    "vendor"
+  ],
+  "koi": {
+    "optional": true
+  }
+}

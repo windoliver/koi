@@ -40,6 +40,7 @@
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../security/middleware-permissions" },
+    { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
     { "path": "../../sandbox/sandbox-os" },

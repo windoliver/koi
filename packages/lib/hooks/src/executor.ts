@@ -20,6 +20,8 @@ import { matchesHookFilter } from "./filter.js";
 import { checkReservedHeaders, validateHeaders } from "./header-sanitize.js";
 import type { HookExecutor } from "./hook-executor.js";
 import { resolveTimeout, validateHookUrl } from "./hook-validation.js";
+import type { RegisteredHook } from "./policy.js";
+import { createRegisteredHooks } from "./policy.js";
 import type { DnsResolverFn } from "./ssrf.js";
 import { defaultHookDnsResolver, pinResolvedIp, resolveAndValidateHookUrl } from "./ssrf.js";
 
@@ -538,7 +540,7 @@ function executeSingleHook(
  * @returns Results for all matching hooks, in declaration order
  */
 export async function executeHooks(
-  hooks: readonly HookConfig[],
+  hooks: readonly RegisteredHook[] | readonly HookConfig[],
   event: HookEvent,
   sessionSignal?: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
@@ -546,7 +548,13 @@ export async function executeHooks(
   promptExecutor?: HookExecutor | undefined,
   dnsResolver?: DnsResolverFn | undefined,
 ): Promise<readonly HookExecutionResult[]> {
-  const matching = hooks.filter((h) => matchesHookFilter(h.filter, event));
+  // Auto-detect bare HookConfig[] and wrap as "user" tier
+  const registered: readonly RegisteredHook[] =
+    hooks.length > 0 && "hook" in hooks[0]!
+      ? (hooks as readonly RegisteredHook[])
+      : createRegisteredHooks(hooks as readonly HookConfig[], "user");
+
+  const matching = registered.filter((rh) => matchesHookFilter(rh.hook.filter, event));
   if (matching.length === 0) {
     return [];
   }
@@ -589,8 +597,9 @@ export async function executeHooks(
   };
 
   for (let i = 0; i < matching.length; i++) {
-    const hook = matching[i];
-    if (hook === undefined) continue;
+    const rh = matching[i];
+    if (rh === undefined) continue;
+    const hook = rh.hook;
 
     if (hook.serial === true) {
       // Flush any pending parallel batch before running serial hook

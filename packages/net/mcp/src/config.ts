@@ -148,11 +148,18 @@ export interface StdioServerConfig {
   readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
+export interface McpOAuthExternalConfig {
+  readonly clientId?: string | undefined;
+  readonly callbackPort?: number | undefined;
+  readonly authServerMetadataUrl?: string | undefined;
+}
+
 export interface HttpServerConfig {
   readonly kind: "http";
   readonly name: string;
   readonly url: string;
   readonly headers?: Readonly<Record<string, string>> | undefined;
+  readonly oauth?: McpOAuthExternalConfig | undefined;
 }
 
 export interface SseServerConfig {
@@ -220,8 +227,19 @@ export function normalizeMcpServers(
       rejected.push(`${name}: headersHelper is not yet supported`);
       continue;
     }
-    if (config.oauth !== undefined) {
-      rejected.push(`${name}: oauth is not yet supported`);
+    // OAuth is supported for HTTP transport only. SSE transport does not
+    // inject auth headers, so OAuth + SSE would silently fail with 401.
+    if (config.oauth !== undefined && (config.type ?? "stdio") !== "http") {
+      rejected.push(
+        `${name}: OAuth is only supported with HTTP transport (not ${config.type ?? "stdio"})`,
+      );
+      continue;
+    }
+    // clientId is required for OAuth — dynamic client registration not yet supported
+    if (config.oauth !== undefined && config.oauth.clientId === undefined) {
+      rejected.push(
+        `${name}: OAuth requires clientId (dynamic client registration not yet supported)`,
+      );
       continue;
     }
 
@@ -278,13 +296,26 @@ function normalizeOne(
       return { server };
     }
     case "http": {
-      const c = config as { url: string; headers?: Record<string, string> };
+      const c = config as {
+        url: string;
+        headers?: Record<string, string>;
+        oauth?: { clientId?: string; callbackPort?: number; authServerMetadataUrl?: string };
+      };
       const headers = c.headers !== undefined ? expandRecord(c.headers) : undefined;
+      const oauth: McpOAuthExternalConfig | undefined =
+        c.oauth !== undefined
+          ? {
+              clientId: c.oauth.clientId,
+              callbackPort: c.oauth.callbackPort,
+              authServerMetadataUrl: c.oauth.authServerMetadataUrl,
+            }
+          : undefined;
       const server: McpServerConfig = {
         kind: "http",
         name,
         url: expand(c.url),
         headers: headers !== undefined && Object.keys(headers).length > 0 ? headers : undefined,
+        oauth,
       };
       if (allMissing.length > 0) {
         return { rejection: `${name}: missing env vars: ${allMissing.join(", ")}` };

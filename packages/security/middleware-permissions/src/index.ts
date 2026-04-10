@@ -11,6 +11,9 @@ export type {
   PermissionDecision,
   PermissionQuery,
 } from "@koi/core/permission-backend";
+// Persistent approval store
+export type { ApprovalGrant, ApprovalStore, ApprovalStoreConfig } from "./approval-store.js";
+export { createApprovalStore } from "./approval-store.js";
 // Classifier (pattern backend)
 export type { PatternBackendConfig, PermissionRules } from "./classifier.js";
 export {
@@ -36,7 +39,6 @@ export {
   DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
   validatePermissionsConfig,
 } from "./config.js";
-
 // Denial tracking
 export type { DenialRecord, DenialSource, DenialTracker } from "./denial-tracker.js";
 export { createDenialTracker } from "./denial-tracker.js";

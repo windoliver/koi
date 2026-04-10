@@ -71,11 +71,15 @@ Output (truncated):
 
 ## Security
 
-1. **Classifier pipeline** (from `@koi/bash-security`): allowlist → injection → path → command
-2. **Hardened spawn**: `bash --noprofile --norc -c "set -euo pipefail; <cmd>"` 
-3. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
-4. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
-5. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
+1. **AST-based classifier pipeline** (from `@koi/bash-ast`, PR #1660): allowlist → byte-level prefilter → tree-sitter AST walker → rule match on argv. `@koi/bash-ast` replaces the regex-only classifier previously imported from `@koi/bash-security`. Grammar-aware analysis closes regex bypasses (obfuscated backslash escapes, ANSI-C strings, line-continuation smuggling) by extracting a trustworthy `argv[]` per simple command.
+2. **Two classify entry points**: when `config.elicit` is provided (TUI wiring), the tool calls `classifyBashCommandWithElicit` (async) so that `too-complex` commands route to an interactive user prompt instead of the regex fallback. When `elicit` is absent (non-interactive `koi start`, standalone tests), the sync `classifyBashCommand` with regex fallback is used instead. Closes #1634 for interactive consumers.
+3. **Fail-closed on parser failure**: `parse-unavailable` (init timeout, over-length, panic) is never permissive — the tool returns `Command blocked by security policy` with `category: "injection"`. Parse-unavailable NEVER reaches the elicit callback OR the regex fallback.
+4. **Hard-deny on shell-escape ambiguity**: `too-complex` reasons (`word`, `string_content`, `prefilter:line-continuation`) hard-deny regardless of path — the raw-text regex is fooled by the same escapes the walker rejects, AND a user asked about `cat \/etc\/passwd` can't reliably distinguish it from benign `cat /etc/passwd`.
+5. **One-time async init**: `initializeBashAst()` is called inside `execute()` before the classifier reads the cached parser. Idempotent via cached-promise; rejection resets the cache so subsequent callers retry fresh (no permanent DoS from a transient disk error).
+6. **Hardened spawn**: `bash --noprofile --norc -c "set -euo pipefail; <cmd>"`
+7. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
+8. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
+9. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
 
 ## OS-Level Sandboxing
 
@@ -140,7 +144,10 @@ L2  @koi/tools-bash
     depends on:
 L0  @koi/core         Tool, ToolExecuteOptions, ManagedTaskBoard, SandboxAdapter,
                       DEFAULT_UNSANDBOXED_POLICY, DEFAULT_SANDBOXED_POLICY
-L0u @koi/bash-security  classifyBashCommand(), BashPolicy
+L0u @koi/bash-ast       classifyBashCommand(), initializeBashAst() (#1660 —
+                        AST-based classifier replacing the regex-only one)
+L0u @koi/bash-security  BashPolicy, DEFAULT_BASH_POLICY (types + transitional
+                        regex fallback consumed by @koi/bash-ast)
 ```
 
 ### `sandboxed` field on `BashSuccessResult`
@@ -156,6 +163,7 @@ consumers can use this to verify confinement status without inspecting the runti
 ```json
 {
   "@koi/core": "workspace:*",
+  "@koi/bash-ast": "workspace:*",
   "@koi/bash-security": "workspace:*"
 }
 ```

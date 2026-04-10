@@ -243,7 +243,7 @@ function validateDecision(raw: unknown): PermissionDecision {
 }
 
 const VALID_APPROVAL_KINDS = new Set(["allow", "always-allow", "deny", "modify"]);
-const VALID_ALWAYS_ALLOW_SCOPES = new Set(["session"]);
+const VALID_ALWAYS_ALLOW_SCOPES = new Set(["session", "always"]);
 
 /**
  * Validate an approval handler response at the trust boundary.
@@ -254,7 +254,7 @@ function validateApprovalDecision(
   raw: unknown,
 ):
   | { readonly kind: "allow" }
-  | { readonly kind: "always-allow"; readonly scope: "session" }
+  | { readonly kind: "always-allow"; readonly scope: "session" | "always" }
   | { readonly kind: "deny"; readonly reason: string }
   | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> }
   | undefined {
@@ -279,7 +279,7 @@ function validateApprovalDecision(
   if (obj.kind === "always-allow") {
     const scope = obj.scope as string;
     if (!VALID_ALWAYS_ALLOW_SCOPES.has(scope)) return undefined;
-    return { kind: "always-allow", scope: scope as "session" };
+    return { kind: "always-allow", scope: scope as "session" | "always" };
   }
   return { kind: "allow" };
 }
@@ -395,12 +395,33 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
    * silently carry over into the next conversation.
    */
   readonly clearSessionApprovals: (sessionId: string) => void;
+  /**
+   * Revoke a persistent always-allow grant. Returns true if a grant existed.
+   * No-op if no persistent store is configured.
+   */
+  readonly revokePersistentApproval: (userId: string, agentId: string, toolId: string) => boolean;
+  /**
+   * Revoke all persistent always-allow grants.
+   * No-op if no persistent store is configured.
+   */
+  readonly revokeAllPersistentApprovals: () => void;
+  /**
+   * List all persistent always-allow grants (for UI/diagnostics).
+   * Returns empty array if no persistent store is configured.
+   */
+  readonly listPersistentApprovals: () => readonly import("./approval-store.js").ApprovalGrant[];
 }
 
 export function createPermissionsMiddleware(
   config: PermissionsMiddlewareConfig,
 ): PermissionsMiddlewareHandle {
-  const { backend, auditSink, description } = config;
+  const {
+    backend,
+    auditSink,
+    description,
+    persistentApprovals: persistentStore,
+    persistentAgentId,
+  } = config;
   const originalSink = config.onApprovalStep;
   // Additive runtime sinks — each createRuntime registers its own dispatch relay.
   // Using an array allows a single permissions handle to be shared across runtimes.
@@ -580,6 +601,8 @@ export function createPermissionsMiddleware(
       durationMs,
       metadata: {
         permissionCheck: true,
+        permissionEvent:
+          decision.effect === "ask" ? "asked" : decision.effect === "deny" ? "denied" : "granted",
         phase: "execute",
         resource,
         effect: decision.effect,
@@ -595,11 +618,11 @@ export function createPermissionsMiddleware(
   /** Validated approval decision — structural type matching validateApprovalDecision return. */
   type ValidatedApproval =
     | { readonly kind: "allow" }
-    | { readonly kind: "always-allow"; readonly scope: "session" }
+    | { readonly kind: "always-allow"; readonly scope: "session" | "always" }
     | { readonly kind: "deny"; readonly reason: string }
     | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> };
 
-  /** Audit an approval outcome after the human responds. */
+  /** Audit an approval outcome. Called both after user responds and on fast-path replay. */
   function auditApprovalOutcome(
     ctx: TurnContext,
     resource: string,
@@ -608,9 +631,18 @@ export function createPermissionsMiddleware(
     durationMs: number,
     sink: AuditSink,
     coalesced = false,
+    remembered = false,
   ): void {
+    // "remembered" = fast-path replay (persistent or session grant matched).
+    // "granted" / "denied" = user responded to a prompt.
+    const permissionEvent = remembered
+      ? "remembered"
+      : approval.kind === "deny"
+        ? "denied"
+        : "granted";
     const meta: Record<string, unknown> = {
       permissionCheck: true,
+      permissionEvent,
       phase: "approval_outcome",
       resource,
       approvalDecision: approval.kind,
@@ -1121,6 +1153,23 @@ export function createPermissionsMiddleware(
       };
     },
     clearSessionApprovals,
+    revokePersistentApproval(userId: string, agentId: string, toolId: string): boolean {
+      if (persistentStore === undefined) return false;
+      // Removes the durable row only. Active sessions retain their own
+      // session-scoped bypass until session end — the in-memory set does not
+      // encode user identity or grant source, so clearing it would break
+      // unrelated session-only approvals. New sessions will prompt again.
+      return persistentStore.revoke(userId, agentId, toolId);
+    },
+    revokeAllPersistentApprovals(): void {
+      // Same rationale: only clear durable state. Session-scoped grants
+      // remain until the session ends or clearSessionApprovals() is called.
+      persistentStore?.revokeAll();
+    },
+    listPersistentApprovals(): readonly import("./approval-store.js").ApprovalGrant[] {
+      if (persistentStore === undefined) return [];
+      return persistentStore.list();
+    },
   }) as PermissionsMiddlewareHandle;
 
   // -----------------------------------------------------------------------
@@ -1141,6 +1190,54 @@ export function createPermissionsMiddleware(
         message: `Tool "${request.toolId}" requires approval but no approval handler is configured`,
         retryable: false,
       });
+    }
+
+    // Check persistent always-allow grants (cross-session, SQLite-backed).
+    // Fail-open: if the store throws (corrupt DB, lock contention), fall through
+    // to the session check and ultimately to the user prompt. This is fail-safe —
+    // a broken store means more prompts, not silent denials or silent allows.
+    // Persistent grants require a real user identity — anonymous sessions
+    // must not share a durable principal, so we skip the store entirely.
+    // Use persistentAgentId if configured (stable across restarts) — falls back
+    // to the per-process agentId for multi-agent runtimes.
+    const persistentUserId = ctx.session.userId;
+    const persistentAid = persistentAgentId ?? ctx.session.agentId;
+    if (persistentStore !== undefined && persistentUserId !== undefined) {
+      try {
+        if (persistentStore.has(persistentUserId, persistentAid, request.toolId)) {
+          const persistentStartMs = clock();
+          getTracker(ctx.session.sessionId as string).record({
+            toolId: request.toolId,
+            reason: `auto-approved (persistent always-allow grant, agent: ${ctx.session.agentId})`,
+            timestamp: persistentStartMs,
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            source: "approval",
+          });
+          emitApprovalStep(
+            ctx,
+            request.toolId,
+            { kind: "always-allow", scope: "always" },
+            request.input,
+            persistentStartMs,
+          );
+          if (auditSink !== undefined) {
+            auditApprovalOutcome(
+              ctx,
+              request.toolId,
+              { kind: "always-allow", scope: "always" },
+              request.input,
+              clock() - persistentStartMs,
+              auditSink,
+              /* coalesced */ false,
+              /* remembered */ true,
+            );
+          }
+          return next(request);
+        }
+      } catch {
+        // Fall through to session/cache/prompt — fail-open.
+      }
     }
 
     // Check always-allowed set (from prior "always-allow" decisions).
@@ -1420,10 +1517,8 @@ export function createPermissionsMiddleware(
       }
 
       // Handle "always-allow" — add tool to session's always-allowed set.
-      // Only scope: "session" is supported. Cross-session persistence ("tool" scope)
-      // was removed from the public API to avoid contract skew — it will be added
-      // when durable storage is implemented.
       // Keyed by agentId+toolId so sub-agents cannot inherit a parent's approval.
+      // For scope "always", also persist to durable storage (SQLite).
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
         let allowed = alwaysAllowedBySession.get(sid);
@@ -1433,6 +1528,25 @@ export function createPermissionsMiddleware(
         }
         const grantKey = `${ctx.session.agentId}\0${request.toolId}`;
         allowed.add(grantKey);
+
+        // Persist to durable storage if scope is "always", store is configured,
+        // and a real user identity exists. Anonymous sessions cannot create durable
+        // grants — they silently downgrade to session scope.
+        // Fail-safe: if persist throws, the tool still executes (approval was given)
+        // but permanence is not recorded. The user gets re-prompted next session.
+        const grantUserId = ctx.session.userId;
+        const grantAgentId = persistentAgentId ?? ctx.session.agentId;
+        if (
+          approvalResult.scope === "always" &&
+          persistentStore !== undefined &&
+          grantUserId !== undefined
+        ) {
+          try {
+            persistentStore.grant(grantUserId, grantAgentId, request.toolId, clock());
+          } catch {
+            // Approval was given — execute the tool. Permanence just wasn't recorded.
+          }
+        }
 
         getTracker(sid).record({
           toolId: request.toolId,

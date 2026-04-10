@@ -18,6 +18,7 @@ export type {
   ExternalServerConfig,
   HttpServerConfig,
   McpJsonConfig,
+  McpOAuthExternalConfig,
   McpServerConfig,
   McpTransportKind,
   NormalizeResult,
@@ -52,10 +53,23 @@ export {
 } from "./errors.js";
 // .mcp.json loader
 export { loadMcpJsonFile, loadMcpJsonString } from "./mcp-json.js";
+export { discoverAuthServer } from "./oauth/discovery.js";
+export type { PkceChallenge } from "./oauth/pkce.js";
+export { createPkceChallenge } from "./oauth/pkce.js";
+export type { OAuthAuthProvider, OAuthProviderOptions } from "./oauth/provider.js";
+export { createOAuthAuthProvider } from "./oauth/provider.js";
+export type { TokenManager, TokenManagerOptions } from "./oauth/tokens.js";
+export { computeServerKey, createTokenManager } from "./oauth/tokens.js";
+// OAuth
+export type {
+  AuthServerMetadata,
+  McpOAuthConfig,
+  OAuthRuntime,
+  OAuthTokens,
+} from "./oauth/types.js";
 // Resolver
 export type { McpResolver, McpResolverOptions, McpServerFailure } from "./resolver.js";
 export { createMcpResolver } from "./resolver.js";
-
 // Schema normalization
 export { normalizeToolSchema } from "./schema.js";
 // State

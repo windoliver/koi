@@ -54,6 +54,8 @@ export interface PermissionPromptData {
   readonly riskLevel: PermissionRiskLevel;
   /** Optional metadata from the ApprovalRequest. */
   readonly metadata?: JsonObject | undefined;
+  /** Whether persistent "always" approval is available (store configured + user authenticated). */
+  readonly permanentAvailable?: boolean | undefined;
 }
 
 /** Transient overlay that preserves the underlying view. */

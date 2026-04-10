@@ -174,11 +174,11 @@ Engine adapter is wired directly from environment variables. Manifest-based
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT registered until real TUI dialogs are wired (tracked in #1582). Without dialog integration: plan-mode would flip a boolean without gating Bash/fs access, and AskUserQuestion would auto-answer without showing the user.
 - **No agent_spawn:** `agent_spawn` is intentionally not registered — child workers only have Glob/Grep (read-only) but the child prompt says "write files, run commands" which they cannot do. Deferred until workers route through `createKoi` with full middleware (#1582).
 - **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp).
-- **MCP wiring:** If `.mcp.json` exists in CWD, `createTuiRuntime()` loads MCP server configs, creates an `McpResolver` + `McpComponentProvider` (tools appear as available tools), and bridges MCP tools into the skill registry via `createSkillsMcpBridge` (tools discoverable via `query({ source: "mcp" })`). MCP connections are cleaned up on shutdown. Without `.mcp.json`, MCP loading is silently skipped.
+- **MCP wiring:** If `.mcp.json` exists in CWD, `createTuiRuntime()` loads MCP server configs and creates connections via `createOAuthAwareMcpConnection()` — HTTP servers with an `oauth` field automatically get an `OAuthAuthProvider` backed by `@koi/secure-storage` keychain tokens. Creates an `McpResolver` + `McpComponentProvider` (tools appear as available tools), and bridges MCP tools into the skill registry via `createSkillsMcpBridge` (tools discoverable via `query({ source: "mcp" })`). MCP connections are cleaned up on shutdown. Without `.mcp.json`, MCP loading is silently skipped. CLI management via `koi mcp list|auth|logout|debug` (#1633).
 - **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode is disabled in TUI (no `spawnFn`). The Skill tool is only registered when `createSkillTool()` succeeds at startup.
 - **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
-- **Hook loading:** At startup, `loadHooks()` reads `~/.koi/hooks.json` (if present) and passes the loaded hooks to `createHookMiddleware()`. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
+- **Hook loading:** At startup, `loadRegisteredHooks()` reads `~/.koi/hooks.json` (if present) and tags loaded hooks as `"user"` tier. Plugin hooks are tagged as `"session"` tier via `createRegisteredHooks()`. Both tiers are merged and passed to `createHookMiddleware()`. Tier-phased dispatch runs hooks in managed → user → session order. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
 - **Plugin activation:** At startup, `loadPluginComponents()` discovers enabled plugins from `~/.koi/plugins/` via `createGatedRegistry` and merges their components into the session: plugin hooks are prepended to user hooks before `createHookMiddleware()`; plugin MCP server configs create additional `McpConnection`s and a separate `McpComponentProvider`; plugin skill directories are scanned for `SKILL.md` files and registered via `skillsRuntime.registerExternal()`. Plugin MCP connections are cleaned up on shutdown alongside workspace MCP.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
@@ -260,6 +260,69 @@ is merged with workspace-specific overrides (network allowed, write access to `c
 tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
 the unsandboxed denylist-only path when the platform is unsupported.
 
+### Bash AST Classifier (PR #1660, issue #1634)
+
+`@koi/tools-bash` now delegates to `@koi/bash-ast` for command classification instead of
+the regex-only path from `@koi/bash-security`. Both `createBashTool()` and
+`createBashBackgroundTool()` await `initializeBashAst()` at the top of `execute()` before
+the sync classifier reads the cached parser. The async init is idempotent via a cached
+promise; on failure the cache resets so callers can retry (no permanent DoS from a
+transient disk error during WASM grammar load).
+
+The new pipeline:
+
+1. Byte-level prefilter (null bytes, control chars, URL-encoded traversal, hex-escaped
+   ANSI-C strings — reused from `@koi/bash-security`)
+2. Pre-parse reject on backslash-newline line continuation (smuggling defense)
+3. Tree-sitter-bash parse with a 50 ms deadline (`progressCallback`-driven cancellation)
+4. Allowlist walker extracts `SimpleCommand[] = { argv, envVars, redirects, text }`
+5. Unknown grammar → `too-complex`:
+   - Escape-related reasons (word/string_content/line-continuation) **hard-deny** — the
+     raw-text regex fallback is fooled by the same escapes the walker rejects
+   - Everything else falls through to `@koi/bash-security`'s regex TTP classifier as a
+     transitional compatibility shim until `#1622` ships three-state permissions with an
+     `ask-user` verdict
+6. `parse-unavailable` (init timeout, over-length, panic) → fail-closed hard-deny,
+   NEVER falls through
+
+End-to-end behaviour is unchanged for common commands (`git status`, `ls -la`, `echo hi`,
+`ls | head -3`) — they flow through the AST walker as `kind: "simple"`. Commands with
+`$VAR`, `$(cmd)`, loops, or `&&` with standalone assignments fall through to the regex
+classifier, preserving current behaviour.
+
+Codex adversarial review of the PR surfaced six real bugs (2 P1 security bypasses + 4
+P2 defects in walker escape handling, init-retry semantics, matcher regex flags, and
+`Tree` WASM memory management). All six are fixed in the same PR with 18 regression
+tests in `@koi/bash-ast/src/__tests__/codex-findings.test.ts`.
+
+### Elicit wiring (#1634 full closure)
+
+`koi tui` wires an `elicit` callback into `createBashTool()` and
+`createBashBackgroundTool()`. When the AST walker classifies a command as
+`too-complex` (non-hard-deny), the tool calls `classifyBashCommandWithElicit`
+from `@koi/bash-ast`, which invokes the elicit callback for interactive user
+approval instead of silently passing through the regex TTP fallback. The
+elicit callback is an adapter over the same `approvalHandler` the permissions
+middleware uses, so the user sees the standard permission dialog.
+
+Example flow for `echo $USER`:
+1. Agent calls Bash tool with `echo $USER`
+2. Permissions middleware allows the Bash tool call (rule-level)
+3. Tool's `execute()` calls `classifyBashCommandWithElicit`
+4. Prefilter passes, AST walker returns `kind: "too-complex"` with
+   `nodeType: "simple_expansion"`
+5. `classifyBashCommandWithElicit` calls the elicit callback with
+   `{ command: "echo $USER", reason: "variable expansion...", nodeType: "simple_expansion" }`
+6. Callback invokes `approvalHandler({ toolId: "Bash", input: { command }, reason })`
+7. User sees permission dialog: `Allow once / Deny / Always allow Bash this session`
+8. On approval: regex TTP defense-in-depth runs (no match), command spawns
+9. On denial: tool returns `Command blocked by security policy`
+
+`koi start` (non-interactive REPL) does NOT wire elicit — it uses the sync
+`classifyBashCommand` with the regex fallback because there is no prompt
+surface for the user. Both paths fail-closed on `parse-unavailable` and
+hard-deny shell-escape ambiguity regardless.
+
 ### Engine Worker (`engine-worker.ts`)
 
 A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):
@@ -284,7 +347,11 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
+| `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
+| `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
+| `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
@@ -292,7 +359,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
-| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279) |
+| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json` as `"user"` tier, plugin hooks as `"session"` tier (#1282). Hook policy tiers enable tier-phased dispatch (managed → user → session) and `HookPolicy` filtering. Wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279) |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory`. Spinner frames/interval centralized in `src/components/spinners.ts` (`DEFAULT_SPINNER`); no CLI-facing change |
 
 > **`@koi/sandbox-os` Linux backend hardening (PR #1617, issue #1339):** No CLI wiring changes. Internal improvements to the integrated `@koi/sandbox-os` L2 package: AppArmor usability probe (real `bwrap --unshare-all` smoke-test replaces sysctl-only check), per-exec named systemd transient scopes (`--unit=koi-sb-<id>`) for cgroup teardown on abort, `denyRead` file vs. directory differentiation (`--bind /dev/null` for files like `~/.netrc`/`~/.npmrc`; `--tmpfs` for directories), and `/bin/bash` absolute path in the ulimit wrapper. Linux bwrap confinement behavior in `tui-command.ts` improves on Ubuntu 24.04+ and systems with systemd user sessions.
@@ -411,3 +478,5 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 > **`createTuiRuntime` extraction + full L2 wiring (current branch):** `koi tui` now delegates runtime assembly to `createTuiRuntime()` in `tui-runtime.ts`. This factory wires the full L2 tool stack: `@koi/memory-tools` (in-memory backend), `@koi/spawn-tools` (stub `SpawnFn`), `@koi/middleware-semantic-retry` (retry signal coordination), `@koi/hooks` (hook middleware with `loadHooks()` from `~/.koi/hooks.json`), and `createHookObserver` (ATIF trajectory recording of hook executions). Returns `TuiRuntimeHandle` with `runtime`, `transcript`, `getTrajectorySteps()`, `resetSessionState()`, `shutdownBackgroundTasks()`, `hasActiveBackgroundTasks()`, and `sandboxActive`. The `check:cli-wiring` CI gate (`scripts/check-cli-wiring.ts`) dynamically enforces that every `@koi/runtime` L2 dependency is wired into the CLI.
 
 > **Task system hardening (PR #1659, issue #1557 review):** The CLI's TUI runtime picks up the `@koi/tasks` / `@koi/task-tools` / `@koi/spawn-tools` / `@koi/task-board` improvements from the review punch list automatically — no wiring changes in `tui-runtime.ts`. User-visible effects: `task_update(completed)` now reports accurate `durationMs` even if `activeForm` was patched mid-run (anchored to the new `Task.startedAt`); `task_list` polling is cheaper thanks to per-snapshot `board.blockedBy()` caching; on coordinator restart, pending tasks whose delegated child never claimed can be cleaned up via `recoverStaleDelegations()` (complements the existing `recoverOrphanedTasks`); file-store write paths refuse malformed task IDs and enforce single-writer PID locking for safety against accidental multi-process collisions. See `docs/L2/tasks.md`, `docs/L2/task-tools.md`, and `docs/L2/spawn-tools.md` for the package-level details.
+
+> **Persistent approvals wired into TUI (#1622):** `koi tui` now creates a SQLite-backed `ApprovalStore` at `~/.koi/approvals.db` and wires it into the permissions middleware with `persistentAgentId: "koi-tui"`. The permission prompt shows `[!] Always (permanent)` which grants approval that survives TUI restart. OS username (`userInfo().username`) is passed as `userId` to `createKoi` so the grant is scoped to the local user. Store creation is wrapped in try/catch; a corrupt DB gracefully degrades to session-only approvals without crashing the TUI.

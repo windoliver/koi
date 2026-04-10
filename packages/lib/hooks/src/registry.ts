@@ -11,10 +11,12 @@
  * on every execute call to prevent cross-session/cross-agent payload injection.
  */
 
-import type { HookConfig, HookEnvPolicy, HookEvent, HookExecutionResult } from "@koi/core";
+import type { HookEnvPolicy, HookEvent, HookExecutionResult, HookPolicy } from "@koi/core";
 import { executeHooks } from "./executor.js";
 import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
+import type { PolicyActor, RegisteredHook } from "./policy.js";
+import { applyPolicy } from "./policy.js";
 import type { DnsResolverFn } from "./ssrf.js";
 
 /** Maximum retries for a once-hook before it is permanently consumed. */
@@ -25,37 +27,37 @@ const MAX_ONCE_RETRIES = 3;
 // ---------------------------------------------------------------------------
 
 interface SessionState {
-  readonly hooks: readonly HookConfig[];
+  readonly hooks: readonly RegisteredHook[];
   readonly controller: AbortController;
   /** Trusted agent identity — bound at registration, enforced on execute. */
   readonly agentId: string;
   readonly envPolicy: HookEnvPolicy | undefined;
   /**
-   * Consumed once-hook indices (position in the hooks array).
-   * Tracked by index, not object reference, so duplicate references
-   * at different positions are treated as distinct instances.
+   * Consumed once-hook IDs (RegisteredHook.id).
+   * Tracked by stable ID, not index, so policy filtering and reordering
+   * do not break once-hook accounting.
    */
-  readonly consumed: Set<number>;
+  readonly consumed: Set<string>;
   /**
-   * In-flight once-hook indices — currently being executed but not yet
+   * In-flight once-hook IDs — currently being executed but not yet
    * committed or rolled back. Used to keep the serialization gate
    * active while execution is pending, even though the hook is already
    * in `consumed`. Cleared after execution completes.
    */
-  readonly inFlight: Set<number>;
+  readonly inFlight: Set<string>;
   /**
-   * Retry counter per once-hook index. Tracks how many times a once-hook
+   * Retry counter per once-hook ID. Tracks how many times a once-hook
    * has been rolled back for retry. After MAX_ONCE_RETRIES, the hook is
    * permanently consumed to prevent infinite respawns from deterministic
    * failures (e.g., prompt that never calls HookVerdict).
    */
-  readonly onceRetries: Map<number, number>;
+  readonly onceRetries: Map<string, number>;
   /**
-   * Once-hook indices that exhausted their retry budget while fail-closed.
+   * Once-hook IDs that exhausted their retry budget while fail-closed.
    * Future matching events get a synthetic block result instead of silently
    * skipping the hook. Fail-open hooks are not tracked here (silent skip is fine).
    */
-  readonly exhaustedBlockers: Set<number>;
+  readonly exhaustedBlockers: Set<string>;
   /**
    * Serialization chain for sessions with once-hooks. Concurrent
    * execute() calls await the previous call so a transient failure
@@ -81,8 +83,10 @@ export interface HookRegistry {
   readonly register: (
     sessionId: string,
     agentId: string,
-    hooks: readonly HookConfig[],
+    hooks: readonly RegisteredHook[],
     envPolicy?: HookEnvPolicy | undefined,
+    policy?: HookPolicy | undefined,
+    policyActor?: PolicyActor | undefined,
   ) => void;
   /**
    * Execute matching hooks for a session event. Returns empty array if session
@@ -166,17 +170,17 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     }
     // Check for exhausted fail-closed once-hooks that still match this event.
     // These produce a synthetic block result without running any hooks.
-    for (const idx of state.exhaustedBlockers) {
-      const hook = state.hooks[idx];
-      if (hook !== undefined && matchesHookFilter(hook.filter, safeEvent)) {
+    for (const id of state.exhaustedBlockers) {
+      const rh = state.hooks.find((h) => h.id === id);
+      if (rh !== undefined && matchesHookFilter(rh.hook.filter, safeEvent)) {
         const syntheticResults: readonly HookExecutionResult[] = [
           {
             ok: true,
-            hookName: hook.name,
+            hookName: rh.hook.name,
             durationMs: 0,
             decision: {
               kind: "block",
-              reason: `Once-hook "${hook.name}" exhausted retry budget (${MAX_ONCE_RETRIES} attempts) without success`,
+              reason: `Once-hook "${rh.hook.name}" exhausted retry budget (${MAX_ONCE_RETRIES} attempts) without success`,
             },
           },
         ];
@@ -192,28 +196,26 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       }
     }
 
-    // Claim matching once-hooks by index BEFORE awaiting execution.
-    // Index-based tracking handles duplicate object references correctly.
-    const claimedIndices: number[] = [];
-    for (let idx = 0; idx < state.hooks.length; idx++) {
-      const hook = state.hooks[idx];
+    // Claim matching once-hooks by ID BEFORE awaiting execution.
+    // ID-based tracking handles duplicate object references correctly.
+    const claimedIds: string[] = [];
+    for (const rh of state.hooks) {
       if (
-        hook !== undefined &&
-        hook.once === true &&
-        !state.consumed.has(idx) &&
-        matchesHookFilter(hook.filter, safeEvent)
+        rh.hook.once === true &&
+        !state.consumed.has(rh.id) &&
+        matchesHookFilter(rh.hook.filter, safeEvent)
       ) {
-        state.consumed.add(idx);
-        state.inFlight.add(idx);
-        claimedIndices.push(idx);
+        state.consumed.add(rh.id);
+        state.inFlight.add(rh.id);
+        claimedIds.push(rh.id);
       }
     }
 
     // Build execution list: include non-consumed hooks + this call's claimed hooks.
     // Preserves declaration order for serial/parallel batching.
-    const claimedSet = new Set(claimedIndices);
+    const claimedSet = new Set(claimedIds);
     const hooksToRun = state.hooks.filter(
-      (_h, idx) => !state.consumed.has(idx) || claimedSet.has(idx),
+      (rh) => !state.consumed.has(rh.id) || claimedSet.has(rh.id),
     );
 
     // Combine session-level and per-call signals so either can cancel hook
@@ -238,16 +240,16 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     } catch (e: unknown) {
       // executeHooks rejected unexpectedly — roll back all claimed hooks
       // so they aren't permanently stuck in consumed/inFlight state.
-      for (const idx of claimedIndices) {
-        state.inFlight.delete(idx);
-        state.consumed.delete(idx);
+      for (const id of claimedIds) {
+        state.inFlight.delete(id);
+        state.consumed.delete(id);
       }
       throw e;
     }
 
     // Clear in-flight status now that execution is complete.
-    for (const idx of claimedIndices) {
-      state.inFlight.delete(idx);
+    for (const id of claimedIds) {
+      state.inFlight.delete(id);
     }
 
     // Mid-flight cancellation: did the caller's signal abort while hooks were
@@ -256,20 +258,20 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     // during the executeHooks() await. The explicit-undefined form sidesteps
     // that narrowing.
     // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
-    const callerCancelled =
-      callSignal !== undefined && callSignal.aborted && !state.controller.signal.aborted;
+    const callerCancelled = callSignal?.aborted && !state.controller.signal.aborted;
 
     // Un-consume once-hooks that failed — they get another chance,
     // up to MAX_ONCE_RETRIES to prevent infinite respawns from
     // deterministic failures (e.g., prompt that never calls HookVerdict).
-    if (claimedIndices.length > 0) {
-      const matchedHooks = hooksToRun.filter((h) => matchesHookFilter(h.filter, safeEvent));
-      const hookToOrigIdx = new Map<number, number>();
-      // let justified: mutable counter for mapping hooksToRun position to original index
+    if (claimedIds.length > 0) {
+      const matchedHooks = hooksToRun.filter((rh) => matchesHookFilter(rh.hook.filter, safeEvent));
+      // Build a map from hooksToRun position to RegisteredHook ID
+      const runPosToId = new Map<number, string>();
+      // let justified: mutable counter for mapping hooksToRun position to ID
       let runIdx = 0;
-      for (let origIdx = 0; origIdx < state.hooks.length; origIdx++) {
-        if (!state.consumed.has(origIdx) || claimedSet.has(origIdx)) {
-          hookToOrigIdx.set(runIdx, origIdx);
+      for (const rh of state.hooks) {
+        if (!state.consumed.has(rh.id) || claimedSet.has(rh.id)) {
+          runPosToId.set(runIdx, rh.id);
           runIdx++;
         }
       }
@@ -277,8 +279,8 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       let matchIdx = 0;
       for (let runPos = 0; runPos < hooksToRun.length && matchIdx < matchedHooks.length; runPos++) {
         if (hooksToRun[runPos] !== matchedHooks[matchIdx]) continue;
-        const origIdx = hookToOrigIdx.get(runPos);
-        if (origIdx !== undefined && claimedSet.has(origIdx)) {
+        const hookId = runPosToId.get(runPos);
+        if (hookId !== undefined && claimedSet.has(hookId)) {
           const result = results[matchIdx];
           if (
             result === undefined ||
@@ -293,25 +295,25 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
             // hooks can reach exhausted-blocker state after MAX_ONCE_RETRIES.
             const isAbortMarked = result !== undefined && result.aborted === true;
             if (callerCancelled && isAbortMarked) {
-              state.consumed.delete(origIdx);
+              state.consumed.delete(hookId);
               matchIdx++;
               continue;
             }
             // Check bounded retry — permanently consume after MAX_ONCE_RETRIES
-            const retries = (state.onceRetries.get(origIdx) ?? 0) + 1;
-            state.onceRetries.set(origIdx, retries);
+            const retries = (state.onceRetries.get(hookId) ?? 0) + 1;
+            state.onceRetries.set(hookId, retries);
             if (retries < MAX_ONCE_RETRIES) {
-              state.consumed.delete(origIdx);
+              state.consumed.delete(hookId);
             } else {
               // Retry budget exhausted. For fail-closed hooks, register as
               // an exhausted blocker so future events are blocked rather
               // than silently unguarded. Fail-open hooks just disappear.
-              const hook = state.hooks[origIdx];
+              const rh = state.hooks.find((h) => h.id === hookId);
               if (
-                hook !== undefined &&
-                (hook.failClosed === undefined || hook.failClosed === true)
+                rh !== undefined &&
+                (rh.hook.failClosed === undefined || rh.hook.failClosed === true)
               ) {
-                state.exhaustedBlockers.add(origIdx);
+                state.exhaustedBlockers.add(hookId);
               }
             }
           }
@@ -385,9 +387,18 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     register(
       sessionId: string,
       agentId: string,
-      hooks: readonly HookConfig[],
+      hooks: readonly RegisteredHook[],
       envPolicy?: HookEnvPolicy | undefined,
+      policy?: HookPolicy | undefined,
+      policyActor?: PolicyActor | undefined,
     ): void {
+      // Require explicit policyActor when disableAllHooks is set
+      if (policy?.disableAllHooks === true && policyActor === undefined) {
+        throw new Error(
+          "policyActor is required when disableAllHooks is set — it determines which tiers are killed",
+        );
+      }
+
       // Cleanup any previous registration for this session
       const existing = sessions.get(sessionId);
       if (existing !== undefined && !existing.cleaned) {
@@ -395,9 +406,14 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
         existing.cleaned = true;
       }
 
+      // Apply policy filtering if a policy is provided
+      const effectiveActor = policyActor ?? "user";
+      const effectiveHooks =
+        policy !== undefined ? applyPolicy(hooks, policy, effectiveActor) : [...hooks];
+
       const controller = new AbortController();
       sessions.set(sessionId, {
-        hooks: [...hooks],
+        hooks: effectiveHooks,
         controller,
         agentId,
         envPolicy,
@@ -444,10 +460,10 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
       // the hook as consumed (claimed but not yet committed) and bypasses
       // serialization, missing the gate if the first call fails.
       const needsSerialize = state.hooks.some(
-        (h, idx) =>
-          h.once === true &&
-          (!state.consumed.has(idx) || state.inFlight.has(idx)) &&
-          matchesHookFilter(h.filter, safeEvent),
+        (rh) =>
+          rh.hook.once === true &&
+          (!state.consumed.has(rh.id) || state.inFlight.has(rh.id)) &&
+          matchesHookFilter(rh.hook.filter, safeEvent),
       );
       if (needsSerialize) {
         return serializeOnceExecution(state, safeEvent, abortSignal);
@@ -475,7 +491,7 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     hasMatching(sessionId: string, event: HookEvent): boolean {
       const state = sessions.get(sessionId);
       if (state === undefined || state.cleaned) return false;
-      return state.hooks.some((h) => matchesHookFilter(h.filter, event));
+      return state.hooks.some((rh) => matchesHookFilter(rh.hook.filter, event));
     },
 
     size(): number {
