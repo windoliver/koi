@@ -261,6 +261,10 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/secure-storage": {
+      "name": "@koi/secure-storage",
+      "version": "0.0.0",
+    },
     "packages/lib/session": {
       "name": "@koi/session",
       "version": "0.0.0",
@@ -403,6 +407,7 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/lsp": "workspace:*",
+        "@koi/mcp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
@@ -416,6 +421,7 @@
         "@koi/rules-loader": "workspace:*",
         "@koi/runtime": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/secure-storage": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
@@ -584,6 +590,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/secure-storage": "workspace:*",
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
@@ -1003,6 +1010,8 @@
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
+
+    "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
 
