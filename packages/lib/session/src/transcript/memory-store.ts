@@ -13,6 +13,7 @@ import type {
   TranscriptLoadResult,
   TranscriptPage,
   TranscriptPageOptions,
+  TruncateResult,
 } from "@koi/core";
 import { transcriptEntryId, validateNonEmpty } from "@koi/core";
 
@@ -95,6 +96,38 @@ export function createInMemoryTranscript(): SessionTranscript {
     return { ok: true, value: { preserved: preserved.length, extended } };
   };
 
+  const truncate = (sid: SessionId, keepFirstN: number): Result<TruncateResult, KoiError> => {
+    const check = validateNonEmpty(sid, "Session ID");
+    if (!check.ok) return check;
+
+    if (keepFirstN < 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "keepFirstN must be non-negative",
+          retryable: false,
+        },
+      };
+    }
+
+    const existing = store.get(sid) ?? [];
+    if (keepFirstN >= existing.length) {
+      // Already shorter than the cap — nothing to drop.
+      return { ok: true, value: { kept: existing.length, dropped: 0 } };
+    }
+
+    const kept = existing.slice(0, keepFirstN);
+    const dropped = existing.length - kept.length;
+    if (kept.length === 0) {
+      // Truncating to zero — remove the entry entirely.
+      store.delete(sid);
+    } else {
+      store.set(sid, kept);
+    }
+    return { ok: true, value: { kept: kept.length, dropped } };
+  };
+
   const remove = (sid: SessionId): Result<void, KoiError> => {
     const check = validateNonEmpty(sid, "Session ID");
     if (!check.ok) return check;
@@ -107,5 +140,5 @@ export function createInMemoryTranscript(): SessionTranscript {
     store.clear();
   };
 
-  return { append, load, loadPage, compact, remove, close };
+  return { append, load, loadPage, compact, truncate, remove, close };
 }

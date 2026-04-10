@@ -1121,6 +1121,7 @@ export type {
   TranscriptLoadResult,
   TranscriptPage,
   TranscriptPageOptions,
+  TruncateResult,
 } from "./transcript.js";
 export { transcriptEntryId } from "./transcript.js";
 // tui adapter — optional rich terminal UI attachment contract (TuiAdapter | null)

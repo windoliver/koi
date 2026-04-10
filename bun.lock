@@ -97,6 +97,7 @@
         "@koi/core": "workspace:*",
       },
       "devDependencies": {
+        "@koi/session": "workspace:*",
         "@koi/snapshot-store-sqlite": "workspace:*",
       },
     },

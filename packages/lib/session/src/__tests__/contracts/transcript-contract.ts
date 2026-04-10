@@ -197,6 +197,115 @@ export function runSessionTranscriptContractTests(createStore: () => SessionTran
   });
 
   // -----------------------------------------------------------------------
+  // Truncate
+  // -----------------------------------------------------------------------
+  describe("truncate", () => {
+    test("truncate keeps the first N entries and drops the rest", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      const entries = Array.from({ length: 5 }, (_, i) =>
+        makeTranscriptEntry({ content: `msg-${i}`, timestamp: 1000 * (i + 1) }),
+      );
+      await store.append(sid, entries);
+
+      const r = await store.truncate(sid, 3);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.kept).toBe(3);
+        expect(r.value.dropped).toBe(2);
+      }
+
+      const loaded = await store.load(sid);
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.entries.map((e) => e.content)).toEqual(["msg-0", "msg-1", "msg-2"]);
+      }
+    });
+
+    test("truncate to 0 removes the transcript entirely", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      await store.append(sid, [makeTranscriptEntry(), makeTranscriptEntry()]);
+
+      const r = await store.truncate(sid, 0);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.kept).toBe(0);
+        expect(r.value.dropped).toBe(2);
+      }
+
+      const loaded = await store.load(sid);
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.entries.length).toBe(0);
+      }
+    });
+
+    test("truncate beyond length is a no-op (kept = existing length)", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      await store.append(sid, [makeTranscriptEntry(), makeTranscriptEntry()]);
+
+      const r = await store.truncate(sid, 100);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.kept).toBe(2);
+        expect(r.value.dropped).toBe(0);
+      }
+    });
+
+    test("truncate is idempotent — running it twice converges", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      await store.append(
+        sid,
+        Array.from({ length: 5 }, (_, i) => makeTranscriptEntry({ content: `m${i}` })),
+      );
+
+      const r1 = await store.truncate(sid, 2);
+      const r2 = await store.truncate(sid, 2);
+      expect(r1.ok && r2.ok).toBe(true);
+      if (r1.ok && r2.ok) {
+        expect(r1.value.kept).toBe(2);
+        expect(r1.value.dropped).toBe(3);
+        expect(r2.value.kept).toBe(2);
+        expect(r2.value.dropped).toBe(0);
+      }
+    });
+
+    test("truncate on a non-existent session returns kept=0 dropped=0", async () => {
+      const store = createStore();
+      const r = await store.truncate(sessionId("never-existed"), 5);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.kept).toBe(0);
+        expect(r.value.dropped).toBe(0);
+      }
+    });
+
+    test("truncate rejects negative keepFirstN", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      await store.append(sid, [makeTranscriptEntry()]);
+
+      const r = await store.truncate(sid, -1);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code).toBe("VALIDATION");
+      }
+    });
+
+    test("truncate rejects empty sessionId", async () => {
+      const store = createStore();
+      const r = await store.truncate(sessionId(""), 0);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code).toBe("VALIDATION");
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Remove
   // -----------------------------------------------------------------------
   describe("remove", () => {

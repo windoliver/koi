@@ -192,13 +192,41 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
     state.turnBuffers.delete(turnKey);
 
-    const payload: CheckpointPayload = {
-      turnIndex: ctx.turnIndex,
-      sessionId: ctx.session.sessionId as unknown as string,
-      fileOps,
-      driftWarnings: [],
-      capturedAt: Date.now(),
-    };
+    // If a transcript is wired in, capture the post-turn entry count so the
+    // restore protocol can truncate back to this point on rewind. The session
+    // middleware appends entries during wrapToolCall/wrapModelStream which
+    // run BEFORE onAfterTurn, so the count we read here is the count at the
+    // boundary between this turn and the next.
+    let transcriptEntryCount: number | undefined;
+    if (config.transcript !== undefined) {
+      try {
+        const loadResult = await config.transcript.load(ctx.session.sessionId);
+        if (loadResult.ok) {
+          transcriptEntryCount = loadResult.value.entries.length;
+        }
+      } catch {
+        // Best-effort: if the load fails, the snapshot just doesn't carry
+        // a count and rewind won't touch the transcript for this turn.
+      }
+    }
+
+    const payload: CheckpointPayload =
+      transcriptEntryCount !== undefined
+        ? {
+            turnIndex: ctx.turnIndex,
+            sessionId: ctx.session.sessionId as unknown as string,
+            fileOps,
+            driftWarnings: [],
+            transcriptEntryCount,
+            capturedAt: Date.now(),
+          }
+        : {
+            turnIndex: ctx.turnIndex,
+            sessionId: ctx.session.sessionId as unknown as string,
+            fileOps,
+            driftWarnings: [],
+            capturedAt: Date.now(),
+          };
 
     // Critical path: write the chain node. Soft-fail on error per Issue 8A.
     const status: SnapshotStatus = "complete";
@@ -259,18 +287,35 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
    * Run the restore protocol for a session. Refreshes the in-memory parent
    * pointer cache so the next captured turn chains off the new rewind marker
    * rather than the pre-rewind head.
+   *
+   * If a `transcript` is wired into config, also calls
+   * `transcript.truncate(sid, target.transcriptEntryCount)` so the
+   * conversation log shrinks back to the same boundary as the file state.
    */
   async function doRewind(
     sessionId: SessionId,
     target: { kind: "by-count"; n: number } | { kind: "by-node"; targetNodeId: NodeId },
   ): Promise<RewindResult> {
     const state = await getOrCreateSession(sessionId);
-    const result = await runRestore({
-      store,
-      chainId: state.chainId,
-      blobDir: config.blobDir,
-      target,
-    });
+    // Build the RestoreInput conditionally so we omit `transcript` entirely
+    // when none is wired (exactOptionalPropertyTypes forbids passing undefined).
+    const result = await runRestore(
+      config.transcript !== undefined
+        ? {
+            store,
+            chainId: state.chainId,
+            blobDir: config.blobDir,
+            target,
+            transcript: config.transcript,
+            sessionId,
+          }
+        : {
+            store,
+            chainId: state.chainId,
+            blobDir: config.blobDir,
+            target,
+          },
+    );
     if (result.ok) {
       // Refresh the parent pointer so the next captured turn chains off the
       // rewind marker, not the old pre-rewind head.

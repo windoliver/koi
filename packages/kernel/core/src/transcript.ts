@@ -110,6 +110,30 @@ export interface CompactResult {
 }
 
 // ---------------------------------------------------------------------------
+// Truncation result
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a truncate() operation — describes how many entries were retained
+ * and how many were dropped.
+ *
+ * Truncate is the inverse of append: it shrinks the log to the first N
+ * entries and discards the rest. Used by @koi/checkpoint to roll back the
+ * conversation log to match a snapshot's file-state when /rewind fires.
+ *
+ * Unlike compact(), truncate does NOT add a synthesis entry — it produces
+ * a strict prefix of the existing log. The caller is responsible for
+ * ensuring the truncation point falls on a turn boundary (otherwise replay
+ * may surface tool_call/tool_result pairs split across the cut).
+ */
+export interface TruncateResult {
+  /** Number of entries kept (= the requested keepFirstN, capped at the original length). */
+  readonly kept: number;
+  /** Number of entries dropped from the end of the log. */
+  readonly dropped: number;
+}
+
+// ---------------------------------------------------------------------------
 // Main interface
 // ---------------------------------------------------------------------------
 
@@ -120,6 +144,8 @@ export interface CompactResult {
  * - `load` reads all entries (with corruption diagnostics)
  * - `loadPage` reads a page of entries
  * - `compact` replaces old entries with a summary + preserved tail
+ * - `truncate` shrinks the log to a strict prefix of `keepFirstN` entries
+ *    (used by @koi/checkpoint to roll back the conversation half of a rewind)
  * - `remove` deletes the transcript
  * - `close` releases resources
  */
@@ -143,6 +169,25 @@ export interface SessionTranscript {
     summary: string,
     preserveLastN: number,
   ) => Result<CompactResult, KoiError> | Promise<Result<CompactResult, KoiError>>;
+
+  /**
+   * Shrink the transcript to its first `keepFirstN` entries. Drops everything
+   * after that index. Idempotent: calling truncate(N) twice produces the same
+   * result.
+   *
+   * Returns `{ kept, dropped }`. If `keepFirstN` exceeds the existing length,
+   * `kept` equals the existing length and `dropped` is 0.
+   *
+   * The caller is responsible for ensuring the cut point lands on a turn
+   * boundary — truncating in the middle of a tool_call/tool_result pair will
+   * leave the log unable to replay cleanly. @koi/checkpoint records the
+   * post-turn entry count in each snapshot's payload so it can pass the
+   * right value here.
+   */
+  readonly truncate: (
+    sessionId: SessionId,
+    keepFirstN: number,
+  ) => Result<TruncateResult, KoiError> | Promise<Result<TruncateResult, KoiError>>;
 
   readonly remove: (
     sessionId: SessionId,
