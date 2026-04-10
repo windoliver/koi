@@ -1,6 +1,6 @@
 {
-  "name": "@koi/tools-bash",
-  "description": "Bash shell execution tool with security classifiers",
+  "name": "@koi/bash-ast",
+  "description": "AST-based bash command analysis for permission matching",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,13 +14,21 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "refresh-grammar": "bun scripts/refresh-grammar.ts"
   },
   "dependencies": {
-    "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "web-tree-sitter": "0.26.8"
   },
+  "devDependencies": {
+    "fast-check": "4.3.0"
+  },
+  "files": [
+    "dist",
+    "vendor"
+  ],
   "koi": {
     "optional": true
   }

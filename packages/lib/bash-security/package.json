@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./bypass-cases": {
+      "types": "./dist/bypass-cases.d.ts",
+      "import": "./dist/bypass-cases.js"
     }
   },
   "scripts": {

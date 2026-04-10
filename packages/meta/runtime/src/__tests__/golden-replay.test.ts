@@ -5762,6 +5762,196 @@ describe("bash-background ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// bash-ast-too-complex ATIF trajectory: @koi/bash-ast transitional fallback
+//
+// Proves the full path for a command the AST walker classifies `too-complex`:
+//   1. AST walker returns `kind: "too-complex"` for `echo "$VAR"` (contains
+//      simple_expansion inside a double-quoted string — decision 8A scope).
+//   2. The transitional regex fallback in @koi/bash-ast/classify.ts allows
+//      the command (no TTP match).
+//   3. tools-bash spawns the subprocess successfully.
+//
+// TODO(#1622): after three-state permissions ship, the regex fallback is
+// deleted and the agent will see an ask-user elicitation instead of running
+// the command. This test will flip to asserting the elicitation event.
+// ---------------------------------------------------------------------------
+
+describe("bash-ast-too-complex ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Bash in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-too-complex.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+  });
+
+  test("at least one Bash tool step ran a command containing an expansion", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-too-complex.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly command?: string };
+        }[];
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const bashCalls = toolSteps.flatMap(
+      (s) => s.tool_calls?.filter((tc) => tc.function_name === "Bash") ?? [],
+    );
+    expect(bashCalls.length).toBeGreaterThanOrEqual(1);
+    // Every Bash call in this trajectory must contain `$KOI_GREETING` —
+    // proving the command reached the tool (AST too-complex → regex fallback
+    // → spawn) rather than being hard-denied by the classifier.
+    const allRefsVar = bashCalls.every((c) => c.arguments.command?.includes("$KOI_GREETING"));
+    expect(allRefsVar).toBe(true);
+  });
+
+  test("the command eventually succeeds with stdout containing 'hello'", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-too-complex.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const bashToolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "Bash"),
+    );
+    const observations = bashToolSteps
+      .flatMap((s) => s.observation?.results?.map((r) => r.content) ?? [])
+      .filter((c) => c.length > 0);
+    // At least one Bash invocation must have produced stdout "hello" with
+    // exitCode 0 — proving the classifier-allow → spawn → exit 0 path.
+    const success = observations.some(
+      (c) => c.includes('"stdout":"hello') && c.includes('"exitCode":0'),
+    );
+    expect(success).toBe(true);
+  });
+
+  test("pure AST analysis of the command returns kind: too-complex", async () => {
+    const { analyzeBashCommand, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    // The tool input from the recorded trajectory. This is a static test of
+    // the walker against the exact string the LLM produced at record time.
+    const r = analyzeBashCommand('export KOI_GREETING=hello; echo "$KOI_GREETING"');
+    expect(r.kind).toBe("too-complex");
+  });
+
+  test("transitional classifier allows the too-complex command via regex fallback", async () => {
+    const { classifyBashCommand, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    const r = classifyBashCommand('export KOI_GREETING=hello; echo "$KOI_GREETING"');
+    // regex classifier finds no TTP match → allow. This is the transitional
+    // compatibility behaviour; `classifyBashCommandWithElicit` replaces it
+    // with an interactive user prompt when an elicit callback is wired.
+    expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-ast-elicit ATIF trajectory: @koi/bash-ast interactive elicit path
+//
+// Proves the full fail-closed loop for #1634. Unlike the sync fallback in
+// `bash-ast-too-complex`, this trajectory wires an `elicit` callback into
+// `createBashTool`. When the walker returns `too-complex` for a non-hard-
+// deny nodeType, the tool routes the command through
+// `classifyBashCommandWithElicit`, which calls the elicit callback for
+// explicit user approval BEFORE falling through to any regex check.
+//
+// In the recording, `elicit` auto-approves to exercise the "approved"
+// branch. In production (TUI wiring via tui-runtime.ts), `elicit` is
+// routed to the same approvalHandler used by permissions, so the user
+// sees a dialog asking about the specific command.
+// ---------------------------------------------------------------------------
+
+describe("bash-ast-elicit ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Bash in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+  });
+
+  test("Bash was called with a command containing $VAR expansion", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly command?: string };
+        }[];
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const bashCalls = toolSteps.flatMap(
+      (s) => s.tool_calls?.filter((tc) => tc.function_name === "Bash") ?? [],
+    );
+    expect(bashCalls.length).toBeGreaterThanOrEqual(1);
+    // The prompt asks for `export KOI_GREETING=world; echo "$KOI_GREETING"`.
+    // The command contains `$KOI_GREETING` (simple_expansion inside string),
+    // which the walker classifies as too-complex. With the auto-approving
+    // elicit callback wired, classifyBashCommandWithElicit calls elicit,
+    // gets approval, runs the regex TTP defense-in-depth (no match), and
+    // proceeds to spawn.
+    expect(bashCalls.some((c) => c.arguments.command?.includes("$KOI_GREETING"))).toBe(true);
+  });
+
+  test("the command spawned successfully with stdout 'world'", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const bashToolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "Bash"),
+    );
+    const observations = bashToolSteps
+      .flatMap((s) => s.observation?.results?.map((r) => r.content) ?? [])
+      .filter((c) => c.length > 0);
+    const success = observations.some(
+      (c) => c.includes('"stdout":"world') && c.includes('"exitCode":0'),
+    );
+    expect(success).toBe(true);
+  });
+
+  test("classifyBashCommandWithElicit calls elicit and allows when approved", async () => {
+    const { classifyBashCommandWithElicit, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    let elicitCalled = false;
+    let elicitReason: string | undefined;
+    const r = await classifyBashCommandWithElicit(
+      'export KOI_GREETING=world; echo "$KOI_GREETING"',
+      {
+        elicit: async (params) => {
+          elicitCalled = true;
+          elicitReason = params.reason;
+          return true;
+        },
+      },
+    );
+    expect(elicitCalled).toBe(true);
+    expect(elicitReason).toBeDefined();
+    expect(r.ok).toBe(true);
+  });
+
+  test("classifyBashCommandWithElicit denies when elicit returns false", async () => {
+    const { classifyBashCommandWithElicit, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    const r = await classifyBashCommandWithElicit(
+      'export KOI_GREETING=world; echo "$KOI_GREETING"',
+      { elicit: async () => false },
+    );
+    expect(r.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/sandbox-os (2 queries)
 // ---------------------------------------------------------------------------
 

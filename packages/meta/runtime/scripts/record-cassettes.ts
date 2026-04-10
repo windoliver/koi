@@ -2634,6 +2634,79 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 4,
   },
 
+  // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex
+  //   fallback path (no elicit wired). The command
+  //   `export KOI_GREETING=hello; echo "$KOI_GREETING"` contains a
+  //   `simple_expansion` inside a double-quoted string AND a standalone
+  //   `variable_assignment`-style declaration, which the AST walker
+  //   rejects as too-complex. Without an elicit callback wired, the sync
+  //   classifier falls through to the regex TTP classifier, which finds
+  //   no TTP match and allows the command. The subprocess then runs
+  //   cleanly and prints "hello" — `export` puts the variable in the
+  //   shell environment BEFORE the parameter expansion happens, which
+  //   satisfies `set -u` (unlike a bare `KOI_GREETING=hello echo "$..."`
+  //   inline prefix, where the expansion fires before the prefix takes
+  //   effect on the builtin `echo`).
+  //
+  //   Covers the non-interactive code path used by `koi start`, standalone
+  //   tool tests, and any caller without a prompt surface.
+  //
+  //   The interactive elicit path is covered by `bash-ast-elicit` below.
+  {
+    name: "bash-ast-too-complex",
+    prompt:
+      'Use the Bash tool to run this exact command and report the output: `export KOI_GREETING=hello; echo "$KOI_GREETING"`',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () => createBashTool({ workspaceRoot: process.cwd() }),
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // bash-ast-elicit: @koi/bash-ast — proves the INTERACTIVE elicit path.
+  //   Same input shape as bash-ast-too-complex, but the bash tool is wired
+  //   with an `elicit` callback that auto-approves. This exercises
+  //   `classifyBashCommandWithElicit` end-to-end: too-complex → elicit →
+  //   approve → regex TTP defense-in-depth → spawn → result.
+  //
+  //   End-to-end this proves: (1) the AST walker still routes $VAR-in-
+  //   string to too-complex (nodeType is captured for the callback),
+  //   (2) the elicit callback receives the correct command and reason,
+  //   (3) the tool proceeds to spawn on approval, (4) the regex TTP
+  //   classifier still runs as defense-in-depth after approval.
+  //
+  //   Closes #1634's full fail-closed loop: in production (TUI wiring)
+  //   the user sees a permission dialog for too-complex commands instead
+  //   of the silent regex fallback.
+  {
+    name: "bash-ast-elicit",
+    prompt:
+      'Use the Bash tool to run the command `export KOI_GREETING=world; echo "$KOI_GREETING"` and tell me the exact word that was printed.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () =>
+          createBashTool({
+            workspaceRoot: process.cwd(),
+            elicit: async () => true, // auto-approve for cassette recording
+          }),
+      }),
+    ],
+    maxTurns: 2,
+  },
+
   // 15. spawn-tools: @koi/spawn-tools — agent_spawn tool with stub SpawnFn
   //     Coordinator creates a task, delegates it, then spawns a child agent.
   //     Stub SpawnFn returns immediately (no real child agent launched).

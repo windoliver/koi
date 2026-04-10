@@ -260,6 +260,69 @@ is merged with workspace-specific overrides (network allowed, write access to `c
 tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
 the unsandboxed denylist-only path when the platform is unsupported.
 
+### Bash AST Classifier (PR #1660, issue #1634)
+
+`@koi/tools-bash` now delegates to `@koi/bash-ast` for command classification instead of
+the regex-only path from `@koi/bash-security`. Both `createBashTool()` and
+`createBashBackgroundTool()` await `initializeBashAst()` at the top of `execute()` before
+the sync classifier reads the cached parser. The async init is idempotent via a cached
+promise; on failure the cache resets so callers can retry (no permanent DoS from a
+transient disk error during WASM grammar load).
+
+The new pipeline:
+
+1. Byte-level prefilter (null bytes, control chars, URL-encoded traversal, hex-escaped
+   ANSI-C strings — reused from `@koi/bash-security`)
+2. Pre-parse reject on backslash-newline line continuation (smuggling defense)
+3. Tree-sitter-bash parse with a 50 ms deadline (`progressCallback`-driven cancellation)
+4. Allowlist walker extracts `SimpleCommand[] = { argv, envVars, redirects, text }`
+5. Unknown grammar → `too-complex`:
+   - Escape-related reasons (word/string_content/line-continuation) **hard-deny** — the
+     raw-text regex fallback is fooled by the same escapes the walker rejects
+   - Everything else falls through to `@koi/bash-security`'s regex TTP classifier as a
+     transitional compatibility shim until `#1622` ships three-state permissions with an
+     `ask-user` verdict
+6. `parse-unavailable` (init timeout, over-length, panic) → fail-closed hard-deny,
+   NEVER falls through
+
+End-to-end behaviour is unchanged for common commands (`git status`, `ls -la`, `echo hi`,
+`ls | head -3`) — they flow through the AST walker as `kind: "simple"`. Commands with
+`$VAR`, `$(cmd)`, loops, or `&&` with standalone assignments fall through to the regex
+classifier, preserving current behaviour.
+
+Codex adversarial review of the PR surfaced six real bugs (2 P1 security bypasses + 4
+P2 defects in walker escape handling, init-retry semantics, matcher regex flags, and
+`Tree` WASM memory management). All six are fixed in the same PR with 18 regression
+tests in `@koi/bash-ast/src/__tests__/codex-findings.test.ts`.
+
+### Elicit wiring (#1634 full closure)
+
+`koi tui` wires an `elicit` callback into `createBashTool()` and
+`createBashBackgroundTool()`. When the AST walker classifies a command as
+`too-complex` (non-hard-deny), the tool calls `classifyBashCommandWithElicit`
+from `@koi/bash-ast`, which invokes the elicit callback for interactive user
+approval instead of silently passing through the regex TTP fallback. The
+elicit callback is an adapter over the same `approvalHandler` the permissions
+middleware uses, so the user sees the standard permission dialog.
+
+Example flow for `echo $USER`:
+1. Agent calls Bash tool with `echo $USER`
+2. Permissions middleware allows the Bash tool call (rule-level)
+3. Tool's `execute()` calls `classifyBashCommandWithElicit`
+4. Prefilter passes, AST walker returns `kind: "too-complex"` with
+   `nodeType: "simple_expansion"`
+5. `classifyBashCommandWithElicit` calls the elicit callback with
+   `{ command: "echo $USER", reason: "variable expansion...", nodeType: "simple_expansion" }`
+6. Callback invokes `approvalHandler({ toolId: "Bash", input: { command }, reason })`
+7. User sees permission dialog: `Allow once / Deny / Always allow Bash this session`
+8. On approval: regex TTP defense-in-depth runs (no match), command spawns
+9. On denial: tool returns `Command blocked by security policy`
+
+`koi start` (non-interactive REPL) does NOT wire elicit — it uses the sync
+`classifyBashCommand` with the regex fallback because there is no prompt
+surface for the user. Both paths fail-closed on `parse-unavailable` and
+hard-deny shell-escape ambiguity regardless.
+
 ### Engine Worker (`engine-worker.ts`)
 
 A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):
@@ -284,6 +347,9 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
+| `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
+| `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
