@@ -20,6 +20,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
+import { enforceBudget } from "@koi/context-manager";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -48,6 +49,7 @@ import { createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
+import { bareModelId } from "../engine-adapter.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
 import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
@@ -255,8 +257,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // 4. Engine adapter — model→tool→model loop via runTurn
   // ---------------------------------------------------------------------------
 
-  const contextWindowSize = flags.contextWindow;
-
   // Wrap ModelAdapter in an EngineAdapter so createKoi can compose middleware.
   // terminals expose modelCall/modelStream so middleware (event-trace, etc.) can intercept.
   // stream() drives the full model→tool→model agent loop via runTurn.
@@ -280,11 +280,20 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         content: [{ kind: "text", text }],
       };
 
+      // let: accumulated across streaming chunks, read after loop completes
       let deltaText = "";
       let doneContentText = "";
-      const contextWindow = [...transcript.slice(-contextWindowSize), stagedUserMsg];
 
       return (async function* (): AsyncIterable<EngineEvent> {
+        // Token-aware compaction — replaces naive message-count slice.
+        const budgetResult = await enforceBudget([...transcript], undefined, {
+          modelId: bareModelId(model),
+        });
+        if (budgetResult.compaction !== "noop") {
+          transcript.splice(0, transcript.length, ...budgetResult.messages);
+        }
+        const contextWindow = [...budgetResult.messages, stagedUserMsg];
+
         for await (const event of runTurn({
           callHandlers: handlers,
           messages: contextWindow,
