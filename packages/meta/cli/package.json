@@ -47,6 +47,7 @@
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
+    "@koi/rules-loader": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/plugins": "workspace:*",
