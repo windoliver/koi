@@ -122,8 +122,19 @@ export function createMockAdapter(config: MockAdapterConfig): MockAdapterResult 
     },
 
     stream(request: ModelRequest): AsyncIterable<ModelChunk> {
-      // Capture request immediately so callers see the call even if the
-      // stream is never iterated, but defer index advancement until first pull.
+      // Record eagerly at stream() call-time because real adapters
+      // perform observable work before iteration begins — the
+      // openai-compat adapter, for example, fires `lazyPrewarm()`
+      // (an authenticated HEAD request) inside `stream()` before the
+      // consumer ever pulls. The mock mirrors that: `calls[]` captures
+      // every `stream()` invocation so tests can catch leaked-stream
+      // bugs that would have side-effected in production.
+      //
+      // Scripted-response consumption stays lazy — the call index
+      // advances on first pull — so an un-iterated stream does not
+      // burn a scripted response. This is the deliberate split:
+      //   - calls[]          → observable side effects (eager)
+      //   - callCount() / index → scripted response consumption (lazy)
       record(request, "stream");
       return {
         [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {

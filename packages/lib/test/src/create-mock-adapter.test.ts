@@ -70,6 +70,24 @@ describe("createMockAdapter — stream", () => {
     expect(callCount()).toBe(1);
   });
 
+  test("un-iterated streams ARE recorded in calls[] (production parity with eager prewarm)", async () => {
+    // Real adapters like openai-compat fire lazyPrewarm() at stream()
+    // call-time before iteration begins. The mock mirrors that: calls[]
+    // captures every stream() invocation, even if the iterator is never
+    // pulled, so tests can catch leaked-stream bugs.
+    const { adapter, calls, callCount } = createMockAdapter({
+      calls: [{ mode: "stream", chunks: streamTextChunks("x") }],
+    });
+
+    adapter.stream(emptyRequest);
+
+    // Observable side effect: the stream() invocation is recorded.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.mode).toBe("stream");
+    // But the scripted response is NOT consumed until first pull.
+    expect(callCount()).toBe(0);
+  });
+
   test("throws on exhaustion", async () => {
     const { adapter } = createMockAdapter({
       calls: [{ mode: "stream", chunks: streamTextChunks("only") }],

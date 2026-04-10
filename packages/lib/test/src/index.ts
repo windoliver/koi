@@ -38,7 +38,11 @@ export type {
 } from "./create-mock-adapter.js";
 // Mock model adapter
 export { createMockAdapter, streamTextChunks, textResponse } from "./create-mock-adapter.js";
-export type { MockChannelConfig, MockChannelResult } from "./create-mock-channel.js";
+export type {
+  HandlerFailure,
+  MockChannelConfig,
+  MockChannelResult,
+} from "./create-mock-channel.js";
 // Mock channel
 export { createMockChannel } from "./create-mock-channel.js";
 // Context factories
