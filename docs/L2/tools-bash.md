@@ -71,14 +71,15 @@ Output (truncated):
 
 ## Security
 
-1. **AST-based classifier pipeline** (from `@koi/bash-ast`, PR #1660): allowlist → byte-level prefilter → tree-sitter AST walker → rule match on argv. `@koi/bash-ast.classifyBashCommand()` replaces the regex-only classifier previously imported from `@koi/bash-security`. Grammar-aware analysis closes regex bypasses (obfuscated backslash escapes, ANSI-C strings, line-continuation smuggling) by extracting a trustworthy `argv[]` per simple command.
-2. **Fail-closed on parser failure**: `parse-unavailable` (init timeout, over-length, panic) is never permissive — the tool returns `Command blocked by security policy` with `category: "injection"`. Parse-unavailable NEVER falls through to the legacy regex classifier.
-3. **Transitional `too-complex` fallback**: commands the walker cannot safely resolve (unknown grammar, `$VAR`, `$(cmd)`, loops, `&&` with assignments, etc.) fall through to `@koi/bash-security`'s regex TTP classifier for backwards compatibility until `#1622` ships three-state permissions with an `ask-user` verdict. Exception: shell-escape-related `too-complex` reasons (`word`, `string_content`, `prefilter:line-continuation`) hard-deny instead of falling through — the raw-text regex is fooled by the same escapes the walker rejects.
-4. **One-time async init**: `initializeBashAst()` is called inside `execute()` before the sync classifier reads the cached parser. Idempotent via cached-promise; rejection resets the cache so subsequent callers retry fresh (no permanent DoS from a transient disk error).
-5. **Hardened spawn**: `bash --noprofile --norc -c "set -euo pipefail; <cmd>"`
-6. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
-7. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
-8. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
+1. **AST-based classifier pipeline** (from `@koi/bash-ast`, PR #1660): allowlist → byte-level prefilter → tree-sitter AST walker → rule match on argv. `@koi/bash-ast` replaces the regex-only classifier previously imported from `@koi/bash-security`. Grammar-aware analysis closes regex bypasses (obfuscated backslash escapes, ANSI-C strings, line-continuation smuggling) by extracting a trustworthy `argv[]` per simple command.
+2. **Two classify entry points**: when `config.elicit` is provided (TUI wiring), the tool calls `classifyBashCommandWithElicit` (async) so that `too-complex` commands route to an interactive user prompt instead of the regex fallback. When `elicit` is absent (non-interactive `koi start`, standalone tests), the sync `classifyBashCommand` with regex fallback is used instead. Closes #1634 for interactive consumers.
+3. **Fail-closed on parser failure**: `parse-unavailable` (init timeout, over-length, panic) is never permissive — the tool returns `Command blocked by security policy` with `category: "injection"`. Parse-unavailable NEVER reaches the elicit callback OR the regex fallback.
+4. **Hard-deny on shell-escape ambiguity**: `too-complex` reasons (`word`, `string_content`, `prefilter:line-continuation`) hard-deny regardless of path — the raw-text regex is fooled by the same escapes the walker rejects, AND a user asked about `cat \/etc\/passwd` can't reliably distinguish it from benign `cat /etc/passwd`.
+5. **One-time async init**: `initializeBashAst()` is called inside `execute()` before the classifier reads the cached parser. Idempotent via cached-promise; rejection resets the cache so subsequent callers retry fresh (no permanent DoS from a transient disk error).
+6. **Hardened spawn**: `bash --noprofile --norc -c "set -euo pipefail; <cmd>"`
+7. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
+8. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
+9. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
 
 ## OS-Level Sandboxing
 

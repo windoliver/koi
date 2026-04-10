@@ -5844,8 +5844,110 @@ describe("bash-ast-too-complex ATIF trajectory (golden file)", () => {
     await initializeBashAst();
     const r = classifyBashCommand('KOI_GREETING=hello echo "$KOI_GREETING"');
     // regex classifier finds no TTP match → allow. This is the transitional
-    // compatibility behaviour; #1622 replaces it with ask-user.
+    // compatibility behaviour; `classifyBashCommandWithElicit` replaces it
+    // with an interactive user prompt when an elicit callback is wired.
     expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-ast-elicit ATIF trajectory: @koi/bash-ast interactive elicit path
+//
+// Proves the full fail-closed loop for #1634. Unlike the sync fallback in
+// `bash-ast-too-complex`, this trajectory wires an `elicit` callback into
+// `createBashTool`. When the walker returns `too-complex` for a non-hard-
+// deny nodeType, the tool routes the command through
+// `classifyBashCommandWithElicit`, which calls the elicit callback for
+// explicit user approval BEFORE falling through to any regex check.
+//
+// In the recording, `elicit` auto-approves to exercise the "approved"
+// branch. In production (TUI wiring via tui-runtime.ts), `elicit` is
+// routed to the same approvalHandler used by permissions, so the user
+// sees a dialog asking about the specific command.
+// ---------------------------------------------------------------------------
+
+describe("bash-ast-elicit ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with Bash in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "Bash")).toBe(true);
+  });
+
+  test("Bash was called with a command containing $VAR expansion", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly command?: string };
+        }[];
+      }[];
+    };
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const bashCalls = toolSteps.flatMap(
+      (s) => s.tool_calls?.filter((tc) => tc.function_name === "Bash") ?? [],
+    );
+    expect(bashCalls.length).toBeGreaterThanOrEqual(1);
+    // The prompt asks for `export KOI_GREETING=world; echo "$KOI_GREETING"`.
+    // The command contains `$KOI_GREETING` (simple_expansion inside string),
+    // which the walker classifies as too-complex. With the auto-approving
+    // elicit callback wired, classifyBashCommandWithElicit calls elicit,
+    // gets approval, runs the regex TTP defense-in-depth (no match), and
+    // proceeds to spawn.
+    expect(bashCalls.some((c) => c.arguments.command?.includes("$KOI_GREETING"))).toBe(true);
+  });
+
+  test("the command spawned successfully with stdout 'world'", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-ast-elicit.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const bashToolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "Bash"),
+    );
+    const observations = bashToolSteps
+      .flatMap((s) => s.observation?.results?.map((r) => r.content) ?? [])
+      .filter((c) => c.length > 0);
+    const success = observations.some(
+      (c) => c.includes('"stdout":"world') && c.includes('"exitCode":0'),
+    );
+    expect(success).toBe(true);
+  });
+
+  test("classifyBashCommandWithElicit calls elicit and allows when approved", async () => {
+    const { classifyBashCommandWithElicit, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    let elicitCalled = false;
+    let elicitReason: string | undefined;
+    const r = await classifyBashCommandWithElicit(
+      'export KOI_GREETING=world; echo "$KOI_GREETING"',
+      {
+        elicit: async (params) => {
+          elicitCalled = true;
+          elicitReason = params.reason;
+          return true;
+        },
+      },
+    );
+    expect(elicitCalled).toBe(true);
+    expect(elicitReason).toBeDefined();
+    expect(r.ok).toBe(true);
+  });
+
+  test("classifyBashCommandWithElicit denies when elicit returns false", async () => {
+    const { classifyBashCommandWithElicit, initializeBashAst } = await import("@koi/bash-ast");
+    await initializeBashAst();
+    const r = await classifyBashCommandWithElicit(
+      'export KOI_GREETING=world; echo "$KOI_GREETING"',
+      { elicit: async () => false },
+    );
+    expect(r.ok).toBe(false);
   });
 });
 

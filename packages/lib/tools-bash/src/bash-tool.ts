@@ -1,4 +1,9 @@
-import { classifyBashCommand, initializeBashAst } from "@koi/bash-ast";
+import {
+  classifyBashCommand,
+  classifyBashCommandWithElicit,
+  type ElicitCallback,
+  initializeBashAst,
+} from "@koi/bash-ast";
 import { type BashPolicy, DEFAULT_BASH_POLICY } from "@koi/bash-security";
 import type {
   JsonObject,
@@ -79,6 +84,31 @@ export interface BashToolConfig {
    * Defaults to false — opt-in to avoid unexpected state mutation.
    */
   readonly trackCwd?: boolean;
+  /**
+   * Optional interactive elicit callback for commands the AST walker
+   * classifies as `too-complex` (but NOT hard-denied for shell-escape
+   * reasons). Invoked with the raw command and the walker's reason
+   * string; returns a boolean indicating whether the user approved
+   * the command.
+   *
+   * When provided, this REPLACES the transitional regex TTP fallback
+   * in `@koi/bash-ast/classify.ts` for the `too-complex` path: instead
+   * of silently passing `$VAR` / `$(...)` / control-flow commands
+   * through a string-match regex classifier, they now reach the user
+   * for explicit approval. When absent, the regex fallback is used
+   * (backward compat for standalone tool tests and callers without
+   * a TUI surface).
+   *
+   * Hard-denied `too-complex` reasons (backslash escapes in words/
+   * strings, backslash-newline line continuation) and `parse-
+   * unavailable` still fail closed and NEVER reach this callback.
+   *
+   * Wired from the runtime at factory time, using the same elicit
+   * surface as `@koi/tools-builtin/ask-user`.
+   *
+   * Closes #1634.
+   */
+  readonly elicit?: ElicitCallback;
 }
 
 /** Shape of the bash tool's JSON output on success. */
@@ -158,6 +188,7 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
   const sandboxAdapter = config?.sandboxAdapter;
   const sandboxProfile = config?.sandboxProfile;
   const trackCwd = config?.trackCwd ?? false;
+  const elicit = config?.elicit;
 
   // let justified: mutable cwd state for trackCwd — updated after each successful execution.
   // Reset to workspaceRoot on session clear via resetCwd().
@@ -225,13 +256,29 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
       const rawCwd = explicitCwd ?? (trackCwd ? currentCwd : workspaceRoot);
       const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : defaultTimeoutMs;
 
-      // Security classification pipeline (allowlist → injection → path → command)
+      // Security classification pipeline:
+      //   prefilter → AST analysis → simple/too-complex disposition
+      //
+      // When `elicit` is wired (L3 runtime), `too-complex` commands with
+      // non-hard-deny nodeTypes (e.g. $VAR / $() / control flow) are routed
+      // to the user via an interactive prompt instead of silently passing
+      // through the transitional regex fallback. Closes #1634.
+      //
+      // When `elicit` is NOT provided (standalone tests, CLI without a
+      // prompt surface), the sync classifier with regex fallback is used.
       const classifyOpts = {
         cwd: rawCwd,
         policy,
         workspaceRoot,
       };
-      const classification = classifyBashCommand(command, classifyOpts);
+      const classification =
+        elicit !== undefined
+          ? await classifyBashCommandWithElicit(command, {
+              ...classifyOpts,
+              elicit,
+              ...(signal !== undefined ? { signal } : {}),
+            })
+          : classifyBashCommand(command, classifyOpts);
       if (!classification.ok) {
         return {
           error: "Command blocked by security policy",

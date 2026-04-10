@@ -2634,24 +2634,17 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 4,
   },
 
-  // bash-ast-too-complex: @koi/bash-ast — proves the transitional too-complex
-  //   fallback path. `KOI_GREETING=hello echo "$KOI_GREETING"` contains a
-  //   `simple_expansion` inside a double-quoted string, which the AST walker
-  //   rejects as too-complex (decision 8A: no variable scope tracking in
-  //   phase 1). Control then falls through to the @koi/bash-security regex
-  //   classifier, which finds no TTP match and allows the command. The
-  //   inline prefix assignment satisfies bash's `set -u` so the command
-  //   runs cleanly and produces the deterministic string "hello".
+  // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex
+  //   fallback path (no elicit wired). `KOI_GREETING=hello echo "$KOI_GREETING"`
+  //   contains a `simple_expansion` inside a double-quoted string, which the
+  //   AST walker rejects as too-complex. Without an elicit callback wired,
+  //   the sync classifier falls through to the regex TTP classifier, which
+  //   finds no TTP match and allows the command.
   //
-  //   End-to-end this proves: (1) the AST walker routes $VAR-in-string to
-  //   too-complex, (2) the transitional regex fallback still permits
-  //   legitimate parameter expansion so users are not regressed until
-  //   #1622 ships an ask-user verdict, (3) the bash tool classifier wiring
-  //   is live through @koi/bash-ast.
+  //   Covers the non-interactive code path used by `koi start`, standalone
+  //   tool tests, and any caller without a prompt surface.
   //
-  //   TODO(#1622): once three-state permissions ship, update this query to
-  //   assert the model sees an ask-user elicitation instead of the command
-  //   running, and delete the regex fallback from @koi/bash-ast/classify.ts.
+  //   The interactive elicit path is covered by `bash-ast-elicit` below.
   {
     name: "bash-ast-too-complex",
     prompt:
@@ -2665,6 +2658,43 @@ const queries: readonly QueryConfig[] = [
         name: "bash",
         toolName: "Bash",
         createTool: () => createBashTool({ workspaceRoot: process.cwd() }),
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // bash-ast-elicit: @koi/bash-ast — proves the INTERACTIVE elicit path.
+  //   Same input shape as bash-ast-too-complex, but the bash tool is wired
+  //   with an `elicit` callback that auto-approves. This exercises
+  //   `classifyBashCommandWithElicit` end-to-end: too-complex → elicit →
+  //   approve → regex TTP defense-in-depth → spawn → result.
+  //
+  //   End-to-end this proves: (1) the AST walker still routes $VAR-in-
+  //   string to too-complex (nodeType is captured for the callback),
+  //   (2) the elicit callback receives the correct command and reason,
+  //   (3) the tool proceeds to spawn on approval, (4) the regex TTP
+  //   classifier still runs as defense-in-depth after approval.
+  //
+  //   Closes #1634's full fail-closed loop: in production (TUI wiring)
+  //   the user sees a permission dialog for too-complex commands instead
+  //   of the silent regex fallback.
+  {
+    name: "bash-ast-elicit",
+    prompt:
+      'Use the Bash tool to run the command `export KOI_GREETING=world; echo "$KOI_GREETING"` and tell me the exact word that was printed.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "bash",
+        toolName: "Bash",
+        createTool: () =>
+          createBashTool({
+            workspaceRoot: process.cwd(),
+            elicit: async () => true, // auto-approve for cassette recording
+          }),
       }),
     ],
     maxTurns: 2,

@@ -295,6 +295,34 @@ P2 defects in walker escape handling, init-retry semantics, matcher regex flags,
 `Tree` WASM memory management). All six are fixed in the same PR with 18 regression
 tests in `@koi/bash-ast/src/__tests__/codex-findings.test.ts`.
 
+### Elicit wiring (#1634 full closure)
+
+`koi tui` wires an `elicit` callback into `createBashTool()` and
+`createBashBackgroundTool()`. When the AST walker classifies a command as
+`too-complex` (non-hard-deny), the tool calls `classifyBashCommandWithElicit`
+from `@koi/bash-ast`, which invokes the elicit callback for interactive user
+approval instead of silently passing through the regex TTP fallback. The
+elicit callback is an adapter over the same `approvalHandler` the permissions
+middleware uses, so the user sees the standard permission dialog.
+
+Example flow for `echo $USER`:
+1. Agent calls Bash tool with `echo $USER`
+2. Permissions middleware allows the Bash tool call (rule-level)
+3. Tool's `execute()` calls `classifyBashCommandWithElicit`
+4. Prefilter passes, AST walker returns `kind: "too-complex"` with
+   `nodeType: "simple_expansion"`
+5. `classifyBashCommandWithElicit` calls the elicit callback with
+   `{ command: "echo $USER", reason: "variable expansion...", nodeType: "simple_expansion" }`
+6. Callback invokes `approvalHandler({ toolId: "Bash", input: { command }, reason })`
+7. User sees permission dialog: `Allow once / Deny / Always allow Bash this session`
+8. On approval: regex TTP defense-in-depth runs (no match), command spawns
+9. On denial: tool returns `Command blocked by security policy`
+
+`koi start` (non-interactive REPL) does NOT wire elicit — it uses the sync
+`classifyBashCommand` with the regex fallback because there is no prompt
+surface for the user. Both paths fail-closed on `parse-unavailable` and
+hard-deny shell-escape ambiguity regardless.
+
 ### Engine Worker (`engine-worker.ts`)
 
 A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the main thread to keep TUI rendering non-blocking (#1484 §2 worker thread isolation):

@@ -10,7 +10,12 @@
  * The concrete implementation (@koi/tasks) is injected at L3 (tui-runtime).
  */
 
-import { classifyBashCommand, initializeBashAst } from "@koi/bash-ast";
+import {
+  classifyBashCommand,
+  classifyBashCommandWithElicit,
+  type ElicitCallback,
+  initializeBashAst,
+} from "@koi/bash-ast";
 import { type BashPolicy, DEFAULT_BASH_POLICY } from "@koi/bash-security";
 import type {
   AgentId,
@@ -93,6 +98,14 @@ export interface BashBackgroundToolConfig {
    * Paired with `onSubprocessStart`. Guaranteed to fire exactly once per start.
    */
   readonly onSubprocessEnd?: (() => void) | undefined;
+  /**
+   * Optional interactive elicit callback for too-complex commands — see
+   * `BashToolConfig.elicit`. Same semantics: when provided, replaces the
+   * transitional regex fallback with an interactive user prompt.
+   *
+   * Closes #1634.
+   */
+  readonly elicit?: ElicitCallback | undefined;
 }
 
 /** Shape of the tool's JSON response on successful task creation. */
@@ -131,6 +144,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
     getSignal,
     onSubprocessStart,
     onSubprocessEnd,
+    elicit,
   } = config;
   const workspaceRoot = config.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = { ...DEFAULT_BASH_POLICY, ...config.policy };
@@ -206,8 +220,21 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
           ? args.description
           : command;
 
-      // Security classification — same pipeline as foreground Bash
-      const classification = classifyBashCommand(command, { cwd, policy, workspaceRoot });
+      // Security classification — same pipeline as foreground Bash. When
+      // `elicit` is wired (L3 runtime), `too-complex` commands with non-
+      // hard-deny nodeTypes are routed to an interactive user prompt
+      // instead of silently passing through the regex fallback. See
+      // `classifyBashCommandWithElicit` for the full contract.
+      const classifyOpts = { cwd, policy, workspaceRoot };
+      const signal = options?.signal;
+      const classification =
+        elicit !== undefined
+          ? await classifyBashCommandWithElicit(command, {
+              ...classifyOpts,
+              elicit,
+              ...(signal !== undefined ? { signal } : {}),
+            })
+          : classifyBashCommand(command, classifyOpts);
       if (!classification.ok) {
         return {
           error: "Command blocked by security policy",

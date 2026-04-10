@@ -19,13 +19,21 @@ If **yes**, the caller gets a `SimpleCommand[]` with resolved argv, environment
 variable assignments, and redirects. Downstream rule matching compares
 `BashRulePattern` (from `@koi/core`) against each `argv`.
 
-If **no**, the command is classified `too-complex` and routed through the
-transitional fallback — the existing `@koi/bash-security` regex classifier —
-until three-state permissions (#1622) lands and `too-complex` can route to an
-`ask-user` verdict instead.
+If **no**, the command is classified `too-complex`. Two classifiers pick up
+from here, depending on whether the caller has an interactive prompt surface:
+
+- **Sync path** (`classifyBashCommand`) — falls through to the existing
+  `@koi/bash-security` regex TTP classifier as a transitional compatibility
+  shim. Used by `koi start`, standalone tests, and any caller without a
+  prompt surface.
+- **Async path** (`classifyBashCommandWithElicit`) — calls the provided
+  `elicit` callback with the command text, walker reason, and node type;
+  the user decides allow/deny explicitly. Closes #1634's fail-closed loop.
+  Used by the TUI (wired in `tui-runtime.ts`), where `elicit` is routed
+  to the same `approvalHandler` that backs permission dialogs.
 
 If parsing fails entirely (timeout, over-length, init failure), the result is
-`parse-unavailable` and the caller **must fail closed**.
+`parse-unavailable` and both paths **fail closed**.
 
 ## Public API
 
@@ -34,17 +42,28 @@ import type { BashRulePattern } from "@koi/core/bash-rule-pattern";
 import {
   initializeBashAst,
   classifyBashCommand,
+  classifyBashCommandWithElicit,
   matchSimpleCommand,
   type AstAnalysis,
   type SimpleCommand,
   type Redirect,
+  type ElicitCallback,
 } from "@koi/bash-ast";
 
 // One-time startup. Caches the init promise; idempotent under concurrent calls.
 await initializeBashAst();
 
-// Sync hot path once init has resolved.
-const result: AstAnalysis = classifyBashCommand("git status --porcelain");
+// Sync path — transitional regex fallback for non-interactive callers.
+const result = classifyBashCommand("git status --porcelain");
+
+// Async path — interactive elicit for too-complex commands.
+const elicit: ElicitCallback = async ({ command, reason, nodeType }) => {
+  // Surface to user via channel-level prompt.
+  return userApproved(command, reason, nodeType);
+};
+const asyncResult = await classifyBashCommandWithElicit("for i in 1 2; do echo $i; done", {
+  elicit,
+});
 
 switch (result.kind) {
   case "simple": {
@@ -165,20 +184,38 @@ obviously-malicious input in microseconds:
   `env` are analyzed as themselves — not as their inner command. A follow-up
   issue will add wrapper stripping.
 
-## Transitional `too-complex` fallback
+## `too-complex` routing — sync fallback + async elicit
 
-Until #1622 (three-state permissions) lands, `too-complex` commands route
-through the existing `@koi/bash-security` regex classifier as a compatibility
-fallback. This:
+Two classifiers share the same AST pipeline but differ in how they handle
+`too-complex` outcomes whose nodeType is NOT a shell-escape hard-deny reason:
 
-- **Preserves current behavior** for commands with `$()`, `$VAR`, loops, `&&`
-- **Does not widen the attack surface** — the fallback runs the same checks
-  these commands get today
-- **Is explicitly transitional** — every fallback call site is marked
-  `// TODO(#1622): remove when ask-user verdict exists`
+- **`classifyBashCommand` (sync)** — falls through to the `@koi/bash-security`
+  regex TTP classifier as a transitional compatibility fallback. Preserves
+  current behavior for non-interactive callers (`koi start`, standalone tool
+  tests) so common shell patterns (`$VAR`, `$(cmd)`, for-loops, `&&`) do not
+  force user prompts they can't respond to.
 
-When #1622 merges, the fallback is deleted and `too-complex` routes to an
-interactive `ask-user` prompt.
+- **`classifyBashCommandWithElicit` (async)** — calls the provided `elicit`
+  callback with the command text, walker reason, and node type. The user
+  decides allow/deny explicitly. Used by the TUI via `tui-runtime.ts`, where
+  `elicit` is routed to the same `approvalHandler` that backs permission
+  dialogs. Closes #1634's fail-closed loop.
+
+Both paths:
+
+- Hard-deny escape-related `too-complex` cases (`word`, `string_content`,
+  `prefilter:line-continuation`) — these NEVER reach the regex fallback OR
+  the elicit callback because the raw source doesn't match bash's effective
+  argv, so neither a regex nor a user can safely approve them.
+- Run the regex TTP classifier as defense-in-depth on the `simple` path AND
+  after elicit approval, so known-malicious patterns (reverse shells,
+  exfiltration, privilege escalation) are blocked regardless of user
+  consent.
+
+When `classifyBashCommandWithElicit` is wired end-to-end (as in the TUI),
+#1622's persistent approval memory is orthogonal future work — the user
+sees the prompt immediately, and #1622's SQLite log layer (when it ships)
+will decide whether to cache "always allow" across restarts.
 
 ## Testing
 
@@ -193,14 +230,20 @@ interactive `ask-user` prompt.
 
 ## Golden query coverage
 
-Two golden queries in `@koi/runtime` exercise this package end-to-end:
+Three golden queries in `@koi/runtime` exercise this package end-to-end:
 
 - **`bash-exec`** (existing) — `echo hello-from-bash` reaches
   `kind: "simple"`, rule matches, command runs. Proves the happy path.
-- **`bash-ast-too-complex`** (new) — `echo $USER` reaches
-  `kind: "too-complex"`, falls through to the regex classifier, command
-  runs. Proves the transitional fallback works. Will be updated in the #1622
-  follow-up to assert an ask-user elicitation instead.
+- **`bash-ast-too-complex`** — `KOI_GREETING=hello echo "$KOI_GREETING"`
+  reaches `kind: "too-complex"` (simple_expansion in a double-quoted
+  string), and without an elicit callback wired, falls through to the
+  sync regex classifier. Proves the transitional non-interactive path.
+- **`bash-ast-elicit`** — same shape but with an elicit callback wired
+  (auto-approving in the cassette recording). Proves the async path:
+  `classifyBashCommandWithElicit` is invoked, the elicit callback
+  receives the command + reason + nodeType, the user approves, the
+  regex TTP defense-in-depth still runs, and the command spawns.
+  Closes #1634's fail-closed loop.
 
 ## WASM asset delivery
 

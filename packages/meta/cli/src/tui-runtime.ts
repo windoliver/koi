@@ -672,9 +672,30 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   // --- @koi/tools-bash: Bash execution (auto-sandboxed when OS adapter available) ---
   // createBashToolWithHooks exposes resetCwd() for session reset (agent:clear / session:new).
+  //
+  // elicit (#1634): when the bash-ast walker classifies a command as
+  // too-complex (non-hard-deny), the tool routes it through the same
+  // approvalHandler as the permissions middleware. The user sees a
+  // dialog asking whether to run the specific command. This closes
+  // the full fail-closed loop by replacing the transitional regex
+  // fallback with an explicit user decision.
+  const bashElicit = async (params: {
+    readonly command: string;
+    readonly reason: string;
+    readonly nodeType?: string;
+  }): Promise<boolean> => {
+    const reasonPrefix = params.nodeType !== undefined ? ` (${params.nodeType})` : "";
+    const decision = await approvalHandler({
+      toolId: "Bash",
+      input: { command: params.command },
+      reason: `AST walker cannot safely analyse this command${reasonPrefix}: ${params.reason}. Approval delegates to the regex TTP classifier for defense-in-depth.`,
+    });
+    return decision.kind === "allow" || decision.kind === "always-allow";
+  };
   const bashHandle = createBashToolWithHooks({
     workspaceRoot: cwd,
     trackCwd: true,
+    elicit: bashElicit,
     ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
       ? { sandboxAdapter, sandboxProfile }
       : {}),
@@ -705,6 +726,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         onSubprocessEnd: () => {
           liveSubprocessCount--;
         },
+        elicit: bashElicit,
         ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
           ? { sandboxAdapter, sandboxProfile }
           : {}),
