@@ -32,6 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
@@ -275,7 +276,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const store = createStore(createInitialState());
-  const permissionBridge = createPermissionBridge({ store });
+  // Persistent approval store — gracefully degrade if DB can't be opened
+  // (corrupt file, permissions issue, etc.). TUI still works without it.
+  // let: approvalStore is conditionally set based on DB availability
+  let approvalStore: ReturnType<typeof createApprovalStore> | undefined;
+  try {
+    approvalStore = createApprovalStore({
+      dbPath: join(homedir(), ".koi", "approvals.db"),
+    });
+  } catch {
+    // DB unavailable — permanent approvals disabled for this session.
+  }
+  const permissionBridge = createPermissionBridge({
+    store,
+    permanentAvailable: approvalStore !== undefined,
+  });
 
   // Flush callback: reduces entire batch in one pass, single notification.
   // Avoids N state updates + N signal invalidations per 16ms flush window.
@@ -325,6 +340,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     systemPrompt,
     session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
     skillsRuntime: skillRuntime,
+    ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
   }).then((handle) => {
     runtimeHandle = handle;
@@ -401,6 +417,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         await runtimeHandle.runtime.dispose();
       }
+      approvalStore?.close();
     } finally {
       process.exit(0);
     }

@@ -10,6 +10,48 @@ import { RichTrajectoryStep } from '@koi/core/rich-trajectory';
 import { CircuitBreakerConfig } from '@koi/errors';
 
 /**
+ * approval-store.ts — SQLite-backed persistent approval memory.
+ *
+ * Stores "always" scope grants that survive process restart.
+ * Keyed by (userId, agentId, toolId) to prevent cross-user grant inheritance.
+ * Versioned by schemaVersion so policy/tool changes invalidate stale grants.
+ *
+ * Uses bun:sqlite (synchronous prepared statements) for sub-microsecond lookups.
+ */
+interface ApprovalStoreConfig {
+    /** SQLite file path, or ":memory:" for tests. */
+    readonly dbPath: string;
+    /**
+     * Application-level version stamp. Grants created under a different version
+     * are ignored on lookup and pruned on next grant. Use this to invalidate
+     * stale approvals when tool behavior, policy rules, or approval semantics
+     * change. Defaults to CURRENT_SCHEMA_VERSION.
+     */
+    readonly schemaVersion?: number;
+}
+interface ApprovalGrant {
+    readonly userId: string;
+    readonly agentId: string;
+    readonly toolId: string;
+    readonly grantedAt: number;
+}
+interface ApprovalStore {
+    /** Check if a persistent always-allow grant exists for the current schema version. */
+    readonly has: (userId: string, agentId: string, toolId: string) => boolean;
+    /** Record a persistent always-allow grant (upsert — updates grantedAt if exists). */
+    readonly grant: (userId: string, agentId: string, toolId: string, grantedAt: number) => void;
+    /** Revoke a specific grant. Returns true if a grant existed. */
+    readonly revoke: (userId: string, agentId: string, toolId: string) => boolean;
+    /** Revoke all grants. */
+    readonly revokeAll: () => void;
+    /** List all grants for the current schema version (for UI/diagnostics). */
+    readonly list: () => readonly ApprovalGrant[];
+    /** Close the database. Idempotent. */
+    readonly close: () => void;
+}
+declare function createApprovalStore(config: ApprovalStoreConfig): ApprovalStore;
+
+/**
  * Pattern-based permission classifier.
  *
  * Evaluates tool names against allow/deny/ask pattern rules with
@@ -89,6 +131,26 @@ interface PermissionsMiddlewareConfig {
     readonly denialEscalation?: boolean | DenialEscalationConfig;
     /** Callback emitted after each approval decision, producing a source:"user" trajectory step. */
     readonly onApprovalStep?: (sessionId: string, step: RichTrajectoryStep) => void;
+    /**
+     * Persistent approval store for cross-session "always" grants.
+     * When configured, "always-allow" decisions are persisted to SQLite and
+     * survive process restart. Constructed externally via \`createApprovalStore\`.
+     */
+    readonly persistentApprovals?: ApprovalStore;
+    /**
+     * Stable agent identifier for persistent grant keys. When set, persistent
+     * "always" grants are keyed by this value instead of the per-process agentId
+     * (which is a random UUID, regenerated on each restart).
+     *
+     * This is required for persistent grants to work across TUI/CLI restarts,
+     * where the manifest name (e.g. "koi-tui") identifies the logical agent
+     * while ctx.session.agentId changes every launch.
+     *
+     * When unset, persistent grants use ctx.session.agentId (unstable across
+     * restarts — useful only for multi-agent runtimes where each agent has a
+     * durable identity managed externally).
+     */
+    readonly persistentAgentId?: string;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 
@@ -126,17 +188,6 @@ interface DenialTracker {
 declare function createDenialTracker(maxEntries?: number): DenialTracker;
 
 /**
- * Permissions middleware — sole interposition layer for tool-level access control.
- *
- * Two interception points:
- * - wrapModelCall: batch-checks all tools, filters denied ones from LLM context
- * - wrapToolCall: re-checks at invocation, handles ask → approval flow
- *
- * Supports decision caching, approval caching, audit logging, circuit breaker,
- * and denial tracking.
- */
-
-/**
  * Extended middleware returned by {@link createPermissionsMiddleware}.
  *
  * This IS a KoiMiddleware (backward compatible — can be passed directly
@@ -159,9 +210,24 @@ interface PermissionsMiddlewareHandle extends KoiMiddleware {
      * silently carry over into the next conversation.
      */
     readonly clearSessionApprovals: (sessionId: string) => void;
+    /**
+     * Revoke a persistent always-allow grant. Returns true if a grant existed.
+     * No-op if no persistent store is configured.
+     */
+    readonly revokePersistentApproval: (userId: string, agentId: string, toolId: string) => boolean;
+    /**
+     * Revoke all persistent always-allow grants.
+     * No-op if no persistent store is configured.
+     */
+    readonly revokeAllPersistentApprovals: () => void;
+    /**
+     * List all persistent always-allow grants (for UI/diagnostics).
+     * Returns empty array if no persistent store is configured.
+     */
+    readonly listPersistentApprovals: () => readonly ApprovalGrant[];
 }
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): PermissionsMiddlewareHandle;
 
-export { type ApprovalCacheConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
+export { type ApprovalCacheConfig, type ApprovalGrant, type ApprovalStore, type ApprovalStoreConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createApprovalStore, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
 "
 `;
