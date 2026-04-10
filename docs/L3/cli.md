@@ -84,7 +84,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 **Wiring (current):**
 
 - Model: `anthropic/claude-sonnet-4-6` via OpenRouter (`OPENROUTER_API_KEY` required)
-- Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
+- Transcript: token-aware compaction via `@koi/context-manager` `enforceBudget()` — micro (tail-truncate) at 50% of model context window, full (optimal-split truncate) at 75%. Window size resolved per-model via `@koi/model-registry` (e.g. claude-opus-4-6 → 1M tokens). Falls back to sliding window of last 20 messages when budget config is unavailable. Messages committed to transcript only on `stopReason === "completed"`. Override window for testing: `KOI_COMPACTION_WINDOW=<tokens>` (#1623)
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
 - **Tools wired:** Glob, Grep, web_fetch, Bash, **TodoWrite** (in-conversation task tracking), and **notebook tools** (notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell — workspace-contained via `cwd`). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT wired — plan-mode requires a real permission backend to enforce the read-only gate; without it the mode flag flips but no permissions are restricted. The TUI wires the full interaction provider because it has a real permission backend. `koi start` uses `TodoWrite` only.
@@ -352,6 +352,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
+| `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
