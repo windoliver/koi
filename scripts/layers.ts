@@ -29,6 +29,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/git-utils",
   "@koi/hash",
   "@koi/hook-prompt",
+  "@koi/model-registry",
   "@koi/redaction",
   "@koi/rules-loader",
   "@koi/secure-storage",

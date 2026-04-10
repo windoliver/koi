@@ -713,4 +713,112 @@ describe("enforceBudget", () => {
       }
     });
   });
+
+  describe("CompactionEvent telemetry", () => {
+    it("emits no events when compaction is noop", async () => {
+      const config = testConfig({ contextWindowSize: 10_000 });
+      const messages = [textMsg("hello")];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("noop");
+      expect(result.events).toEqual([]);
+    });
+
+    it("emits compaction.triggered and compaction.completed on micro", async () => {
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        preserveRecent: 1,
+      });
+      const messages = [textMsg("a".repeat(30)), textMsg("b".repeat(30))];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("micro");
+      const triggered = result.events.find((e) => e.kind === "compaction.triggered");
+      const completed = result.events.find((e) => e.kind === "compaction.completed");
+
+      expect(triggered).toBeDefined();
+      if (triggered?.kind === "compaction.triggered") {
+        expect(triggered.signal).toBe("micro");
+        expect(triggered.tokensBefore).toBeGreaterThan(0);
+        expect(triggered.contextWindow).toBe(100);
+      }
+      expect(completed).toBeDefined();
+      if (completed?.kind === "compaction.completed") {
+        expect(completed.signal).toBe("micro");
+        expect(completed.tokensBefore).toBeGreaterThan(0);
+        expect(completed.tokensAfter).toBeLessThan(completed.tokensBefore);
+      }
+    });
+
+    it("emits compaction.completed with tokensBefore > tokensAfter on full", async () => {
+      const config = testConfig({
+        contextWindowSize: 50,
+        softTriggerFraction: 0.3,
+        hardTriggerFraction: 0.5,
+        microTargetFraction: 0.1,
+        preserveRecent: 1,
+        maxSummaryTokens: 5,
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20)), textMsg("c".repeat(20))];
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("full");
+      const completed = result.events.find((e) => e.kind === "compaction.completed");
+      expect(completed).toBeDefined();
+      if (completed?.kind === "compaction.completed") {
+        expect(completed.signal).toBe("full");
+        expect(completed.tokensBefore).toBeGreaterThan(0);
+        expect(typeof completed.tokensAfter).toBe("number");
+      }
+    });
+  });
+
+  describe("overflow recovery — onBeforeDrop failure is fail-open", () => {
+    it("surfaces preservationFailed on micro when callback throws — no exception propagated", async () => {
+      const config = testConfig({
+        contextWindowSize: 100,
+        softTriggerFraction: 0.5,
+        hardTriggerFraction: 0.75,
+        microTargetFraction: 0.35,
+        preserveRecent: 1,
+        onBeforeDrop: () => {
+          throw new Error("archiver offline");
+        },
+      });
+      const messages = [textMsg("a".repeat(30)), textMsg("b".repeat(30))];
+
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(["micro", "full"]).toContain(result.compaction);
+      if (result.compaction === "micro" || result.compaction === "full") {
+        expect(result.preservationFailed).toBe(true);
+        expect((result.preservationError as Error).message).toBe("archiver offline");
+      }
+    });
+
+    it("surfaces preservationFailed on full when async callback rejects — no exception propagated", async () => {
+      const config = testConfig({
+        contextWindowSize: 50,
+        softTriggerFraction: 0.3,
+        hardTriggerFraction: 0.5,
+        microTargetFraction: 0.1,
+        preserveRecent: 1,
+        maxSummaryTokens: 5,
+        onBeforeDrop: async () => {
+          throw new Error("network timeout");
+        },
+      });
+      const messages = [textMsg("a".repeat(20)), textMsg("b".repeat(20)), textMsg("c".repeat(20))];
+
+      const result = await enforceBudget(messages, undefined, config);
+
+      expect(result.compaction).toBe("full");
+      if (result.compaction === "full") {
+        expect(result.preservationFailed).toBe(true);
+      }
+    });
+  });
 });

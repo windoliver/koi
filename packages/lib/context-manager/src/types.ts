@@ -47,9 +47,20 @@ export interface ReplacementConfig {
   readonly previewChars?: number;
 }
 
+// User-facing policy config (partial, per-model overrides)
+export interface CompactionPolicy {
+  readonly softTriggerFraction: number;
+  readonly hardTriggerFraction: number;
+  readonly prunePreserveLastK: number;
+}
+
 export interface CompactionManagerConfig {
   /** Context window size in tokens. Default: 200_000. */
   readonly contextWindowSize?: number;
+  readonly modelId?: string;
+  readonly globalPolicy?: Partial<CompactionPolicy>;
+  readonly perModelPolicy?: Readonly<Record<string, Partial<CompactionPolicy>>>;
+  readonly modelWindowOverrides?: Readonly<Record<string, number>>;
   /** Number of most recent messages to always preserve. Default: 4. */
   readonly preserveRecent?: number;
   /** Override the default token estimator (4 chars/token heuristic). */
@@ -71,6 +82,7 @@ export interface CompactionManagerConfig {
 export interface ResolvedConfig {
   readonly contextWindowSize: number;
   readonly preserveRecent: number;
+  readonly prunePreserveLastK: number;
   readonly tokenEstimator: TokenEstimator;
   readonly micro: {
     readonly triggerFraction: number;
@@ -92,6 +104,43 @@ export interface ResolvedConfig {
   };
 }
 
+// Resolved, cached in CompactionState
+export interface ResolvedCompactionPolicy {
+  readonly contextWindow: number;
+  readonly softTriggerFraction: number;
+  readonly hardTriggerFraction: number;
+  readonly prunePreserveLastK: number;
+}
+
+// SummaryAnchor for Issue 4
+export interface SummaryAnchor {
+  readonly fromTimestamp: number;
+  readonly toTimestamp: number;
+  readonly tokensBefore: number;
+  readonly tokensAfter: number;
+}
+
+// Telemetry events returned from enforceBudget
+export type CompactionEvent =
+  | {
+      readonly kind: "compaction.triggered";
+      readonly signal: "micro" | "full";
+      readonly tokensBefore: number;
+      readonly contextWindow: number;
+    }
+  | {
+      readonly kind: "compaction.completed";
+      readonly signal: "micro" | "full";
+      readonly tokensBefore: number;
+      readonly tokensAfter: number;
+      readonly summaryAnchor?: SummaryAnchor;
+    }
+  | {
+      readonly kind: "tool_output.pruned";
+      readonly pairsRemoved: number;
+      readonly tokensSaved: number;
+    };
+
 // ---------------------------------------------------------------------------
 // Compaction state — explicit, immutably updated
 // ---------------------------------------------------------------------------
@@ -107,6 +156,7 @@ export interface CompactionState {
   readonly consecutiveFailures: number;
   /** Turn number at which backoff expires and compaction is retried. */
   readonly skipUntilTurn: number;
+  readonly resolvedPolicy: ResolvedCompactionPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +166,7 @@ export interface CompactionState {
 export const COMPACTION_DEFAULTS = {
   contextWindowSize: 200_000,
   preserveRecent: 4,
+  prunePreserveLastK: 3,
   micro: {
     triggerFraction: 0.5,
     targetFraction: 0.35,
@@ -142,4 +193,10 @@ export const INITIAL_STATE: CompactionState = {
   lastTokenFraction: 0,
   consecutiveFailures: 0,
   skipUntilTurn: 0,
+  resolvedPolicy: {
+    contextWindow: 200_000,
+    softTriggerFraction: 0.5,
+    hardTriggerFraction: 0.75,
+    prunePreserveLastK: 3,
+  },
 };

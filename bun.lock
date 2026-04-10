@@ -120,6 +120,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/model-registry": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
     },
@@ -249,6 +250,10 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+    },
+    "packages/lib/model-registry": {
+      "name": "@koi/model-registry",
+      "version": "0.0.0",
     },
     "packages/lib/plugins": {
       "name": "@koi/plugins",
@@ -1022,6 +1027,8 @@
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
+
+    "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 

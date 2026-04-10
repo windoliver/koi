@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/model-registry": "workspace:*",
     "@koi/token-estimator": "workspace:*"
   },
   "scripts": {
