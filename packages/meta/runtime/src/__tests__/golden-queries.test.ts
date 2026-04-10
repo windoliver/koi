@@ -447,3 +447,58 @@ eval("malicious");
     expect(result.error.message).toContain("evil-skill");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/context-manager (#1623)
+// ---------------------------------------------------------------------------
+
+import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
+import type { InboundMessage } from "@koi/core";
+
+describe("Golden: @koi/context-manager", () => {
+  function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
+    return { senderId, timestamp: Date.now(), content: [{ kind: "text", text }] };
+  }
+
+  // ~225 tokens per block (4 chars/token fallback estimator)
+  const block = "The quick brown fox jumps over the lazy dog. ".repeat(20);
+
+  test("micro compaction fires and reduces message count when past soft trigger", async () => {
+    // 3000-token window, soft trigger at 50% (1500). 8 messages × ~225 tokens ≈ 1800 tokens.
+    const budgetConfig = { contextWindowSize: 3000, softTriggerFraction: 0.5 };
+    const msgs: InboundMessage[] = [];
+    for (let i = 0; i < 4; i++) {
+      msgs.push(makeMsg("user", `Q${i + 1}: ${block}`));
+      msgs.push(makeMsg("assistant", `A${i + 1}: ${block}`));
+    }
+
+    const result = await enforceBudget([...msgs], undefined, budgetConfig);
+
+    expect(result.compaction).toBe("micro");
+    expect(result.messages.length).toBeLessThan(msgs.length);
+    // At least the two most-recent messages survive (preserveRecent default)
+    expect(result.messages.length).toBeGreaterThan(0);
+    // Events include triggered + completed
+    const triggered = result.events.find((e) => e.kind === "compaction.triggered");
+    expect(triggered).toBeDefined();
+    const completed = result.events.find((e) => e.kind === "compaction.completed");
+    expect(completed).toBeDefined();
+    if (completed?.kind === "compaction.completed") {
+      expect(completed.tokensAfter).toBeLessThan(completed.tokensBefore);
+    }
+  });
+
+  test("resolveConfig returns correct window for known model via model-registry", () => {
+    const result = resolveConfig({ modelId: "claude-opus-4-6" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // claude-opus-4-6 has 1M context window
+    expect(result.value.contextWindowSize).toBe(1_000_000);
+
+    // budgetConfigFromResolved propagates contextWindowSize
+    const cfg = budgetConfigFromResolved(result.value);
+    expect(cfg.contextWindowSize).toBe(1_000_000);
+    expect(cfg.softTriggerFraction).toBeDefined();
+    expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+});
