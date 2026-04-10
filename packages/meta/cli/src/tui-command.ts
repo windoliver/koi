@@ -801,6 +801,39 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         case "agent:clear":
           resetConversation();
           break;
+        case "agent:rewind":
+          // /rewind rolls back the previous turn (file edits + conversation)
+          // via @koi/checkpoint. Always rewinds 1 turn — multi-turn rewind
+          // requires arg parsing through the slash dispatch chain, which is
+          // a separate refactor (the current onCommand callback doesn't
+          // accept args). Users who need to go further back can call /rewind
+          // multiple times.
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const result = await runtimeHandle.checkpoint.rewind(tuiSessionId, 1);
+            if (!result.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_FAILED",
+                message: `Rewind failed: ${result.error.message}`,
+              });
+              return;
+            }
+            // After a successful rewind the conversation transcript and any
+            // tracked file edits from the previous turn are gone. Clear the
+            // in-memory transcript array and TUI message log so the displayed
+            // state matches what /rewind actually restored.
+            runtimeHandle.transcript.splice(0);
+            store.dispatch({ kind: "clear_messages" });
+          })();
+          break;
         case "system:quit":
           void shutdown();
           break;

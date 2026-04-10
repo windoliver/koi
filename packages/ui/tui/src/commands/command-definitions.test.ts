@@ -6,8 +6,8 @@ import { COMMAND_DEFINITIONS, filterCommands } from "./command-definitions.js";
 // ---------------------------------------------------------------------------
 
 describe("COMMAND_DEFINITIONS", () => {
-  test("has exactly 18 commands", () => {
-    expect(COMMAND_DEFINITIONS).toHaveLength(18);
+  test("has exactly 19 commands", () => {
+    expect(COMMAND_DEFINITIONS).toHaveLength(19);
   });
 
   test("all command ids are unique", () => {
@@ -28,6 +28,17 @@ describe("COMMAND_DEFINITIONS", () => {
     for (const cmd of COMMAND_DEFINITIONS) {
       expect(valid.has(cmd.category)).toBe(true);
     }
+  });
+
+  test("agent:rewind is registered as a destructive agent command", () => {
+    // /rewind ships in #1625 — verify it's wired into the palette so the
+    // CLI's onCommand switch can dispatch it.
+    const rewind = COMMAND_DEFINITIONS.find((c) => c.id === "agent:rewind");
+    expect(rewind).toBeDefined();
+    if (rewind === undefined) return;
+    expect(rewind.category).toBe("agent");
+    expect(rewind.destructive).toBe(true);
+    expect(rewind.label).toBe("Rewind");
   });
 });
 

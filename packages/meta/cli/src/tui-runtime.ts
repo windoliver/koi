@@ -31,6 +31,7 @@ import { appendFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
+import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
@@ -86,8 +87,7 @@ import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-// NOTE: createSpawnTools (legacy stub-based spawn) is replaced by
-// createSpawnToolProvider from @koi/engine for real agent spawning (#1583).
+import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import {
@@ -313,6 +313,16 @@ export interface TuiRuntimeConfig {
 export interface TuiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
+  /**
+   * Checkpoint handle for session-level rollback (#1625). Always populated
+   * in the TUI — captures end-of-turn snapshots and exposes rewind() so the
+   * `/rewind` slash command can roll back the active session.
+   *
+   * Snapshots live in an in-memory SQLite chain (per-process, lost on exit);
+   * blobs live in a flat tmp dir under `~/.koi/file-history`. The conversation
+   * log is shared with the session transcript so /rewind truncates both halves.
+   */
+  readonly checkpoint: Checkpoint;
   /**
    * Mutable conversation transcript array — owned by the caller.
    * Splice to reset: `transcript.splice(0)` on agent:clear or session:new.
@@ -1158,34 +1168,30 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       version: "0.0.0",
       description: "Spawned sub-agent",
       model: { name: config.modelName },
-      // Restrictive ceiling for dynamic (ad-hoc) agents: read-only tools only.
-      // Built-in agents (researcher, coder, etc.) override this via their own
-      // definition.manifest.selfCeiling which takes precedence in the merge.
-      // Dynamic agents (unknown names via allowDynamicAgents) inherit this ceiling
-      // so they can't escalate to Bash/fs_write/fs_edit/web_fetch without an
-      // authored definition explicitly granting those tools.
       selfCeiling: {
         tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
       },
     },
-    // Inherit security middleware (permissions, secret-scanning, hooks) + the
-    // system prompt so children have the same envelope as the parent. Session
-    // transcript middleware is intentionally excluded — it holds a mutable
-    // transcript array that must stay isolated per-runtime.
     inheritedMiddleware: [
       permMw,
       exfiltrationGuardMw,
       hookMw,
       ...(systemPromptMw !== null ? [systemPromptMw] : []),
     ],
-    // Enable dynamic agent creation: unknown names create ad-hoc agents from
-    // the description (Claude Code behavior). Built-in and project/user-defined
-    // agents still resolve normally with their authored prompts and ceilings.
     allowDynamicAgents: true,
-    // Side-channel spawn event observer — bridge dispatches these into the
-    // TUI store so /agents and inline spawn_call blocks reflect real state.
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   });
+
+  // --- Checkpoint (#1625): always wired in the TUI ---
+  const checkpointHandle = createCheckpoint({
+    store: createSnapshotStoreSqlite({ path: ":memory:" }),
+    config: {
+      blobDir: join(homedir(), ".koi", "file-history"),
+      driftDetector: null,
+      ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
+    },
+  });
+  const checkpointMw = checkpointHandle.middleware;
 
   // --- Wrap middleware with trace for full ATIF instrumentation ---
   // Same pattern as golden-query recording: each middleware hook invocation
@@ -1206,6 +1212,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     ...(config.modelRouterMiddleware !== undefined ? [config.modelRouterMiddleware] : []),
     ...(goalMw !== undefined ? [goalMw] : []),
     ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
+    checkpointMw,
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
@@ -1251,6 +1258,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   return {
     runtime,
+    checkpoint: checkpointHandle,
     transcript,
     sandboxActive: osSandboxResult.ok,
     getTrajectorySteps: async () => {
