@@ -276,12 +276,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const store = createStore(createInitialState());
-  const approvalStore = createApprovalStore({
-    dbPath: join(homedir(), ".koi", "approvals.db"),
-  });
+  // Persistent approval store — gracefully degrade if DB can't be opened
+  // (corrupt file, permissions issue, etc.). TUI still works without it.
+  // let: approvalStore is conditionally set based on DB availability
+  let approvalStore: ReturnType<typeof createApprovalStore> | undefined;
+  try {
+    approvalStore = createApprovalStore({
+      dbPath: join(homedir(), ".koi", "approvals.db"),
+    });
+  } catch {
+    // DB unavailable — permanent approvals disabled for this session.
+  }
   const permissionBridge = createPermissionBridge({
     store,
-    permanentAvailable: true,
+    permanentAvailable: approvalStore !== undefined,
   });
 
   // Flush callback: reduces entire batch in one pass, single notification.
@@ -332,7 +340,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     systemPrompt,
     session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
     skillsRuntime: skillRuntime,
-    persistentApprovals: approvalStore,
+    ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
   }).then((handle) => {
     runtimeHandle = handle;
@@ -409,7 +417,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         await runtimeHandle.runtime.dispose();
       }
-      approvalStore.close();
+      approvalStore?.close();
     } finally {
       process.exit(0);
     }

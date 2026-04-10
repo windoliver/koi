@@ -27,7 +27,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import type {
@@ -964,6 +964,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
+    userId: userInfo().username,
     loopDetection: false,
   });
 
