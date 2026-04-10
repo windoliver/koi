@@ -93,7 +93,7 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
-import { bareModelId, createTranscriptAdapter } from "./engine-adapter.js";
+import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 
@@ -875,7 +875,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
-    budgetConfig: { modelId: bareModelId(modelName) },
+    budgetConfig: budgetConfigForModel(modelName),
   });
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---

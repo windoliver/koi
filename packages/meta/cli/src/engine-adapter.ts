@@ -17,7 +17,7 @@
  */
 
 import type { BudgetConfig } from "@koi/context-manager";
-import { enforceBudget } from "@koi/context-manager";
+import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
 import type {
   EngineAdapter,
   EngineEvent,
@@ -171,4 +171,25 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
 export function bareModelId(modelName: string): string {
   const colonIdx = modelName.indexOf(":");
   return colonIdx >= 0 ? modelName.slice(colonIdx + 1) : modelName;
+}
+
+/**
+ * Build a fully-resolved BudgetConfig for a given model name.
+ *
+ * Calls resolveConfig({ modelId }) so the context window size is looked up
+ * from @koi/model-registry (e.g. claude-opus-4-6 → 1_000_000, gpt-4o → 128_000).
+ * Falls back to COMPACTION_DEFAULTS.contextWindowSize (200_000) for unknown models.
+ *
+ * Use this instead of passing { modelId } directly to enforceBudget — the raw
+ * modelId field in BudgetConfig is only used for token estimation, not window resolution.
+ */
+export function budgetConfigForModel(modelName: string): BudgetConfig {
+  const modelId = bareModelId(modelName);
+  const result = resolveConfig({ modelId });
+  // resolveConfig only fails on invalid fraction values — model registry lookup
+  // never produces invalid fractions, so this path is unreachable in practice.
+  if (!result.ok) {
+    return { modelId };
+  }
+  return budgetConfigFromResolved(result.value);
 }
