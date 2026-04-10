@@ -39,6 +39,9 @@ export function createFileLock(lockDir?: string): FileLock {
   const dir = lockDir ?? join(homedir(), ".koi", "locks");
 
   async function acquireLock(key: string): Promise<string> {
+    // Ensure base lock directory exists on first use
+    await mkdir(dir, { recursive: true });
+
     const lockPath = join(dir, `${sanitizeKey(key)}.lock`);
     const metaPath = join(lockPath, "meta.json");
     const deadline = Date.now() + MAX_WAIT_MS;

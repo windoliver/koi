@@ -109,11 +109,16 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     authUrl.searchParams.set("state", state);
 
     // Delegate to runtime for browser interaction
-    const code = await runtime.authorize(authUrl.toString(), redirectUri);
+    const callbackResult = await runtime.authorize(authUrl.toString(), redirectUri);
+
+    // Validate state parameter to prevent CSRF attacks
+    if (callbackResult.state !== state) {
+      return false;
+    }
 
     // Exchange authorization code for tokens
     const tokens = await exchangeCode(
-      code,
+      callbackResult.code,
       pkce.verifier,
       redirectUri,
       metadata.tokenEndpoint,

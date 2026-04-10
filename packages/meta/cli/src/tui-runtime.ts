@@ -55,13 +55,7 @@ import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver } from "@koi/mcp";
-import {
-  createMcpComponentProvider,
-  createMcpConnection,
-  createMcpResolver,
-  loadMcpJsonFile,
-  resolveServerConfig,
-} from "@koi/mcp";
+import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -99,6 +93,7 @@ import {
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createTranscriptAdapter } from "./engine-adapter.js";
+import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 
 // ---------------------------------------------------------------------------
@@ -351,9 +346,7 @@ async function loadMcp(
   if (!result.ok) return undefined;
   if (result.value.servers.length === 0) return undefined;
 
-  const connections = result.value.servers.map((server) =>
-    createMcpConnection(resolveServerConfig(server)),
-  );
+  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
   const resolver = createMcpResolver(connections);
   const provider = createMcpComponentProvider({ resolver });
 
@@ -420,7 +413,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   let pluginMcpSetup: McpSetup | undefined;
   if (pluginComponents.mcpServers.length > 0) {
     const connections = pluginComponents.mcpServers.map((server) =>
-      createMcpConnection(resolveServerConfig(server)),
+      createOAuthAwareMcpConnection(server),
     );
     const resolver = createMcpResolver(connections);
     const provider = createMcpComponentProvider({ resolver });

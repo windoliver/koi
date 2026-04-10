@@ -14,8 +14,16 @@ import { parse } from "node:url";
 // Types (mirrors @koi/mcp's OAuthRuntime without importing it)
 // ---------------------------------------------------------------------------
 
+interface OAuthCallbackResult {
+  readonly code: string;
+  readonly state: string | undefined;
+}
+
 interface OAuthRuntime {
-  readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<string>;
+  readonly authorize: (
+    authorizationUrl: string,
+    redirectUri: string,
+  ) => Promise<OAuthCallbackResult>;
   readonly onReauthNeeded: (serverName: string) => Promise<void>;
 }
 
@@ -41,12 +49,15 @@ export function createCliOAuthRuntime(): OAuthRuntime {
 
 const CALLBACK_TIMEOUT_MS = 120_000; // 2 minutes
 
-async function startCallbackServer(authorizationUrl: string, redirectUri: string): Promise<string> {
+async function startCallbackServer(
+  authorizationUrl: string,
+  redirectUri: string,
+): Promise<OAuthCallbackResult> {
   const uri = new URL(redirectUri);
   const port = Number(uri.port) || 8912;
   const callbackPath = uri.pathname;
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<OAuthCallbackResult>((resolve, reject) => {
     const timeout = setTimeout(() => {
       server.close();
       reject(new Error("OAuth callback timed out after 2 minutes"));
@@ -85,9 +96,13 @@ async function startCallbackServer(authorizationUrl: string, redirectUri: string
       res.end(
         "<html><body><h1>Authentication Successful</h1><p>You can close this tab and return to the terminal.</p></body></html>",
       );
+      const callbackState = parsed.query.state;
       clearTimeout(timeout);
       server.close();
-      resolve(code);
+      resolve({
+        code,
+        state: typeof callbackState === "string" ? callbackState : undefined,
+      });
     });
 
     server.listen(port, "127.0.0.1", () => {

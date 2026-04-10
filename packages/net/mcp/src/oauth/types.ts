@@ -27,15 +27,24 @@ export interface McpOAuthConfig {
  * @koi/mcp calls these methods when user interaction is needed.
  * The CLI implements them with browser launch + local HTTP callback server.
  */
+/** Result from the OAuth callback containing code and state for validation. */
+export interface OAuthCallbackResult {
+  readonly code: string;
+  readonly state: string | undefined;
+}
+
 export interface OAuthRuntime {
   /**
    * Open the authorization URL in a browser and wait for the redirect callback.
-   * Returns the authorization code from the callback.
+   * Returns the authorization code and state parameter from the callback.
    *
    * @param authorizationUrl - Full OAuth authorization URL with PKCE challenge
    * @param redirectUri - The callback URI the auth server will redirect to
    */
-  readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<string>;
+  readonly authorize: (
+    authorizationUrl: string,
+    redirectUri: string,
+  ) => Promise<OAuthCallbackResult>;
 
   /**
    * Notify the user that re-authentication is needed (e.g., after 401 mid-session).

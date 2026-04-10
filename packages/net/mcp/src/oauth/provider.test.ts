@@ -23,7 +23,12 @@ function createMockStorage(): SecureStorage {
 
 function createMockRuntime(): OAuthRuntime {
   return {
-    authorize: mock(async () => "auth-code-123"),
+    authorize: mock(async (authUrl: string) => {
+      // Extract state from the authorization URL to simulate valid callback
+      const url = new URL(authUrl);
+      const state = url.searchParams.get("state") ?? undefined;
+      return { code: "auth-code-123", state };
+    }),
     onReauthNeeded: mock(async () => {}),
   };
 }

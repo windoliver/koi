@@ -92,6 +92,8 @@ export interface ConnectionDeps {
   }) => SdkClientLike;
   readonly createTransport: CreateTransportFn;
   readonly random: () => number;
+  /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
+  readonly onUnauthorized?: () => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,7 @@ export function createMcpConnection(
     createClient: makeClient = defaultCreateClient,
     createTransport: makeTransport = defaultCreateTransport,
     random = Math.random,
+    onUnauthorized,
   } = deps ?? {};
 
   const stateMachine: TransportStateMachine = createTransportStateMachine();
@@ -372,6 +375,8 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        // Notify host to clear stale tokens and prompt for re-auth
+        void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };
       }
       if (stateMachine.canTransitionTo("error")) {
@@ -438,6 +443,8 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        // Notify host to clear stale tokens and prompt for re-auth
+        void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };
       }
       if (stateMachine.canTransitionTo("error")) {

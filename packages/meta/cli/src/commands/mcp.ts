@@ -8,7 +8,6 @@ import { resolve } from "node:path";
 import type { McpServerConfig, ResolvedMcpServerConfig } from "@koi/mcp";
 import {
   computeServerKey,
-  createMcpConnection,
   createOAuthAuthProvider,
   loadMcpJsonFile,
   resolveServerConfig,
@@ -16,6 +15,7 @@ import {
 import { createSecureStorage } from "@koi/secure-storage";
 import type { CliFlags, McpFlags } from "../args.js";
 import { isMcpFlags } from "../args.js";
+import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { ExitCode } from "../types.js";
 import { createCliOAuthRuntime } from "./mcp-oauth-runtime.js";
 
@@ -210,7 +210,7 @@ async function runDebug(flags: McpFlags): Promise<ExitCode> {
     console.log(`Diagnosing connection to "${serverName}"...\n`);
   }
 
-  const conn = createMcpConnection(resolved);
+  const conn = createOAuthAwareMcpConnection(resolved.server);
   const connectResult = await conn.connect();
 
   if (connectResult.ok) {
