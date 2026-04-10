@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig, PromptHookConfig } from '@koi/core';
+"import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookPolicy, Result, KoiError, HookFilter, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig, PromptHookConfig } from '@koi/core';
 import { PromptModelCaller } from '@koi/hook-prompt';
 import { z } from 'zod';
 
@@ -238,6 +238,71 @@ type EnvRecordExpandResult = EnvRecordExpandOk | EnvRecordExpandError;
 declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>, allowedVars?: ReadonlySet<string> | undefined): EnvRecordExpandResult;
 
 /**
+ * Hook policy — tier model, filtering, and grouping for managed environments.
+ *
+ * Tiers control hook precedence and disable-ability:
+ * - \`managed\` — enterprise/admin hooks, cannot be disabled by users
+ * - \`user\` — user settings / project config hooks
+ * - \`session\` — in-memory / programmatic hooks
+ *
+ * All types and functions are internal to L2 — only \`HookPolicy\` flags live in L0.
+ */
+
+/** Hook policy tier — determines precedence and disable-ability. */
+type HookTier = "managed" | "user" | "session";
+/**
+ * A HookConfig annotated with its policy tier and a stable ID.
+ *
+ * The \`id\` is \`\${tier}:\${hook.name}\` — stable across array reordering
+ * and policy filtering, unlike index-based tracking.
+ */
+interface RegisteredHook {
+    readonly id: string;
+    readonly tier: HookTier;
+    readonly hook: HookConfig;
+}
+/**
+ * Tags an array of validated HookConfigs with the given tier and generates
+ * stable IDs. IDs are unique per instance — if two hooks share the same name
+ * within a tier, a counter suffix is appended to distinguish them.
+ */
+declare function createRegisteredHooks(hooks: readonly HookConfig[], tier: HookTier): readonly RegisteredHook[];
+/** Actor that set the policy — determines \`disableAllHooks\` semantics. */
+type PolicyActor = "managed" | "user";
+/**
+ * Filters registered hooks based on the active policy and the actor who set it.
+ *
+ * - \`disableAllHooks\` + actor "managed" → kills ALL hooks (nuclear switch)
+ * - \`disableAllHooks\` + actor "user" → kills user + session; managed survive
+ * - \`managedOnly\` → only managed-tier hooks run
+ * - Otherwise: filter on \`allowUserHooks\` (default true) and \`allowSessionHooks\` (default true)
+ */
+declare function applyPolicy(hooks: readonly RegisteredHook[], policy: HookPolicy, actor: PolicyActor): readonly RegisteredHook[];
+/** Hooks grouped by tier for phased dispatch. */
+interface TierGroups {
+    readonly managed: readonly RegisteredHook[];
+    readonly user: readonly RegisteredHook[];
+    readonly session: readonly RegisteredHook[];
+}
+/**
+ * Groups hooks by tier, preserving declaration order within each group.
+ * Used by the registry for tier-phased dispatch.
+ */
+declare function groupByTier(hooks: readonly RegisteredHook[]): TierGroups;
+/**
+ * Returns the tier execution order (managed → user → session).
+ * Used by the registry to iterate tier phases.
+ */
+declare function tierOrder(): readonly HookTier[];
+/**
+ * Validates that no two registered hooks share the same name across *different* tiers.
+ * Same-name hooks within the same tier are allowed (the loader already handles
+ * intra-batch uniqueness, and the prior registry code supported this).
+ * Returns an error only for cross-tier name collisions.
+ */
+declare function validateNoDuplicateNames(hooks: readonly RegisteredHook[]): Result<void, KoiError>;
+
+/**
  * DNS-level SSRF protection for HTTP hooks.
  *
  * Validates resolved IPs against blocked ranges to prevent DNS rebinding
@@ -317,7 +382,7 @@ declare function defaultHookDnsResolver(hostname: string): Promise<readonly stri
  * @param agentExecutor - Optional executor for agent-type hooks (injected via middleware)
  * @returns Results for all matching hooks, in declaration order
  */
-declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined, promptExecutor?: HookExecutor | undefined, dnsResolver?: DnsResolverFn | undefined): Promise<readonly HookExecutionResult[]>;
+declare function executeHooks(hooks: readonly RegisteredHook[] | readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined, promptExecutor?: HookExecutor | undefined, dnsResolver?: DnsResolverFn | undefined): Promise<readonly HookExecutionResult[]>;
 
 /**
  * Hook filter matching — determines whether a hook should fire for a given event.
@@ -416,6 +481,21 @@ declare function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError
  * @returns Result with validated hook configs + warnings, or a KoiError.
  */
 declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult, KoiError>;
+/** Successful load result for registered hooks including optional warnings. */
+interface LoadRegisteredHooksResult {
+    readonly hooks: readonly RegisteredHook[];
+    readonly warnings: readonly string[];
+}
+/**
+ * Validates raw hook config and returns \`RegisteredHook[]\` tagged with the given tier.
+ *
+ * Combines \`loadHooks\` validation with \`createRegisteredHooks\` tagging.
+ */
+declare function loadRegisteredHooks(raw: unknown, tier: HookTier): Result<readonly RegisteredHook[], KoiError>;
+/**
+ * Like \`loadRegisteredHooks\`, but also returns warnings for unknown event kinds.
+ */
+declare function loadRegisteredHooksWithDiagnostics(raw: unknown, tier: HookTier): Result<LoadRegisteredHooksResult, KoiError>;
 
 /**
  * Hook middleware — bridges @koi/hooks execution into the KoiMiddleware contract.
@@ -441,8 +521,8 @@ declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult,
 
 /** Options for creating a hook middleware. */
 interface CreateHookMiddlewareOptions {
-    /** Validated hook configs to dispatch. Typically from \`loadHooks()\`. */
-    readonly hooks: readonly HookConfig[];
+    /** Validated hook configs to dispatch. Accepts RegisteredHook[] or bare HookConfig[] (auto-wrapped as "user" tier). */
+    readonly hooks: readonly RegisteredHook[] | readonly HookConfig[];
     /**
      * Spawn function for agent-type hooks. Required when any hook has \`kind: "agent"\`.
      * Provided by the L1 engine at middleware wiring time.
@@ -455,6 +535,10 @@ interface CreateHookMiddlewareOptions {
     readonly promptCallFn?: PromptModelCaller | undefined;
     /** System-wide env-var policy for allowlisting. */
     readonly envPolicy?: HookEnvPolicy | undefined;
+    /** Hook policy for tier-based filtering. */
+    readonly policy?: HookPolicy | undefined;
+    /** Actor that set the policy — required when disableAllHooks is set. */
+    readonly policyActor?: PolicyActor | undefined;
     /**
      * Custom DNS resolver for SSRF validation. Defaults to Bun.dns.lookup.
      * Injectable for testing or environments with custom DNS infrastructure.
@@ -607,7 +691,7 @@ declare class PromptExecutorAdapter implements HookExecutor {
  */
 interface HookRegistry {
     /** Register hooks for a session with its trusted agent identity. Replaces any existing registration. */
-    readonly register: (sessionId: string, agentId: string, hooks: readonly HookConfig[], envPolicy?: HookEnvPolicy | undefined) => void;
+    readonly register: (sessionId: string, agentId: string, hooks: readonly RegisteredHook[], envPolicy?: HookEnvPolicy | undefined, policy?: HookPolicy | undefined, policyActor?: PolicyActor | undefined) => void;
     /**
      * Execute matching hooks for a session event. Returns empty array if session
      * not registered. Optional abortSignal is a per-call cancellation signal
@@ -670,6 +754,6 @@ declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type PinnedUrl, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, validateHeaderValue, validateHeaders, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookTier, type HookVerdictResult, type LoadHooksResult, type LoadRegisteredHooksResult, type PayloadStatus, type PinnedUrl, type PolicyActor, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, type RegisteredHook, type TierGroups, agentHookSchema, aggregateDecisions, aggregatePostDecisions, applyPolicy, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, createRegisteredHooks, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, groupByTier, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, loadRegisteredHooks, loadRegisteredHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, tierOrder, validateHeaderValue, validateHeaders, validateHookUrl, validateNoDuplicateNames, verdictToDecision };
 "
 `;

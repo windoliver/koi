@@ -27,6 +27,7 @@ import type {
   HookEnvPolicy,
   HookEvent,
   HookExecutionResult,
+  HookPolicy,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -46,6 +47,8 @@ import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAgentExecutor } from "./agent-executor.js";
 import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
+import type { PolicyActor, RegisteredHook } from "./policy.js";
+import { applyPolicy, createRegisteredHooks } from "./policy.js";
 import { PromptExecutorAdapter } from "./prompt-adapter.js";
 import { createHookRegistry } from "./registry.js";
 import type { DnsResolverFn } from "./ssrf.js";
@@ -56,8 +59,8 @@ import type { DnsResolverFn } from "./ssrf.js";
 
 /** Options for creating a hook middleware. */
 export interface CreateHookMiddlewareOptions {
-  /** Validated hook configs to dispatch. Typically from `loadHooks()`. */
-  readonly hooks: readonly HookConfig[];
+  /** Validated hook configs to dispatch. Accepts RegisteredHook[] or bare HookConfig[] (auto-wrapped as "user" tier). */
+  readonly hooks: readonly RegisteredHook[] | readonly HookConfig[];
   /**
    * Spawn function for agent-type hooks. Required when any hook has `kind: "agent"`.
    * Provided by the L1 engine at middleware wiring time.
@@ -70,6 +73,10 @@ export interface CreateHookMiddlewareOptions {
   readonly promptCallFn?: PromptModelCaller | undefined;
   /** System-wide env-var policy for allowlisting. */
   readonly envPolicy?: HookEnvPolicy | undefined;
+  /** Hook policy for tier-based filtering. */
+  readonly policy?: HookPolicy | undefined;
+  /** Actor that set the policy — required when disableAllHooks is set. */
+  readonly policyActor?: PolicyActor | undefined;
   /**
    * Custom DNS resolver for SSRF validation. Defaults to Bun.dns.lookup.
    * Injectable for testing or environments with custom DNS infrastructure.
@@ -325,15 +332,35 @@ const POST_TOOL_HOOK_DEADLINE_MS = 5_000;
  */
 export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware {
   const {
-    hooks,
+    hooks: rawHooks,
     spawnFn,
     promptCallFn,
     envPolicy,
+    policy,
+    policyActor,
     postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS,
   } = options;
 
+  // Require explicit policyActor when disableAllHooks is set
+  if (policy?.disableAllHooks === true && policyActor === undefined) {
+    throw new Error(
+      "policyActor is required when disableAllHooks is set — it determines which tiers are killed",
+    );
+  }
+
+  // Auto-detect bare HookConfig[] and wrap as "user" tier
+  const registeredHooks: readonly RegisteredHook[] =
+    rawHooks.length > 0 && "hook" in rawHooks[0]!
+      ? (rawHooks as readonly RegisteredHook[])
+      : createRegisteredHooks(rawHooks as readonly HookConfig[], "user");
+
+  // Apply policy BEFORE dependency validation
+  const effectiveActor = policyActor ?? "user";
+  const effectiveHooks =
+    policy !== undefined ? applyPolicy(registeredHooks, policy, effectiveActor) : registeredHooks;
+
   // Fail-fast: agent hooks require spawnFn (Decision 12A)
-  const hasAgentHooks = hooks.some((h) => h.kind === "agent");
+  const hasAgentHooks = effectiveHooks.some((rh) => rh.hook.kind === "agent");
   if (hasAgentHooks && spawnFn === undefined) {
     throw new Error(
       "Agent hooks require spawnFn — provide it via CreateHookMiddlewareOptions.spawnFn",
@@ -341,7 +368,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
   }
 
   // Fail-fast: prompt hooks require promptCallFn
-  const hasPromptHooks = hooks.some((h) => h.kind === "prompt");
+  const hasPromptHooks = effectiveHooks.some((rh) => rh.hook.kind === "prompt");
   if (hasPromptHooks && promptCallFn === undefined) {
     throw new Error(
       "Prompt hooks require promptCallFn — provide it via CreateHookMiddlewareOptions.promptCallFn",
@@ -489,7 +516,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       const sessionId = ctx.sessionId as string;
-      registry.register(sessionId, ctx.agentId, hooks, envPolicy);
+      registry.register(sessionId, ctx.agentId, effectiveHooks, envPolicy, policy, policyActor);
       const event = buildEvent(ctx, "session.started");
       const results = await registry.execute(sessionId, event);
       const aggregated = aggregateDecisions(results);
@@ -668,7 +695,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
         Array.isArray(postResultsOrTimeout) &&
         postResultsOrTimeout.length === 0 &&
         postAborted &&
-        hooks.some((h) => h.failClosed !== false && matchesHookFilter(h.filter, postEvent))
+        effectiveHooks.some(
+          (rh) => rh.hook.failClosed !== false && matchesHookFilter(rh.hook.filter, postEvent),
+        )
       ) {
         return {
           output: "[output redacted: post-hooks skipped due to cancellation]",
@@ -833,8 +862,8 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      if (hooks.length === 0) return undefined;
-      const names = hooks.map((h) => h.name).join(", ");
+      if (effectiveHooks.length === 0) return undefined;
+      const names = effectiveHooks.map((rh) => rh.hook.name).join(", ");
       return {
         label: "hooks",
         description: `Active hooks: ${names}`,

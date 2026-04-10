@@ -27,12 +27,25 @@ export {
 } from "./header-sanitize.js";
 export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
-export type { LoadHooksResult } from "./loader.js";
-export { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
+export type { LoadHooksResult, LoadRegisteredHooksResult } from "./loader.js";
+export {
+  loadHooks,
+  loadHooksWithDiagnostics,
+  loadRegisteredHooks,
+  loadRegisteredHooksWithDiagnostics,
+} from "./loader.js";
 export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middleware.js";
 export { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
 export type { PayloadStatus, RedactedPayload } from "./payload-redaction.js";
 export { extractStructure, redactEventData } from "./payload-redaction.js";
+export type { HookTier, PolicyActor, RegisteredHook, TierGroups } from "./policy.js";
+export {
+  applyPolicy,
+  createRegisteredHooks,
+  groupByTier,
+  tierOrder,
+  validateNoDuplicateNames,
+} from "./policy.js";
 export type { CreatePromptAdapterOptions } from "./prompt-adapter.js";
 export { PromptExecutorAdapter } from "./prompt-adapter.js";
 export type { CreateHookRegistryOptions, HookRegistry } from "./registry.js";

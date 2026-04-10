@@ -7,7 +7,17 @@
 
 import { describe, expect, it } from "bun:test";
 import type { HookConfig, HookEvent } from "@koi/core";
+import type { RegisteredHook } from "../policy.js";
+import { createRegisteredHooks } from "../policy.js";
 import { createHookRegistry } from "../registry.js";
+
+/** Wrap an array of HookConfigs as RegisteredHook[]. */
+function rhs(
+  hooks: readonly HookConfig[],
+  tier: "managed" | "user" | "session" = "user",
+): readonly RegisteredHook[] {
+  return createRegisteredHooks(hooks, tier);
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -20,7 +30,7 @@ const baseEvent: HookEvent = {
   toolName: "Bash",
 };
 
-const testHooks: readonly HookConfig[] = [
+const testHooksRaw: readonly HookConfig[] = [
   {
     kind: "command",
     name: "security-gate",
@@ -28,6 +38,8 @@ const testHooks: readonly HookConfig[] = [
     filter: { events: ["tool.before"] },
   },
 ];
+
+const testHooks = rhs(testHooksRaw);
 
 // ---------------------------------------------------------------------------
 // Registry-level suppression (Decision 2A)
@@ -113,7 +125,7 @@ describe("sequential agent hook execution", () => {
     const registry = createHookRegistry();
 
     // Simulate: first hook agent session runs and completes
-    registry.register("hook-session-1", "agent-1", []);
+    registry.register("hook-session-1", "agent-1", rhs([]));
     registry.markHookAgent("hook-session-1");
 
     const suppressed1 = await registry.execute("hook-session-1", baseEvent);
@@ -123,7 +135,7 @@ describe("sequential agent hook execution", () => {
     registry.cleanup("hook-session-1");
 
     // Second hook agent session: should also work cleanly
-    registry.register("hook-session-2", "agent-1", []);
+    registry.register("hook-session-2", "agent-1", rhs([]));
     registry.markHookAgent("hook-session-2");
 
     const suppressed2 = await registry.execute("hook-session-2", baseEvent);
