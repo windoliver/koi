@@ -26,7 +26,7 @@ describe("loadRulesFile", () => {
   test("loads existing file with content and token estimate", async () => {
     const path = join(tempDir, "CLAUDE.md");
     writeFileSync(path, "# Project Rules\n\nUse bun, not npm.");
-    const file: DiscoveredFile = { path, depth: 0 };
+    const file: DiscoveredFile = { path, realPath: path, depth: 0 };
 
     const result = await loadRulesFile(file);
     expect(result.ok).toBe(true);
@@ -40,7 +40,11 @@ describe("loadRulesFile", () => {
   });
 
   test("returns NOT_FOUND error for missing file", async () => {
-    const file: DiscoveredFile = { path: join(tempDir, "nonexistent.md"), depth: 0 };
+    const file: DiscoveredFile = {
+      path: join(tempDir, "nonexistent.md"),
+      realPath: join(tempDir, "nonexistent.md"),
+      depth: 0,
+    };
     const result = await loadRulesFile(file);
 
     expect(result.ok).toBe(false);
@@ -51,7 +55,7 @@ describe("loadRulesFile", () => {
   test("loads empty file", async () => {
     const path = join(tempDir, "CLAUDE.md");
     writeFileSync(path, "");
-    const file: DiscoveredFile = { path, depth: 0 };
+    const file: DiscoveredFile = { path, realPath: path, depth: 0 };
 
     const result = await loadRulesFile(file);
     expect(result.ok).toBe(true);
@@ -63,7 +67,7 @@ describe("loadRulesFile", () => {
   test("preserves depth from discovered file", async () => {
     const path = join(tempDir, "CLAUDE.md");
     writeFileSync(path, "content");
-    const file: DiscoveredFile = { path, depth: 3 };
+    const file: DiscoveredFile = { path, realPath: path, depth: 3 };
 
     const result = await loadRulesFile(file);
     expect(result.ok).toBe(true);
@@ -88,9 +92,11 @@ describe("loadAllRulesFiles", () => {
     writeFileSync(join(tempDir, "a.md"), "aaa");
     writeFileSync(join(tempDir, "b.md"), "bbb");
 
+    const aPath = join(tempDir, "a.md");
+    const bPath = join(tempDir, "b.md");
     const files: readonly DiscoveredFile[] = [
-      { path: join(tempDir, "a.md"), depth: 0 },
-      { path: join(tempDir, "b.md"), depth: 1 },
+      { path: aPath, realPath: aPath, depth: 0 },
+      { path: bPath, realPath: bPath, depth: 1 },
     ];
 
     const result = await loadAllRulesFiles(files);
@@ -102,9 +108,11 @@ describe("loadAllRulesFiles", () => {
   test("skips missing files without throwing", async () => {
     writeFileSync(join(tempDir, "a.md"), "aaa");
 
+    const aPath = join(tempDir, "a.md");
+    const missingPath = join(tempDir, "missing.md");
     const files: readonly DiscoveredFile[] = [
-      { path: join(tempDir, "a.md"), depth: 0 },
-      { path: join(tempDir, "missing.md"), depth: 1 },
+      { path: aPath, realPath: aPath, depth: 0 },
+      { path: missingPath, realPath: missingPath, depth: 1 },
     ];
 
     const result = await loadAllRulesFiles(files);
@@ -113,7 +121,10 @@ describe("loadAllRulesFiles", () => {
   });
 
   test("returns empty array when all files missing", async () => {
-    const files: readonly DiscoveredFile[] = [{ path: join(tempDir, "missing.md"), depth: 0 }];
+    const missingPath = join(tempDir, "missing.md");
+    const files: readonly DiscoveredFile[] = [
+      { path: missingPath, realPath: missingPath, depth: 0 },
+    ];
 
     const result = await loadAllRulesFiles(files);
     expect(result).toHaveLength(0);

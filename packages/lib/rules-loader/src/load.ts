@@ -17,8 +17,9 @@ import type { DiscoveredFile, LoadedFile } from "./config.js";
  */
 export async function loadRulesFile(file: DiscoveredFile): Promise<Result<LoadedFile, KoiError>> {
   try {
-    const content = await readFile(file.path, "utf-8");
-    const fileStat = await stat(file.path);
+    // Read from the canonical path to prevent TOCTOU symlink swaps
+    const content = await readFile(file.realPath, "utf-8");
+    const fileStat = await stat(file.realPath);
     const tokens = estimateTokens(content);
 
     return {

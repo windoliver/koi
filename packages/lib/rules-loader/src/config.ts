@@ -66,7 +66,10 @@ export const DEFAULT_MAX_TOKENS = 8000;
 
 /** A discovered rules file with its path and depth from root. */
 export interface DiscoveredFile {
+  /** Original path (for display/caching). */
   readonly path: string;
+  /** Canonical resolved path (for reading — immune to symlink swaps). */
+  readonly realPath: string;
   /** 0 = git root (or filesystem root), higher = deeper toward cwd. */
   readonly depth: number;
 }

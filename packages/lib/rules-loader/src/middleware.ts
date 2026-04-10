@@ -106,16 +106,9 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
 
     async onSessionStart(ctx) {
       if (!resolved.enabled) return;
-      let state: RulesSessionState;
-      try {
-        state = await loadRules();
-      } catch (e: unknown) {
-        console.warn(
-          "[rules-loader] Failed to load rules at session start, continuing without rules:",
-          e instanceof Error ? e.message : e,
-        );
-        return;
-      }
+      // Fail closed: if rules cannot be loaded, the session must not start
+      // without trusted policy. Errors propagate to the engine.
+      const state = await loadRules();
       sessions.set(ctx.sessionId, state);
 
       if (state.ruleset.files.length > 0 && state.ruleset.truncated) {

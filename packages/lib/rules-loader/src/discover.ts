@@ -37,7 +37,7 @@ async function validateCandidate(
     const st = await lstat(resolved);
     if (!st.isFile()) return undefined;
 
-    return path;
+    return resolved;
   } catch (e: unknown) {
     if (isEnoent(e)) return undefined;
     throw e;
@@ -98,9 +98,9 @@ export async function discoverRulesFiles(
     if (dir === undefined) continue;
     for (const scanPath of scanPaths) {
       const candidate = join(dir, scanPath);
-      const valid = await validateCandidate(candidate, boundary);
-      if (valid !== undefined) {
-        discovered.push({ path: candidate, depth });
+      const canonicalPath = await validateCandidate(candidate, boundary);
+      if (canonicalPath !== undefined) {
+        discovered.push({ path: candidate, realPath: canonicalPath, depth });
       }
     }
   }
