@@ -15,9 +15,9 @@ import type {
   InboxItem,
 } from "@koi/core";
 import { agentId, INBOX } from "@koi/core";
+import { createFakeEngine } from "@koi/test";
 import { createInboxQueue } from "../inbox-queue.js";
 import { createKoi } from "../koi.js";
-import { createFakeEngineAdapter } from "./helpers/fake-engine-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -70,7 +70,7 @@ async function collectEvents(iter: AsyncIterable<EngineEvent>): Promise<readonly
 describe("inbox integration", () => {
   test("inbox items are drained at turn boundary", async () => {
     const inbox = createInboxQueue();
-    const { adapter } = createFakeEngineAdapter({
+    const { adapter } = createFakeEngine({
       turns: [[{ kind: "text_delta", delta: "response 1" }]],
     });
 
@@ -95,7 +95,7 @@ describe("inbox integration", () => {
 
   test("steer items trigger adapter.inject()", async () => {
     const inbox = createInboxQueue();
-    const { adapter, injectedMessages } = createFakeEngineAdapter({
+    const { adapter, injectedMessages } = createFakeEngine({
       turns: [[{ kind: "text_delta", delta: "response" }]],
     });
 
@@ -138,7 +138,7 @@ describe("inbox integration", () => {
 
   test("multi-turn inbox survival — items pushed between turns", async () => {
     const inbox = createInboxQueue();
-    const { adapter, injectedMessages } = createFakeEngineAdapter({
+    const { adapter, injectedMessages } = createFakeEngine({
       turns: [[{ kind: "text_delta", delta: "turn 1" }], [{ kind: "text_delta", delta: "turn 2" }]],
     });
 
@@ -166,7 +166,7 @@ describe("inbox integration", () => {
 
   test("empty inbox does not affect normal execution", async () => {
     const inbox = createInboxQueue();
-    const { adapter } = createFakeEngineAdapter({
+    const { adapter } = createFakeEngine({
       turns: [[{ kind: "text_delta", delta: "response" }]],
     });
 
