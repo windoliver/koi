@@ -1958,7 +1958,7 @@ describe("Golden: @koi/tasks", () => {
 
 describe("Golden: @koi/hooks once + toolAllowlist", () => {
   test("once flag: hook loads, validates, and registry consumes after first fire", async () => {
-    const { loadHooks, createHookRegistry } = await import("@koi/hooks");
+    const { loadHooks, createHookRegistry, createRegisteredHooks } = await import("@koi/hooks");
 
     // once:true validates through schema
     const result = loadHooks([
@@ -1984,7 +1984,7 @@ describe("Golden: @koi/hooks once + toolAllowlist", () => {
 
     // Registry tracks once-hooks and consumes them
     const registry = createHookRegistry();
-    registry.register("s1", "agent-1", result.value);
+    registry.register("s1", "agent-1", createRegisteredHooks(result.value, "user"));
     expect(registry.has("s1")).toBe(true);
     expect(registry.size()).toBe(1);
 

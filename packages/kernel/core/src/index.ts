@@ -617,6 +617,7 @@ export type {
   HookEventName,
   HookExecutionResult,
   HookFilter,
+  HookPolicy,
   HookRedactionConfig,
   HookType,
   HttpHookConfig,

@@ -31,7 +31,7 @@ import type {
 import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createCliHarness } from "@koi/harness";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -153,7 +153,7 @@ async function loadHookMiddleware(): Promise<KoiMiddleware | undefined> {
   } catch {
     return undefined;
   }
-  const result = loadHooks(raw);
+  const result = loadRegisteredHooks(raw, "user");
   if (!result.ok || result.value.length === 0) return undefined;
   return createHookMiddleware({ hooks: result.value });
 }
@@ -357,25 +357,28 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     pluginMcpProvider = createMcpComponentProvider({ resolver });
   }
 
-  // Plugin hooks merged into hook middleware
+  // Plugin hooks merged into hook middleware with tier tagging:
+  // user hooks = "user" tier, plugin hooks = "session" tier.
   let mergedHookMiddleware = hookMiddleware;
   if (pluginComponents.hooks.length > 0) {
-    const pluginHooks = pluginComponents.hooks;
+    const pluginRegistered = createRegisteredHooks(pluginComponents.hooks, "session");
     if (hookMiddleware !== undefined) {
       // Rebuild with merged hooks (user hooks loaded via loadHookMiddleware don't
       // expose the underlying array, so re-load user hooks and merge)
       const userHooksPath = join(homedir(), ".koi", "hooks.json");
-      let userHooks: readonly import("@koi/core").HookConfig[] = [];
+      let userRegistered: readonly import("@koi/hooks").RegisteredHook[] = [];
       try {
         const raw: unknown = await Bun.file(userHooksPath).json();
-        const result = loadHooks(raw);
-        if (result.ok) userHooks = result.value;
+        const result = loadRegisteredHooks(raw, "user");
+        if (result.ok) userRegistered = result.value;
       } catch {
         // Already loaded above — fallback to empty
       }
-      mergedHookMiddleware = createHookMiddleware({ hooks: [...pluginHooks, ...userHooks] });
+      mergedHookMiddleware = createHookMiddleware({
+        hooks: [...userRegistered, ...pluginRegistered],
+      });
     } else {
-      mergedHookMiddleware = createHookMiddleware({ hooks: pluginHooks });
+      mergedHookMiddleware = createHookMiddleware({ hooks: pluginRegistered });
     }
   }
 

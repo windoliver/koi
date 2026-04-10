@@ -21,7 +21,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_MAX_STOP_RETRIES, DEFAULT_PROMPT_HOOK_TIMEOUT_MS, DEFAULT_PROMPT_MAX_TOKENS, DEFAULT_PROMPT_SESSION_TOKEN_BUDGET, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookRedactionConfig, HookType, HttpHookConfig, PromptHookConfig } from './hook.js';
+export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_MAX_STOP_RETRIES, DEFAULT_PROMPT_HOOK_TIMEOUT_MS, DEFAULT_PROMPT_MAX_TOKENS, DEFAULT_PROMPT_SESSION_TOKEN_BUDGET, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookPolicy, HookRedactionConfig, HookType, HttpHookConfig, PromptHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, MemoryFrontmatter, MemoryIndex, MemoryIndexEntry, MemoryRecord, MemoryRecordId, MemoryRecordInput, MemoryRecordPatch, MemoryType, MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } from './memory.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
@@ -3534,6 +3534,28 @@ interface HookEnvPolicy {
     readonly allowedPatterns: readonly string[];
 }
 /**
+ * Policy controlling which hook tiers are active.
+ *
+ * Tiers (managed > user > session) are an L2 runtime concept — this interface
+ * only carries the policy flags. The \`actor\` parameter is passed out-of-band
+ * to the L2 \`applyPolicy()\` function to determine semantics:
+ *
+ * - \`disableAllHooks\` + actor "managed" → kills ALL hooks (nuclear switch)
+ * - \`disableAllHooks\` + actor "user" → kills user + session hooks; managed survive
+ * - \`managedOnly\` → only managed-tier hooks run
+ * - Otherwise: filter on \`allowUserHooks\` (default true) and \`allowSessionHooks\` (default true)
+ */
+interface HookPolicy {
+    /** Kill switch — scope depends on actor (see doc above). */
+    readonly disableAllHooks?: boolean | undefined;
+    /** When true, only managed-tier hooks run. User + session tiers are suppressed. */
+    readonly managedOnly?: boolean | undefined;
+    /** When true, user-tier hooks are allowed. Default: true. */
+    readonly allowUserHooks?: boolean | undefined;
+    /** When true, session-tier hooks are allowed. Default: true. */
+    readonly allowSessionHooks?: boolean | undefined;
+}
+/**
  * Decision returned by a hook execution, expressing the hook's intent.
  *
  * Hooks return one of:
@@ -3626,7 +3648,7 @@ declare const DEFAULT_AGENT_MAX_TOKENS: 4096;
  */
 declare const DEFAULT_AGENT_SESSION_TOKEN_BUDGET: 500000;
 
-export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_MAX_STOP_RETRIES, DEFAULT_PROMPT_HOOK_TIMEOUT_MS, DEFAULT_PROMPT_MAX_TOKENS, DEFAULT_PROMPT_SESSION_TOKEN_BUDGET, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookRedactionConfig, type HookType, type HttpHookConfig, type PromptHookConfig };
+export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_MAX_STOP_RETRIES, DEFAULT_PROMPT_HOOK_TIMEOUT_MS, DEFAULT_PROMPT_MAX_TOKENS, DEFAULT_PROMPT_SESSION_TOKEN_BUDGET, HOOK_EVENT_KINDS, type HookConfig, type HookDecision, type HookEnvPolicy, type HookEvent, type HookEventKind, type HookEventName, type HookExecutionResult, type HookFilter, type HookPolicy, type HookRedactionConfig, type HookType, type HttpHookConfig, type PromptHookConfig };
 "
 `;
 
