@@ -106,8 +106,32 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // Reads back the existing head if the session is being resumed from disk.
       // `await` is a no-op when the store impl is sync (e.g., SQLite).
       const headResult = await store.head(cid);
-      const parent =
+      let parent =
         headResult.ok && headResult.value !== undefined ? headResult.value.nodeId : undefined;
+
+      // Bootstrap: a brand-new session gets an initial empty snapshot so the
+      // first real turn has a predecessor to rewind TO. Without this, the
+      // first captured turn would be the root of the chain, and
+      // `rewind 1` would land ON the root (keeping its file ops applied)
+      // rather than undoing them. The protocol's snapshotsToUndo excludes
+      // the target snapshot — so we need a target that has no ops.
+      if (parent === undefined) {
+        const bootstrapPayload: CheckpointPayload = {
+          turnIndex: -1,
+          sessionId: sessionId as unknown as string,
+          fileOps: [],
+          driftWarnings: [],
+          capturedAt: Date.now(),
+        };
+        const bootstrapResult = await store.put(cid, bootstrapPayload, [], {
+          [SNAPSHOT_STATUS_KEY]: "complete",
+          koi_bootstrap: true,
+        });
+        if (bootstrapResult.ok && bootstrapResult.value !== undefined) {
+          parent = bootstrapResult.value.nodeId;
+        }
+      }
+
       state = {
         chainId: cid,
         parentNodeId: parent,
@@ -146,10 +170,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         return await next(request);
       }
 
-      const path = extractPath(request.input);
-      if (path === undefined) {
+      const rawPath = extractPath(request.input);
+      if (rawPath === undefined) {
         return await next(request);
       }
+
+      // Resolve the tool-input path to the real filesystem path. Without
+      // this, virtualized backends like @koi/fs-local (which maps
+      // "/workspace/foo" → "<cwd>/workspace/foo") would silently cause the
+      // middleware to read from a non-existent path and capture nothing.
+      // Default is identity — unit tests and unsandboxed setups unchanged.
+      const path = config.resolvePath !== undefined ? config.resolvePath(rawPath) : rawPath;
 
       const state = await getOrCreateSession(sid);
       const turnKey = String(ctx.turnId);

@@ -835,7 +835,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               n = parsed;
             }
 
-            const result = await runtimeHandle.checkpoint.rewind(tuiSessionId, n);
+            // Use the ENGINE session ID (from @koi/engine's createKoi),
+            // not tuiSessionId. The checkpoint middleware captures chains
+            // keyed by ctx.session.sessionId which is the engine's
+            // composite "agent:{agentId}:{instanceId}" ID — tuiSessionId
+            // is a TUI-local UUID that never matches a captured chain.
+            const engineSessionId = sessionId(runtimeHandle.runtime.sessionId);
+            const result = await runtimeHandle.checkpoint.rewind(engineSessionId, n);
             if (!result.ok) {
               store.dispatch({
                 kind: "add_error",

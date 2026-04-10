@@ -104,6 +104,25 @@ export interface CheckpointMiddlewareConfig {
    * of rewind is handled elsewhere.
    */
   readonly transcript?: SessionTranscript;
+
+  /**
+   * Optional path resolver that maps a tool-input path string (the raw
+   * `path` field from a `fs_write` / `fs_edit` tool request) to the real
+   * filesystem path the middleware should read pre/post images from.
+   *
+   * This is required whenever the filesystem backend virtualizes paths —
+   * e.g., `@koi/fs-local` treats `/workspace/foo` as `<cwd>/workspace/foo`
+   * after stripping the leading `/`. Without the resolver, the checkpoint
+   * middleware would read from the literal virtual path (which doesn't
+   * exist on disk) and silently capture nothing.
+   *
+   * The resolved path is also what gets stored in the `FileOpRecord`, so
+   * the restore protocol can write back directly without re-resolving.
+   *
+   * When omitted (the default), the path is used as-is — suitable for
+   * unit tests and setups where the agent emits absolute filesystem paths.
+   */
+  readonly resolvePath?: (virtualPath: string) => string;
 }
 
 /**

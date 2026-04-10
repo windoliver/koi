@@ -58,13 +58,16 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
 
-  // Checkpoint marker: count completed (non-streaming) assistant messages.
-  // Each one corresponds to one snapshot captured by @koi/checkpoint at end
-  // of turn — the count is a stable proxy for "available rewind targets"
-  // without requiring cross-package wiring from the runtime back to the TUI.
-  const checkpointCount = useTuiStore(
-    (s) => s.messages.filter((m) => m.kind === "assistant" && !m.streaming).length,
-  );
+  // Checkpoint marker visibility: show the /rewind hint as soon as the user
+  // has submitted at least one message. Each user message corresponds to one
+  // captured snapshot at turn end, so this is a reliable "rewind is available"
+  // signal without coupling the TUI store to the runtime's checkpoint count.
+  //
+  // We intentionally omit a precise count. The TUI store creates multiple
+  // assistant messages per turn (streaming chunks + tool-call blocks) so
+  // filtering for "non-streaming assistant messages" overcounts. Showing a
+  // stable hint is more useful than a wrong number.
+  const hasCapturedTurn = useTuiStore((s) => s.messages.some((m) => m.kind === "user"));
 
   // Prompt history — session-scoped. Cleared when messages are reset
   // (agent:clear, session:new, session resume) to prevent leaking
@@ -187,15 +190,13 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   return (
     <box flexDirection="column" flexGrow={1}>
       <MessageList syntaxStyle={props.syntaxStyle} treeSitterClient={props.treeSitterClient} />
-      {/* Checkpoint marker: a single-line hint above the input showing how
-          many turns are available to rewind. Only renders when there's at
-          least one captured turn so the empty conversation stays clean.
-          One line tall = one extra row of vertical space when active. */}
-      <Show when={checkpointCount() > 0}>
+      {/* Checkpoint marker: a single-line hint above the input. Only renders
+          once the user has submitted their first message so the empty
+          conversation stays clean. One line tall = one extra row of vertical
+          space when active. */}
+      <Show when={hasCapturedTurn()}>
         <box paddingLeft={1}>
-          <text fg={COLORS.textMuted}>
-            {`↶ /rewind  ·  ${checkpointCount()} turn${checkpointCount() === 1 ? "" : "s"} available`}
-          </text>
+          <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
         </box>
       </Show>
       <InputArea

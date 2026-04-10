@@ -241,19 +241,23 @@ describe("checkpoint middleware", () => {
     await onAfter(makeTurn(session, 1));
     await onAfter(makeTurn(session, 2));
 
+    // 3 real turns + 1 bootstrap snapshot at session start = 4 total
     const list = rig.store.list(chainId(String(session.sessionId)));
     if (!list.ok) throw new Error("list failed");
-    expect(list.value.length).toBe(3);
+    expect(list.value.length).toBe(4);
 
-    // Newest first; turn 2 should have turn 1's nodeId in parentIds.
+    // Newest first; turn 2 → turn 1 → turn 0 → bootstrap (turnIndex: -1)
     const newest = list.value[0];
     const middle = list.value[1];
-    const oldest = list.value[2];
+    const oldestTurn = list.value[2];
+    const bootstrap = list.value[3];
     expect(newest?.data.turnIndex).toBe(2);
-    expect(oldest?.data.turnIndex).toBe(0);
+    expect(oldestTurn?.data.turnIndex).toBe(0);
+    expect(bootstrap?.data.turnIndex).toBe(-1);
     expect(newest?.parentIds).toEqual(middle ? [middle.nodeId] : []);
-    expect(middle?.parentIds).toEqual(oldest ? [oldest.nodeId] : []);
-    expect(oldest?.parentIds).toEqual([]);
+    expect(middle?.parentIds).toEqual(oldestTurn ? [oldestTurn.nodeId] : []);
+    expect(oldestTurn?.parentIds).toEqual(bootstrap ? [bootstrap.nodeId] : []);
+    expect(bootstrap?.parentIds).toEqual([]);
   });
 
   test("two sessions are isolated — each gets its own chain", async () => {
@@ -265,11 +269,12 @@ describe("checkpoint middleware", () => {
     await onAfter(makeTurn(b));
     await onAfter(makeTurn(a, 1));
 
+    // a: bootstrap + 2 turns = 3; b: bootstrap + 1 turn = 2
     const aList = rig.store.list(chainId(String(a.sessionId)));
     const bList = rig.store.list(chainId(String(b.sessionId)));
     if (!aList.ok || !bList.ok) throw new Error("list failed");
-    expect(aList.value.length).toBe(2);
-    expect(bList.value.length).toBe(1);
+    expect(aList.value.length).toBe(3);
+    expect(bList.value.length).toBe(2);
   });
 
   test("snapshot is marked complete in metadata under SNAPSHOT_STATUS_KEY", async () => {
@@ -293,11 +298,13 @@ describe("checkpoint middleware", () => {
 
     // Without errors — clearing is internal but the next session should
     // still work. We resume the same sessionId and confirm it picks up
-    // the existing chain head from the store.
+    // the existing chain head from the store (no second bootstrap — the
+    // bootstrap only fires when the head doesn't exist).
     await onAfter(makeTurn(session, 1));
+    // bootstrap + 2 turns = 3 total
     const list = rig.store.list(chainId(String(session.sessionId)));
     if (!list.ok) throw new Error("list failed");
-    expect(list.value.length).toBe(2);
+    expect(list.value.length).toBe(3);
     // Newest must have the prior node as parent (we re-loaded the head
     // from disk, not from in-memory state).
     expect(list.value[0]?.parentIds.length).toBe(1);
@@ -323,10 +330,68 @@ describe("checkpoint middleware", () => {
     // The recorded postContentHash should resolve to a real blob in CAS.
     const head = rig.store.head(chainId(String(session.sessionId)));
     if (!head.ok || head.value === undefined) throw new Error("no head");
-    const op = head.value.data.fileOps[0];
+    const op = head.value.data.fileOps.find((o) => o.kind === "create");
     if (op?.kind !== "create") throw new Error("expected create");
     const blobFile = join(rig.blobDir, op.postContentHash.slice(0, 2), op.postContentHash);
     const bytes = readFileSync(blobFile, "utf8");
     expect(bytes).toBe("verify content");
+  });
+
+  // Regression test: E2E TUI validation (#1625) discovered that virtual
+  // paths (e.g. `/workspace/foo` under the fs-local backend) were being
+  // read verbatim, finding nothing on disk, and silently no-op'ing capture.
+  // The `resolvePath` hook on CheckpointMiddlewareConfig fixes this by
+  // letting the runtime supply a backend-aware path resolver.
+  test("resolvePath hook maps virtual paths to real paths before capture", async () => {
+    // Fresh rig with a resolver that strips leading "/" and resolves
+    // against workDir — mirroring fs-local's lexicalCheck normalization.
+    const session = makeSession();
+    const ctx = makeTurn(session);
+    const storeLocal = createSnapshotStoreSqlite<CheckpointPayload>({ path: ":memory:" });
+    const workDir = rig.workDir;
+    const middleware = createCheckpointMiddleware({
+      store: storeLocal,
+      config: {
+        blobDir: rig.blobDir,
+        driftDetector: NULL_DRIFT,
+        resolvePath: (v) => {
+          if (v === workDir || v.startsWith(`${workDir}/`)) return v;
+          return join(workDir, v.startsWith("/") ? v.slice(1) : v);
+        },
+      },
+    });
+
+    // Agent-view virtual path that fs-local would map to <workDir>/workspace/hi.txt
+    const virtualPath = "/workspace/hi.txt";
+    const realPath = join(workDir, "workspace", "hi.txt");
+
+    const wrap = expectFn(middleware.wrapToolCall);
+    const onAfter = expectFn(middleware.onAfterTurn);
+
+    await wrap(ctx, makeRequest("fs_write", { path: virtualPath, content: "hi" }), async () => {
+      // The tool handler writes to the REAL path (what fs-local does).
+      mkdirSync(join(realPath, ".."), { recursive: true });
+      writeFileSync(realPath, "hi");
+      return PASSTHROUGH_RESPONSE;
+    });
+    await onAfter(ctx);
+
+    // The captured FileOpRecord should store the REAL path (resolved),
+    // not the virtual one — so restore can write directly without
+    // re-resolving.
+    const head = storeLocal.head(chainId(String(session.sessionId)));
+    if (!head.ok || head.value === undefined) throw new Error("no head");
+    const op = head.value.data.fileOps.find((o) => o.kind === "create");
+    if (op?.kind !== "create") {
+      throw new Error(
+        `expected create record — capture did not fire (resolvePath regression?); got ${JSON.stringify(head.value.data.fileOps)}`,
+      );
+    }
+    expect(op.path).toBe(realPath);
+    // And the blob content should be in CAS at the recorded hash.
+    const blobFile = join(rig.blobDir, op.postContentHash.slice(0, 2), op.postContentHash);
+    expect(readFileSync(blobFile, "utf8")).toBe("hi");
+
+    storeLocal.close();
   });
 });

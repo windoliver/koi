@@ -252,11 +252,16 @@ describe("round-trip rewind", () => {
     expect(readFileSync(pathA, "utf8")).toBe(before);
   });
 
-  test("rewind on an empty chain returns NOT_FOUND", async () => {
+  test("rewind on a fresh session (only bootstrap, no captured turns) returns VALIDATION", async () => {
+    // After the bootstrap-on-first-access change, a "fresh" session already
+    // has an initial empty snapshot. rewind 1 from that head asks for 1
+    // ancestor above head — there is none — so the validation error fires.
+    // The old "NOT_FOUND on empty chain" path is unreachable now: the
+    // bootstrap ensures every session has at least one snapshot.
     const result = await rig.checkpoint.rewind(SESSION_ID, 1);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe("NOT_FOUND");
+    expect(result.error.code).toBe("VALIDATION");
   });
 
   test("after rewind, capture chains off the new marker (not the pre-rewind head)", async () => {

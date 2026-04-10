@@ -1190,11 +1190,29 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   mkdirSync(snapshotDir, { recursive: true });
   const workspaceHash = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
   const snapshotPath = join(snapshotDir, `${workspaceHash}.sqlite`);
+  // Path resolver — mirrors @koi/fs-local's lexicalCheck normalization so
+  // the checkpoint middleware reads pre/post images from the REAL filesystem
+  // path, not the virtual path the model sees. Without this, tool-input paths
+  // like "/workspace/foo.txt" would be read literally, find nothing, and
+  // silently no-op capture (the bug surfaced in #1625's E2E TUI validation).
+  const resolveCheckpointPath = (virtualPath: string): string => {
+    // Strip workspace root prefix if the path already matches it (absolute
+    // paths under cwd pass through unchanged).
+    if (virtualPath === cwd || virtualPath.startsWith(`${cwd}/`)) {
+      return virtualPath;
+    }
+    // Strip leading "/" and resolve against cwd, matching fs-local's
+    // "treat as workspace-relative" rule.
+    const stripped = virtualPath.startsWith("/") ? virtualPath.slice(1) : virtualPath;
+    return join(cwd, stripped);
+  };
+
   const checkpointHandle = createCheckpoint({
     store: createSnapshotStoreSqlite({ path: snapshotPath }),
     config: {
       blobDir: join(koiHomeDir, "file-history"),
       driftDetector: null,
+      resolvePath: resolveCheckpointPath,
       ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
     },
   });
