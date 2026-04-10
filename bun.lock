@@ -252,6 +252,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/rules-loader": {
+      "name": "@koi/rules-loader",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/session": {
       "name": "@koi/session",
       "version": "0.0.0",
@@ -986,6 +995,8 @@
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
+
+    "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
