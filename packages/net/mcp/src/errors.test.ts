@@ -12,13 +12,13 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("mapMcpError with HTTP status", () => {
-  test("maps 401 to PERMISSION", () => {
+  test("maps 401 to AUTH_REQUIRED", () => {
     const err = mapMcpError(new Error("Unauthorized"), {
       serverName: "s1",
       httpStatus: 401,
     });
-    expect(err.code).toBe("PERMISSION");
-    expect(err.retryable).toBe(false);
+    expect(err.code).toBe("AUTH_REQUIRED");
+    expect(err.retryable).toBe(true);
     expect(err.message).toContain("HTTP 401");
   });
 
@@ -95,12 +95,12 @@ describe("mapMcpError with HTTP status", () => {
   });
 
   test("HTTP status takes priority over message patterns", () => {
-    // Message says "timeout" but HTTP status says 401 (PERMISSION)
+    // Message says "timeout" but HTTP status says 401 (AUTH_REQUIRED)
     const err = mapMcpError(new Error("timeout connecting"), {
       serverName: "s1",
       httpStatus: 401,
     });
-    expect(err.code).toBe("PERMISSION");
+    expect(err.code).toBe("AUTH_REQUIRED");
   });
 
   test("unknown HTTP status falls through to message patterns", () => {

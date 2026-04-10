@@ -32,13 +32,7 @@ import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createCliHarness } from "@koi/harness";
 import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
-import {
-  createMcpComponentProvider,
-  createMcpConnection,
-  createMcpResolver,
-  loadMcpJsonFile,
-  resolveServerConfig,
-} from "@koi/mcp";
+import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import {
   createPatternPermissionBackend,
   createPermissionsMiddleware,
@@ -56,6 +50,7 @@ import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { loadPluginComponents } from "../plugin-activation.js";
 import { ExitCode } from "../types.js";
 
@@ -135,9 +130,7 @@ async function loadMcpProvider(cwd: string): Promise<ComponentProvider | undefin
   if (!result.ok) return undefined; // absent or unreadable — silently skip
   if (result.value.servers.length === 0) return undefined;
 
-  const connections = result.value.servers.map((server) =>
-    createMcpConnection(resolveServerConfig(server)),
-  );
+  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
   const resolver = createMcpResolver(connections);
   return createMcpComponentProvider({ resolver });
 }
@@ -351,7 +344,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let pluginMcpProvider: ComponentProvider | undefined;
   if (pluginComponents.mcpServers.length > 0) {
     const connections = pluginComponents.mcpServers.map((server) =>
-      createMcpConnection(resolveServerConfig(server)),
+      createOAuthAwareMcpConnection(server),
     );
     const resolver = createMcpResolver(connections);
     pluginMcpProvider = createMcpComponentProvider({ resolver });

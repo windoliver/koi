@@ -320,7 +320,7 @@ describe("normalizeMcpServers", () => {
     expect(rejected).toHaveLength(0);
   });
 
-  test("rejects config with oauth (not yet implemented)", () => {
+  test("accepts HTTP config with oauth", () => {
     const { servers, rejected } = normalizeMcpServers({
       "oauth-server": {
         type: "http",
@@ -328,19 +328,35 @@ describe("normalizeMcpServers", () => {
         oauth: { clientId: "my-client" },
       },
     });
-    expect(servers).toHaveLength(0);
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0]).toContain("oauth");
+    expect(servers).toHaveLength(1);
+    expect(rejected).toHaveLength(0);
+    const server = servers[0];
+    expect(server?.kind).toBe("http");
+    if (server?.kind === "http") {
+      expect(server.oauth?.clientId).toBe("my-client");
+    }
   });
 
-  test("allows supported servers alongside rejected auth servers", () => {
+  test("rejects SSE config with oauth", () => {
+    const { servers, rejected } = normalizeMcpServers({
+      "sse-oauth": {
+        type: "sse",
+        url: "https://example.com",
+        oauth: { clientId: "x" },
+      },
+    });
+    expect(servers).toHaveLength(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toContain("OAuth is only supported with HTTP");
+  });
+
+  test("allows HTTP servers with and without oauth together", () => {
     const { servers, rejected } = normalizeMcpServers({
       good: { type: "http", url: "https://example.com" },
       "needs-oauth": { type: "http", url: "https://authed.com", oauth: { clientId: "x" } },
     });
-    expect(servers).toHaveLength(1);
-    expect(servers[0]?.name).toBe("good");
-    expect(rejected).toHaveLength(1);
+    expect(servers).toHaveLength(2);
+    expect(rejected).toHaveLength(0);
   });
 });
 
