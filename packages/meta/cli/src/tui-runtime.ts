@@ -575,7 +575,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: "koi tui — default permission mode",
-    persistentApprovals: config.persistentApprovals,
+    ...(config.persistentApprovals !== undefined
+      ? { persistentApprovals: config.persistentApprovals }
+      : {}),
   });
 
   // --- @koi/fs-local: local filesystem backend ---
