@@ -7,7 +7,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
-import type { PermissionDecision } from "@koi/core/permission-backend";
+import type { PermissionBackend, PermissionDecision } from "@koi/core/permission-backend";
 import type { ApprovalStore } from "../approval-store.js";
 import { createApprovalStore } from "../approval-store.js";
 import { createPermissionsMiddleware } from "../middleware.js";
@@ -87,7 +87,7 @@ describe("persistent approval — middleware integration", () => {
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
     const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
 
-    expect(result.output).toBe("done");
+    expect(result?.output).toBe("done");
     // The approval handler should NOT have been called
     expect(approvalHandler).not.toHaveBeenCalled();
   });
@@ -150,7 +150,7 @@ describe("persistent approval — middleware integration", () => {
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
     const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
 
-    expect(result.output).toBe("done");
+    expect(result?.output).toBe("done");
     expect(approvalHandler).toHaveBeenCalledTimes(1);
   });
 
@@ -179,7 +179,7 @@ describe("persistent approval — middleware integration", () => {
     const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
 
     // Should fall through to approval handler despite store error
-    expect(result.output).toBe("done");
+    expect(result?.output).toBe("done");
     expect(approvalHandler).toHaveBeenCalledTimes(1);
   });
 
@@ -212,7 +212,7 @@ describe("persistent approval — middleware integration", () => {
     const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
 
     // Tool should still execute even though persistence failed
-    expect(result.output).toBe("done");
+    expect(result?.output).toBe("done");
   });
 
   test("revokePersistentApproval removes grant", () => {
@@ -286,7 +286,7 @@ describe("persistent approval — middleware integration", () => {
     const approvalEntry = auditEntries.find(
       (e) =>
         (e as Record<string, unknown>).metadata !== undefined &&
-        (e as Record<string, Record<string, unknown>>).metadata.permissionEvent === "remembered",
+        (e as Record<string, Record<string, unknown>>).metadata?.permissionEvent === "remembered",
     );
     expect(approvalEntry).toBeDefined();
   });
