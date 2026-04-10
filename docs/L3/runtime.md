@@ -74,7 +74,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/skill-tool` | SkillTool meta-tool — model invokes `Skill(name, args?)` for on-demand skill loading. Budget-aware advertising (3-phase: full → truncated → names-only). Inline mode returns substituted body; fork mode delegates to `SpawnFn` with recursion guard. Structural `SkillResolver` interface avoids cross-L2 imports. Fail-closed spawn validation: empty allowlists, reserved-only tools, missing spawnFn all return typed errors (#1594) | `skill-tool-use` |
 | `@koi/harness` | CLI harness: single-prompt + interactive REPL wiring, TUI adapter bridge, fail-closed stream guards. Renders `plan_update` and `task_progress` events in verbose mode (#1555) | standalone |
 
-> **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board` are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/`.
+> **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board`, `@koi/rules-loader` (hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt) are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/` or `docs/L2/`.
 
 ### Spawn Inheritance Coverage (#1425)
 

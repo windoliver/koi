@@ -30,6 +30,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/hash",
   "@koi/hook-prompt",
   "@koi/redaction",
+  "@koi/rules-loader",
   "@koi/session-repair",
   "@koi/shutdown",
   "@koi/skill-scanner",

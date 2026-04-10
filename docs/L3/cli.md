@@ -351,6 +351,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
 | `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
+| `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
