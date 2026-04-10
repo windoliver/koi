@@ -22,7 +22,7 @@ interface StatusMapping {
 
 const HTTP_STATUS_MAP: Readonly<Record<number, StatusMapping>> = {
   400: { code: "VALIDATION", retryable: false },
-  401: { code: "PERMISSION", retryable: false },
+  401: { code: "AUTH_REQUIRED", retryable: true },
   403: { code: "PERMISSION", retryable: false },
   404: { code: "NOT_FOUND", retryable: false },
   408: { code: "TIMEOUT", retryable: true },

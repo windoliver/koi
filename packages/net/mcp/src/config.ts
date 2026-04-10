@@ -235,6 +235,13 @@ export function normalizeMcpServers(
       );
       continue;
     }
+    // clientId is required for OAuth — dynamic client registration not yet supported
+    if (config.oauth !== undefined && config.oauth.clientId === undefined) {
+      rejected.push(
+        `${name}: OAuth requires clientId (dynamic client registration not yet supported)`,
+      );
+      continue;
+    }
 
     const result = normalizeOne(name, config);
     if (result === undefined) continue;

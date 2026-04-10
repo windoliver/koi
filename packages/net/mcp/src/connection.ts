@@ -256,8 +256,8 @@ export function createMcpConnection(
 
       const koiError = mapMcpError(error, { serverName: config.name });
 
-      // Check for auth challenge (401/403)
-      if (koiError.code === "PERMISSION") {
+      // Check for auth challenge (401 only, not 403 scope denials)
+      if (koiError.code === "AUTH_REQUIRED") {
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
@@ -375,8 +375,9 @@ export function createMcpConnection(
       return { ok: true, value: tools };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
-      // 401/403 mid-session → auth-needed (not generic error)
-      if (koiError.code === "PERMISSION" && stateMachine.canTransitionTo("auth-needed")) {
+      // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
+      // stays as a normal error — don't clear valid credentials.
+      if (koiError.code === "AUTH_REQUIRED" && stateMachine.canTransitionTo("auth-needed")) {
         stateMachine.transition({
           kind: "auth-needed",
           challenge: { type: "oauth" },
@@ -443,8 +444,9 @@ export function createMcpConnection(
       return { ok: true, value: content };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
-      // 401/403 mid-session → auth-needed (not generic error)
-      if (koiError.code === "PERMISSION" && stateMachine.canTransitionTo("auth-needed")) {
+      // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
+      // stays as a normal error — don't clear valid credentials.
+      if (koiError.code === "AUTH_REQUIRED" && stateMachine.canTransitionTo("auth-needed")) {
         stateMachine.transition({
           kind: "auth-needed",
           challenge: { type: "oauth" },

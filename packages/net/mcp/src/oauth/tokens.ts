@@ -76,40 +76,40 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   };
 
   const getAccessToken = async (): Promise<string | undefined> => {
-    return storage.withLock(storageKey, async () => {
-      const tokens = await getTokens();
-      if (tokens === undefined) return undefined;
+    // Read tokens under lock (fast — no network)
+    const tokens = await storage.withLock(storageKey, () => getTokens());
+    if (tokens === undefined) return undefined;
 
-      // Check if access token is still valid
-      if (!isExpired(tokens)) {
-        return tokens.accessToken;
+    // Check if access token is still valid (no lock needed)
+    if (!isExpired(tokens)) {
+      return tokens.accessToken;
+    }
+
+    // Try to refresh — outside the lock to avoid blocking concurrent readers
+    // during the 15s network call
+    if (tokens.refreshToken === undefined || metadata === undefined) {
+      await storage.withLock(storageKey, () => storage.delete(storageKey));
+      return undefined;
+    }
+
+    const refreshResult = await refreshAccessToken(
+      tokens.refreshToken,
+      metadata.tokenEndpoint,
+      clientId,
+    );
+    if (!refreshResult.ok) {
+      if (refreshResult.terminal) {
+        // Terminal failure (invalid_grant, revoked) — clear tokens under lock
+        await storage.withLock(storageKey, () => storage.delete(storageKey));
       }
+      return undefined;
+    }
 
-      // Try to refresh
-      if (tokens.refreshToken === undefined || metadata === undefined) {
-        // Can't refresh — clear stale tokens
-        await storage.delete(storageKey);
-        return undefined;
-      }
-
-      const refreshResult = await refreshAccessToken(
-        tokens.refreshToken,
-        metadata.tokenEndpoint,
-        clientId,
-      );
-      if (!refreshResult.ok) {
-        if (refreshResult.terminal) {
-          // Terminal failure (invalid_grant, revoked) — clear tokens
-          await storage.delete(storageKey);
-        }
-        // Transient failures preserve tokens for retry on next call
-        return undefined;
-      }
-
-      // Store refreshed tokens
-      await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
-      return refreshResult.tokens.accessToken;
-    });
+    // Write-back refreshed tokens under lock
+    await storage.withLock(storageKey, () =>
+      storage.set(storageKey, JSON.stringify(refreshResult.tokens)),
+    );
+    return refreshResult.tokens.accessToken;
   };
 
   return { getAccessToken, storeTokens, clearTokens, hasTokens };
