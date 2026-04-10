@@ -81,7 +81,6 @@
     "@koi/harness": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/mcp": "workspace:*",
-    "@koi/middleware-permissions": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/query-engine": "workspace:*",
     "@koi/runtime": "workspace:*",

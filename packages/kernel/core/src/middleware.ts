@@ -136,7 +136,7 @@ export interface ApprovalRequest {
 
 export type ApprovalDecision =
   | { readonly kind: "allow" }
-  | { readonly kind: "always-allow"; readonly scope: "session" }
+  | { readonly kind: "always-allow"; readonly scope: "session" | "always" }
   | { readonly kind: "modify"; readonly updatedInput: JsonObject }
   | { readonly kind: "deny"; readonly reason: string };
 

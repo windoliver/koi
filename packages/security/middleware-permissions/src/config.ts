@@ -8,6 +8,8 @@ import type { PermissionBackend } from "@koi/core/permission-backend";
 import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import type { CircuitBreakerConfig } from "@koi/errors";
 
+import type { ApprovalStore } from "./approval-store.js";
+
 // ---------------------------------------------------------------------------
 // Cache config
 // ---------------------------------------------------------------------------
@@ -80,6 +82,26 @@ export interface PermissionsMiddlewareConfig {
   readonly denialEscalation?: boolean | DenialEscalationConfig;
   /** Callback emitted after each approval decision, producing a source:"user" trajectory step. */
   readonly onApprovalStep?: (sessionId: string, step: RichTrajectoryStep) => void;
+  /**
+   * Persistent approval store for cross-session "always" grants.
+   * When configured, "always-allow" decisions are persisted to SQLite and
+   * survive process restart. Constructed externally via `createApprovalStore`.
+   */
+  readonly persistentApprovals?: ApprovalStore;
+  /**
+   * Stable agent identifier for persistent grant keys. When set, persistent
+   * "always" grants are keyed by this value instead of the per-process agentId
+   * (which is a random UUID, regenerated on each restart).
+   *
+   * This is required for persistent grants to work across TUI/CLI restarts,
+   * where the manifest name (e.g. "koi-tui") identifies the logical agent
+   * while ctx.session.agentId changes every launch.
+   *
+   * When unset, persistent grants use ctx.session.agentId (unstable across
+   * restarts — useful only for multi-agent runtimes where each agent has a
+   * durable identity managed externally).
+   */
+  readonly persistentAgentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +229,30 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // onApprovalStep — must be a function if set
   if (config.onApprovalStep !== undefined && typeof config.onApprovalStep !== "function") {
     return fail("config.onApprovalStep must be a function");
+  }
+
+  // persistentApprovals — object with has/grant/revoke methods
+  if (config.persistentApprovals !== undefined) {
+    if (typeof config.persistentApprovals !== "object" || config.persistentApprovals === null) {
+      return fail("config.persistentApprovals must be an object");
+    }
+    const store = config.persistentApprovals as Record<string, unknown>;
+    if (typeof store.has !== "function") {
+      return fail("config.persistentApprovals.has must be a function");
+    }
+    if (typeof store.grant !== "function") {
+      return fail("config.persistentApprovals.grant must be a function");
+    }
+    if (typeof store.revoke !== "function") {
+      return fail("config.persistentApprovals.revoke must be a function");
+    }
+  }
+
+  // persistentAgentId — non-empty string if set
+  if (config.persistentAgentId !== undefined) {
+    if (typeof config.persistentAgentId !== "string" || config.persistentAgentId.length === 0) {
+      return fail("config.persistentAgentId must be a non-empty string");
+    }
   }
 
   return { ok: true, value: config as unknown as PermissionsMiddlewareConfig };

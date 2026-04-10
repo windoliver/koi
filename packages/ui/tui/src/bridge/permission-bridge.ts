@@ -52,6 +52,8 @@ export interface PermissionBridgeOptions {
   readonly timeoutMs?: number;
   /** Risk level classifier. Default: always "medium". */
   readonly classifyRisk?: (request: ApprovalRequest) => PermissionRiskLevel;
+  /** Whether persistent "always" approval is available (store configured + user authenticated). */
+  readonly permanentAvailable?: boolean;
 }
 
 /** The bridge instance returned by createPermissionBridge. */
@@ -86,7 +88,12 @@ export function resetRequestIdCounter(): void {
 // ---------------------------------------------------------------------------
 
 export function createPermissionBridge(options: PermissionBridgeOptions): PermissionBridge {
-  const { store, timeoutMs = DEFAULT_PERMISSION_TIMEOUT_MS, classifyRisk } = options;
+  const {
+    store,
+    timeoutMs = DEFAULT_PERMISSION_TIMEOUT_MS,
+    classifyRisk,
+    permanentAvailable = false,
+  } = options;
 
   // Pending approvals keyed by requestId
   const pending = new Map<string, PendingApproval>();
@@ -150,6 +157,7 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
         reason: request.reason,
         riskLevel,
         metadata: request.metadata,
+        permanentAvailable,
       };
 
       // Backstop lifetime timer — starts NOW at enqueue time, matching the engine's
